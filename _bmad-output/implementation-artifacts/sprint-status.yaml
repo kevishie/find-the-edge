@@ -1,0 +1,419 @@
+project: FIND THE EDGE
+created: "2026-07-15"
+updated: "2026-07-15"
+source: "_bmad-output/planning-artifacts/epics-and-stories.md"
+statusValues:
+  - backlog
+  - ready
+  - in-progress
+  - review
+  - blocked
+  - done
+nextReadyStory: FTE-001
+stories:
+  - id: FTE-001
+    title: Monorepo and TypeScript Tooling Foundation
+    epic: Engineering foundation
+    status: ready
+    dependencies: []
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-002
+    title: Vite React Web App Shell Baseline
+    epic: Engineering foundation
+    status: backlog
+    dependencies: [FTE-001]
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-003
+    title: Shared Package Structure and Dependency Boundaries
+    epic: Engineering foundation
+    status: backlog
+    dependencies: [FTE-001]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-004
+    title: Unit, Integration, and E2E Test Harness
+    epic: Engineering foundation
+    status: backlog
+    dependencies: [FTE-001, FTE-002]
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-005
+    title: GitHub Actions CI Quality Gates
+    epic: Engineering foundation
+    status: backlog
+    dependencies: [FTE-001, FTE-004]
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-006
+    title: Environment Validation and Local Development Documentation
+    epic: Engineering foundation
+    status: backlog
+    dependencies: [FTE-001]
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-007
+    title: Base AWS CDK Application Skeleton
+    epic: Engineering foundation
+    status: backlog
+    dependencies: [FTE-001, FTE-006]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-008
+    title: Cognito Private Authentication Infrastructure
+    epic: Authentication and application shell
+    status: backlog
+    dependencies: [FTE-007]
+    risk: Medium
+    approvalRequiredBeforeMerge: true
+  - id: FTE-009
+    title: Login, Logout, Session Refresh, and Protected Routes
+    epic: Authentication and application shell
+    status: backlog
+    dependencies: [FTE-002, FTE-008]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-010
+    title: Password Reset and Session-Expired States
+    epic: Authentication and application shell
+    status: backlog
+    dependencies: [FTE-009]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-011
+    title: Navigation Shell, Sidebar, Header, and Mobile Nav
+    epic: Authentication and application shell
+    status: backlog
+    dependencies: [FTE-009]
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-012
+    title: Authentication Audit Events
+    epic: Authentication and application shell
+    status: backlog
+    dependencies: [FTE-008, FTE-009]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-013
+    title: Soccer Domain Models and Event Lifecycle
+    epic: Sports catalog and event ingestion
+    status: backlog
+    dependencies: [FTE-003]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-014
+    title: The Odds API Adapter Foundation and Request Logging
+    epic: Sports catalog and event ingestion
+    status: backlog
+    dependencies: [FTE-006, FTE-013]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-015
+    title: Upcoming Soccer Event Ingestion Worker
+    epic: Sports catalog and event ingestion
+    status: backlog
+    dependencies: [FTE-013, FTE-014, FTE-019]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-016
+    title: Event Repository, API, and Pagination
+    epic: Sports catalog and event ingestion
+    status: backlog
+    dependencies: [FTE-013, FTE-015]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-017
+    title: Event Status and Data Freshness Indicators
+    epic: Sports catalog and event ingestion
+    status: backlog
+    dependencies: [FTE-016]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-018
+    title: Events Explorer Screen
+    epic: Sports catalog and event ingestion
+    status: backlog
+    dependencies: [FTE-011, FTE-016, FTE-017]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-019
+    title: Spike - Initial Soccer Competitions Allowlist
+    epic: Sports catalog and event ingestion
+    status: backlog
+    dependencies: [FTE-014]
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-020
+    title: Bookmaker, Market, and Selection Normalization
+    epic: Odds ingestion and market normalization
+    status: backlog
+    dependencies: [FTE-013, FTE-014, FTE-032]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-021
+    title: Immutable Odds Snapshot Persistence and Current Projection
+    epic: Odds ingestion and market normalization
+    status: backlog
+    dependencies: [FTE-020]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-022
+    title: DynamoDB Streams Projection Workflow
+    epic: Odds ingestion and market normalization
+    status: backlog
+    dependencies: [FTE-021, FTE-007]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-023
+    title: Featured and Event-Specific Odds Ingestion
+    epic: Odds ingestion and market normalization
+    status: backlog
+    dependencies: [FTE-015, FTE-021]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-024
+    title: Provider Quota, Retry, DLQ, and Suspended/Partial States
+    epic: Odds ingestion and market normalization
+    status: backlog
+    dependencies: [FTE-023]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-025
+    title: Event Detail Odds Comparison
+    epic: Odds ingestion and market normalization
+    status: backlog
+    dependencies: [FTE-011, FTE-016, FTE-021, FTE-020]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-026
+    title: Odds History API and Chart
+    epic: Odds ingestion and market normalization
+    status: backlog
+    dependencies: [FTE-021, FTE-025, FTE-027]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-027
+    title: Pure Odds Conversion and Implied Probability Functions
+    epic: Deterministic betting engine
+    status: backlog
+    dependencies: [FTE-003]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-028
+    title: Two-Way and Three-Way No-Vig Consensus
+    epic: Deterministic betting engine
+    status: backlog
+    dependencies: [FTE-027, FTE-032]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-029
+    title: Fair Odds, EV, Expected Profit, Kelly, and Fractional Kelly
+    epic: Deterministic betting engine
+    status: backlog
+    dependencies: [FTE-027, FTE-028]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-030
+    title: Movement, CLV, Outlier, and Market Disagreement Functions
+    epic: Deterministic betting engine
+    status: backlog
+    dependencies: [FTE-027, FTE-032]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-031
+    title: Calculation Versioning, Precision, and Display Rounding
+    epic: Deterministic betting engine
+    status: backlog
+    dependencies: [FTE-027, FTE-028, FTE-029, FTE-030]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-032
+    title: Spike - Consensus and Qualification Defaults
+    epic: Deterministic betting engine
+    status: backlog
+    dependencies: [FTE-014, FTE-019]
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-033
+    title: Candidate Opportunity Creation and Qualification Rules
+    epic: +EV opportunity lifecycle and dashboard
+    status: backlog
+    dependencies: [FTE-021, FTE-028, FTE-029, FTE-032]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-034
+    title: Opportunity Lifecycle States and Expiration
+    epic: +EV opportunity lifecycle and dashboard
+    status: backlog
+    dependencies: [FTE-033]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-035
+    title: Ranked Opportunity API and Explanation
+    epic: +EV opportunity lifecycle and dashboard
+    status: backlog
+    dependencies: [FTE-033, FTE-034]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-036
+    title: Dashboard Layout and +EV Opportunity Cards
+    epic: +EV opportunity lifecycle and dashboard
+    status: backlog
+    dependencies: [FTE-011, FTE-035]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-037
+    title: Provider Health and Quota Dashboard States
+    epic: +EV opportunity lifecycle and dashboard
+    status: backlog
+    dependencies: [FTE-024, FTE-036]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-038
+    title: Scout Event API, Idempotent Job Model, SQS, and Step Functions
+    epic: Manual scouting workflow
+    status: backlog
+    dependencies: [FTE-016, FTE-007]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-039
+    title: Spike - Soccer Enrichment Provider Evaluation
+    epic: Manual scouting workflow
+    status: backlog
+    dependencies: [FTE-019]
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-040
+    title: Provider-Backed Scouting Input Contract and Development Stub
+    epic: Manual scouting workflow
+    status: backlog
+    dependencies: [FTE-038, FTE-039]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-041
+    title: AI Report Provider Interface and Structured Report Schema
+    epic: Manual scouting workflow
+    status: backlog
+    dependencies: [FTE-040, FTE-031]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-042
+    title: Report Persistence, Versioning, and Source Provenance
+    epic: Manual scouting workflow
+    status: backlog
+    dependencies: [FTE-041]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-043
+    title: Scouting Progress UI and Retry States
+    epic: Manual scouting workflow
+    status: backlog
+    dependencies: [FTE-038]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-044
+    title: Scouting Report Screen, Versions, Sources, and PASS State
+    epic: Manual scouting workflow
+    status: backlog
+    dependencies: [FTE-042, FTE-043]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-045
+    title: Watchlist API Add and Remove
+    epic: Watchlist and change tracking
+    status: backlog
+    dependencies: [FTE-016]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-046
+    title: Watchlist Screen and Empty State
+    epic: Watchlist and change tracking
+    status: backlog
+    dependencies: [FTE-018, FTE-045]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-047
+    title: Watched-Event Change Tracking and Prioritization
+    epic: Watchlist and change tracking
+    status: backlog
+    dependencies: [FTE-026, FTE-042, FTE-045]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-048
+    title: Manual Bet Entry with Opportunity or Report Source Link
+    epic: Bet tracker and settlement
+    status: backlog
+    dependencies: [FTE-025, FTE-035, FTE-044]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-049
+    title: Bet Tracker Screen and Status Filters
+    epic: Bet tracker and settlement
+    status: backlog
+    dependencies: [FTE-048]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-050
+    title: Manual Settlement, Payout, Profit/Loss, and Audit
+    epic: Bet tracker and settlement
+    status: backlog
+    dependencies: [FTE-049, FTE-027]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-051
+    title: Closing Odds and CLV Integration
+    epic: Bet tracker and settlement
+    status: backlog
+    dependencies: [FTE-026, FTE-030, FTE-050, FTE-032]
+    risk: High
+    approvalRequiredBeforeMerge: false
+  - id: FTE-052
+    title: Performance Aggregates and Screen
+    epic: Performance and settings
+    status: backlog
+    dependencies: [FTE-050, FTE-051]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-053
+    title: User Settings for Sportsbook, Markets, Thresholds, Weights, and Timezone
+    epic: Performance and settings
+    status: backlog
+    dependencies: [FTE-032, FTE-020, FTE-033]
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-054
+    title: Future Automatic Scouting Preferences Placeholder
+    epic: Performance and settings
+    status: backlog
+    dependencies: [FTE-053]
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-055
+    title: Structured Logging, Correlation IDs, Metrics, and Alarms
+    epic: Reliability, security, and production readiness
+    status: backlog
+    dependencies: [FTE-024, FTE-034, FTE-038]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-056
+    title: Secrets, IAM, Encryption, Throttling, and Audit Hardening
+    epic: Reliability, security, and production readiness
+    status: backlog
+    dependencies: [FTE-008, FTE-023, FTE-038, FTE-048]
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-057
+    title: E2E Regression, Accessibility, and Provider-Outage Test Suite
+    epic: Reliability, security, and production readiness
+    status: backlog
+    dependencies: [FTE-036, FTE-044, FTE-049, FTE-052]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-058
+    title: Production Deployment, Rollback, Cost, and Release Checklist
+    epic: Reliability, security, and production readiness
+    status: backlog
+    dependencies: [FTE-055, FTE-056, FTE-057]
+    risk: High
+    approvalRequiredBeforeMerge: true
