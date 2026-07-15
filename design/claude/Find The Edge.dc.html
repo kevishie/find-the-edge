@@ -1,0 +1,1333 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #0a0a0d; color: #f3f1f8; font-family: 'Space Grotesk', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: #a855f7; text-decoration: none; }
+  a:hover { color: #c084fc; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #0a0a0d; }
+  ::-webkit-scrollbar-thumb { background: #2a2833; border-radius: 6px; border: 2px solid #0a0a0d; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a3547; }
+  @keyframes ftePulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @keyframes fteSpin { to { transform: rotate(360deg); } }
+  @keyframes fteRise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes fteShimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+  @keyframes fteToast { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+</style>
+</helmet>
+<div style="display: flex; min-height: 100vh; width: 100%; background: #0a0a0d;">
+
+  <aside style="width: 244px; flex-shrink: 0; background: #0c0c10; border-right: 1px solid #201e29; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; overflow-y: auto;">
+    <div style="padding: 22px 20px 18px; border-bottom: 1px solid #201e29;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <svg width="30" height="24" viewBox="0 0 30 24" fill="none" style="filter: drop-shadow(0 0 6px rgba(168,85,247,0.6));">
+          <path d="M2 20 L5 7 L11 14 L15 4 L19 14 L25 7 L28 20 Z" fill="#8b5cf6" stroke="#c084fc" stroke-width="1" stroke-linejoin="round"/>
+          <rect x="3" y="20" width="24" height="3" rx="1" fill="#c084fc"/>
+        </svg>
+        <div style="line-height: 1;">
+          <div style="font-family: 'Anton', sans-serif; font-size: 20px; letter-spacing: 0.5px;">FIND THE <span style="color: #a855f7; font-style: italic; text-shadow: 0 0 12px rgba(168,85,247,0.7);">EDGE</span></div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; letter-spacing: 2px; margin-top: 3px;">BY @KEVISHIE</div>
+        </div>
+      </div>
+    </div>
+
+    <nav style="flex: 1; padding: 12px 12px 8px; display: flex; flex-direction: column; gap: 2px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 2px; color: #56515f; padding: 10px 10px 6px;">TERMINAL</div>
+      <sc-for list="{{ navMain }}" as="item" hint-placeholder-count="7">
+        <a href="#" onClick="{{ item.go }}" style="{{ item.style }}">
+          <span style="width: 18px; display: inline-flex; justify-content: center;" data-icon="{{ item.id }}">{{ item.dot }}</span>
+          <span style="flex: 1;">{{ item.label }}</span>
+          <sc-if value="{{ item.badge }}" hint-placeholder-val="12">
+            <span style="{{ item.badgeStyle }}">{{ item.badge }}</span>
+          </sc-if>
+        </a>
+      </sc-for>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 2px; color: #56515f; padding: 16px 10px 6px;">DESIGN</div>
+      <sc-for list="{{ navDesign }}" as="item" hint-placeholder-count="2">
+        <a href="#" onClick="{{ item.go }}" style="{{ item.style }}">
+          <span style="width: 18px; display: inline-flex; justify-content: center;">{{ item.dot }}</span>
+          <span style="flex: 1;">{{ item.label }}</span>
+        </a>
+      </sc-for>
+    </nav>
+
+    <div style="padding: 14px 16px; border-top: 1px solid #201e29; display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; align-items: center; gap: 8px; font-size: 12px;">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: #34d399; box-shadow: 0 0 8px #34d399; animation: ftePulse 2.4s infinite;"></span>
+        <span style="color: #a29daf;">Providers</span>
+        <span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; color: #34d399;">4/5 OK</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg,#7c3aed,#a855f7); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px;">K</div>
+        <div style="line-height: 1.2;">
+          <div style="font-size: 12px; font-weight: 600;">Kevishie</div>
+          <div style="font-size: 10px; color: #6b6678; font-family: 'IBM Plex Mono', monospace;">FLORIDA · PRIVATE</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+    <header style="height: 60px; flex-shrink: 0; border-bottom: 1px solid #201e29; background: rgba(12,12,16,0.85); backdrop-filter: blur(8px); display: flex; align-items: center; gap: 18px; padding: 0 24px; position: sticky; top: 0; z-index: 30;">
+      <div style="min-width: 0;">
+        <div style="font-family: 'Anton', sans-serif; font-size: 19px; letter-spacing: 0.5px; line-height: 1;">{{ routeTitle }}</div>
+        <div style="font-size: 11px; color: #6b6678; margin-top: 2px;">{{ routeSub }}</div>
+      </div>
+      <div style="flex: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 8px; background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 7px 12px; width: 240px; color: #6b6678; font-size: 13px;">
+        <span style="width: 13px; height: 13px; border: 1.5px solid #6b6678; border-radius: 50%; display: inline-block; position: relative;"></span>
+        <span>Search events, teams…</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #a29daf; background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 8px 11px;">
+        <span style="width: 6px; height: 6px; border-radius: 50%; background: #a855f7; box-shadow: 0 0 6px #a855f7;"></span>
+        {{ clockET }} ET
+      </div>
+      <button onClick="{{ onRefresh }}" style="display: flex; align-items: center; gap: 7px; background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 8px 12px; color: #f3f1f8; font-family: 'Space Grotesk'; font-size: 13px; font-weight: 500; cursor: pointer;">
+        <span style="{{ refreshSpin }}">↻</span> Refresh
+      </button>
+      <button onClick="{{ onAddBet }}" style="display: flex; align-items: center; gap: 7px; background: linear-gradient(135deg,#7c3aed,#a855f7); border: none; border-radius: 8px; padding: 9px 15px; color: #fff; font-weight: 600; font-size: 13px; cursor: pointer; box-shadow: 0 0 18px rgba(139,92,246,0.4);">+ Add Bet</button>
+    </header>
+
+    <main style="flex: 1; overflow-y: auto; padding: 26px 28px 60px; position: relative;">
+
+      <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ true }}">
+        <div style="max-width: 1320px; margin: 0 auto; animation: fteRise 0.35s ease;">
+          <div style="display: flex; align-items: baseline; gap: 14px; margin-bottom: 18px;">
+            <h1 style="font-family: 'Anton', sans-serif; font-size: 30px; margin: 0; letter-spacing: 0.5px;">Where is the edge right now?</h1>
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6b6678;">{{ dashDate }}</span>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 22px;">
+            <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="4">
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 16px 18px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1.5px; color: #6b6678; text-transform: uppercase;">{{ k.label }}</div>
+                <div style="font-family: 'Anton', sans-serif; font-size: 30px; margin-top: 8px; line-height: 1; color: {{ k.color }};">{{ k.value }}</div>
+                <div style="font-size: 11px; color: #a29daf; margin-top: 8px;">{{ k.sub }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: start;">
+            <div style="flex: 1 1 520px; min-width: 0;">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+                <h2 style="font-family: 'Anton', sans-serif; font-size: 18px; margin: 0; letter-spacing: 0.5px;">TOP +EV OPPORTUNITIES</h2>
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; border: 1px solid #2a2833; border-radius: 20px; padding: 3px 9px;">RANKED BY EV</span>
+                <a href="#" onClick="{{ goScanner }}" style="margin-left: auto; font-size: 12px;">Open scanner →</a>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 14px;">
+                <sc-for list="{{ topOpps }}" as="o" hint-placeholder-count="3">
+                  <div style="background: linear-gradient(180deg,#12111a,#0f0e14); border: 1px solid #2a2635; border-radius: 14px; padding: 18px; position: relative; overflow: hidden;">
+                    <div style="position: absolute; top: 0; left: 0; width: 3px; height: 100%; background: linear-gradient(180deg,#a855f7,#7c3aed);"></div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+                      <span style="font-family: 'Anton', sans-serif; font-size: 15px; color: #0a0a0d; background: linear-gradient(135deg,#a855f7,#c084fc); width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center;">{{ o.rank }}</span>
+                      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1px; color: #a29daf; background: #1b1a22; border: 1px solid #2a2833; border-radius: 5px; padding: 3px 8px;">{{ o.league }}</span>
+                      <span style="font-size: 12px; color: #6b6678;">{{ o.kickoff }}</span>
+                      <span style="{{ o.freshStyle }}">{{ o.freshLabel }}</span>
+                      <sc-if value="{{ o.hasWarn }}" hint-placeholder-val="">
+                        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #fbbf24; background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.35); border-radius: 5px; padding: 3px 8px;">⚠ {{ o.warn }}</span>
+                      </sc-if>
+                      <span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">upd {{ o.updated }}</span>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 3px;">
+                      <span style="font-size: 20px;">{{ o.homeFlag }}</span>
+                      <span style="font-family: 'Anton', sans-serif; font-size: 21px; letter-spacing: 0.5px;">{{ o.matchup }}</span>
+                      <span style="font-size: 20px;">{{ o.awayFlag }}</span>
+                    </div>
+                    <div style="font-size: 13px; color: #a29daf; margin-bottom: 15px;"><span style="color: #f3f1f8; font-weight: 600;">{{ o.selection }}</span> · {{ o.market }}</div>
+
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px;">
+                      <div style="background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.4); border-radius: 10px; padding: 10px 12px; position: relative;">
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1px; color: #c084fc;">HARD ROCK FL</div>
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; color: #f3f1f8; margin-top: 3px;">{{ o.hrOddsFmt }}</div>
+                      </div>
+                      <div style="background: #131319; border: 1px solid #2a2833; border-radius: 10px; padding: 10px 12px;">
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1px; color: #6b6678;">BEST · {{ o.bestBook }}</div>
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; color: #a29daf; margin-top: 3px;">{{ o.bestOddsFmt }}</div>
+                      </div>
+                      <div style="background: #131319; border: 1px solid #2a2833; border-radius: 10px; padding: 10px 12px;">
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1px; color: #6b6678;">FAIR ODDS</div>
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; color: #a29daf; margin-top: 3px;">{{ o.fairOddsFmt }}</div>
+                      </div>
+                    </div>
+
+                    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 16px 20px; padding: 12px 14px; background: #0d0c12; border: 1px solid #201e29; border-radius: 10px;">
+                      <div>
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1px; color: #6b6678;">EST. PROB</div>
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 16px; margin-top: 2px;">{{ o.probPct }}</div>
+                      </div>
+                      <div>
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1px; color: #6b6678;">HR IMPLIED</div>
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 16px; margin-top: 2px; color: #a29daf;">{{ o.impliedPct }}</div>
+                      </div>
+                      <div style="flex: 1 1 160px; min-width: 140px;">
+                        <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1px; color: #6b6678; margin-bottom: 5px;"><span>CONFIDENCE · {{ o.confLabel }}</span><span>{{ o.numBooks }} BOOKS</span></div>
+                        <div style="height: 6px; background: #1b1a22; border-radius: 4px; overflow: hidden;"><div style="height: 100%; width: {{ o.confPct }}; background: {{ o.confColor }}; border-radius: 4px;"></div></div>
+                      </div>
+                      <div style="text-align: right; margin-left: auto;">
+                        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1px; color: #6b6678;">EST. EV</div>
+                        <div style="font-family: 'Anton', sans-serif; font-size: 28px; line-height: 1; color: #34d399; text-shadow: 0 0 14px rgba(52,211,153,0.35);">{{ o.evFmt }}</div>
+                      </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 14px;">
+                      <button onClick="{{ o.openEvent }}" style="flex: 1; background: #1b1a22; border: 1px solid #2a2833; border-radius: 9px; padding: 10px; color: #f3f1f8; font-family: 'Space Grotesk'; font-weight: 600; font-size: 13px; cursor: pointer;">Open Event</button>
+                      <button onClick="{{ o.addBet }}" style="flex: 1; background: linear-gradient(135deg,#7c3aed,#a855f7); border: none; border-radius: 9px; padding: 10px; color: #fff; font-family: 'Space Grotesk'; font-weight: 600; font-size: 13px; cursor: pointer; box-shadow: 0 0 16px rgba(139,92,246,0.35);">Add Bet</button>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+
+            <div style="flex: 1 1 300px; max-width: 360px; display: flex; flex-direction: column; gap: 16px;">
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 16px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1.5px; color: #6b6678; margin-bottom: 12px;">HARD ROCK DISCREPANCIES</div>
+                <sc-for list="{{ discrepancies }}" as="d" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #1b1a22;">
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ d.sel }}</div>
+                      <div style="font-size: 10px; color: #6b6678;">{{ d.match }}</div>
+                    </div>
+                    <div style="text-align: right; font-family: 'IBM Plex Mono', monospace;">
+                      <div style="font-size: 13px;">{{ d.hr }}</div>
+                      <div style="font-size: 10px; color: #34d399;">{{ d.gap }}</div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 16px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1.5px; color: #6b6678; margin-bottom: 12px;">WATCHED · STARTING SOON</div>
+                <sc-for list="{{ watched }}" as="w" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #1b1a22;">
+                    <span style="font-size: 15px;">{{ w.flag }}</span>
+                    <div style="flex: 1; min-width: 0;"><div style="font-size: 12px; font-weight: 600;">{{ w.match }}</div><div style="font-size: 10px; color: #6b6678;">{{ w.league }}</div></div>
+                    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #a855f7;">{{ w.countdown }}</span>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 16px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1.5px; color: #6b6678; margin-bottom: 12px;">RECENT LINE MOVEMENT</div>
+                <sc-for list="{{ lineMoves }}" as="m" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #1b1a22;">
+                    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: {{ m.color }};">{{ m.arrow }}</span>
+                    <div style="flex: 1; min-width: 0;"><div style="font-size: 12px; font-weight: 600;">{{ m.sel }}</div><div style="font-size: 10px; color: #6b6678;">{{ m.match }}</div></div>
+                    <div style="text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 11px;"><span style="color: #6b6678;">{{ m.from }}</span> <span style="color: {{ m.color }};">{{ m.to }}</span></div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 16px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1.5px; color: #6b6678; margin-bottom: 12px;">RECENT SCOUTING REPORTS</div>
+                <sc-for list="{{ recentReports }}" as="r" hint-placeholder-count="2">
+                  <a href="#" onClick="{{ r.open }}" style="display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #1b1a22; color: inherit;">
+                    <div style="flex: 1; min-width: 0;"><div style="font-size: 12px; font-weight: 600; color: #f3f1f8;">{{ r.match }}</div><div style="font-size: 10px; color: #6b6678;">{{ r.meta }}</div></div>
+                    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #a855f7; border: 1px solid rgba(168,85,247,0.35); border-radius: 5px; padding: 2px 7px;">{{ r.version }}</span>
+                  </a>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isScanner }}" hint-placeholder-val="">
+        <div style="max-width: 1400px; margin: 0 auto; animation: fteRise 0.35s ease;">
+          <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 16px 18px; margin-bottom: 18px;">
+            <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1.5px; color: #6b6678; margin-right: 4px;">FILTERS</span>
+              <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">Soccer ▾</span>
+              <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">FIFA WC26 ▾</span>
+              <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">All markets ▾</span>
+              <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">Hard Rock FL ▾</span>
+              <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">Pre-match ▾</span>
+              <span style="font-size: 12px; color: #a29daf; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">Min EV <span style="color: #34d399; font-family: 'IBM Plex Mono', monospace;">2.0%</span></span>
+              <span style="font-size: 12px; color: #a29daf; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">Min conf <span style="color: #f3f1f8; font-family: 'IBM Plex Mono', monospace;">30</span></span>
+              <span style="font-size: 12px; color: #a29daf; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">Min books <span style="color: #f3f1f8; font-family: 'IBM Plex Mono', monospace;">3</span></span>
+              <span style="font-size: 12px; color: #a29daf; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">Freshness <span style="color: #34d399;">≤ 10m</span></span>
+              <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #a29daf; margin-left: auto;"><span style="width: 30px; height: 17px; background: rgba(139,92,246,0.3); border-radius: 20px; position: relative;"><span style="position: absolute; right: 2px; top: 2px; width: 13px; height: 13px; background: #a855f7; border-radius: 50%;"></span></span>Watchlist only</label>
+              <button style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 12px; cursor: pointer;">Reset</button>
+            </div>
+          </div>
+
+          <div style="background: #0e0d13; border: 1px solid #201e29; border-radius: 12px; overflow-x: auto;">
+            <div style="display: grid; grid-template-columns: 42px minmax(180px,1.4fr) minmax(150px,1.2fr) 78px 78px 78px 70px 70px 82px 120px 60px 90px; min-width: 1080px; align-items: center; padding: 11px 16px; border-bottom: 1px solid #201e29; background: #0c0b11; font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 0.5px; color: #6b6678;">
+              <div>#</div><div>EVENT</div><div>SELECTION</div>
+              <a href="#" onClick="{{ setSortKickoff }}" style="color: #6b6678;">START</a>
+              <div style="text-align: center;">HR FL</div><div style="text-align: center;">BEST</div><div style="text-align: center;">FAIR</div>
+              <div style="text-align: center;">P(est)</div><div style="text-align: center;">IMPL</div>
+              <a href="#" onClick="{{ setSortEV }}" style="text-align: right; color: {{ sortEVColor }};">EV ↓</a>
+              <a href="#" onClick="{{ setSortConf }}" style="text-align: center; color: {{ sortConfColor }};">CONF</a>
+              <div style="text-align: right;">ACTION</div>
+            </div>
+            <sc-for list="{{ scannerOpps }}" as="o" hint-placeholder-count="7">
+              <div style="display: grid; grid-template-columns: 42px minmax(180px,1.4fr) minmax(150px,1.2fr) 78px 78px 78px 70px 70px 82px 120px 60px 90px; min-width: 1080px; align-items: center; padding: 12px 16px; border-bottom: 1px solid #17161d; font-size: 12px;">
+                <div style="font-family: 'Anton', sans-serif; color: #6b6678;">{{ o.rank }}</div>
+                <div style="min-width: 0;"><div style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ o.homeFlag }} {{ o.matchup }}</div><div style="font-size: 10px; color: #6b6678; font-family: 'IBM Plex Mono', monospace;">{{ o.league }} · {{ o.market }}</div></div>
+                <div style="min-width: 0;"><div style="color: #f3f1f8; font-weight: 500;">{{ o.selection }}</div><span style="{{ o.freshStyle }}">{{ o.freshLabel }}</span></div>
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">{{ o.kickoff }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: center; color: #c084fc;">{{ o.hrOddsFmt }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: center; color: #34d399;">{{ o.bestOddsFmt }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: center; color: #a29daf;">{{ o.fairOddsFmt }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: center;">{{ o.probPct }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: center; color: #a29daf;">{{ o.impliedPct }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; font-weight: 600; text-align: right; color: #34d399; font-size: 14px;">{{ o.evFmt }}</div>
+                <div style="display: flex; align-items: center; gap: 6px; justify-content: center;"><div style="width: 34px; height: 5px; background: #1b1a22; border-radius: 3px; overflow: hidden;"><div style="height: 100%; width: {{ o.confPct }}; background: {{ o.confColor }};"></div></div><span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">{{ o.numBooks }}</span></div>
+                <div style="display: flex; gap: 5px; justify-content: flex-end;"><button onClick="{{ o.rowScout }}" title="Scout" style="background: #1b1a22; border: 1px solid #2a2833; border-radius: 6px; width: 28px; height: 26px; color: #a29daf; cursor: pointer;">⊙</button><button onClick="{{ o.rowAdd }}" title="Add bet" style="background: linear-gradient(135deg,#7c3aed,#a855f7); border: none; border-radius: 6px; width: 28px; height: 26px; color: #fff; cursor: pointer;">+</button></div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 12px; color: #6b6678;">
+            <span style="width: 10px; height: 10px; background: rgba(139,92,246,0.2); border: 1px solid rgba(139,92,246,0.4); border-radius: 3px; display: inline-block;"></span> Hard Rock target
+            <span style="width: 10px; height: 10px; background: rgba(52,211,153,0.15); border: 1px solid rgba(52,211,153,0.4); border-radius: 3px; display: inline-block; margin-left: 12px;"></span> Best available price
+            <span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace;">{{ scannerCount }} qualified · updated 2m ago</span>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isEvents }}" hint-placeholder-val="">
+        <div style="max-width: 1400px; margin: 0 auto; animation: fteRise 0.35s ease;">
+          <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 18px;">
+            <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">Soccer ▾</span>
+            <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">FIFA WC26 ▾</span>
+            <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">Jul 14–15 ▾</span>
+            <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">★ Watchlist</span>
+            <span style="font-size: 12px; color: #f3f1f8; background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px;">All statuses ▾</span>
+            <div style="display: flex; align-items: center; gap: 8px; background: #131319; border: 1px solid #2a2833; border-radius: 7px; padding: 6px 11px; color: #6b6678; font-size: 12px; width: 200px;"><span style="width: 12px; height: 12px; border: 1.5px solid #6b6678; border-radius: 50%;"></span>Search teams…</div>
+            <div style="margin-left: auto; display: flex; background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 3px;">
+              <a href="#" onClick="{{ eventViewTable }}" style="{{ eventTableStyle }}">Table</a>
+              <a href="#" onClick="{{ eventViewCards }}" style="{{ eventCardsStyle }}">Cards</a>
+            </div>
+          </div>
+
+          <sc-if value="{{ eventIsTable }}" hint-placeholder-val="{{ true }}">
+            <div style="background: #0e0d13; border: 1px solid #201e29; border-radius: 12px; overflow-x: auto;">
+              <div style="display: grid; grid-template-columns: minmax(200px,2fr) 150px 110px 90px 90px 110px 130px 110px; min-width: 900px; align-items: center; padding: 11px 16px; border-bottom: 1px solid #201e29; background: #0c0b11; font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 0.5px; color: #6b6678;">
+                <div>EVENT</div><div>KICKOFF (ET)</div><div>STATUS</div><div style="text-align:center;">HR FL</div><div style="text-align:center;">BEST</div><div>REPORT</div><div>LINEUPS</div><div style="text-align:right;">ACTION</div>
+              </div>
+              <sc-for list="{{ eventList }}" as="e" hint-placeholder-count="5">
+                <div style="display: grid; grid-template-columns: minmax(200px,2fr) 150px 110px 90px 90px 110px 130px 110px; min-width: 900px; align-items: center; padding: 13px 16px; border-bottom: 1px solid #17161d; font-size: 12px;">
+                  <div style="display: flex; align-items: center; gap: 10px; min-width: 0;"><span style="font-size: 16px;">{{ e.flag }}{{ e.flag2 }}</span><div style="min-width: 0;"><div style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ e.match }}</div><div style="font-size: 10px; color: #6b6678; font-family: 'IBM Plex Mono', monospace;">{{ e.league }}</div></div></div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #a29daf;">{{ e.time }}</div>
+                  <div><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: {{ e.freshFg }};">● {{ e.status }}</span></div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; text-align: center; color: #c084fc;">{{ e.hr }}</div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; text-align: center; color: #34d399;">{{ e.best }}</div>
+                  <div style="font-size: 11px; color: {{ e.reportColor }}; font-family: 'IBM Plex Mono', monospace;">{{ e.reportLabel }}</div>
+                  <div style="font-size: 11px; color: {{ e.lineupColor }};">{{ e.lineupText }}</div>
+                  <div style="text-align: right;"><button onClick="{{ e.onScout }}" style="background: #1b1a22; border: 1px solid #2a2833; border-radius: 7px; padding: 7px 11px; color: #f3f1f8; font-family: 'Space Grotesk'; font-size: 11px; font-weight: 600; cursor: pointer;">{{ e.scoutLabel }}</button></div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ eventIsCards }}" hint-placeholder-val="">
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px;">
+              <sc-for list="{{ eventList }}" as="e" hint-placeholder-count="5">
+                <div style="background: linear-gradient(180deg,#12111a,#0f0e14); border: 1px solid #2a2635; border-radius: 12px; padding: 16px;">
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #a29daf; background: #1b1a22; border: 1px solid #2a2833; border-radius: 5px; padding: 3px 8px;">{{ e.league }}</span>
+                    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: {{ e.freshFg }};">● {{ e.freshLabel }}</span>
+                    <span style="margin-left: auto; font-size: 11px; color: {{ e.watchColor }};">{{ e.watchLabel }}</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;"><span style="font-size: 22px;">{{ e.flag }}{{ e.flag2 }}</span><span style="font-family: 'Anton', sans-serif; font-size: 18px;">{{ e.match }}</span></div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #a29daf; margin-bottom: 14px;">{{ e.time }}</div>
+                  <div style="display: flex; gap: 10px; margin-bottom: 14px;">
+                    <div style="flex: 1; background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.35); border-radius: 8px; padding: 8px 10px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 8px; color: #c084fc;">HARD ROCK</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px;">{{ e.hr }}</div></div>
+                    <div style="flex: 1; background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 8px 10px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 8px; color: #6b6678;">BEST</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; color: #34d399;">{{ e.best }}</div></div>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px; font-size: 11px; margin-bottom: 14px;"><span style="color: {{ e.lineupColor }};">● {{ e.lineupText }}</span><span style="margin-left: auto; color: {{ e.reportColor }}; font-family: 'IBM Plex Mono', monospace;">{{ e.reportLabel }}</span></div>
+                  <button onClick="{{ e.onScout }}" style="width: 100%; background: #1b1a22; border: 1px solid #2a2833; border-radius: 8px; padding: 9px; color: #f3f1f8; font-family: 'Space Grotesk'; font-size: 12px; font-weight: 600; cursor: pointer;">{{ e.scoutLabel }}</button>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isScouting }}" hint-placeholder-val="">
+        <div style="max-width: 1360px; margin: 0 auto; display: grid; grid-template-columns: 232px minmax(0,1fr); gap: 24px; align-items: start; animation: fteRise 0.35s ease;">
+          <aside style="position: sticky; top: 0; align-self: start;">
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 14px; margin-bottom: 14px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1.5px; color: #6b6678; margin-bottom: 9px;">REPORT VERSION</div>
+              <div style="display: flex; gap: 6px; margin-bottom: 10px;">
+                <a href="#" onClick="{{ setV1 }}" style="{{ v1Style }}">v1</a>
+                <a href="#" onClick="{{ setV2 }}" style="{{ v2Style }}">v2</a>
+                <a href="#" onClick="{{ setV3 }}" style="{{ v3Style }}">v3</a>
+              </div>
+              <div style="font-size: 10px; color: #34d399; font-family: 'IBM Plex Mono', monospace; display: flex; align-items: center; gap: 6px;"><span style="width: 6px; height: 6px; border-radius: 50%; background: #34d399;"></span>{{ versionMeta }}</div>
+              <div style="font-size: 10px; color: #38bdf8; font-family: 'IBM Plex Mono', monospace; margin-top: 6px;">↳ {{ versionDiff }}</div>
+            </div>
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 8px;">
+              <sc-for list="{{ reportSecs }}" as="s" hint-placeholder-count="14">
+                <a href="#" onClick="{{ s.go }}" style="{{ s.style }}"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f;">{{ s.n }}</span>{{ s.title }}</a>
+              </sc-for>
+            </div>
+          </aside>
+
+          <div style="min-width: 0;">
+            <div style="background: linear-gradient(135deg,#16121f,#0f0e14); border: 1px solid #2a2635; border-radius: 14px; padding: 22px; margin-bottom: 18px; position: relative; overflow: hidden;">
+              <svg width="150" height="180" viewBox="0 0 100 120" style="position: absolute; right: -20px; top: -30px; opacity: 0.06;"><path d="M6 26 L58 24 L62 34 L72 34 L78 42 L84 54 L80 68 L72 84 L64 98 L56 112 L52 108 L54 92 L50 78 L42 68 L32 60 L20 54 L10 44 Z" fill="none" stroke="#a855f7" stroke-width="2"/></svg>
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #a29daf; background: #1b1a22; border: 1px solid #2a2833; border-radius: 5px; padding: 3px 9px;">FIFA WC26 · SEMI-FINAL</span>
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #34d399;">● LINEUPS CONFIRMED</span>
+                <a href="#" onClick="{{ onRefresh }}" style="margin-left: auto; font-size: 12px;">↻ Refresh data</a>
+              </div>
+              <div style="display: flex; align-items: center; gap: 14px;">
+                <span style="font-size: 30px;">🇫🇷</span>
+                <h1 style="font-family: 'Anton', sans-serif; font-size: 34px; margin: 0; letter-spacing: 0.5px;">France <span style="color: #6b6678;">v</span> Spain</h1>
+                <span style="font-size: 30px;">🇪🇸</span>
+              </div>
+              <div style="display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; font-size: 12px; color: #a29daf; font-family: 'IBM Plex Mono', monospace;">
+                <span>📅 Tue, Jul 14, 2026 · 3:00 PM ET</span><span>📍 AT&amp;T Stadium, Arlington TX</span><span>🌤 92°F · Indoor / Dome</span><span>Collected 2m ago</span>
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 16px;">
+              <div id="sec-snapshot" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">01</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">MATCH SNAPSHOT</h2><span style="{{ verifiedChip }}">VERIFIED</span><span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">API-Football · 2m ago</span></div>
+                <p style="font-size: 14px; line-height: 1.7; color: #cfcada; margin: 0 0 14px;">Tournament co-favorites meet in the semi-final. France carries the higher squad valuation and defensive record; Spain owns the possession and chance-creation edge. Model projects a tight, low-tempo match — both defenses rank top-3 for xGA in the tournament, and the venue's closed roof removes weather variance.</p>
+                <div style="display: grid; grid-template-columns: repeat(4,1fr); gap: 10px;">
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">PROJ. GOALS</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; margin-top: 4px;">2.1</div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">FRA WIN</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; margin-top: 4px;">38%</div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">DRAW</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; margin-top: 4px; color: #34d399;">31%</div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">ESP WIN</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; margin-top: 4px;">31%</div></div>
+                </div>
+                <div style="margin-top: 12px; font-size: 11px; color: #6b6678;">Sources: <a href="#">FBref xG model</a> · <a href="#">Opta match preview</a> · collected 2m ago</div>
+              </div>
+
+              <div id="sec-venue" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">02</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">VENUE & WEATHER</h2><span style="{{ verifiedChip }}">VERIFIED</span><span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">OpenWeather · 6m ago</span></div>
+                <div style="display: grid; grid-template-columns: repeat(5,1fr); gap: 10px;">
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">ROOF</div><div style="font-size: 14px; margin-top: 4px;">Closed</div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">TEMP</div><div style="font-size: 14px; margin-top: 4px;">72°F ctrl</div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">SURFACE</div><div style="font-size: 14px; margin-top: 4px;">Grass (temp)</div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">WIND</div><div style="font-size: 14px; margin-top: 4px;">None</div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">IMPACT</div><div style="font-size: 14px; margin-top: 4px; color: #34d399;">Neutral</div></div>
+                </div>
+                <p style="font-size: 13px; line-height: 1.6; color: #a29daf; margin: 12px 0 0;">Indoor conditions remove weather as a scoring variable — supports the model's low-total lean without an over-adjustment for wind or rain.</p>
+              </div>
+
+              <div id="sec-team" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">03</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">TEAM SCOUTING</h2><span style="{{ verifiedChip }}">VERIFIED</span></div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+                  <div><div style="font-weight: 700; margin-bottom: 8px;">🇫🇷 France</div><ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; color: #cfcada;"><li>Unbeaten in last 9 competitive fixtures</li><li>Elite transition speed — 2nd-best counter xG</li><li>Clean sheets in 4 of last 5 knockouts</li></ul></div>
+                  <div><div style="font-weight: 700; margin-bottom: 8px;">🇪🇸 Spain</div><ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; color: #cfcada;"><li>Tournament-high 64% avg possession</li><li>Leads in progressive passes & final-third entries</li><li>Concedes chances on the counter — matchup risk</li></ul></div>
+                </div>
+              </div>
+
+              <div id="sec-tactical" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">04</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">TACTICAL MATCHUP</h2><span style="{{ inferredChip }}">INFERRED</span><span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #38bdf8;">model-derived</span></div>
+                <p style="font-size: 14px; line-height: 1.7; color: #cfcada; margin: 0;">Spain will dominate the ball; France will sit in a mid-block and attack the space behind Spain's high line. Expect long spells without clear chances — the tactical shape favors a low first-half goal count and a live draw price, which underpins the <span style="color: #a855f7;">1st Half Draw</span> play.</p>
+              </div>
+
+              <div id="sec-players" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">05</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">PLAYER MATCHUPS</h2><span style="{{ verifiedChip }}">VERIFIED</span></div>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                  <div style="display: grid; grid-template-columns: 1fr 60px 1fr; align-items: center; background: #0d0c12; border: 1px solid #201e29; border-radius: 8px; padding: 10px 14px; font-size: 13px;"><span>Mbappé (LW)</span><span style="text-align: center; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">VS</span><span style="text-align: right;">Carvajal (RB)</span></div>
+                  <div style="display: grid; grid-template-columns: 1fr 60px 1fr; align-items: center; background: #0d0c12; border: 1px solid #201e29; border-radius: 8px; padding: 10px 14px; font-size: 13px;"><span>Tchouaméni (DM)</span><span style="text-align: center; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">VS</span><span style="text-align: right;">Pedri (CM)</span></div>
+                </div>
+              </div>
+
+              <div id="sec-xfactor" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">06</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">X-FACTOR / CINDERELLA CHECK</h2><span style="{{ inferredChip }}">INFERRED</span></div>
+                <p style="font-size: 14px; line-height: 1.7; color: #cfcada; margin: 0;">No underdog dynamic — two elite sides. X-factor is set-piece quality: France converts a tournament-high 18% of set-piece xG. In a low-chance game, a single dead-ball moment could decide it, adding tail risk to Under and BTTS-No positions.</p>
+              </div>
+
+              <div id="sec-market" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">07</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">BETTING MARKET ANALYSIS</h2><span style="{{ verifiedChip }}">VERIFIED</span><span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">6 books · 2m ago</span></div>
+                <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 10px; overflow: hidden;">
+                  <div style="display: grid; grid-template-columns: 1.4fr 80px 80px 80px 90px; padding: 9px 14px; background: #0c0b11; font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;"><div>MARKET</div><div style="text-align:center;">HR FL</div><div style="text-align:center;">FAIR</div><div style="text-align:center;">EV</div><div style="text-align:center;">EDGE</div></div>
+                  <div style="display: grid; grid-template-columns: 1.4fr 80px 80px 80px 90px; padding: 11px 14px; border-top: 1px solid #17161d; font-size: 12px; align-items: center;"><div style="font-weight: 600;">1st Half Draw</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #c084fc;">+115</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #a29daf;">+106</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #34d399; font-weight: 600;">+4.3%</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #34d399;">strong</div></div>
+                  <div style="display: grid; grid-template-columns: 1.4fr 80px 80px 80px 90px; padding: 11px 14px; border-top: 1px solid #17161d; font-size: 12px; align-items: center;"><div style="font-weight: 600;">Under 2.5 Goals</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #c084fc;">-110</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #a29daf;">-118</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #34d399; font-weight: 600;">+4.0%</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #34d399;">moderate</div></div>
+                  <div style="display: grid; grid-template-columns: 1.4fr 80px 80px 80px 90px; padding: 11px 14px; border-top: 1px solid #17161d; font-size: 12px; align-items: center;"><div style="font-weight: 600;">Match Result — France</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #c084fc;">+140</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #a29daf;">+164</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #f87171;">-3.9%</div><div style="text-align:center; font-family: 'IBM Plex Mono', monospace; color: #f87171;">negative</div></div>
+                </div>
+              </div>
+
+              <div id="sec-movement" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">08</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">LINE MOVEMENT</h2><span style="{{ verifiedChip }}">VERIFIED</span></div>
+                <div style="height: 120px; display: flex; align-items: flex-end; gap: 3px; padding: 10px; background: #0d0c12; border: 1px solid #201e29; border-radius: 10px;">
+                  <div style="flex: 1; height: 40%; background: linear-gradient(180deg,#a855f7,#7c3aed); border-radius: 3px 3px 0 0; opacity: 0.5;"></div><div style="flex: 1; height: 46%; background: linear-gradient(180deg,#a855f7,#7c3aed); border-radius: 3px 3px 0 0; opacity: 0.55;"></div><div style="flex: 1; height: 52%; background: linear-gradient(180deg,#a855f7,#7c3aed); border-radius: 3px 3px 0 0; opacity: 0.6;"></div><div style="flex: 1; height: 58%; background: linear-gradient(180deg,#a855f7,#7c3aed); border-radius: 3px 3px 0 0; opacity: 0.7;"></div><div style="flex: 1; height: 55%; background: linear-gradient(180deg,#a855f7,#7c3aed); border-radius: 3px 3px 0 0; opacity: 0.75;"></div><div style="flex: 1; height: 64%; background: linear-gradient(180deg,#a855f7,#7c3aed); border-radius: 3px 3px 0 0; opacity: 0.85;"></div><div style="flex: 1; height: 72%; background: linear-gradient(180deg,#a855f7,#7c3aed); border-radius: 3px 3px 0 0;"></div><div style="flex: 1; height: 78%; background: linear-gradient(180deg,#c084fc,#a855f7); border-radius: 3px 3px 0 0; box-shadow: 0 0 12px rgba(168,85,247,0.5);"></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; margin-top: 8px;"><span>Open +108</span><span>1st Half Draw · steamed +7c toward our side</span><span style="color: #34d399;">Now +115</span></div>
+              </div>
+
+              <div id="sec-metrics" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">09</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">ADVANCED METRICS</h2><span style="{{ inferredChip }}">INFERRED</span></div>
+                <div style="display: grid; grid-template-columns: repeat(3,1fr); gap: 10px;">
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">xG FRA / ESP</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 16px; margin-top: 4px;">1.05 / 1.02</div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">PPDA</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 16px; margin-top: 4px;">9.1 / 7.4</div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">BTTS RATE</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 16px; margin-top: 4px;">41%</div></div>
+                </div>
+              </div>
+
+              <div id="sec-trends" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">10</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">HISTORICAL TRENDS</h2><span style="{{ staleChip }}">STALE</span><span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #fbbf24;">H2H feed 3d old</span></div>
+                <ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.9; color: #cfcada;"><li>Last 5 France–Spain meetings: 3 draws at HT</li><li>4 of last 5 finished Under 2.5</li><li>BTTS hit in only 1 of last 6</li></ul>
+                <div style="margin-top: 10px; font-size: 11px; color: #fbbf24;">⚠ H2H source last synced 3 days ago — treat as directional, not decisive.</div>
+              </div>
+
+              <div id="sec-edge" style="background: linear-gradient(135deg,#12111a,#0f0e14); border: 1px solid rgba(168,85,247,0.35); border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">11</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">MARKET EDGE</h2><span style="{{ verifiedChip }}">VERIFIED</span></div>
+                <p style="font-size: 14px; line-height: 1.7; color: #cfcada; margin: 0 0 12px;">Why we believe there's value: our no-vig fair line for <strong>1st Half Draw</strong> is <span style="font-family: 'IBM Plex Mono', monospace; color: #a855f7;">+106</span> (48.5% fair probability), while Hard Rock prices it at <span style="font-family: 'IBM Plex Mono', monospace; color: #c084fc;">+115</span> (46.5% implied). The 2.0-point probability gap is corroborated by 6 books and a supportive line move — that's the edge.</p>
+                <div style="display: flex; gap: 10px;"><div style="flex: 1; background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px; text-align: center;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">FAIR PROB</div><div style="font-family: 'Anton', sans-serif; font-size: 22px;">48.5%</div></div><div style="flex: 1; background: #0d0c12; border: 1px solid #201e29; border-radius: 9px; padding: 12px; text-align: center;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">HR IMPLIED</div><div style="font-family: 'Anton', sans-serif; font-size: 22px; color: #a29daf;">46.5%</div></div><div style="flex: 1; background: #0d0c12; border: 1px solid rgba(52,211,153,0.35); border-radius: 9px; padding: 12px; text-align: center;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">EST. EV</div><div style="font-family: 'Anton', sans-serif; font-size: 22px; color: #34d399;">+4.3%</div></div></div>
+              </div>
+
+              <div id="sec-risk" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">12</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">RISK ASSESSMENT</h2><span style="{{ inferredChip }}">INFERRED</span></div>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                  <div style="display: flex; align-items: center; gap: 10px; font-size: 13px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #fbbf24;"></span>Early set-piece goal breaks the 1st-half draw thesis<span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #fbbf24;">MED</span></div>
+                  <div style="display: flex; align-items: center; gap: 10px; font-size: 13px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #34d399;"></span>Confirmed lineups — no late team-news risk<span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #34d399;">LOW</span></div>
+                  <div style="display: flex; align-items: center; gap: 10px; font-size: 13px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #f87171;"></span>H2H data is stale — historical weight reduced<span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #f87171;">FLAG</span></div>
+                </div>
+              </div>
+
+              <div id="sec-plays" style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; scroll-margin-top: 80px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">13</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">FINAL PLAYS</h2><span style="{{ verifiedChip }}">VERIFIED</span></div>
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                  <div style="display: flex; align-items: center; gap: 14px; background: #0d0c12; border: 1px solid rgba(52,211,153,0.25); border-radius: 10px; padding: 14px;"><span style="font-family: 'Anton', sans-serif; font-size: 15px; color: #0a0a0d; background: linear-gradient(135deg,#a855f7,#c084fc); width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center;">1</span><div style="flex: 1;"><div style="font-weight: 600;">1st Half Draw</div><div style="font-size: 11px; color: #6b6678;">First Half Result · Hard Rock +115 · ¼ Kelly = $180</div></div><span style="font-family: 'Anton', sans-serif; font-size: 20px; color: #34d399;">+4.3%</span><button onClick="{{ onAddBet }}" style="background: linear-gradient(135deg,#7c3aed,#a855f7); border: none; border-radius: 8px; padding: 8px 14px; color: #fff; font-weight: 600; font-size: 12px; cursor: pointer;">Add Bet</button></div>
+                  <div style="display: flex; align-items: center; gap: 14px; background: #0d0c12; border: 1px solid #201e29; border-radius: 10px; padding: 14px;"><span style="font-family: 'Anton', sans-serif; font-size: 15px; color: #0a0a0d; background: #3a3547; width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center;">2</span><div style="flex: 1;"><div style="font-weight: 600;">Under 2.5 Goals</div><div style="font-size: 11px; color: #6b6678;">Total Goals · Hard Rock -110 · ¼ Kelly = $120</div></div><span style="font-family: 'Anton', sans-serif; font-size: 20px; color: #34d399;">+4.0%</span><button onClick="{{ onAddBet }}" style="background: #1b1a22; border: 1px solid #2a2833; border-radius: 8px; padding: 8px 14px; color: #f3f1f8; font-weight: 600; font-size: 12px; cursor: pointer;">Add Bet</button></div>
+                </div>
+              </div>
+
+              <div id="sec-nuke" style="background: linear-gradient(135deg,#1a1020,#12111a); border: 1px solid rgba(168,85,247,0.4); border-radius: 12px; padding: 22px; scroll-margin-top: 80px; text-align: center;">
+                <div style="display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 16px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #56515f;">14</span><h2 style="font-family: 'Anton', sans-serif; font-size: 19px; margin: 0;">NUKE OR PASS</h2></div>
+                <div style="font-family: 'Anton', sans-serif; font-size: 42px; color: #a855f7; text-shadow: 0 0 20px rgba(168,85,247,0.5); letter-spacing: 1px;">NUKE ⚡</div>
+                <p style="font-size: 14px; color: #cfcada; max-width: 480px; margin: 12px auto 0; line-height: 1.6;">Two qualified +EV plays with corroborating movement, confirmed lineups, and a neutral venue. Verdict: <strong style="color: #a855f7;">play both at ¼ Kelly</strong>. Overall confidence <strong>HIGH</strong>; primary uncertainty is set-piece variance.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isBetTracker }}" hint-placeholder-val="">
+        <div style="max-width: 1400px; margin: 0 auto; animation: fteRise 0.35s ease;">
+          <div style="display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 18px;">
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 15px 18px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">OPEN EXPOSURE</div><div style="font-family: 'Anton', sans-serif; font-size: 26px; margin-top: 6px;">$450</div><div style="font-size: 11px; color: #a29daf; margin-top: 4px;">2 open bets</div></div>
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 15px 18px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">SETTLED P/L</div><div style="font-family: 'Anton', sans-serif; font-size: 26px; margin-top: 6px; color: #34d399;">+$208</div><div style="font-size: 11px; color: #a29daf; margin-top: 4px;">5 settled · 60% win</div></div>
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 15px 18px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">AVG CLV</div><div style="font-family: 'Anton', sans-serif; font-size: 26px; margin-top: 6px; color: #34d399;">+3.1%</div><div style="font-size: 11px; color: #a29daf; margin-top: 4px;">Beating closing line</div></div>
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 15px 18px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">ROI</div><div style="font-family: 'Anton', sans-serif; font-size: 26px; margin-top: 6px; color: #34d399;">+16.3%</div><div style="font-size: 11px; color: #a29daf; margin-top: 4px;">On $1,280 turnover</div></div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+            <sc-for list="{{ betFilters }}" as="f" hint-placeholder-count="7"><a href="#" onClick="{{ f.go }}" style="{{ f.style }}">{{ f.label }}</a></sc-for>
+            <button onClick="{{ openBetEntry }}" style="margin-left: auto; background: linear-gradient(135deg,#7c3aed,#a855f7); border: none; border-radius: 8px; padding: 9px 15px; color: #fff; font-weight: 600; font-size: 13px; cursor: pointer; box-shadow: 0 0 16px rgba(139,92,246,0.35);">+ Log Bet</button>
+          </div>
+
+          <div style="background: #0e0d13; border: 1px solid #201e29; border-radius: 12px; overflow-x: auto;">
+            <div style="display: grid; grid-template-columns: 100px minmax(180px,1.6fr) 90px 80px 130px 90px 90px 90px; min-width: 860px; align-items: center; padding: 11px 16px; border-bottom: 1px solid #201e29; background: #0c0b11; font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">
+              <div>STATUS</div><div>BET</div><div style="text-align:center;">ODDS</div><div style="text-align:center;">STAKE</div><div>SOURCE</div><div style="text-align:center;">CLOSE</div><div style="text-align:center;">CLV</div><div style="text-align:right;">P/L</div>
+            </div>
+            <sc-for list="{{ bets }}" as="b" hint-placeholder-count="7">
+              <div style="display: grid; grid-template-columns: 100px minmax(180px,1.6fr) 90px 80px 130px 90px 90px 90px; min-width: 860px; align-items: center; padding: 13px 16px; border-bottom: 1px solid #17161d; font-size: 12px;">
+                <div><span style="{{ b.statusStyle }}">{{ b.statusLabel }}</span></div>
+                <div style="min-width: 0;"><div style="font-weight: 600;">{{ b.sel }}</div><div style="font-size: 10px; color: #6b6678; font-family: 'IBM Plex Mono', monospace;">{{ b.match }} · {{ b.book }} · {{ b.resultFmt }}</div></div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: center; color: #c084fc;">{{ b.oddsFmt }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: center;">{{ b.stakeFmt }}</div>
+                <div style="font-size: 10px; color: #a29daf; font-family: 'IBM Plex Mono', monospace;">{{ b.src }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: center; color: #a29daf;">{{ b.closeFmt }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: center; color: {{ b.clvColor }};">{{ b.clvFmt }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; text-align: right; font-weight: 600; color: {{ b.plColor }};">{{ b.plFmt }}</div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="margin-top: 12px; font-size: 11px; color: #6b6678; display: flex; align-items: center; gap: 8px;"><span style="color: #a855f7;">↳</span> Each bet links back to the recommendation that created it — click a row to open its source report or scanner rec.</div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isDataSources }}" hint-placeholder-val="">
+        <div style="max-width: 1200px; margin: 0 auto; animation: fteRise 0.35s ease;">
+          <div style="display: flex; flex-direction: column; gap: 14px; overflow-x: auto;">
+            <sc-for list="{{ providers }}" as="p" hint-placeholder-count="5">
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 18px 20px; display: grid; grid-template-columns: minmax(180px,1.6fr) 1fr 1.1fr 190px 110px; gap: 18px; align-items: center; min-width: 820px;">
+                <div>
+                  <div style="display: flex; align-items: center; gap: 10px;"><span style="font-weight: 700; font-size: 15px;">{{ p.name }}</span></div>
+                  <div style="font-size: 11px; color: #6b6678; margin-top: 3px;">{{ p.type }}</div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: {{ p.statusFg }}; margin-top: 8px;">{{ p.statusLabel }}</div>
+                </div>
+                <div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">LAST SYNC</div>
+                  <div style="font-size: 13px; margin-top: 3px;">{{ p.sync }}</div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-top: 8px;">LAST ERROR</div>
+                  <div style="font-size: 12px; margin-top: 3px; color: {{ p.errColor }};">{{ p.err }}</div>
+                </div>
+                <div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">SUPPORTS</div>
+                  <div style="font-size: 12px; margin-top: 3px; color: #cfcada;">{{ p.sports }}</div>
+                  <div style="font-size: 11px; margin-top: 3px; color: #6b6678;">{{ p.markets }}</div>
+                </div>
+                <div>
+                  <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 5px;"><span>QUOTA LEFT</span><span style="color: {{ p.quotaColor }};">{{ p.quotaPct }}</span></div>
+                  <div style="height: 7px; background: #1b1a22; border-radius: 4px; overflow: hidden;"><div style="height: 100%; width: {{ p.quotaPct }}; background: {{ p.quotaColor }};"></div></div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; margin-top: 5px;">{{ p.usage }}</div>
+                </div>
+                <div style="text-align: right;"><button onClick="{{ p.onConfig }}" style="background: #1b1a22; border: 1px solid #2a2833; border-radius: 8px; padding: 9px 14px; color: #f3f1f8; font-family: 'Space Grotesk'; font-size: 12px; font-weight: 600; cursor: pointer;">Configure</button></div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="margin-top: 16px; background: rgba(248,113,113,0.06); border: 1px solid rgba(248,113,113,0.3); border-radius: 10px; padding: 14px 18px; font-size: 13px; color: #cfcada;"><span style="color: #f87171; font-weight: 600;">⚠ Hard Rock Feed offline (1h 4m).</span> Target-book odds are being served from last-known cache — all Hard Rock prices across the app carry a <span style="color: #fbbf24;">STALE</span> badge until the feed recovers.</div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isDesignSystem }}" hint-placeholder-val="">
+        <div style="max-width: 1100px; margin: 0 auto; animation: fteRise 0.35s ease; display: flex; flex-direction: column; gap: 28px;">
+
+          <section>
+            <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 4px;">COLOR TOKENS</h2>
+            <p style="font-size: 12px; color: #6b6678; margin: 0 0 14px;">Near-black surfaces · neon-purple accent · semantic colors carry meaning, never decoration.</p>
+            <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px;">
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #0a0a0d;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">bg<div style="color: #6b6678;">#0A0A0D</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #111015;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">panel<div style="color: #6b6678;">#111015</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #1b1a22;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">raised<div style="color: #6b6678;">#1B1A22</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #2a2833;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">border<div style="color: #6b6678;">#2A2833</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #8b5cf6;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">purple<div style="color: #6b6678;">#8B5CF6</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #a855f7; box-shadow: inset 0 0 20px rgba(255,255,255,0.15);"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">purple-neon<div style="color: #6b6678;">#A855F7</div></div></div>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 10px;">
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #34d399;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">positive-ev<div style="color: #6b6678;">#34D399</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #f87171;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">negative/error<div style="color: #6b6678;">#F87171</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #fbbf24;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">warning/stale<div style="color: #6b6678;">#FBBF24</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #38bdf8;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">inferred<div style="color: #6b6678;">#38BDF8</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #f3f1f8;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">text<div style="color: #6b6678;">#F3F1F8</div></div></div>
+              <div style="border: 1px solid #201e29; border-radius: 10px; overflow: hidden;"><div style="height: 54px; background: #6b6678;"></div><div style="padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">muted/unavail<div style="color: #6b6678;">#6B6678</div></div></div>
+            </div>
+          </section>
+
+          <section style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div>
+              <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 14px;">TYPOGRAPHY</h2>
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 16px;">
+                <div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 4px;">DISPLAY · ANTON</div><div style="font-family: 'Anton', sans-serif; font-size: 30px;">FIND THE EDGE</div></div>
+                <div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 4px;">UI · SPACE GROTESK</div><div style="font-size: 16px;">The professional's edge, quantified.</div></div>
+                <div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 4px;">NUMERIC · IBM PLEX MONO</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 18px;">+115 · -110 · +4.3% EV</div></div>
+              </div>
+            </div>
+            <div>
+              <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 14px;">RADII · SPACING · GLOW</h2>
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #a29daf;">
+                <div style="display: flex; gap: 8px; align-items: center;"><span style="width: 30px; height: 30px; background: #1b1a22; border: 1px solid #2a2833; border-radius: 6px;"></span><span style="width: 30px; height: 30px; background: #1b1a22; border: 1px solid #2a2833; border-radius: 10px;"></span><span style="width: 30px; height: 30px; background: #1b1a22; border: 1px solid #2a2833; border-radius: 14px;"></span> radius 6 / 10 / 14</div>
+                <div>Spacing scale: 4 · 8 · 12 · 16 · 20 · 24 · 28</div>
+                <div style="display: flex; gap: 12px; align-items: center;"><span style="width: 40px; height: 24px; background: #a855f7; border-radius: 6px; box-shadow: 0 0 18px rgba(139,92,246,0.5);"></span> accent glow</div>
+                <div>Breakpoints: 390 · 768 · 1280 · 1440</div>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 14px;">COMPONENTS</h2>
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 18px;">
+              <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; width: 80px;">BUTTONS</span>
+                <button style="background: linear-gradient(135deg,#7c3aed,#a855f7); border: none; border-radius: 8px; padding: 9px 16px; color: #fff; font-weight: 600; font-size: 13px; cursor: pointer; box-shadow: 0 0 16px rgba(139,92,246,0.35);">Primary</button>
+                <button style="background: #1b1a22; border: 1px solid #2a2833; border-radius: 8px; padding: 9px 16px; color: #f3f1f8; font-weight: 600; font-size: 13px; cursor: pointer;">Secondary</button>
+                <button style="background: transparent; border: none; padding: 9px 16px; color: #a855f7; font-weight: 600; font-size: 13px; cursor: pointer;">Ghost</button>
+                <button style="background: rgba(52,211,153,0.12); border: 1px solid rgba(52,211,153,0.4); border-radius: 8px; padding: 9px 16px; color: #34d399; font-weight: 600; font-size: 13px; cursor: pointer;">Add Bet</button>
+              </div>
+              <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; width: 80px;">INPUTS</span>
+                <div style="background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 9px 12px; color: #6b6678; font-size: 13px; width: 180px;">Search events…</div>
+                <div style="background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 9px 12px; color: #f3f1f8; font-size: 13px;">All markets ▾</div>
+                <span style="width: 34px; height: 19px; background: rgba(139,92,246,0.3); border-radius: 20px; position: relative;"><span style="position: absolute; right: 2px; top: 2px; width: 15px; height: 15px; background: #a855f7; border-radius: 50%;"></span></span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; width: 80px;">TABS</span>
+                <div style="display: flex; background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 3px;"><span style="padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; background: #a855f7; color: #0a0a0d;">Table</span><span style="padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; color: #8b8494;">Cards</span></div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; width: 80px;">BADGES</span>
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #34d399; background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.4); border-radius: 5px; padding: 3px 8px;">● FRESH</span>
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #fbbf24; background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.4); border-radius: 5px; padding: 3px 8px;">● AGING</span>
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #f87171; background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.4); border-radius: 5px; padding: 3px 8px;">● STALE</span>
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #fbbf24; background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.35); border-radius: 5px; padding: 3px 8px;">⚠ WARNING</span>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 14px;">SEMANTIC INDICATORS</h2>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px;">
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 18px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 12px;">DATA STATUS</div>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #34d399; background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.4); border-radius: 4px; padding: 2px 7px;">VERIFIED</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #38bdf8; background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.4); border-radius: 4px; padding: 2px 7px;">INFERRED</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #fbbf24; background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.4); border-radius: 4px; padding: 2px 7px;">STALE</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; background: rgba(107,102,120,0.1); border: 1px solid rgba(107,102,120,0.4); border-radius: 4px; padding: 2px 7px;">UNAVAILABLE</span></div>
+              </div>
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 18px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 12px;">CONFIDENCE (separate from EV)</div>
+                <div style="display: flex; flex-direction: column; gap: 8px;"><div style="display: flex; align-items: center; gap: 10px; font-size: 11px;"><div style="width: 90px; height: 6px; background: #1b1a22; border-radius: 4px; overflow: hidden;"><div style="height: 100%; width: 84%; background: #34d399;"></div></div>HIGH</div><div style="display: flex; align-items: center; gap: 10px; font-size: 11px;"><div style="width: 90px; height: 6px; background: #1b1a22; border-radius: 4px; overflow: hidden;"><div style="height: 100%; width: 58%; background: #fbbf24;"></div></div>MEDIUM</div><div style="display: flex; align-items: center; gap: 10px; font-size: 11px;"><div style="width: 90px; height: 6px; background: #1b1a22; border-radius: 4px; overflow: hidden;"><div style="height: 100%; width: 32%; background: #f87171;"></div></div>LOW</div></div>
+              </div>
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 18px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 12px;">EV INDICATORS</div>
+                <div style="display: flex; gap: 14px; align-items: baseline;"><span style="font-family: 'Anton', sans-serif; font-size: 22px; color: #34d399; text-shadow: 0 0 12px rgba(52,211,153,0.35);">+4.3%</span><span style="font-family: 'Anton', sans-serif; font-size: 22px; color: #a29daf;">0.0%</span><span style="font-family: 'Anton', sans-serif; font-size: 22px; color: #f87171;">-3.9%</span></div>
+                <div style="font-size: 10px; color: #6b6678; margin-top: 8px;">Green reserved for verified positive EV only.</div>
+              </div>
+              <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 18px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 12px;">EVENT STATE</div>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #f87171; display: flex; align-items: center; gap: 5px;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #f87171; animation: ftePulse 1.6s infinite;"></span>LIVE</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #a855f7; display: flex; align-items: center; gap: 5px;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #a855f7;"></span>PRE-MATCH</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; display: flex; align-items: center; gap: 5px;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #6b6678;"></span>FINAL</span></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isDocs }}" hint-placeholder-val="">
+        <div style="max-width: 940px; margin: 0 auto; animation: fteRise 0.35s ease; display: flex; flex-direction: column; gap: 24px;">
+
+          <section style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 22px;">
+            <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 12px;">01 · PRODUCT DESIGN DIRECTION</h2>
+            <p style="font-size: 14px; line-height: 1.7; color: #cfcada; margin: 0 0 12px;">A professional betting terminal crossed with a modern analytics product. Density and speed over decoration. Evidence over hype: every claim of value is traceable to fair-odds math, a book count, and a freshness timestamp. Confidence and expected value are shown as <em>separate</em> signals so a high-EV / low-confidence play is never mistaken for a sure thing.</p>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;"><span style="font-size: 11px; color: #f87171; font-family: 'IBM Plex Mono', monospace; border: 1px solid rgba(248,113,113,0.3); border-radius: 5px; padding: 4px 9px;">BANNED COPY: lock · guaranteed · risk-free · can't lose</span></div>
+          </section>
+
+          <section style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 22px;">
+            <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 12px;">02 · INFORMATION ARCHITECTURE</h2>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #a29daf; line-height: 2;">
+              <div>Terminal / <span style="color: #a855f7;">Dashboard</span> — where is the edge now</div>
+              <div style="padding-left: 18px;">├ <span style="color: #f3f1f8;">Events</span> → <span style="color: #f3f1f8;">Event Detail</span> → <span style="color: #f3f1f8;">Scouting Report</span></div>
+              <div style="padding-left: 18px;">├ <span style="color: #f3f1f8;">+EV Scanner</span> · <span style="color: #f3f1f8;">Odds Terminal</span> · <span style="color: #f3f1f8;">Watchlist</span></div>
+              <div style="padding-left: 18px;">├ <span style="color: #f3f1f8;">Scouting Reports</span> (library + versions)</div>
+              <div style="padding-left: 18px;">├ <span style="color: #f3f1f8;">Bet Tracker</span> → <span style="color: #f3f1f8;">Performance</span> (CLV, calibration)</div>
+              <div style="padding-left: 18px;">└ <span style="color: #f3f1f8;">Data Sources</span> · <span style="color: #f3f1f8;">Settings</span></div>
+            </div>
+          </section>
+
+          <section style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 22px;">
+            <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 14px;">03 · PRIMARY USER FLOWS</h2>
+            <div style="display: flex; flex-direction: column; gap: 14px;">
+              <div><div style="font-weight: 700; font-size: 13px; margin-bottom: 6px; color: #a855f7;">Dashboard → placed bet (the core loop)</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #cfcada; line-height: 1.8;">Dashboard top +EV card → Open Event → read Scouting Report (esp. Market Edge) → Final Plays → Add Bet (pre-filled ¼-Kelly stake) → confirm → lands in Bet Tracker as OPEN with source link.</div></div>
+              <div><div style="font-weight: 700; font-size: 13px; margin-bottom: 6px; color: #a855f7;">Manual scouting</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #cfcada; line-height: 1.8;">Events / Event Detail → Scout Event → job enters queue (QUEUED → IN PROGRESS with live section-by-section fill → COMPLETE). Failures surface a retry with partial-data fallback.</div></div>
+              <div><div style="font-weight: 700; font-size: 13px; margin-bottom: 6px; color: #a855f7;">Automatic scouting</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #cfcada; line-height: 1.8;">Scheduled per Settings (leagues + cadence). New results appear as a new report version with a "changes since previous" diff and a dashboard "recently completed" entry.</div></div>
+              <div><div style="font-weight: 700; font-size: 13px; margin-bottom: 6px; color: #a855f7;">Bet ↔ recommendation linkage</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #cfcada; line-height: 1.8;">Every bet stores its source (Scanner rec # or Report version). Bet Tracker rows deep-link back so Performance can attribute CLV to the model version that produced it.</div></div>
+              <div><div style="font-weight: 700; font-size: 13px; margin-bottom: 6px; color: #a855f7;">Why the system believes there's value</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #cfcada; line-height: 1.8;">Market Edge section states it plainly: no-vig fair prob vs Hard Rock implied prob, the gap, the corroborating book count, and supporting line movement — the whole argument on one screen.</div></div>
+            </div>
+          </section>
+
+          <section style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 22px;">
+              <h2 style="font-family: 'Anton', sans-serif; font-size: 18px; margin: 0 0 12px;">04 · RESPONSIVE</h2>
+              <ul style="margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.9; color: #cfcada;"><li>1440 desktop = primary; 1280 laptop = same layout, tighter gutters</li><li>768 tablet: rail collapses under content; tables scroll-x</li><li>390 mobile: single column — current +EV, event status, odds, report summary, bet-entry only. No full terminal.</li></ul>
+            </div>
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 22px;">
+              <h2 style="font-family: 'Anton', sans-serif; font-size: 18px; margin: 0 0 12px;">05 · ACCESSIBILITY</h2>
+              <ul style="margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.9; color: #cfcada;"><li>Status never by color alone — always icon/label + color</li><li>Body text ≥ AA contrast on #0A0A0D; numerics in mono for scanability</li><li>Keyboard: nav, sort, tab-to-row; visible focus ring in purple</li><li>Live regions announce odds refresh + stale warnings</li></ul>
+            </div>
+          </section>
+
+          <section style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 22px;">
+            <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 12px;">06 · STATE INVENTORY</h2>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <sc-for list="{{ stateChips }}" as="s" hint-placeholder-count="13"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #a29daf; background: #1b1a22; border: 1px solid #2a2833; border-radius: 6px; padding: 5px 10px;">{{ s }}</span></sc-for>
+            </div>
+          </section>
+
+          <section style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 22px;">
+            <h2 style="font-family: 'Anton', sans-serif; font-size: 20px; margin: 0 0 12px;">07 · DEVELOPER HANDOFF NOTES</h2>
+            <ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.9; color: #cfcada;">
+              <li>All odds stored American; convert to decimal for math. No-vig fair prob = normalize implied probs across books, then average (book-weighted per Settings).</li>
+              <li>EV% = fairProb × decimalOdds − 1. A play qualifies at EV ≥ threshold AND books ≥ min AND age ≤ max (Settings-driven).</li>
+              <li>Freshness is a function of <code style="color:#a855f7;">last_updated</code> vs maxOddsAge: fresh ≤ 5m, aging ≤ 10m, stale &gt; 10m — recomputed client-side each render.</li>
+              <li>Confidence is a model output independent of EV; render as its own meter, never fold into the EV color.</li>
+              <li>Reports are versioned append-only; diffing compares section hashes to flag "changes since previous".</li>
+            </ul>
+          </section>
+
+          <section style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 22px;">
+              <h2 style="font-family: 'Anton', sans-serif; font-size: 18px; margin: 0 0 12px;">08 · OPEN UX QUESTIONS</h2>
+              <ul style="margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.9; color: #cfcada;"><li>Should qualified +EV exclude thin (&lt;5 book) markets from the dashboard, or show with a warning? (Currently: show + warn.)</li><li>Auto-refresh cadence vs API quota — poll interval or manual only?</li><li>Kelly: expose the fraction per-bet, or global in Settings?</li><li>Live in-play scanning in MVP or v2?</li><li>How aggressively to alert on stale Hard Rock feed?</li></ul>
+            </div>
+            <div style="background: linear-gradient(135deg,#12111a,#0f0e14); border: 1px solid rgba(168,85,247,0.35); border-radius: 12px; padding: 22px;">
+              <h2 style="font-family: 'Anton', sans-serif; font-size: 18px; margin: 0 0 12px;">09 · IMPLEMENTATION ORDER</h2>
+              <ol style="margin: 0; padding-left: 20px; font-size: 12px; line-height: 1.9; color: #cfcada;"><li>Auth + shell + Data Sources (prove the pipeline)</li><li>Odds Terminal + fair-odds/EV engine</li><li>+EV Scanner (the daily driver)</li><li>Dashboard (aggregates the above)</li><li>Event Detail → Scouting Report + versioning</li><li>Bet Tracker → Performance (CLV loop)</li><li>Events Explorer, Watchlist, Settings polish</li></ol>
+            </div>
+          </section>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isMobileView }}" hint-placeholder-val="">
+        <div style="animation: fteRise 0.35s ease;">
+          <p style="font-size: 13px; color: #a29daf; max-width: 700px; margin: 0 0 24px; line-height: 1.6;">Mobile is a <strong style="color:#f3f1f8;">distilled companion</strong>, not a shrunk terminal. It surfaces only what drives an on-the-go decision: current +EV, event status, odds, the report verdict, and one-tap bet entry. A bottom tab bar replaces the sidebar.</p>
+          <div style="display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-start;">
+
+            <div style="width: 390px; flex-shrink: 0;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; margin-bottom: 10px; letter-spacing: 1px;">MOBILE DASHBOARD</div>
+              <div style="width: 390px; height: 780px; background: #0a0a0d; border: 8px solid #1b1a22; border-radius: 38px; overflow: hidden; box-shadow: 0 0 40px rgba(0,0,0,0.6); display: flex; flex-direction: column;">
+                <div style="height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;"><span>2:41</span><span style="width: 90px; height: 18px; background: #0a0a0d;"></span><span>▪▪▪ ⌁</span></div>
+                <div style="padding: 6px 18px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #201e29;">
+                  <svg width="22" height="18" viewBox="0 0 30 24"><path d="M2 20 L5 7 L11 14 L15 4 L19 14 L25 7 L28 20 Z" fill="#8b5cf6"/><rect x="3" y="20" width="24" height="3" rx="1" fill="#c084fc"/></svg>
+                  <span style="font-family: 'Anton', sans-serif; font-size: 15px;">FIND THE <span style="color: #a855f7; font-style: italic;">EDGE</span></span>
+                  <span style="margin-left: auto; font-size: 18px; color: #a29daf;">↻</span>
+                </div>
+                <div style="flex: 1; overflow-y: auto; padding: 16px 18px 80px;">
+                  <div style="font-family: 'Anton', sans-serif; font-size: 22px; line-height: 1.1;">Where's the edge?</div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6678; margin: 4px 0 16px;">Tue · Jul 14 · 7 qualified</div>
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px;">
+                    <div style="background: #111015; border: 1px solid #201e29; border-radius: 10px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">HIGHEST EV</div><div style="font-family: 'Anton', sans-serif; font-size: 24px; color: #34d399;">+8.0%</div></div>
+                    <div style="background: #111015; border: 1px solid #201e29; border-radius: 10px; padding: 12px;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">OPEN EXP.</div><div style="font-family: 'Anton', sans-serif; font-size: 24px;">$1.2k</div></div>
+                  </div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; letter-spacing: 1px; margin-bottom: 10px;">TOP +EV</div>
+                  <div style="background: linear-gradient(180deg,#12111a,#0f0e14); border: 1px solid #2a2635; border-radius: 12px; padding: 14px; margin-bottom: 12px;">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #a29daf; background: #1b1a22; border-radius: 4px; padding: 2px 6px;">WC26</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #34d399;">● FRESH</span><span style="margin-left: auto; font-family: 'Anton', sans-serif; font-size: 20px; color: #34d399;">+4.3%</span></div>
+                    <div style="font-family: 'Anton', sans-serif; font-size: 17px;">🇫🇷 France v Spain 🇪🇸</div>
+                    <div style="font-size: 12px; color: #a29daf; margin: 2px 0 10px;"><span style="color: #f3f1f8; font-weight: 600;">1st Half Draw</span> · 1H Result</div>
+                    <div style="display: flex; gap: 8px; margin-bottom: 10px;"><div style="flex: 1; background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.4); border-radius: 8px; padding: 7px; text-align: center;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 8px; color: #c084fc;">HARD ROCK</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 16px;">+115</div></div><div style="flex: 1; background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 7px; text-align: center;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 8px; color: #6b6678;">FAIR</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 16px; color: #a29daf;">+106</div></div></div>
+                    <button style="width: 100%; background: linear-gradient(135deg,#7c3aed,#a855f7); border: none; border-radius: 8px; padding: 10px; color: #fff; font-weight: 600; font-size: 13px;">Add Bet</button>
+                  </div>
+                  <div style="background: #111015; border: 1px solid #201e29; border-radius: 12px; padding: 14px;">
+                    <div style="display: flex; align-items: center; gap: 8px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #34d399;">● FRESH</span><span style="margin-left: auto; font-family: 'Anton', sans-serif; font-size: 18px; color: #34d399;">+6.0%</span></div>
+                    <div style="font-family: 'Anton', sans-serif; font-size: 16px; margin-top: 4px;">🇬🇧 England v Portugal</div>
+                    <div style="font-size: 12px; color: #a29daf;"><span style="color: #f3f1f8; font-weight: 600;">BTTS Yes</span> · +100</div>
+                  </div>
+                </div>
+                <div style="height: 62px; border-top: 1px solid #201e29; background: #0c0c10; display: flex; align-items: center; justify-content: space-around; font-size: 10px;">
+                  <span style="color: #a855f7; display: flex; flex-direction: column; align-items: center; gap: 3px;">◆<span>Edge</span></span>
+                  <span style="color: #6b6678; display: flex; flex-direction: column; align-items: center; gap: 3px;">◇<span>Scanner</span></span>
+                  <span style="color: #6b6678; display: flex; flex-direction: column; align-items: center; gap: 3px;">◇<span>Reports</span></span>
+                  <span style="color: #6b6678; display: flex; flex-direction: column; align-items: center; gap: 3px;">◇<span>Bets</span></span>
+                </div>
+              </div>
+            </div>
+
+            <div style="width: 390px; flex-shrink: 0;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; margin-bottom: 10px; letter-spacing: 1px;">REPORT SUMMARY</div>
+              <div style="width: 390px; height: 780px; background: #0a0a0d; border: 8px solid #1b1a22; border-radius: 38px; overflow: hidden; box-shadow: 0 0 40px rgba(0,0,0,0.6); display: flex; flex-direction: column;">
+                <div style="height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;"><span>2:41</span><span style="width: 90px; height: 18px;"></span><span>▪▪▪ ⌁</span></div>
+                <div style="padding: 6px 18px 12px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #201e29;"><span style="font-size: 18px; color: #a29daf;">←</span><span style="font-family: 'Anton', sans-serif; font-size: 16px;">France v Spain</span><span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #a855f7; border: 1px solid rgba(168,85,247,0.4); border-radius: 4px; padding: 2px 6px;">v3</span></div>
+                <div style="flex: 1; overflow-y: auto; padding: 16px 18px 80px;">
+                  <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #a29daf;"><span>📅 Jul 14 · 3:00 PM ET</span><span style="color: #34d399;">● LINEUPS CONFIRMED</span></div>
+                  <div style="background: linear-gradient(135deg,#1a1020,#12111a); border: 1px solid rgba(168,85,247,0.4); border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 16px;">
+                    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">VERDICT</div>
+                    <div style="font-family: 'Anton', sans-serif; font-size: 34px; color: #a855f7; text-shadow: 0 0 18px rgba(168,85,247,0.5);">NUKE ⚡</div>
+                    <div style="font-size: 12px; color: #cfcada; margin-top: 6px;">2 qualified plays · confidence HIGH</div>
+                  </div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; margin-bottom: 10px;">FINAL PLAYS</div>
+                  <div style="background: #111015; border: 1px solid rgba(52,211,153,0.25); border-radius: 10px; padding: 14px; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;"><span style="font-weight: 600;">1st Half Draw</span><span style="font-family: 'Anton', sans-serif; font-size: 18px; color: #34d399;">+4.3%</span></div>
+                    <div style="font-size: 11px; color: #6b6678; margin: 3px 0 10px;">HR +115 · ¼ Kelly $180</div>
+                    <button style="width: 100%; background: linear-gradient(135deg,#7c3aed,#a855f7); border: none; border-radius: 8px; padding: 9px; color: #fff; font-weight: 600; font-size: 12px;">Add Bet</button>
+                  </div>
+                  <div style="background: #111015; border: 1px solid #201e29; border-radius: 10px; padding: 14px;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;"><span style="font-weight: 600;">Under 2.5 Goals</span><span style="font-family: 'Anton', sans-serif; font-size: 18px; color: #34d399;">+4.0%</span></div>
+                    <div style="font-size: 11px; color: #6b6678; margin: 3px 0 10px;">HR -110 · ¼ Kelly $120</div>
+                    <button style="width: 100%; background: #1b1a22; border: 1px solid #2a2833; border-radius: 8px; padding: 9px; color: #f3f1f8; font-weight: 600; font-size: 12px;">Add Bet</button>
+                  </div>
+                  <a href="#" style="display: block; text-align: center; font-size: 12px; margin-top: 14px;">Read full 14-section report →</a>
+                </div>
+                <div style="height: 62px; border-top: 1px solid #201e29; background: #0c0c10; display: flex; align-items: center; justify-content: space-around; font-size: 10px;">
+                  <span style="color: #6b6678; display: flex; flex-direction: column; align-items: center; gap: 3px;">◇<span>Edge</span></span>
+                  <span style="color: #6b6678; display: flex; flex-direction: column; align-items: center; gap: 3px;">◇<span>Scanner</span></span>
+                  <span style="color: #a855f7; display: flex; flex-direction: column; align-items: center; gap: 3px;">◆<span>Reports</span></span>
+                  <span style="color: #6b6678; display: flex; flex-direction: column; align-items: center; gap: 3px;">◇<span>Bets</span></span>
+                </div>
+              </div>
+            </div>
+
+            <div style="width: 390px; flex-shrink: 0;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; margin-bottom: 10px; letter-spacing: 1px;">BET ENTRY</div>
+              <div style="width: 390px; height: 780px; background: #0a0a0d; border: 8px solid #1b1a22; border-radius: 38px; overflow: hidden; box-shadow: 0 0 40px rgba(0,0,0,0.6); display: flex; flex-direction: column;">
+                <div style="height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;"><span>2:41</span><span></span><span>▪▪▪ ⌁</span></div>
+                <div style="padding: 6px 18px 12px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #201e29;"><span style="font-size: 18px; color: #a29daf;">✕</span><span style="font-family: 'Anton', sans-serif; font-size: 16px;">Log Bet</span></div>
+                <div style="flex: 1; overflow-y: auto; padding: 16px 18px 80px; display: flex; flex-direction: column; gap: 14px;">
+                  <div style="background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.35); border-radius: 10px; padding: 12px; font-size: 11px; color: #c084fc; font-family: 'IBM Plex Mono', monospace;">↳ Sourced from +EV Scanner rec #1 — fields pre-filled</div>
+                  <div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 5px;">SPORTSBOOK</div><div style="background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 11px 12px; font-size: 13px; display: flex; justify-content: space-between;">Hard Rock FL <span style="color:#6b6678;">▾</span></div></div>
+                  <div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 5px;">SELECTION</div><div style="background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 11px 12px; font-size: 13px;">1st Half Draw — France v Spain</div></div>
+                  <div style="display: flex; gap: 10px;"><div style="flex: 1;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 5px;">ODDS</div><div style="background: #131319; border: 1px solid rgba(139,92,246,0.4); border-radius: 8px; padding: 11px 12px; font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #c084fc;">+115</div></div><div style="flex: 1;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 5px;">STAKE</div><div style="background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 11px 12px; font-family: 'IBM Plex Mono', monospace; font-size: 15px;">$180</div></div></div>
+                  <div style="background: #0d0c12; border: 1px solid #201e29; border-radius: 10px; padding: 14px; display: flex; justify-content: space-between; align-items: center;"><div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">POTENTIAL PAYOUT</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; color: #34d399; margin-top: 3px;">$387</div></div><div style="text-align: right;"><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678;">EST. EV</div><div style="font-family: 'Anton', sans-serif; font-size: 20px; color: #34d399;">+4.3%</div></div></div>
+                  <div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b6678; margin-bottom: 5px;">NOTES</div><div style="background: #131319; border: 1px solid #2a2833; border-radius: 8px; padding: 11px 12px; font-size: 12px; color: #6b6678; min-height: 44px;">Model 48.5% vs 46.5% implied…</div></div>
+                  <button style="width: 100%; background: linear-gradient(135deg,#7c3aed,#a855f7); border: none; border-radius: 10px; padding: 14px; color: #fff; font-weight: 700; font-size: 15px; box-shadow: 0 0 18px rgba(139,92,246,0.4);">Confirm Bet</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isPlaceholder }}" hint-placeholder-val="">
+        <div style="max-width: 640px; margin: 60px auto; text-align: center; animation: fteRise 0.35s ease;">
+          <svg width="46" height="37" viewBox="0 0 30 24" fill="none" style="opacity: 0.5; margin-bottom: 18px;">
+            <path d="M2 20 L5 7 L11 14 L15 4 L19 14 L25 7 L28 20 Z" fill="none" stroke="#8b5cf6" stroke-width="1.4" stroke-linejoin="round"/>
+          </svg>
+          <h2 style="font-family: 'Anton', sans-serif; font-size: 24px; margin: 0 0 10px;">{{ routeTitle }}</h2>
+          <p style="color: #a29daf; font-size: 14px; line-height: 1.6;">This screen is specified in the design docs and scheduled in the implementation order. Not built out in this first hi-fi pass — open the <a href="#" onClick="{{ goDocs }}">Documentation</a> page for its full spec.</p>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ toast }}" hint-placeholder-val="">
+        <div style="position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); background: #17161d; border: 1px solid #3a3547; border-left: 3px solid #a855f7; border-radius: 10px; padding: 13px 18px; font-size: 13px; box-shadow: 0 12px 40px rgba(0,0,0,0.6); animation: fteToast 0.25s ease; z-index: 100; display: flex; align-items: center; gap: 10px;">
+          <span style="color: #a855f7;">✦</span> {{ toast }}
+        </div>
+      </sc-if>
+
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = {
+    route: 'dashboard',
+    scannerSort: 'ev',
+    scannerMinEV: 2,
+    scannerMinConf: 0,
+    eventView: 'table',
+    betFilter: 'all',
+    reportVersion: 'v3',
+    activeSection: 'snapshot',
+    collapsed: {},
+    toast: null,
+    spinning: false,
+  };
+
+  // ---------- odds math ----------
+  amToDec(a) { return a >= 0 ? a / 100 + 1 : 100 / -a + 1; }
+  amToImp(a) { return a >= 0 ? 100 / (a + 100) : -a / (-a + 100); }
+  decToAm(d) { return d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)); }
+  probToAm(p) { return this.decToAm(1 / p); }
+  fmtAm(a) { return (a >= 0 ? '+' : '') + a; }
+  evPct(a, p) { return (p * this.amToDec(a) - 1) * 100; }
+
+  rawOpps() {
+    return [
+      { id: 'fra-esp-1hd', league: 'FIFA WC26', kickoff: 'Jul 14 · 3:00 PM', home: 'France', away: 'Spain', homeFlag: '🇫🇷', awayFlag: '🇪🇸', market: 'First Half Result (3-Way)', selection: '1st Half Draw', hrOdds: 115, fairProb: 0.485, bestBook: 'FanDuel', bestOdds: 120, conf: 84, numBooks: 6, updated: '2m', fresh: 'fresh', warn: '' },
+      { id: 'eng-por-btts', league: 'FIFA WC26', kickoff: 'Jul 14 · 12:00 PM', home: 'England', away: 'Portugal', homeFlag: '🇬🇧', awayFlag: '🇵🇹', market: 'Both Teams To Score', selection: 'BTTS — Yes', hrOdds: 100, fairProb: 0.53, bestBook: 'Caesars', bestOdds: 102, conf: 79, numBooks: 6, updated: '1m', fresh: 'fresh', warn: '' },
+      { id: 'fra-esp-tt', league: 'FIFA WC26', kickoff: 'Jul 14 · 3:00 PM', home: 'France', away: 'Spain', homeFlag: '🇫🇷', awayFlag: '🇪🇸', market: 'Team Total — Spain', selection: 'Spain Over 1.5', hrOdds: 140, fairProb: 0.44, bestBook: 'BetMGM', bestOdds: 142, conf: 66, numBooks: 6, updated: '3m', fresh: 'fresh', warn: '' },
+      { id: 'ned-ger-x2', league: 'FIFA WC26', kickoff: 'Jul 14 · 4:00 PM', home: 'Netherlands', away: 'Germany', homeFlag: '🇳🇱', awayFlag: '🇩🇪', market: 'Double Chance', selection: 'Netherlands or Draw', hrOdds: -120, fairProb: 0.58, bestBook: 'BetMGM', bestOdds: -115, conf: 57, numBooks: 5, updated: '11m', fresh: 'stale', warn: 'Line moved 6m ago' },
+      { id: 'fra-esp-u25', league: 'FIFA WC26', kickoff: 'Jul 14 · 3:00 PM', home: 'France', away: 'Spain', homeFlag: '🇫🇷', awayFlag: '🇪🇸', market: 'Total Goals', selection: 'Under 2.5 Goals', hrOdds: -110, fairProb: 0.545, bestBook: 'DraftKings', bestOdds: -104, conf: 61, numBooks: 6, updated: '4m', fresh: 'fresh', warn: '' },
+      { id: 'arg-bra-draw', league: 'FIFA WC26', kickoff: 'Jul 14 · 8:00 PM', home: 'Argentina', away: 'Brazil', homeFlag: '🇦🇷', awayFlag: '🇧🇷', market: 'Match Result (3-Way)', selection: 'Draw (90 min)', hrOdds: 230, fairProb: 0.32, bestBook: 'BetMGM', bestOdds: 235, conf: 38, numBooks: 5, updated: '8m', fresh: 'aging', warn: '' },
+      { id: 'arg-bra-mesast', league: 'FIFA WC26', kickoff: 'Jul 14 · 8:00 PM', home: 'Argentina', away: 'Brazil', homeFlag: '🇦🇷', awayFlag: '🇧🇷', market: 'Player Props — Assists', selection: 'Messi Anytime Assist', hrOdds: 260, fairProb: 0.30, bestBook: 'Hard Rock FL', bestOdds: 260, conf: 31, numBooks: 3, updated: '6m', fresh: 'aging', warn: 'Only 3 books' },
+    ];
+  }
+
+  computeOpps() {
+    const freshMap = {
+      fresh: { label: '● FRESH', bg: 'rgba(52,211,153,0.1)', bd: 'rgba(52,211,153,0.4)', fg: '#34d399' },
+      aging: { label: '● AGING', bg: 'rgba(251,191,36,0.1)', bd: 'rgba(251,191,36,0.4)', fg: '#fbbf24' },
+      stale: { label: '● STALE', bg: 'rgba(248,113,113,0.1)', bd: 'rgba(248,113,113,0.4)', fg: '#f87171' },
+    };
+    const opps = this.rawOpps().map((o) => {
+      const ev = this.evPct(o.hrOdds, o.fairProb);
+      const imp = this.amToImp(o.hrOdds);
+      const fairAm = this.probToAm(o.fairProb);
+      const confColor = o.conf >= 70 ? '#34d399' : o.conf >= 50 ? '#fbbf24' : '#f87171';
+      const confLabel = o.conf >= 70 ? 'HIGH' : o.conf >= 50 ? 'MED' : 'LOW';
+      const f = freshMap[o.fresh];
+      return {
+        ...o,
+        ev,
+        matchup: o.home + ' v ' + o.away,
+        hrOddsFmt: this.fmtAm(o.hrOdds),
+        bestOddsFmt: this.fmtAm(o.bestOdds),
+        fairOddsFmt: this.fmtAm(fairAm),
+        probPct: (o.fairProb * 100).toFixed(1) + '%',
+        impliedPct: (imp * 100).toFixed(1) + '%',
+        evFmt: '+' + ev.toFixed(1) + '%',
+        evNum: ev,
+        confPct: o.conf + '%',
+        confColor, confLabel,
+        freshLabel: f.label,
+        freshStyle: 'font-family:\'IBM Plex Mono\',monospace; font-size:10px; letter-spacing:0.5px; color:' + f.fg + '; background:' + f.bg + '; border:1px solid ' + f.bd + '; border-radius:5px; padding:3px 8px;',
+        hasWarn: !!o.warn,
+      };
+    });
+    opps.sort((a, b) => b.ev - a.ev);
+    return opps;
+  }
+
+  bookList() { return ['Hard Rock FL', 'DraftKings', 'FanDuel', 'BetMGM', 'Caesars', 'Fanatics']; }
+
+  oddsMatrix() {
+    // american odds per book, per market row
+    return [
+      { match: 'France v Spain', flag: '🇫🇷', market: 'Match Result', sel: 'Draw', hr: 210, dk: 205, fd: 215, mgm: 208, czr: 212, fan: 200, mv: 'up', updated: '2m', fresh: 'fresh' },
+      { match: 'France v Spain', flag: '🇫🇷', market: '1st Half Result', sel: '1st Half Draw', hr: 115, dk: 112, fd: 120, mgm: 110, czr: 114, fan: 108, mv: 'up', updated: '2m', fresh: 'fresh' },
+      { match: 'France v Spain', flag: '🇫🇷', market: 'Total Goals', sel: 'Under 2.5', hr: -110, dk: -104, fd: -108, mgm: -110, czr: -106, fan: -112, mv: 'up', updated: '4m', fresh: 'fresh' },
+      { match: 'England v Portugal', flag: '🇬🇧', market: 'Both Teams Score', sel: 'BTTS Yes', hr: 100, dk: -102, fd: 100, mgm: -104, czr: 102, fan: -105, mv: 'flat', updated: '1m', fresh: 'fresh' },
+      { match: 'Netherlands v Germany', flag: '🇳🇱', market: 'Double Chance', sel: 'Neth or Draw', hr: -120, dk: -118, fd: -122, mgm: -115, czr: -120, fan: null, mv: 'down', updated: '11m', fresh: 'stale' },
+      { match: 'Argentina v Brazil', flag: '🇦🇷', market: 'Match Result', sel: 'Argentina', hr: 165, dk: 160, fd: 170, mgm: 162, czr: 168, fan: 158, mv: 'flat', updated: '8m', fresh: 'aging' },
+      { match: 'Argentina v Brazil', flag: '🇦🇷', market: 'Total Goals', sel: 'Over 2.5', hr: -105, dk: null, fd: null, mgm: 'SUSP', czr: -108, fan: -102, mv: 'flat', updated: '3m', fresh: 'fresh' },
+    ];
+  }
+
+  betsData() {
+    return [
+      { status: 'open', match: 'France v Spain', sel: '1st Half Draw', market: '1st Half Result', book: 'Hard Rock FL', odds: 115, stake: 200, placed: 'Jul 14 · 9:12 AM', src: '+EV Scanner #1', payout: 430, result: null, pl: null, close: null, clv: null, note: 'Model 48.5% vs 46.5% implied' },
+      { status: 'open', match: 'England v Portugal', sel: 'BTTS Yes', market: 'Both Teams Score', book: 'Hard Rock FL', odds: 100, stake: 250, placed: 'Jul 14 · 8:40 AM', src: 'Scouting Report v2', payout: 500, result: null, pl: null, close: -108, clv: '+3.8%', note: '' },
+      { status: 'won', match: 'Brazil v Croatia', sel: 'Brazil -0.5', market: 'Asian Handicap', book: 'Hard Rock FL', odds: -120, stake: 300, placed: 'Jul 11 · 6:05 PM', src: '+EV Scanner #2', payout: 550, result: 'Brazil 2-0', pl: 250, close: -145, clv: '+5.1%', note: '' },
+      { status: 'lost', match: 'Portugal v Morocco', sel: 'Over 2.5', market: 'Total Goals', book: 'DraftKings', odds: 105, stake: 150, placed: 'Jul 10 · 2:20 PM', src: 'Manual', payout: 0, result: '1-0 FT', pl: -150, close: 118, clv: '-4.2%', note: 'Lineups changed late' },
+      { status: 'pushed', match: 'Germany v USA', sel: 'Germany -1.0', market: 'Asian Handicap', book: 'Hard Rock FL', odds: -110, stake: 200, placed: 'Jul 9 · 4:00 PM', src: 'Scouting Report v1', payout: 200, result: 'Germany 1-0', pl: 0, close: -115, clv: '+1.1%', note: 'Stake returned' },
+      { status: 'cashed', match: 'Spain v Colombia', sel: 'Spain ML', market: 'Match Result', book: 'Hard Rock FL', odds: -140, stake: 280, placed: 'Jul 8 · 3:15 PM', src: '+EV Scanner #4', payout: 388, result: 'Cashed 78\'', pl: 108, close: -180, clv: '+6.4%', note: 'Cashed out early at +$108' },
+      { status: 'void', match: 'Uruguay v Ghana', sel: 'Suárez Anytime', market: 'Goalscorer', book: 'FanDuel', odds: 180, stake: 100, placed: 'Jul 7 · 1:00 PM', src: 'Manual', payout: 0, result: 'Void — DNP', pl: 0, close: null, clv: null, note: 'Player did not dress' },
+    ];
+  }
+
+  providersData() {
+    return [
+      { name: 'The Odds API', type: 'Odds aggregator', status: 'ok', sync: '43s ago', err: '—', quota: 78, usage: '4,410 / 20,000', sports: 'Soccer · NFL · NBA', markets: 'ML · Totals · Spreads · Props', fresh: 'fresh' },
+      { name: 'API-Football', type: 'Fixtures · lineups · stats', status: 'ok', sync: '1m ago', err: '—', quota: 64, usage: '3,180 / 7,500', sports: 'Soccer', markets: 'Fixtures · Lineups · xG', fresh: 'fresh' },
+      { name: 'OpenWeather', type: 'Venue weather', status: 'ok', sync: '6m ago', err: '—', quota: 91, usage: '910 / 10,000', sports: 'All', markets: 'Weather', fresh: 'aging' },
+      { name: 'SportRadar Injuries', type: 'Injury & availability', status: 'degraded', sync: '22m ago', err: '429 rate-limited', quota: 12, usage: '2,940 / 3,000', sports: 'Soccer · NFL', markets: 'Injuries · Status', fresh: 'stale' },
+      { name: 'Hard Rock Feed', type: 'Target book odds', status: 'down', sync: '1h 4m ago', err: 'Timeout — endpoint unreachable', quota: 0, usage: '— / —', sports: 'Soccer', markets: 'All markets', fresh: 'stale' },
+    ];
+  }
+
+  reportSections() {
+    return [
+      { id: 'snapshot', n: '01', title: 'Match Snapshot' },
+      { id: 'venue', n: '02', title: 'Venue & Weather' },
+      { id: 'team', n: '03', title: 'Team Scouting' },
+      { id: 'tactical', n: '04', title: 'Tactical Matchup' },
+      { id: 'players', n: '05', title: 'Player Matchups' },
+      { id: 'xfactor', n: '06', title: 'X-Factor / Cinderella' },
+      { id: 'market', n: '07', title: 'Betting Market Analysis' },
+      { id: 'movement', n: '08', title: 'Line Movement' },
+      { id: 'metrics', n: '09', title: 'Advanced Metrics' },
+      { id: 'trends', n: '10', title: 'Historical Trends' },
+      { id: 'edge', n: '11', title: 'Market Edge' },
+      { id: 'risk', n: '12', title: 'Risk Assessment' },
+      { id: 'plays', n: '13', title: 'Final Plays' },
+      { id: 'nuke', n: '14', title: 'Nuke or Pass' },
+    ];
+  }
+
+  verChip(v) {
+    const active = this.state.reportVersion === v;
+    return 'flex:1; text-align:center; padding:6px 0; border-radius:7px; font-family:\'IBM Plex Mono\',monospace; font-size:12px; ' + (active ? 'background:#a855f7; color:#0a0a0d; font-weight:600;' : 'background:#1b1a22; color:#8b8494; border:1px solid #2a2833;');
+  }
+
+  statusChip(kind) {
+    const map = {
+      verified: { fg: '#34d399', bg: 'rgba(52,211,153,0.1)', bd: 'rgba(52,211,153,0.4)', label: 'VERIFIED' },
+      inferred: { fg: '#38bdf8', bg: 'rgba(56,189,248,0.1)', bd: 'rgba(56,189,248,0.4)', label: 'INFERRED' },
+      stale: { fg: '#fbbf24', bg: 'rgba(251,191,36,0.1)', bd: 'rgba(251,191,36,0.4)', label: 'STALE' },
+      unavailable: { fg: '#6b6678', bg: 'rgba(107,102,120,0.1)', bd: 'rgba(107,102,120,0.4)', label: 'UNAVAILABLE' },
+    };
+    const m = map[kind];
+    return 'font-family:\'IBM Plex Mono\',monospace; font-size:9px; letter-spacing:1px; color:' + m.fg + '; background:' + m.bg + '; border:1px solid ' + m.bd + '; border-radius:4px; padding:2px 7px; white-space:nowrap;';
+  }
+
+  routeMeta() {
+    return {
+      dashboard: ['Dashboard', 'Mission control · edge, exposure & freshness'],
+      events: ['Events Explorer', 'Discover, filter & scout upcoming fixtures'],
+      scanner: ['+EV Scanner', 'Qualified positive expected-value opportunities'],
+      scouting: ['Scouting Report', 'France v Spain · FIFA WC26 · 14-section deep dive'],
+      betTracker: ['Bet Tracker', 'Placed bets · closing line value · P/L'],
+      dataSources: ['Data Sources', 'Provider health, quota & freshness'],
+      reports: ['Scouting Reports', 'Stored reports library'],
+      oddsTerminal: ['Odds Terminal', 'Professional cross-book odds comparison'],
+      watchlist: ['Watchlist', 'Tracked events & markets'],
+      performance: ['Performance', 'Process quality, CLV & calibration'],
+      settings: ['Settings', 'Thresholds, weights & preferences'],
+      designSystem: ['Design System', 'Tokens, components & indicators'],
+      docs: ['Documentation', 'IA · flows · handoff · open questions'],
+      mobile: ['Mobile · 390px', 'Distilled on-the-go experience'],
+    };
+  }
+
+  go(route) { return (e) => { if (e) e.preventDefault(); this.setState({ route }); const m = document.querySelector('main'); if (m) m.scrollTop = 0; }; }
+  fireToast(msg) { this.setState({ toast: msg }); clearTimeout(this._t); this._t = setTimeout(() => this.setState({ toast: null }), 2600); }
+
+  navStyle(id) {
+    const active = this.state.route === id;
+    return 'display:flex; align-items:center; gap:11px; padding:9px 10px; border-radius:9px; font-size:13px; font-weight:500; cursor:pointer; ' +
+      (active ? 'background:linear-gradient(90deg,rgba(139,92,246,0.18),rgba(139,92,246,0.04)); color:#f3f1f8; box-shadow:inset 2px 0 0 #a855f7;' : 'color:#8b8494;');
+  }
+  dot(id) {
+    const active = this.state.route === id;
+    return active ? '◆' : '◇';
+  }
+
+  buildNav(items) {
+    return items.map((it) => ({
+      ...it,
+      go: this.go(it.id),
+      style: this.navStyle(it.id),
+      dot: this.dot(it.id),
+      badgeStyle: 'font-family:\'IBM Plex Mono\',monospace; font-size:10px; color:#34d399; background:rgba(52,211,153,0.12); border-radius:20px; padding:2px 7px;',
+    }));
+  }
+
+  freshInfo(fresh) {
+    const m = {
+      fresh: { fg: '#34d399', label: 'FRESH' },
+      aging: { fg: '#fbbf24', label: 'AGING' },
+      stale: { fg: '#f87171', label: 'STALE' },
+    };
+    return m[fresh] || m.fresh;
+  }
+
+  buildOddsRows() {
+    return this.oddsMatrix().map((row) => {
+      const keys = ['hr', 'dk', 'fd', 'mgm', 'czr', 'fan'];
+      let bestKey = null, bestDec = 0;
+      keys.forEach((k) => {
+        const v = row[k];
+        if (typeof v === 'number') { const d = this.amToDec(v); if (d > bestDec) { bestDec = d; bestKey = k; } }
+      });
+      const nums = keys.map((k) => row[k]).filter((v) => typeof v === 'number');
+      const avgDec = nums.reduce((s, v) => s + this.amToDec(v), 0) / nums.length;
+      const avgAm = this.decToAm(avgDec);
+      const noVig = this.decToAm(avgDec * 0.97);
+      const f = this.freshInfo(row.fresh);
+      const cells = keys.map((k) => {
+        const v = row[k];
+        const isHR = k === 'hr';
+        const isBest = k === bestKey;
+        let txt, color = '#d8d4e0', bg = 'transparent', bd = '1px solid transparent';
+        if (v === null) { txt = '—'; color = '#4a4653'; }
+        else if (v === 'SUSP') { txt = 'SUSP'; color = '#f87171'; bg = 'rgba(248,113,113,0.08)'; }
+        else { txt = this.fmtAm(v); }
+        if (isBest) { color = '#34d399'; bg = 'rgba(52,211,153,0.1)'; bd = '1px solid rgba(52,211,153,0.4)'; }
+        if (isHR && typeof v === 'number' && !isBest) { bd = '1px solid rgba(139,92,246,0.4)'; bg = 'rgba(139,92,246,0.07)'; }
+        return { key: k, txt, style: 'font-family:\'IBM Plex Mono\',monospace; font-size:13px; text-align:center; padding:9px 6px; color:' + color + '; background:' + bg + '; border:' + bd + '; border-radius:6px;' };
+      });
+      const mv = { up: { a: '▲', c: '#34d399' }, down: { a: '▼', c: '#f87171' }, flat: { a: '—', c: '#6b6678' } }[row.mv];
+      return {
+        ...row, cells,
+        bestFmt: this.fmtAm(row[bestKey]),
+        avgFmt: this.fmtAm(avgAm),
+        noVigFmt: this.fmtAm(noVig),
+        mvArrow: mv.a, mvColor: mv.c,
+        freshFg: f.fg, freshLabel: f.label,
+        suspended: keys.some((k) => row[k] === 'SUSP'),
+      };
+    });
+  }
+
+  buildEvents(opps) {
+    const evs = [
+      { match: 'England v Portugal', flag: '🇬🇧', flag2: '🇵🇹', league: 'FIFA WC26 · QF', time: 'Jul 14 · 12:00 PM ET', status: 'Pre-match', hr: '+100', best: '+102', report: 'v2', lineup: 'pending', fresh: 'fresh', watched: true, scouted: true },
+      { match: 'France v Spain', flag: '🇫🇷', flag2: '🇪🇸', league: 'FIFA WC26 · SF', time: 'Jul 14 · 3:00 PM ET', status: 'Pre-match', hr: '+115', best: '+120', report: 'v3', lineup: 'confirmed', fresh: 'fresh', watched: true, scouted: true },
+      { match: 'Netherlands v Germany', flag: '🇳🇱', flag2: '🇩🇪', league: 'FIFA WC26 · SF', time: 'Jul 14 · 4:00 PM ET', status: 'Pre-match', hr: '-120', best: '-115', report: null, lineup: 'pending', fresh: 'stale', watched: false, scouted: false },
+      { match: 'Argentina v Brazil', flag: '🇦🇷', flag2: '🇧🇷', league: 'FIFA WC26 · SF', time: 'Jul 14 · 8:00 PM ET', status: 'Pre-match', hr: '+165', best: '+170', report: null, lineup: 'pending', fresh: 'aging', watched: true, scouted: false },
+      { match: 'Morocco v Croatia', flag: '🇲🇦', flag2: '🇭🇷', league: 'FIFA WC26 · 3rd Place', time: 'Jul 15 · 3:00 PM ET', status: 'Scheduled', hr: '+135', best: '+140', report: null, lineup: 'na', fresh: 'aging', watched: false, scouted: false },
+    ];
+    return evs.map((e) => {
+      const f = this.freshInfo(e.fresh);
+      const lineupMap = { confirmed: { c: '#34d399', t: 'Lineups confirmed' }, pending: { c: '#fbbf24', t: 'Lineups pending' }, na: { c: '#6b6678', t: 'Not yet available' } };
+      const lu = lineupMap[e.lineup];
+      return {
+        ...e,
+        freshFg: f.fg, freshLabel: f.label,
+        lineupColor: lu.c, lineupText: lu.t,
+        reportLabel: e.report || 'Unscouted',
+        reportColor: e.report ? '#a855f7' : '#6b6678',
+        scoutLabel: e.scouted ? 'Open Report' : 'Scout Event',
+        watchLabel: e.watched ? '★ Watching' : '☆ Watch',
+        watchColor: e.watched ? '#a855f7' : '#6b6678',
+        onScout: this.go('scouting'),
+      };
+    });
+  }
+
+  buildBets() {
+    const stMap = {
+      open: { fg: '#a855f7', bg: 'rgba(168,85,247,0.12)', bd: 'rgba(168,85,247,0.4)', label: 'OPEN' },
+      won: { fg: '#34d399', bg: 'rgba(52,211,153,0.12)', bd: 'rgba(52,211,153,0.4)', label: 'WON' },
+      lost: { fg: '#f87171', bg: 'rgba(248,113,113,0.12)', bd: 'rgba(248,113,113,0.4)', label: 'LOST' },
+      pushed: { fg: '#a29daf', bg: 'rgba(162,157,175,0.1)', bd: 'rgba(162,157,175,0.35)', label: 'PUSH' },
+      cashed: { fg: '#38bdf8', bg: 'rgba(56,189,248,0.12)', bd: 'rgba(56,189,248,0.4)', label: 'CASHED OUT' },
+      void: { fg: '#6b6678', bg: 'rgba(107,102,120,0.1)', bd: 'rgba(107,102,120,0.35)', label: 'VOID' },
+    };
+    let all = this.betsData();
+    if (this.state.betFilter !== 'all') all = all.filter((b) => b.status === this.state.betFilter);
+    return all.map((b) => {
+      const s = stMap[b.status];
+      const plColor = b.pl > 0 ? '#34d399' : b.pl < 0 ? '#f87171' : '#a29daf';
+      const clvColor = !b.clv ? '#6b6678' : b.clv.startsWith('+') ? '#34d399' : '#f87171';
+      return {
+        ...b,
+        statusStyle: 'font-family:\'IBM Plex Mono\',monospace; font-size:10px; letter-spacing:0.5px; color:' + s.fg + '; background:' + s.bg + '; border:1px solid ' + s.bd + '; border-radius:5px; padding:3px 8px; white-space:nowrap;',
+        statusLabel: s.label,
+        oddsFmt: this.fmtAm(b.odds),
+        stakeFmt: '$' + b.stake,
+        payoutFmt: b.payout ? '$' + b.payout : '—',
+        plFmt: b.pl === null ? '—' : (b.pl > 0 ? '+$' + b.pl : b.pl < 0 ? '-$' + Math.abs(b.pl) : '$0'),
+        plColor,
+        closeFmt: b.close === null ? '—' : this.fmtAm(b.close),
+        clvFmt: b.clv || '—',
+        clvColor,
+        resultFmt: b.result || 'In progress',
+      };
+    });
+  }
+
+  buildProviders() {
+    return this.providersData().map((p) => {
+      const stMap = {
+        ok: { fg: '#34d399', label: '● OPERATIONAL' },
+        degraded: { fg: '#fbbf24', label: '● DEGRADED' },
+        down: { fg: '#f87171', label: '● OFFLINE' },
+      };
+      const s = stMap[p.status];
+      const quotaColor = p.quota > 40 ? '#34d399' : p.quota > 15 ? '#fbbf24' : '#f87171';
+      return {
+        ...p,
+        statusFg: s.fg, statusLabel: s.label,
+        quotaColor, quotaPct: p.quota + '%',
+        errColor: p.err === '—' ? '#6b6678' : '#f87171',
+        onConfig: () => this.fireToast('Configuration drawer opened for ' + p.name),
+      };
+    });
+  }
+
+  renderVals() {
+    const r = this.state.route;
+    const meta = this.routeMeta();
+    const [routeTitle, routeSub] = meta[r] || ['', ''];
+    const opps = this.computeOpps();
+    const built = ['dashboard', 'events', 'scanner', 'scouting', 'betTracker', 'dataSources', 'designSystem', 'docs', 'mobile'];
+
+    const navMain = this.buildNav([
+      { id: 'dashboard', label: 'Dashboard' },
+      { id: 'events', label: 'Events' },
+      { id: 'scanner', label: '+EV Scanner', badge: opps.length },
+      { id: 'scouting', label: 'Scouting Reports' },
+      { id: 'oddsTerminal', label: 'Odds Terminal' },
+      { id: 'watchlist', label: 'Watchlist' },
+      { id: 'betTracker', label: 'Bet Tracker' },
+      { id: 'performance', label: 'Performance' },
+      { id: 'dataSources', label: 'Data Sources' },
+      { id: 'settings', label: 'Settings' },
+    ]);
+    const navDesign = this.buildNav([
+      { id: 'designSystem', label: 'Design System' },
+      { id: 'mobile', label: 'Mobile · 390px' },
+      { id: 'docs', label: 'Documentation' },
+    ]);
+
+    const topOpps = opps.slice(0, 3).map((o) => ({
+      ...o,
+      openEvent: this.go('scouting'),
+      addBet: (e) => { if (e) e.preventDefault(); this.fireToast('Bet drafted from ' + o.selection + ' — sourced to +EV Scanner rec #' + o.rank); this.setState({ route: 'betTracker' }); },
+    })).map((o, i) => ({ ...o, rank: i + 1 }));
+
+    return {
+      routeTitle, routeSub,
+      isDashboard: r === 'dashboard',
+      isScanner: r === 'scanner',
+      isEvents: r === 'events',
+      isScouting: r === 'scouting',
+      isBetTracker: r === 'betTracker',
+      isDataSources: r === 'dataSources',
+      isDesignSystem: r === 'designSystem',
+      isMobileView: r === 'mobile',
+      isDocs: r === 'docs',
+      isPlaceholder: !built.includes(r),
+
+      // ---- scanner ----
+      scannerOpps: [...opps].sort((a, b) => {
+        const k = this.state.scannerSort;
+        if (k === 'conf') return b.conf - a.conf;
+        if (k === 'books') return b.numBooks - a.numBooks;
+        if (k === 'kickoff') return a.kickoff.localeCompare(b.kickoff);
+        return b.ev - a.ev;
+      }).map((o, i) => ({
+        ...o, rank: i + 1,
+        rowScout: this.go('scouting'),
+        rowAdd: (e) => { if (e) e.preventDefault(); this.fireToast('Bet drafted from ' + o.selection); },
+        gapVsFair: (this.amToImp(o.hrOdds) < o.fairProb ? '+' : '') + ((o.fairProb - this.amToImp(o.hrOdds)) * 100).toFixed(1) + 'pts',
+      })),
+      scannerSort: this.state.scannerSort,
+      setSortEV: (e) => { if (e) e.preventDefault(); this.setState({ scannerSort: 'ev' }); },
+      setSortConf: (e) => { if (e) e.preventDefault(); this.setState({ scannerSort: 'conf' }); },
+      setSortKickoff: (e) => { if (e) e.preventDefault(); this.setState({ scannerSort: 'kickoff' }); },
+      sortEVColor: this.state.scannerSort === 'ev' ? '#a855f7' : '#6b6678',
+      sortConfColor: this.state.scannerSort === 'conf' ? '#a855f7' : '#6b6678',
+      scannerCount: opps.length,
+
+      // ---- odds terminal-style matrix (also reused) ----
+      oddsRows: this.buildOddsRows(),
+      bookHeaders: this.bookList(),
+
+      // ---- events ----
+      eventList: this.buildEvents(opps),
+      eventIsTable: this.state.eventView === 'table',
+      eventIsCards: this.state.eventView === 'cards',
+      eventViewTable: (e) => { if (e) e.preventDefault(); this.setState({ eventView: 'table' }); },
+      eventViewCards: (e) => { if (e) e.preventDefault(); this.setState({ eventView: 'cards' }); },
+      eventTableStyle: 'padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; ' + (this.state.eventView === 'table' ? 'background:#a855f7; color:#0a0a0d;' : 'color:#8b8494;'),
+      eventCardsStyle: 'padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; ' + (this.state.eventView === 'cards' ? 'background:#a855f7; color:#0a0a0d;' : 'color:#8b8494;'),
+
+      // ---- scouting report ----
+      reportSecs: this.reportSections().map((s) => ({
+        ...s,
+        go: (e) => { if (e) e.preventDefault(); this.setState({ activeSection: s.id }); const el = document.getElementById('sec-' + s.id); const main = document.querySelector('main'); if (el && main) main.scrollTo({ top: el.offsetTop - 80, behavior: 'smooth' }); },
+        style: 'display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:7px; font-size:12px; cursor:pointer; ' + (this.state.activeSection === s.id ? 'background:rgba(139,92,246,0.14); color:#f3f1f8; box-shadow:inset 2px 0 0 #a855f7;' : 'color:#8b8494;'),
+      })),
+      reportVersion: this.state.reportVersion,
+      setV1: (e) => { if (e) e.preventDefault(); this.setState({ reportVersion: 'v1' }); this.fireToast('Loaded report v1 — pre-lineup baseline'); },
+      setV2: (e) => { if (e) e.preventDefault(); this.setState({ reportVersion: 'v2' }); this.fireToast('Loaded report v2 — diff vs v1 highlighted'); },
+      setV3: (e) => { if (e) e.preventDefault(); this.setState({ reportVersion: 'v3' }); this.fireToast('Loaded report v3 — diff vs v2 highlighted'); },
+      v1Style: this.verChip('v1'), v2Style: this.verChip('v2'), v3Style: this.verChip('v3'),
+      versionMeta: this.state.reportVersion === 'v3' ? 'v3 · latest · 12m ago' : this.state.reportVersion === 'v2' ? 'v2 · 41m ago' : 'v1 · 3h ago',
+      versionDiff: this.state.reportVersion === 'v3' ? 'Since v2: lineups confirmed, EV +0.4%' : this.state.reportVersion === 'v2' ? 'Since v1: odds refreshed, +1 play added' : 'Baseline · pre-lineup',
+      verifiedChip: this.statusChip('verified'),
+      inferredChip: this.statusChip('inferred'),
+      staleChip: this.statusChip('stale'),
+      unavailChip: this.statusChip('unavailable'),
+
+      // ---- bet tracker ----
+      bets: this.buildBets(),
+      betFilters: [['all', 'All'], ['open', 'Open'], ['won', 'Won'], ['lost', 'Lost'], ['pushed', 'Push'], ['cashed', 'Cashed Out'], ['void', 'Void']].map(([id, label]) => ({
+        label,
+        go: (e) => { if (e) e.preventDefault(); this.setState({ betFilter: id }); },
+        style: 'padding:7px 13px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; ' + (this.state.betFilter === id ? 'background:#a855f7; color:#0a0a0d;' : 'background:#131319; color:#8b8494; border:1px solid #2a2833;'),
+      })),
+      openBetEntry: () => this.fireToast('Manual bet entry drawer opened'),
+
+      // ---- data sources ----
+      providers: this.buildProviders(),
+      stateChips: ['Loading', 'Empty', 'Error', 'Partial data', 'Stale data', 'Provider unavailable', 'Market suspended', 'No edge found', 'Scouting queued', 'Scouting in progress', 'Scouting failed', 'Report complete', 'Lineups pending', 'Lineups confirmed'],
+      navMain, navDesign,
+      clockET: '2:41 PM',
+      dashDate: 'Tue · Jul 14, 2026',
+      toast: this.state.toast,
+      refreshSpin: this.state.spinning ? 'display:inline-block; animation:fteSpin 0.6s linear;' : 'display:inline-block;',
+      onRefresh: () => { this.setState({ spinning: true }); this.fireToast('Odds refreshed · 6 books polled · fair lines recomputed'); setTimeout(() => this.setState({ spinning: false }), 700); },
+      onAddBet: () => { this.fireToast('Manual bet entry opened'); this.setState({ route: 'betTracker' }); },
+      goScanner: this.go('scanner'),
+      goDocs: this.go('docs'),
+      topOpps,
+      kpis: [
+        { label: 'Active +EV', value: opps.length, color: '#a855f7', sub: '≥ 2% EV · 3+ books qualified' },
+        { label: 'Highest EV', value: '+' + opps[0].ev.toFixed(1) + '%', color: '#34d399', sub: opps[0].selection },
+        { label: 'Open Exposure', value: '$1,240', color: '#f3f1f8', sub: '6 open bets · avg stake $207' },
+        { label: 'Recent CLV', value: '+3.1%', color: '#34d399', sub: 'Last 20 settled bets' },
+      ],
+      discrepancies: [
+        { sel: '1st Half Draw', match: 'France v Spain', hr: '+115', gap: '+2.3% vs fair' },
+        { sel: 'BTTS Yes', match: 'England v Portugal', hr: '+100', gap: '+3.0% vs fair' },
+        { sel: 'Spain TT Over 1.5', match: 'France v Spain', hr: '+140', gap: '+2.1% vs fair' },
+      ],
+      watched: [
+        { flag: '🇬🇧', match: 'England v Portugal', league: 'FIFA WC26 · QF', countdown: '9h 19m' },
+        { flag: '🇫🇷', match: 'France v Spain', league: 'FIFA WC26 · SF', countdown: '12h 19m' },
+        { flag: '🇦🇷', match: 'Argentina v Brazil', league: 'FIFA WC26 · SF', countdown: '17h 19m' },
+      ],
+      lineMoves: [
+        { arrow: '▲', color: '#34d399', sel: '1st Half Draw', match: 'France v Spain', from: '+108', to: '+115' },
+        { arrow: '▼', color: '#f87171', sel: 'Neth or Draw', match: 'Netherlands v Germany', from: '-112', to: '-120' },
+        { arrow: '▲', color: '#34d399', sel: 'Under 2.5', match: 'France v Spain', from: '-118', to: '-110' },
+      ],
+      recentReports: [
+        { match: 'France v Spain', meta: 'Completed 12m ago · 14 sections · lineups confirmed', version: 'v3', open: this.go('scouting') },
+        { match: 'England v Portugal', meta: 'Completed 41m ago · lineups pending', version: 'v2', open: this.go('scouting') },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
