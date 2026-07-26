@@ -1,5 +1,20 @@
 # Decision Log
 
+## 2026-07-26 — Multi-sport module architecture
+
+Reason: Original soccer-first planning and the first MLB slice would force sport conditionals into shared models and infrastructure.
+
+Decision:
+
+- Universal domain and pricing stay sport-agnostic.
+- Registered sport modules own mechanics, data needs, terminology, and extension behavior.
+- Versioned strategies own approved markets and product policy.
+- Providers advertise capabilities and coverage.
+- Prompts compose shared, sport, strategy, and analysis sections.
+- Maturity is explicit: MLB beta, soccer experimental, tennis/NFL/NCAAF planned.
+
+Hypothesis: the fifth and tenth sport can be added without rewriting shared event, pricing, API, persistence, or prompt infrastructure.
+
 ## 2026-07-26 — MLB v2.1: value-first decisions
 
 Reason: Early scouting disproportionately selected favorites because ranking emphasized matchup strength rather than price error.

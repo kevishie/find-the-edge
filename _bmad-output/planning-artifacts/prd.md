@@ -2,11 +2,53 @@
 title: "PRD: FIND THE EDGE"
 status: "final"
 created: "2026-07-15"
-updated: "2026-07-15"
+updated: "2026-07-26"
 source: "_bmad-output/planning-artifacts/product-brief.md"
 ---
 
 # PRD: FIND THE EDGE
+
+## 0A. Binding Multi-Sport Product Amendment (2026-07-26)
+
+This amendment supersedes soccer-first platform assumptions in the original PRD while preserving soccer requirements as module requirements. FIND THE EDGE must support MLB, soccer/MLS, tennis, NFL, NCAAF, and later sports through registration rather than core rewrites.
+
+### Platform requirements
+
+**FR-MS-001 — Universal betting domain.** The system represents sports, leagues, seasons, competitions, events, participants, teams, players, venues, markets, selections, sportsbooks, immutable odds, consensus, fair probability/price, EV, confidence, scouts, recommendations, picks, bets, results, closing lines, CLV, ROI, model/strategy versions, freshness, and provider health without sport-specific shared fields.
+
+**FR-MS-002 — Registered sport modules.** Every enabled sport implements the versioned `SportModule` contract and declares metadata, maturity, leagues, participant/event mechanics, market definitions, data needs, scouting categories, methodologies, recommendation/roster/grading rules, prompt/output/validation contracts, and UI terminology.
+
+**FR-MS-003 — Mechanics versus strategy.** Immutable sport mechanics and possible markets are separated from versioned product strategy. Strategy selects approved/prohibited markets, thresholds, target sportsbook, public-fade behavior, confidence policy, and recommendation preferences.
+
+**FR-MS-004 — Generic platform surfaces.** Database keys, API routes, event explorer, sport selector, opportunity views, evaluation storage, and prompt infrastructure use `sportKey` and registered configuration. Shared code contains no sport-specific branching.
+
+**FR-MS-005 — Capability-based providers.** Providers declare capabilities, supported sports/leagues/markets, rate limits, freshness, and quality. No workflow assumes a single vendor covers all sports.
+
+**FR-MS-006 — Versioned reproducibility.** Every scout, recommendation, and pick stores sport module, strategy, model, calculation, input-schema, and prompt-bundle versions plus input provenance.
+
+**FR-MS-007 — Honest maturity.** Module maturity is one of planned, experimental, beta, or production and is displayed to users. Presence in the registry does not imply production readiness.
+
+**FR-MS-008 — Routine extensibility.** Contract tests prove that a test sport can be added through module creation and registration without core-domain, core-pricing, storage-key, or generic-route changes.
+
+### Initial sport scope
+
+- MLB beta strategy: moneyline, starting-pitcher strikeouts, or No Bet; no run lines by default.
+- Soccer experimental strategy: To Advance, BTTS, goal totals, team totals, anytime scorer, requested shots-on-target, and selectively priced moneyline.
+- Tennis planned: match moneyline; set/game/player markets only when enabled.
+- NFL planned: moneyline, spread, totals, and configured player props.
+- NCAAF planned: moneyline, spread, totals, with higher uncertainty requirements than NFL.
+
+These declarations describe platform scope, not claims that all modules or data integrations are complete. The first complete vertical slice may use fixture data and the module with the most working infrastructure.
+
+### Acceptance outcomes
+
+1. MLB and soccer register through the same contract.
+2. Tennis, NFL, and NCAAF have registered planned specifications.
+3. Shared pricing receives generic selections and strategy thresholds.
+4. Prompt construction composes shared + sport + strategy + analysis-type sections.
+5. No paid API, infrastructure, or AI service is required for local contract and fixture tests.
+
+The remaining original PRD is retained for detailed workflow requirements. References to a fixed Hard Rock target become configurable target-sportsbook requirements; soccer-specific requirements belong to the soccer module.
 
 ## 0. Document Purpose
 

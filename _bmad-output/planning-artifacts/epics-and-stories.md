@@ -2,7 +2,7 @@
 title: "Epics and Stories: FIND THE EDGE"
 status: "initial"
 created: "2026-07-15"
-updated: "2026-07-15"
+updated: "2026-07-26"
 workflow: "bmad-create-epics-and-stories"
 stepsCompleted:
   - "validate-prerequisites"
@@ -20,6 +20,65 @@ sources:
 ---
 
 # Epics and Stories: FIND THE EDGE
+
+## 0. Multi-Sport Rebaseline (2026-07-26)
+
+This rebaseline is authoritative over soccer-first scope guardrails below. Existing stories remain useful but must consume generic domain, sport registry, strategy, provider-capability, and prompt-composition foundations.
+
+### Epic 0: Multi-Sport Platform Foundation
+
+#### FTE-SPORT-001: Sport-Agnostic Domain and Registry
+
+- Outcome: New sports register without core-domain or pricing edits.
+- In scope: universal IDs/entities, evidence/version references, `SportModule` contract, registry, maturity states, generic markets.
+- Dependencies: FTE-001.
+- Acceptance criteria: MLB and soccer register; a test sport registers without core edits; shared event has no sport-specific fields; registry rejects duplicates.
+- Validation: `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`.
+- Status: ready.
+
+#### FTE-SPORT-002: Versioned Strategy Configuration
+
+- Outcome: Product policy is separate from sport mechanics.
+- In scope: strategy schema, validation, MLB v2.1 strategy, soccer draft strategy, planned sport strategies.
+- Dependencies: FTE-SPORT-001.
+- Acceptance criteria: approved/prohibited markets validate against module capabilities; thresholds and public-fade policy are versioned; invalid configurations fail explicitly.
+- Validation: root quality gates and schema/unit tests.
+- Status: backlog.
+
+#### FTE-SPORT-003: Capability-Based Provider Ports
+
+- Outcome: Providers can cover different sports and data capabilities.
+- In scope: eight provider interfaces and capability/coverage metadata.
+- Dependencies: FTE-SPORT-001.
+- Acceptance criteria: no universal provider assumption; support resolution is testable by sport/league/market/capability.
+- Validation: root quality gates and contract tests.
+- Status: backlog.
+
+#### FTE-SPORT-004: Composable Prompt and Scout Versioning
+
+- Outcome: Scouts use shared + sport + strategy + analysis prompt sections and store exact versions.
+- Dependencies: FTE-SPORT-001, FTE-SPORT-002.
+- Acceptance criteria: deterministic composition order; missing sections fail; bundle version and model version are present; prompts cannot own pricing.
+- Validation: root quality gates and prompt snapshot tests.
+- Status: backlog.
+
+#### FTE-SPORT-005: Generic Sport Selector and Event Explorer
+
+- Outcome: The web shell discovers registered sports and uses module terminology without sport branching.
+- Dependencies: FTE-002, FTE-SPORT-001.
+- Acceptance criteria: maturity visible; generic routes include sport key; module switch requires no shared UI edit.
+- Validation: root quality gates and UI tests.
+- Status: backlog.
+
+#### FTE-SPORT-006: MLB and Soccer Module Vertical Slice
+
+- Outcome: Fixture data runs through registered modules, strategy, generic pricing, and generic UI.
+- Dependencies: FTE-SPORT-001 through FTE-SPORT-005.
+- Acceptance criteria: both modules produce auditable Play/No Bet evaluations; stored/displayed results include module and strategy version.
+- Validation: root gates, integration tests, and browser smoke.
+- Status: backlog.
+
+Old sport-catalog, ingestion, scouting, and opportunity stories must depend on the applicable FTE-SPORT stories before implementation. Product/provider approval gates remain in force.
 
 ## 1. Purpose
 

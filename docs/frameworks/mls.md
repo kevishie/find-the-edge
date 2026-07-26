@@ -3,13 +3,18 @@
 Version: MLS v1.0-draft  
 Status: draft pending evidence-based calibration
 
-## Approved MVP decisions
+## Strategy-configurable decisions
 
-- Three-way moneyline
-- Draw-no-bet only after an explicit product decision
+- To Advance
+- Both Teams to Score
+- Goal totals
+- Team totals
+- Anytime scorer
+- Shots on target where requested
+- Three-way moneyline only when value is meaningful
 - No Bet
 
-No totals, handicaps, props, or parlays unless the user expands scope. Soccer qualification uses deterministic no-vig consensus, fair odds, EV, freshness, contributing-book, and data-quality gates defined by the model contract.
+No market is active merely because the sport module supports it. The versioned soccer strategy must approve it. Soccer qualification uses market-appropriate deterministic no-vig consensus, fair odds, EV, freshness, contributing-book, and data-quality gates.
 
 ## Required audit
 

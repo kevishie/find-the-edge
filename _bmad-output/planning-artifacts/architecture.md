@@ -2,13 +2,110 @@
 title: "System Architecture: FIND THE EDGE"
 status: "final"
 created: "2026-07-15"
-updated: "2026-07-15"
+updated: "2026-07-26"
 sources:
   - "_bmad-output/planning-artifacts/product-brief.md"
   - "_bmad-output/planning-artifacts/prd.md"
 ---
 
 # System Architecture: FIND THE EDGE
+
+## 0. Binding Multi-Sport Amendment (2026-07-26)
+
+This section supersedes any soccer-first or MLB-specific architectural constraint elsewhere in this artifact. Soccer and MLB may be delivery priorities, but neither is the core domain. FIND THE EDGE is a sport-agnostic betting intelligence platform whose sport behavior is supplied by registered, versioned modules.
+
+### 0.1 Architectural invariants
+
+- Shared domain models, database keys, APIs, routes, pricing calculations, prompt composition, and evaluation infrastructure use stable sport, league, event, participant, market, strategy, and model identifiers.
+- Shared `Event` has no pitcher, handedness, quarterback, formation, surface, set, or lineup-specific fields. Typed sport payloads own those attributes.
+- Core pricing accepts generic market definitions and selections. A sport strategy determines whether a market is approved.
+- A target sportsbook is configuration, not a domain constant.
+- No provider is assumed to cover every sport, league, or capability.
+- AI is optional and composable. Deterministic price, probability, EV, qualification, grading, CLV, and ROI remain outside prompts.
+- Every scout, recommendation, pick, and evaluation stores `sportKey`, `sportModuleVersion`, `strategyVersion`, `calculationVersion`, and exact prompt bundle version when AI is used.
+- Adding a sport requires a module, registration, market definitions, strategy, docs, and contract tests—not edits to core event or pricing code.
+
+### 0.2 Layer model
+
+```text
+Core betting domain
+  Sport, League, Season, Competition, Event, Participant, Venue
+  Market, Selection, Sportsbook, OddsSnapshot, ConsensusPrice
+  FairPrice, EV, Recommendation, Pick, Bet, Result, CLV, ROI
+  ModelVersion, StrategyVersion, Freshness, ProviderHealth
+          |
+Sport module contract and registry
+  MLB | Soccer | Tennis | NFL | NCAAF | future modules
+          |
+Strategy configurations
+  Approved/prohibited markets, thresholds, confidence and recommendation policy
+          |
+Provider capability ports
+  Odds | Schedule | Stats | Injury | Lineup | Weather | PublicBetting | Results
+          |
+Applications
+  API | workers | web | optional LLM report synthesis
+```
+
+### 0.3 Repository boundaries
+
+```text
+packages/
+  domain/       # universal entities, IDs, evidence, version references
+  odds/         # sport-agnostic deterministic pricing and EV
+  sports/       # SportModule contract, registry, and sport implementations
+  scouting/     # prompt composition and structured scout contracts
+  providers/    # capability-based provider ports/adapters
+strategies/
+  schema.json
+  mlb/
+  soccer/
+  tennis/
+  nfl/
+  ncaaf/
+prompts/
+  shared/
+  sports/
+  strategies/
+```
+
+### 0.4 SportModule contract
+
+Each module declares immutable sport mechanics and terminology:
+
+- key, version, maturity, display name, leagues, participants, and event phases
+- possible markets and grading mechanics
+- required/optional data, scouting categories, and feature definitions
+- fair-price and confidence methodology descriptors
+- lineup/roster rules and live-betting capability
+- validation, normalization, feature, evaluation, scout, output, and grading ports
+- prompt section, output schema identifier, validation schema identifier, and UI labels
+
+User/product preferences live in a separately versioned strategy. Strategy owns approved/prohibited markets, thresholds, target book, public-fade policy, and recommendation preferences.
+
+### 0.5 Universal storage and APIs
+
+All primary records include `sportKey`. Event keys are shaped from stable IDs such as `SPORT#{sportKey}#EVENT#{eventId}`; no key embeds team-vs-player or sport-specific semantics. Sport detail is stored as a versioned payload with `schemaId`, `schemaVersion`, and module-owned validation.
+
+Generic API paths use `/sports/:sportKey/events/:eventId`, `/sports/:sportKey/opportunities`, and `/sports/:sportKey/scouts`. The UI resolves terminology and sport panels through registry metadata. Shared screens never branch on `sportKey`; modules contribute configuration or components through registered extension points.
+
+### 0.6 Provider capability model
+
+Provider interfaces are capability-specific: `OddsProvider`, `ScheduleProvider`, `StatsProvider`, `InjuryProvider`, `LineupProvider`, `WeatherProvider`, `PublicBettingProvider`, and `ResultsProvider`. Each adapter declares supported sports, leagues, markets, rate limits, expected freshness, and quality tier. Orchestration resolves providers by capability and declared coverage.
+
+### 0.7 Module maturity
+
+Modules declare `planned`, `experimental`, `beta`, or `production`. Maturity is visible in APIs and UI and cannot be inferred from folder presence. Initial targets:
+
+- MLB: beta
+- Soccer: experimental
+- Tennis: planned
+- NFL: planned
+- NCAAF: planned
+
+### 0.8 Compatibility note
+
+The older soccer-first sections below document the original delivery plan. Where they prescribe soccer-specific shared models, routes, providers, or core behavior, this amendment wins. Sport-specific soccer details remain useful input to the soccer module.
 
 ## 1. Architecture Purpose
 
