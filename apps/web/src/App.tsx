@@ -5,6 +5,7 @@ import {
   removeVig,
   type EdgeEvaluation,
 } from "@find-the-edge/odds";
+import { mlbFindTheEdgeStrategy, mlbModule } from "@find-the-edge/sports";
 
 const reasonLabels: Record<string, string> = {
   "positive-ev": "Qualified positive EV",
@@ -54,12 +55,16 @@ function calculate(form: FormState): EdgeEvaluation {
   return evaluateEdge({
     offeredAmerican: form.offered,
     fairProbability,
-    market: "mlb-moneyline",
+    marketKey: "moneyline",
+    approvedMarketKeys: mlbFindTheEdgeStrategy.approvedMarketKeys,
     comparisonBooks: form.bookCount,
     priceAgeMinutes: form.priceAge,
     lineupConfirmed: form.lineupConfirmed,
     minutesToStart: form.minutesToStart,
     publicTicketPercent: form.publicTickets,
+    minimumEv: mlbFindTheEdgeStrategy.minimumEv,
+    minimumBooks: mlbFindTheEdgeStrategy.minimumComparisonBooks,
+    maximumPriceAgeMinutes: mlbFindTheEdgeStrategy.maximumPriceAgeMinutes,
   });
 }
 
@@ -124,7 +129,9 @@ export function App() {
         </nav>
         <div className="model-card">
           <span>ACTIVE MODEL</span>
-          <strong>MLB v2.1</strong>
+          <strong>
+            {mlbModule.metadata.displayName} {mlbFindTheEdgeStrategy.version}
+          </strong>
           <small>edge-calculation-v1</small>
         </div>
       </aside>

@@ -30,3 +30,7 @@ The last completed artifact is the implementation epics and stories (`6d4f266`, 
 ## Architecture impact
 
 The existing soccer-first AWS/serverless architecture remains useful. This MVP adds MLB as a canonical sport module and starts with a local-first deterministic vertical slice. It does not deploy AWS, choose paid providers, or overwrite planning artifacts.
+
+## Multi-sport rebaseline
+
+The 2026-07-26 audit found soccer/Hard Rock coupling in the BMAD product artifacts and MLB market coupling in the first local slice. Binding amendments now make the universal domain, sport registry, strategy configuration, provider capabilities, and prompt composition authoritative. Original soccer requirements remain preserved as soccer-module input.

@@ -1,5 +1,18 @@
 # Progress Log
 
+## 2026-07-26 — Multi-sport architecture foundation
+
+- Audited all BMAD artifacts and current code for soccer, MLB, and fixed-sportsbook coupling.
+- Added binding multi-sport amendments to architecture, PRD, and epics; preserved original planning detail.
+- Added ADR 0001 and the architecture coupling report.
+- Implemented universal domain contracts, `SportModule`, registry, maturity states, and strategy validation.
+- Registered MLB beta, soccer experimental, and planned tennis/NFL/NCAAF modules.
+- Added capability-specific provider ports and deterministic prompt composition/versioning.
+- Genericized core odds qualification so approved markets come from strategy.
+- Gates passed: formatting, lint, strict typecheck, 19 tests, and all package/application builds.
+- No external services, secrets, infrastructure, paid APIs, or live betting data were used.
+- Next: complete the generic app shell/story, then implement weighted consensus states and a registry-driven sport explorer.
+
 ## 2026-07-26 — Assessment and execution reset
 
 - Confirmed the authoritative GitHub repository and preserved the untracked design uploads.

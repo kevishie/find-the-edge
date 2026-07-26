@@ -11,6 +11,90 @@ statusValues:
   - done
 nextReadyStory: FTE-002
 stories:
+  - id: FTE-SPORT-001
+    title: Sport-Agnostic Domain and Registry
+    sport: core
+    league: all
+    module: sport-registry
+    priority: P0
+    status: done
+    dependencies: [FTE-001]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-SPORT-002
+    title: Versioned Strategy Configuration
+    sport: core
+    league: all
+    module: strategy-configuration
+    priority: P0
+    status: done
+    dependencies: [FTE-SPORT-001]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-SPORT-003
+    title: Capability-Based Provider Ports
+    sport: core
+    league: all
+    module: provider-ports
+    priority: P0
+    status: done
+    dependencies: [FTE-SPORT-001]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-SPORT-004
+    title: Composable Prompt and Scout Versioning
+    sport: core
+    league: all
+    module: prompt-composition
+    priority: P0
+    status: done
+    dependencies: [FTE-SPORT-001, FTE-SPORT-002]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-SPORT-005
+    title: Generic Sport Selector and Event Explorer
+    sport: core
+    league: all
+    module: generic-event-explorer
+    priority: P1
+    status: backlog
+    dependencies: [FTE-002, FTE-SPORT-001]
+    validationCommands: [pnpm check, browser-smoke]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-SPORT-006
+    title: MLB and Soccer Module Vertical Slice
+    sport: mlb,soccer
+    league: mlb,mls
+    module: fixture-vertical-slice
+    priority: P2
+    status: backlog
+    dependencies: [FTE-SPORT-005]
+    validationCommands: [pnpm check, browser-smoke]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-SPORT-007
+    title: Weighted Consensus States
+    sport: core
+    league: all
+    module: weighted-consensus
+    priority: P1
+    status: ready
+    dependencies: [FTE-SPORT-002]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: false
   - id: FTE-001
     title: Monorepo and TypeScript Tooling Foundation
     epic: Engineering foundation

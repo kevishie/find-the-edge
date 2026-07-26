@@ -12,7 +12,8 @@ export type QualificationReason =
 export interface EdgeInput {
   offeredAmerican: number;
   fairProbability: number;
-  market: "mlb-moneyline" | "mlb-pitcher-k" | "soccer-three-way";
+  marketKey: string;
+  approvedMarketKeys: readonly string[];
   comparisonBooks: number;
   priceAgeMinutes: number;
   lineupConfirmed: boolean;
@@ -100,7 +101,7 @@ export function evaluateEdge(input: EdgeInput): EdgeEvaluation {
   const ev = expectedValue(input.fairProbability, input.offeredAmerican);
   const reasons: QualificationReason[] = [];
 
-  if (input.market !== "mlb-moneyline" && input.market !== "mlb-pitcher-k") {
+  if (!input.approvedMarketKeys.includes(input.marketKey)) {
     reasons.push("unsupported-market");
   }
   if (ev < minimumEv) reasons.push("ev-below-threshold");

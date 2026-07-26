@@ -4,7 +4,7 @@
 
 1. Read `AGENTS.md` if present, `docs/task-queue.md`, sprint status, decision log, architecture, and the selected story.
 2. Confirm the working tree and preserve unrelated/user-owned changes.
-3. Select the highest-priority unblocked task whose dependencies are done.
+3. Select the highest-priority unblocked task across sports whose dependencies are done. Prefer `core` work when it unblocks multiple sports.
 4. Move it to in progress and append a progress entry.
 5. Implement the smallest complete vertical slice.
 6. Run acceptance tests, lint, typecheck, unit tests, and build. Run E2E for user-facing behavior.
@@ -28,3 +28,17 @@ Never fabricate provider data, silently weaken tests, commit secrets, deploy, pl
 ## Progress record format
 
 Append to `docs/progress.md`: timestamp, task/story, outcome, files, gates, commit, decisions, blockers, and next task.
+
+Every queued task must record:
+
+- `sport`: `core` or a registered sport key
+- `league`: `all`, a league key, or `n/a`
+- `module`
+- `priority`
+- dependencies
+- acceptance criteria
+- validation commands
+- status
+- blocker reason when blocked
+
+The loop must never treat planned module presence as authorization to publish recommendations.

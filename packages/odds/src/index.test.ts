@@ -53,7 +53,8 @@ describe("qualification", () => {
   const base = {
     offeredAmerican: 120,
     fairProbability: 0.48,
-    market: "mlb-moneyline" as const,
+    marketKey: "moneyline",
+    approvedMarketKeys: ["moneyline"],
     comparisonBooks: 5,
     priceAgeMinutes: 4,
     lineupConfirmed: true,
