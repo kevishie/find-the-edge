@@ -1,6 +1,6 @@
 project: FIND THE EDGE
 created: "2026-07-15"
-updated: "2026-07-15"
+updated: "2026-07-26"
 source: "_bmad-output/planning-artifacts/epics-and-stories.md"
 statusValues:
   - backlog
@@ -9,26 +9,26 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-001
+nextReadyStory: FTE-002
 stories:
   - id: FTE-001
     title: Monorepo and TypeScript Tooling Foundation
     epic: Engineering foundation
-    status: ready
+    status: done
     dependencies: []
     risk: Low
     approvalRequiredBeforeMerge: false
   - id: FTE-002
     title: Vite React Web App Shell Baseline
     epic: Engineering foundation
-    status: backlog
+    status: ready
     dependencies: [FTE-001]
     risk: Low
     approvalRequiredBeforeMerge: false
   - id: FTE-003
     title: Shared Package Structure and Dependency Boundaries
     epic: Engineering foundation
-    status: backlog
+    status: ready
     dependencies: [FTE-001]
     risk: Medium
     approvalRequiredBeforeMerge: false
@@ -49,7 +49,7 @@ stories:
   - id: FTE-006
     title: Environment Validation and Local Development Documentation
     epic: Engineering foundation
-    status: backlog
+    status: ready
     dependencies: [FTE-001]
     risk: Low
     approvalRequiredBeforeMerge: false
