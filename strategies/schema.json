@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://find-the-edge.local/schemas/strategy-v1.json",
+  "title": "FIND THE EDGE Strategy",
+  "type": "object",
+  "required": [
+    "id",
+    "sport",
+    "version",
+    "approvedMarkets",
+    "prohibitedMarkets",
+    "minimumEv",
+    "minimumComparisonBooks",
+    "maximumPriceAgeMinutes"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "sport": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "approvedMarkets": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "prohibitedMarkets": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "minimumEv": { "type": "number", "minimum": 0, "exclusiveMaximum": 1 },
+    "minimumComparisonBooks": { "type": "integer", "minimum": 1 },
+    "maximumPriceAgeMinutes": { "type": "number", "exclusiveMinimum": 0 },
+    "nukeThreshold": { "type": "number", "minimum": 0, "maximum": 10 },
+    "maxFavoritePrice": { "type": "integer", "maximum": -100 },
+    "publicFade": {
+      "type": "object",
+      "required": ["ticketThreshold", "confidencePenalty"],
+      "properties": {
+        "ticketThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "confidencePenalty": {
+          "type": "object",
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "number", "minimum": 0 },
+            "max": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": "find-the-edge",
+  "sport": "nfl",
+  "version": "0.1.0-planned",
+  "approvedMarkets": ["moneyline", "spread", "total"],
+  "prohibitedMarkets": [],
+  "minimumEv": 0.03,
+  "minimumComparisonBooks": 3,
+  "maximumPriceAgeMinutes": 15
+}

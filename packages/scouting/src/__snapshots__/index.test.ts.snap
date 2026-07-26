@@ -1,0 +1,15 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`prompt composition > uses a deterministic shared-sport-strategy-analysis order 1`] = `
+"<!-- shared:philosophy@1 -->
+Use verified facts.
+
+<!-- sport:mlb@1 -->
+Apply sport mechanics.
+
+<!-- strategy:fte@2 -->
+Apply strategy.
+
+<!-- analysis:game@1 -->
+Analyze this event."
+`;

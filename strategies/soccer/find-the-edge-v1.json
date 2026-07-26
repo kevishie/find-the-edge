@@ -1,0 +1,18 @@
+{
+  "id": "find-the-edge",
+  "sport": "soccer",
+  "version": "1.0.0-experimental",
+  "approvedMarkets": [
+    "to_advance",
+    "btts",
+    "goal_total",
+    "team_total",
+    "anytime_scorer",
+    "shots_on_target",
+    "three_way_moneyline"
+  ],
+  "prohibitedMarkets": [],
+  "minimumEv": 0.025,
+  "minimumComparisonBooks": 3,
+  "maximumPriceAgeMinutes": 15
+}

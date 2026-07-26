@@ -1,0 +1,16 @@
+{
+  "id": "find-the-edge",
+  "sport": "mlb",
+  "version": "2.1.0",
+  "approvedMarkets": ["moneyline", "pitcher_strikeouts"],
+  "prohibitedMarkets": ["run_line", "alternate_run_line"],
+  "minimumEv": 0.02,
+  "minimumComparisonBooks": 3,
+  "maximumPriceAgeMinutes": 15,
+  "nukeThreshold": 9.5,
+  "maxFavoritePrice": -250,
+  "publicFade": {
+    "ticketThreshold": 0.8,
+    "confidencePenalty": { "min": 1, "max": 2 }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "find-the-edge",
+  "sport": "tennis",
+  "version": "0.1.0-planned",
+  "approvedMarkets": ["match_moneyline"],
+  "prohibitedMarkets": [],
+  "minimumEv": 0.03,
+  "minimumComparisonBooks": 3,
+  "maximumPriceAgeMinutes": 15
+}
