@@ -1,0 +1,7 @@
+.agents/
+_bmad/
+_bmad-output/
+design/
+dist/
+coverage/
+pnpm-lock.yaml
