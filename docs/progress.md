@@ -1,5 +1,14 @@
 # Progress Log
 
+## 2026-07-29 — FTE-004 complete
+
+- Outcome: added a typed Playwright harness with desktop and mobile Chromium projects plus a deterministic test utility sample.
+- Outcome: added web coverage configuration with 50% statement/function/line and 40% branch starter thresholds.
+- Outcome: retained screenshots, video, traces, and an HTML report for failed E2E runs.
+- Gates: `pnpm check` passed; web coverage passed at 81.53% statements and 63.15% branches; four desktop/mobile E2E tests passed.
+- Blockers: none; tests use local fixtures and no secrets or provider access.
+- Next: `FTE-005`, GitHub Actions CI quality gates.
+
 ## 2026-07-29 — FTE-003 complete
 
 - Outcome: added all architecture-aligned package skeletons and documented each package responsibility.

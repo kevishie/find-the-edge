@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added a typed Vitest/Playwright harness with starter coverage thresholds, deterministic test utilities, desktop/mobile E2E projects, and retained failure artifacts.
 - Added architecture-aligned auth, config, database, observability, UI, and test utility packages.
 - Added an enforced package dependency graph with negative boundary tests to the root quality gate.
 - Completed the generic TanStack Router app shell while preserving the local Edge Lab.

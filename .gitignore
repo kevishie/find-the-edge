@@ -11,6 +11,8 @@ build/
 out/
 .next/
 coverage/
+playwright-report/
+test-results/
 
 # Logs
 *.log

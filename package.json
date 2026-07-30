@@ -8,16 +8,22 @@
   "scripts": {
     "build": "turbo run build",
     "boundaries": "node --test scripts/check-boundaries.test.mjs && node scripts/check-boundaries.mjs",
+    "coverage": "pnpm --filter @find-the-edge/web coverage",
     "dev": "turbo run dev --parallel",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings 0",
     "test": "turbo run test",
+    "test:e2e": "playwright test",
     "typecheck": "turbo run typecheck",
-    "check": "pnpm format:check && pnpm lint && pnpm boundaries && pnpm typecheck && pnpm test && pnpm build"
+    "typecheck:tools": "tsc -p tsconfig.json",
+    "check": "pnpm format:check && pnpm lint && pnpm boundaries && pnpm typecheck && pnpm typecheck:tools && pnpm test && pnpm build"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@playwright/test": "^1.62.0",
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.2",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.26",
