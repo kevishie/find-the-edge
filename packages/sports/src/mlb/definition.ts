@@ -106,6 +106,7 @@ export const mlbModule = createDeclarativeSportModule({
   validationSchemaId: "sport-input/mlb@1",
   ui: {
     event: "Game",
+    events: "Games",
     participant: "Team",
     participants: "Teams",
     lineup: "Lineup",

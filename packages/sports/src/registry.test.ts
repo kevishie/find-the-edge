@@ -5,6 +5,7 @@ import { mlbModule } from "./mlb/definition";
 import { SportRegistry, sportRegistry } from "./registry";
 import { createDeclarativeSportModule } from "./shared/create-module";
 import { validateStrategy } from "./shared/strategy";
+import { strategyRegistry } from "./strategy-registry";
 
 describe("sport registry", () => {
   it("registers the initial modules with honest maturity", () => {
@@ -62,5 +63,13 @@ describe("strategy validation", () => {
         mlbModule,
       ).errors,
     ).toContain("Approved market is not defined by module: invented_market");
+  });
+});
+
+describe("strategy registry", () => {
+  it("resolves active strategies and leaves planned modules unpublished", () => {
+    expect(strategyRegistry.find("mlb")?.version).toBe("2.1.0");
+    expect(strategyRegistry.find("soccer")?.version).toBe("1.0.0-experimental");
+    expect(strategyRegistry.find("tennis")).toBeUndefined();
   });
 });

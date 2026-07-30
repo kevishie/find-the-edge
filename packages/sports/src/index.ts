@@ -4,3 +4,4 @@ export * from "./registry";
 export * from "./shared/contracts";
 export * from "./shared/strategy";
 export * from "./soccer/definition";
+export * from "./strategy-registry";

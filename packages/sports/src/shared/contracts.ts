@@ -77,6 +77,7 @@ export interface ScoutReport {
 
 export interface UiTerminology {
   event: string;
+  events: string;
   participant: string;
   participants: string;
   lineup: string;

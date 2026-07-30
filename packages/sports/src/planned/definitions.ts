@@ -51,6 +51,7 @@ function planned(
     validationSchemaId: `sport-input/${keyValue}@0`,
     ui: {
       event: keyValue === "tennis" ? "Match" : "Game",
+      events: keyValue === "tennis" ? "Matches" : "Games",
       participant: keyValue === "tennis" ? "Player" : "Team",
       participants: keyValue === "tennis" ? "Players" : "Teams",
       lineup: keyValue === "tennis" ? "Entrants" : "Roster",

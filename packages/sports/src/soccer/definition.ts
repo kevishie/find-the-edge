@@ -87,6 +87,7 @@ export const soccerModule = createDeclarativeSportModule({
   validationSchemaId: "sport-input/soccer@1",
   ui: {
     event: "Match",
+    events: "Matches",
     participant: "Club",
     participants: "Clubs",
     lineup: "Starting XI",
