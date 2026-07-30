@@ -1,4 +1,47 @@
 export const CALCULATION_VERSION = "edge-calculation-v1" as const;
+export const CONSENSUS_CALCULATION_VERSION = "weighted-consensus-v1" as const;
+
+export type ConsensusIssue =
+  | "stale"
+  | "suspended"
+  | "sparse"
+  | "outlier";
+
+export interface ConsensusBookInput {
+  sportsbookId: string;
+  americanOdds: readonly number[];
+  weight: number;
+  ageMinutes: number;
+  status: "active" | "suspended";
+}
+
+export interface ConsensusExclusion {
+  sportsbookId: string;
+  reason:
+    | "offered-sportsbook"
+    | "stale"
+    | "suspended"
+    | "outlier"
+    | "invalid-market";
+}
+
+export interface ConsensusInput {
+  books: readonly ConsensusBookInput[];
+  offeredSportsbookId: string;
+  outcomeCount: 2 | 3;
+  minimumBooks?: number;
+  maximumAgeMinutes?: number;
+  outlierThreshold?: number;
+}
+
+export interface ConsensusResult {
+  calculationVersion: typeof CONSENSUS_CALCULATION_VERSION;
+  status: "available" | "unavailable";
+  issues: ConsensusIssue[];
+  probabilities: number[] | null;
+  includedSportsbookIds: string[];
+  exclusions: ConsensusExclusion[];
+}
 
 export type QualificationReason =
   | "positive-ev"
@@ -79,6 +122,99 @@ export function removeVig(americanOdds: readonly number[]): number[] {
   const raw = americanOdds.map(impliedProbability);
   const overround = raw.reduce((total, probability) => total + probability, 0);
   return raw.map((probability) => probability / overround);
+}
+
+function median(values: readonly number[]): number {
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  const upper = ordered[middle];
+  if (upper === undefined) throw new RangeError("Median requires values");
+  const lower = ordered[middle - 1];
+  return ordered.length % 2 === 0 && lower !== undefined
+    ? (lower + upper) / 2
+    : upper;
+}
+
+export function calculateWeightedConsensus(
+  input: ConsensusInput,
+): ConsensusResult {
+  const minimumBooks = input.minimumBooks ?? 3;
+  const maximumAge = input.maximumAgeMinutes ?? 15;
+  const outlierThreshold = input.outlierThreshold ?? 0.08;
+  const exclusions: ConsensusExclusion[] = [];
+  const issues = new Set<ConsensusIssue>();
+
+  const eligible = input.books.flatMap((book) => {
+    let reason: ConsensusExclusion["reason"] | undefined;
+    if (book.sportsbookId === input.offeredSportsbookId) {
+      reason = "offered-sportsbook";
+    } else if (book.status === "suspended") {
+      reason = "suspended";
+      issues.add("suspended");
+    } else if (book.ageMinutes > maximumAge) {
+      reason = "stale";
+      issues.add("stale");
+    } else if (
+      book.americanOdds.length !== input.outcomeCount ||
+      !Number.isFinite(book.weight) ||
+      book.weight <= 0
+    ) {
+      reason = "invalid-market";
+    }
+
+    if (reason) {
+      exclusions.push({ sportsbookId: book.sportsbookId, reason });
+      return [];
+    }
+    return [{ ...book, probabilities: removeVig(book.americanOdds) }];
+  });
+
+  const centers =
+    eligible.length === 0
+      ? []
+      : Array.from({ length: input.outcomeCount }, (_, index) =>
+          median(eligible.map((book) => book.probabilities[index] ?? 0)),
+        );
+  const included = eligible.filter((book) => {
+    const outlier = book.probabilities.some(
+      (probability, index) =>
+        Math.abs(probability - (centers[index] ?? probability)) >
+        outlierThreshold,
+    );
+    if (outlier) {
+      issues.add("outlier");
+      exclusions.push({
+        sportsbookId: book.sportsbookId,
+        reason: "outlier",
+      });
+    }
+    return !outlier;
+  });
+
+  if (included.length < minimumBooks) issues.add("sparse");
+  const totalWeight = included.reduce((sum, book) => sum + book.weight, 0);
+  const probabilities =
+    included.length === 0
+      ? null
+      : Array.from({ length: input.outcomeCount }, (_, index) =>
+          included.reduce(
+            (sum, book) =>
+              sum + (book.probabilities[index] ?? 0) * book.weight,
+            0,
+          ) / totalWeight,
+        );
+
+  return {
+    calculationVersion: CONSENSUS_CALCULATION_VERSION,
+    status:
+      probabilities !== null && included.length >= minimumBooks
+        ? "available"
+        : "unavailable",
+    issues: [...issues],
+    probabilities,
+    includedSportsbookIds: included.map((book) => book.sportsbookId),
+    exclusions,
+  };
 }
 
 export function expectedValue(
