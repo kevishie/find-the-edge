@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Completed the generic TanStack Router app shell while preserving the local Edge Lab.
+- Added weighted two-way and three-way no-vig consensus with offered-book exclusion and explicit market-quality states.
+- Added a registry-driven sport selector and `/sports/:sportKey/events` fixture explorer with module terminology and maturity.
+- Added universal fixture events for every registered module; planned modules publish no strategies or recommendations.
 - Rebased the BMAD architecture, PRD, epics, and execution plan around a multi-sport module registry.
 - Added a universal betting domain, SportModule contract, registry, maturity states, and strategy validation.
 - Added MLB and soccer modules plus planned tennis, NFL, and NCAAF specifications.

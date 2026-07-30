@@ -16,7 +16,6 @@ import {
 } from "@find-the-edge/odds";
 import {
   mlbFindTheEdgeStrategy,
-  mlbModule,
   sportRegistry,
   strategyRegistry,
 } from "@find-the-edge/sports";
@@ -461,6 +460,7 @@ const eventsRoute = createRoute({
 });
 const routeTree = rootRoute.addChildren([indexRoute, eventsRoute]);
 const registeredRouter = createRouter({ routeTree });
+void registeredRouter;
 
 declare module "@tanstack/react-router" {
   interface Register {

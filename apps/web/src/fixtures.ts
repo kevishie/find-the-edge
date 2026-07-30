@@ -3,7 +3,6 @@ import type {
   EntityId,
   Event,
   IsoTimestamp,
-  SportKey,
 } from "@find-the-edge/domain";
 import {
   sportRegistry,
@@ -75,7 +74,7 @@ export const fixtureEvents: FixtureEvent[] = sportRegistry
     return {
       event: {
         id: id(`${String(module.key)}-fixture-001`),
-        sportKey: module.key as SportKey,
+        sportKey: module.key,
         leagueId: id(module.metadata.supportedLeagues[0] ?? "unassigned"),
         participantIds: names.map((_, participantIndex) =>
           id(

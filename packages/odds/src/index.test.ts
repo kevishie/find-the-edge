@@ -95,9 +95,9 @@ describe("weighted consensus", () => {
       sportsbookId: "offered",
       reason: "offered-sportsbook",
     });
-    expect(result.probabilities?.reduce((sum, value) => sum + value, 0)).toBeCloseTo(
-      1,
-    );
+    expect(
+      result.probabilities?.reduce((sum, value) => sum + value, 0),
+    ).toBeCloseTo(1);
   });
 
   it("supports weighted three-way no-vig consensus", () => {
@@ -119,9 +119,9 @@ describe("weighted consensus", () => {
 
     expect(result.status).toBe("available");
     expect(result.probabilities).toHaveLength(3);
-    expect(result.probabilities?.reduce((sum, value) => sum + value, 0)).toBeCloseTo(
-      1,
-    );
+    expect(
+      result.probabilities?.reduce((sum, value) => sum + value, 0),
+    ).toBeCloseTo(1);
   });
 
   it("returns explicit stale, suspended, sparse, and outlier states", () => {

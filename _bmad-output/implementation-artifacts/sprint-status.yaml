@@ -1,6 +1,6 @@
 project: FIND THE EDGE
 created: "2026-07-15"
-updated: "2026-07-26"
+updated: "2026-07-29"
 source: "_bmad-output/planning-artifacts/epics-and-stories.md"
 statusValues:
   - backlog
@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-002
+nextReadyStory: FTE-003
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -65,7 +65,7 @@ stories:
     league: all
     module: generic-event-explorer
     priority: P1
-    status: backlog
+    status: done
     dependencies: [FTE-002, FTE-SPORT-001]
     validationCommands: [pnpm check, browser-smoke]
     blockerReason:
@@ -77,7 +77,7 @@ stories:
     league: mlb,mls
     module: fixture-vertical-slice
     priority: P2
-    status: backlog
+    status: done
     dependencies: [FTE-SPORT-005]
     validationCommands: [pnpm check, browser-smoke]
     blockerReason:
@@ -89,7 +89,7 @@ stories:
     league: all
     module: weighted-consensus
     priority: P1
-    status: ready
+    status: done
     dependencies: [FTE-SPORT-002]
     validationCommands: [pnpm check]
     blockerReason:
@@ -105,7 +105,7 @@ stories:
   - id: FTE-002
     title: Vite React Web App Shell Baseline
     epic: Engineering foundation
-    status: ready
+    status: done
     dependencies: [FTE-001]
     risk: Low
     approvalRequiredBeforeMerge: false

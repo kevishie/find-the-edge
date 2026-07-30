@@ -1,5 +1,20 @@
 # Decision Log
 
+## 2026-07-29 — Consensus quality and fixture publication
+
+Reason: A consensus price is not trustworthy if it includes the offered book or silently absorbs stale, suspended, sparse, or materially divergent inputs.
+
+Decision:
+
+- Normalize each comparison book to no-vig probabilities before weighting.
+- Exclude the offered sportsbook unconditionally.
+- Exclude stale, suspended, invalid, and outlier books with explicit reasons.
+- Mark consensus unavailable when the remaining independent market is sparse.
+- Let registered module metadata and strategy registration drive fixture UI.
+- Publish fixture recommendations only for non-planned modules; fixture recommendations remain No Bet because no live evidence is present.
+
+Hypothesis: market-quality failures stay visible and adding a planned sport cannot accidentally create a recommendation.
+
 ## 2026-07-26 — Multi-sport module architecture
 
 Reason: Original soccer-first planning and the first MLB slice would force sport conditionals into shared models and infrastructure.

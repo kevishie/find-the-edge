@@ -1,11 +1,7 @@
 export const CALCULATION_VERSION = "edge-calculation-v1" as const;
 export const CONSENSUS_CALCULATION_VERSION = "weighted-consensus-v1" as const;
 
-export type ConsensusIssue =
-  | "stale"
-  | "suspended"
-  | "sparse"
-  | "outlier";
+export type ConsensusIssue = "stale" | "suspended" | "sparse" | "outlier";
 
 export interface ConsensusBookInput {
   sportsbookId: string;
@@ -18,11 +14,7 @@ export interface ConsensusBookInput {
 export interface ConsensusExclusion {
   sportsbookId: string;
   reason:
-    | "offered-sportsbook"
-    | "stale"
-    | "suspended"
-    | "outlier"
-    | "invalid-market";
+    "offered-sportsbook" | "stale" | "suspended" | "outlier" | "invalid-market";
 }
 
 export interface ConsensusInput {
@@ -196,12 +188,14 @@ export function calculateWeightedConsensus(
   const probabilities =
     included.length === 0
       ? null
-      : Array.from({ length: input.outcomeCount }, (_, index) =>
-          included.reduce(
-            (sum, book) =>
-              sum + (book.probabilities[index] ?? 0) * book.weight,
-            0,
-          ) / totalWeight,
+      : Array.from(
+          { length: input.outcomeCount },
+          (_, index) =>
+            included.reduce(
+              (sum, book) =>
+                sum + (book.probabilities[index] ?? 0) * book.weight,
+              0,
+            ) / totalWeight,
         );
 
   return {

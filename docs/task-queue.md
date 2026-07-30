@@ -69,7 +69,7 @@ This is the human-readable execution backlog. BMAD story details remain in the p
   module: generic-event-explorer
   priority: P1
   dependencies: [FTE-002, FTE-SPORT-001]
-  status: backlog
+  status: done
   blockerReason: null
   acceptance:
     - Sport selector is registry-driven
@@ -86,7 +86,7 @@ This is the human-readable execution backlog. BMAD story details remain in the p
   module: fixture-vertical-slice
   priority: P2
   dependencies: [FTE-SPORT-005]
-  status: backlog
+  status: done
   blockerReason: null
   acceptance:
     - Fixture events use generic domain records
@@ -102,7 +102,7 @@ This is the human-readable execution backlog. BMAD story details remain in the p
   module: weighted-consensus
   priority: P1
   dependencies: [FTE-SPORT-002]
-  status: ready
+  status: done
   blockerReason: null
   acceptance:
     - Weighted two-way and three-way no-vig consensus

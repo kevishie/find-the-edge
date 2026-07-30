@@ -2,7 +2,7 @@
 title: "Epics and Stories: FIND THE EDGE"
 status: "initial"
 created: "2026-07-15"
-updated: "2026-07-26"
+updated: "2026-07-29"
 workflow: "bmad-create-epics-and-stories"
 stepsCompleted:
   - "validate-prerequisites"
@@ -34,7 +34,7 @@ This rebaseline is authoritative over soccer-first scope guardrails below. Exist
 - Dependencies: FTE-001.
 - Acceptance criteria: MLB and soccer register; a test sport registers without core edits; shared event has no sport-specific fields; registry rejects duplicates.
 - Validation: `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`.
-- Status: ready.
+- Status: done.
 
 #### FTE-SPORT-002: Versioned Strategy Configuration
 
@@ -43,7 +43,7 @@ This rebaseline is authoritative over soccer-first scope guardrails below. Exist
 - Dependencies: FTE-SPORT-001.
 - Acceptance criteria: approved/prohibited markets validate against module capabilities; thresholds and public-fade policy are versioned; invalid configurations fail explicitly.
 - Validation: root quality gates and schema/unit tests.
-- Status: backlog.
+- Status: done.
 
 #### FTE-SPORT-003: Capability-Based Provider Ports
 
@@ -52,7 +52,7 @@ This rebaseline is authoritative over soccer-first scope guardrails below. Exist
 - Dependencies: FTE-SPORT-001.
 - Acceptance criteria: no universal provider assumption; support resolution is testable by sport/league/market/capability.
 - Validation: root quality gates and contract tests.
-- Status: backlog.
+- Status: done.
 
 #### FTE-SPORT-004: Composable Prompt and Scout Versioning
 
@@ -60,7 +60,7 @@ This rebaseline is authoritative over soccer-first scope guardrails below. Exist
 - Dependencies: FTE-SPORT-001, FTE-SPORT-002.
 - Acceptance criteria: deterministic composition order; missing sections fail; bundle version and model version are present; prompts cannot own pricing.
 - Validation: root quality gates and prompt snapshot tests.
-- Status: backlog.
+- Status: done.
 
 #### FTE-SPORT-005: Generic Sport Selector and Event Explorer
 
@@ -68,7 +68,7 @@ This rebaseline is authoritative over soccer-first scope guardrails below. Exist
 - Dependencies: FTE-002, FTE-SPORT-001.
 - Acceptance criteria: maturity visible; generic routes include sport key; module switch requires no shared UI edit.
 - Validation: root quality gates and UI tests.
-- Status: backlog.
+- Status: done.
 
 #### FTE-SPORT-006: MLB and Soccer Module Vertical Slice
 
@@ -76,7 +76,15 @@ This rebaseline is authoritative over soccer-first scope guardrails below. Exist
 - Dependencies: FTE-SPORT-001 through FTE-SPORT-005.
 - Acceptance criteria: both modules produce auditable Play/No Bet evaluations; stored/displayed results include module and strategy version.
 - Validation: root gates, integration tests, and browser smoke.
-- Status: backlog.
+- Status: done.
+
+#### FTE-SPORT-007: Weighted Consensus States
+
+- Outcome: Generic pricing produces an auditable weighted no-vig consensus.
+- Dependencies: FTE-SPORT-002.
+- Acceptance criteria: two-way and three-way markets are supported; the offered sportsbook is excluded; stale, suspended, sparse, and outlier states are explicit.
+- Validation: root quality gates and deterministic unit tests.
+- Status: done.
 
 Old sport-catalog, ingestion, scouting, and opportunity stories must depend on the applicable FTE-SPORT stories before implementation. Product/provider approval gates remain in force.
 
