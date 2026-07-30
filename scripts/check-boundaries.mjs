@@ -4,7 +4,7 @@ import path from "node:path";
 
 export const packageRules = {
   auth: ["config", "domain"],
-  config: [],
+  config: ["domain"],
   database: ["config", "domain"],
   domain: [],
   observability: ["config"],

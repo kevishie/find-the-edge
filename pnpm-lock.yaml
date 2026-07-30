@@ -114,6 +114,10 @@ importers:
         version: 4.1.10(@types/node@24.13.3)(@vitest/coverage-v8@4.1.10)(jsdom@28.1.0)(vite@7.3.6(@types/node@24.13.3))
 
   packages/config:
+    dependencies:
+      '@find-the-edge/domain':
+        specifier: workspace:*
+        version: link:../domain
     devDependencies:
       vitest:
         specifier: ^4.0.18
@@ -145,9 +149,15 @@ importers:
 
   packages/providers:
     dependencies:
+      '@find-the-edge/config':
+        specifier: workspace:*
+        version: link:../config
       '@find-the-edge/domain':
         specifier: workspace:*
         version: link:../domain
+      '@find-the-edge/observability':
+        specifier: workspace:*
+        version: link:../observability
     devDependencies:
       vitest:
         specifier: ^4.0.18

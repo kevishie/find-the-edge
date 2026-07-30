@@ -175,3 +175,97 @@ export interface ProviderHealth {
   freshnessSeconds?: number;
   message?: string;
 }
+
+export type FeedCapability = "schedule" | "odds" | "results";
+export type LeagueAllowlistState = "enabled" | "planned" | "disabled";
+export type FeedMaturity = "development" | "production";
+export type FeedUnsupportedReason =
+  | "league-unregistered"
+  | "league-planned"
+  | "league-disabled"
+  | "capability-unavailable"
+  | "market-unsupported";
+export type FeedCadence =
+  | { readonly mode: "interval"; readonly seconds: number }
+  | { readonly mode: "manual"; readonly seconds?: never };
+export interface FeedQuotaEstimate {
+  readonly requestsPerRun: number;
+  readonly requestsPerDay: number;
+}
+export interface FeedCoverageKey {
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly capability: FeedCapability;
+}
+interface FeedPolicyBase extends FeedCoverageKey {
+  readonly leagueName: string;
+}
+interface ActivePolicyBase extends FeedPolicyBase {
+  readonly allowlistState: "enabled";
+  readonly providerId: string;
+  readonly maturity: FeedMaturity;
+  readonly cadence: FeedCadence;
+  readonly quotaEstimate: FeedQuotaEstimate;
+  readonly active: true;
+  readonly unsupportedReason?: never;
+}
+export type ActiveFeedPolicy =
+  | (ActivePolicyBase & {
+      readonly capability: "odds";
+      readonly supportedMarketKeys: readonly [string, ...string[]];
+    })
+  | (ActivePolicyBase & {
+      readonly capability: "schedule" | "results";
+      readonly supportedMarketKeys: readonly [];
+    });
+interface InactivePolicyBase extends FeedPolicyBase {
+  readonly supportedMarketKeys: readonly [];
+  readonly active: false;
+  readonly providerId?: never;
+  readonly maturity?: never;
+  readonly cadence?: never;
+  readonly quotaEstimate?: never;
+}
+export type InactiveFeedPolicy =
+  | (InactivePolicyBase & {
+      readonly allowlistState: "planned";
+      readonly unsupportedReason: "league-planned";
+    })
+  | (InactivePolicyBase & {
+      readonly allowlistState: "disabled";
+      readonly unsupportedReason: "league-disabled";
+    });
+export type FeedCoverageRegistration = ActiveFeedPolicy | InactiveFeedPolicy;
+export interface FeedCoverageRequest extends FeedCoverageKey {
+  readonly marketKeys?: readonly string[];
+}
+export interface SupportedFeedCoverage extends FeedCoverageKey {
+  readonly supported: true;
+  readonly providerId: string;
+  readonly maturity: FeedMaturity;
+  readonly cadence: FeedCadence;
+  readonly supportedMarketKeys: readonly string[];
+  readonly quotaEstimate: FeedQuotaEstimate;
+}
+export interface UnsupportedFeedCoverage extends FeedCoverageKey {
+  readonly supported: false;
+  readonly reason: FeedUnsupportedReason;
+  readonly allowlistState?: LeagueAllowlistState;
+}
+export type FeedCoverageResolution =
+  SupportedFeedCoverage | UnsupportedFeedCoverage;
+export interface FeedCoverageReportEntry extends FeedCoverageKey {
+  readonly leagueName: string;
+  readonly allowlistState: LeagueAllowlistState;
+  readonly supported: boolean;
+  readonly providerId?: string;
+  readonly maturity?: FeedMaturity;
+  readonly cadence?: FeedCadence;
+  readonly supportedMarketKeys: readonly string[];
+  readonly quotaEstimate?: FeedQuotaEstimate;
+  readonly reason?: FeedUnsupportedReason;
+}
+export interface FeedCoverageReport {
+  readonly version: string;
+  readonly entries: readonly FeedCoverageReportEntry[];
+}

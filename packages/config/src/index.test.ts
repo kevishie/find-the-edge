@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { ConfigValidationError, validateEnvironment } from "./index";
+import {
+  ConfigValidationError,
+  defaultFeedCoveragePolicies,
+  feedCoverageCatalogVersion,
+  validateEnvironment,
+} from "./index";
 
 describe("validateEnvironment", () => {
   it("supports local fixture mode without secrets", () => {
@@ -52,5 +57,26 @@ describe("validateEnvironment", () => {
     ).toThrow(
       "NODE_ENV must be development, test, or production; FTE_PORT must be an integer from 1 through 65535",
     );
+  });
+});
+
+describe("default feed coverage catalog", () => {
+  it("contains complete, immutable, secret-free league policy sets", () => {
+    expect(feedCoverageCatalogVersion).toBe("2026-07-30.v5");
+    expect(defaultFeedCoveragePolicies).toHaveLength(18);
+    const leagues = new Map<string, Set<string>>();
+    for (const policy of defaultFeedCoveragePolicies) {
+      const key = `${policy.sportKey}/${policy.leagueKey}`;
+      const capabilities = leagues.get(key) ?? new Set<string>();
+      capabilities.add(policy.capability);
+      leagues.set(key, capabilities);
+      expect(Object.isFrozen(policy)).toBe(true);
+      expect(JSON.stringify(policy)).not.toMatch(/api.?key|secret|token/i);
+    }
+    expect([...leagues.values()]).toHaveLength(6);
+    for (const capabilities of leagues.values()) {
+      expect([...capabilities].sort()).toEqual(["odds", "results", "schedule"]);
+    }
+    expect(Object.isFrozen(defaultFeedCoveragePolicies)).toBe(true);
   });
 });

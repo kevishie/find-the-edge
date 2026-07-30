@@ -1,3 +1,5 @@
+export * from "./feed-coverage";
+
 export type RuntimeEnvironment = "development" | "test" | "production";
 export type ConfigProfile = "local" | "provider" | "aws";
 

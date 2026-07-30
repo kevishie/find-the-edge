@@ -11,22 +11,25 @@ export type ProviderCapability =
   | "results";
 
 export interface ProviderCoverage {
-  sportKeys: SportKey[];
-  leagueKeys: string[];
-  marketKeys: string[];
+  readonly leagues: readonly {
+    readonly sportKey: SportKey;
+    readonly leagueKey: string;
+    readonly capabilities: readonly ProviderCapability[];
+    readonly marketKeys: readonly string[];
+  }[];
 }
 
 export interface ProviderDescriptor {
-  id: string;
-  displayName: string;
-  capabilities: ProviderCapability[];
-  coverage: ProviderCoverage;
-  rateLimit?: {
-    requests: number;
-    windowSeconds: number;
+  readonly id: string;
+  readonly displayName: string;
+  readonly capabilities: readonly ProviderCapability[];
+  readonly coverage: ProviderCoverage;
+  readonly rateLimit?: {
+    readonly requests: number;
+    readonly windowSeconds: number;
   };
-  expectedFreshnessSeconds: number;
-  qualityTier: "unknown" | "development" | "standard" | "premium";
+  readonly expectedFreshnessSeconds: number;
+  readonly qualityTier: "unknown" | "development" | "standard" | "premium";
 }
 
 export interface ProviderRequest {
@@ -63,18 +66,56 @@ export function supportsRequest(
   capability: ProviderCapability,
   request: ProviderRequest,
 ): boolean {
-  if (!descriptor.capabilities.includes(capability)) return false;
-  if (!descriptor.coverage.sportKeys.includes(request.sportKey)) return false;
-  if (
-    request.leagueKey &&
-    descriptor.coverage.leagueKeys.length > 0 &&
-    !descriptor.coverage.leagueKeys.includes(request.leagueKey)
-  ) {
+  try {
+    if (
+      request === null ||
+      typeof request !== "object" ||
+      typeof request.sportKey !== "string" ||
+      !request.sportKey ||
+      request.sportKey !== request.sportKey.trim() ||
+      (request.leagueKey !== undefined &&
+        (typeof request.leagueKey !== "string" ||
+          !request.leagueKey ||
+          request.leagueKey !== request.leagueKey.trim())) ||
+      (request.marketKeys !== undefined &&
+        (!Array.isArray(request.marketKeys) ||
+          request.marketKeys.some(
+            (market) =>
+              typeof market !== "string" || !market || market !== market.trim(),
+          ) ||
+          new Set(request.marketKeys).size !== request.marketKeys.length)) ||
+      (capability !== "odds" && (request.marketKeys?.length ?? 0) > 0) ||
+      !Array.isArray(descriptor.capabilities) ||
+      !descriptor.capabilities.includes(capability) ||
+      !Array.isArray(descriptor.coverage?.leagues)
+    ) {
+      return false;
+    }
+    for (const item of descriptor.coverage.leagues as readonly unknown[]) {
+      if (item === null || typeof item !== "object" || Array.isArray(item)) {
+        continue;
+      }
+      const pair = item as Record<string, unknown>;
+      const pairCapabilities = pair["capabilities"];
+      const pairMarkets = pair["marketKeys"];
+      if (
+        pair["sportKey"] === request.sportKey &&
+        (request.leagueKey === undefined ||
+          pair["leagueKey"] === request.leagueKey) &&
+        Array.isArray(pairCapabilities) &&
+        (pairCapabilities as readonly unknown[]).includes(capability) &&
+        Array.isArray(pairMarkets) &&
+        (request.marketKeys ?? []).every((market) =>
+          (pairMarkets as readonly unknown[]).includes(market),
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
     return false;
   }
-  return (request.marketKeys ?? []).every(
-    (market) =>
-      descriptor.coverage.marketKeys.length === 0 ||
-      descriptor.coverage.marketKeys.includes(market),
-  );
 }
+
+export * from "./coverage-registry";
