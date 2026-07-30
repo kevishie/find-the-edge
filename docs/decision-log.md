@@ -1,5 +1,13 @@
 # Decision Log
 
+## 2026-07-29 — CDK starts resource-free
+
+Reason: Infrastructure structure can be validated without creating cloud resources, requiring credentials, or implying deployment authorization.
+
+Decision: the foundation stack uses a bootstrapless synthesizer, disables analytics metadata, contains no resources, has environment-aware naming, and exposes synth but no deploy command. The empty-template validation warning is explicitly acknowledged with its rationale.
+
+Hypothesis: later infrastructure stories can add isolated stacks safely while synthesis remains deterministic and non-chargeable.
+
 ## 2026-07-29 — Configuration is profile-scoped
 
 Reason: Requiring future provider or AWS variables during fixture-only development would make optional adapters feel mandatory and encourage unsafe placeholder secrets.

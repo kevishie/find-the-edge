@@ -39,6 +39,9 @@ jobs:
       - name: Enforce starter coverage policy
         run: pnpm coverage
 
+      - name: Synthesize resource-free CDK foundation
+        run: pnpm synth
+
   e2e:
     name: Desktop and mobile browser smoke
     runs-on: ubuntu-latest

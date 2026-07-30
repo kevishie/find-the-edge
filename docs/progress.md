@@ -1,5 +1,13 @@
 # Progress Log
 
+## 2026-07-29 — FTE-007 complete
+
+- Outcome: added an environment-aware AWS CDK app and foundation stack with deterministic stage naming.
+- Safety: the synthesized template contains no resources, uses no credentials, disables analytics metadata, uses a bootstrapless synthesizer, and exposes no deploy command.
+- Gates: two CDK tests, `pnpm synth`, and full `pnpm check` passed; CI now synthesizes the same baseline.
+- Blockers: Cognito story `FTE-008` remains approval-gated and was not started.
+- Next: `FTE-027`, the highest-priority unblocked deterministic core story; reconcile the existing odds conversion implementation against its full acceptance criteria.
+
 ## 2026-07-29 — FTE-006 complete
 
 - Outcome: added typed local, provider, and AWS environment profiles with structured missing/malformed errors.
