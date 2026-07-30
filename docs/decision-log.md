@@ -1,5 +1,13 @@
 # Decision Log
 
+## 2026-07-29 — Configuration is profile-scoped
+
+Reason: Requiring future provider or AWS variables during fixture-only development would make optional adapters feel mandatory and encourage unsafe placeholder secrets.
+
+Decision: validation is explicit at each package startup boundary and uses `local`, `provider`, or `aws` profiles. Local mode has safe non-secret defaults; provider and AWS variables become required only when those profiles are selected. Validation failures expose structured issue codes and variable names.
+
+Hypothesis: local development stays zero-secret while misconfigured adapters fail immediately and readably.
+
 ## 2026-07-29 — Enforced package dependency direction
 
 Reason: Naming package boundaries does not prevent domain, provider, persistence, and frontend responsibilities from coupling over time.

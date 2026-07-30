@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added typed local/provider/AWS environment profiles, structured validation errors, a secret-free example env file, and local development documentation.
 - Added secret-free GitHub Actions quality and browser jobs with frozen installs, coverage enforcement, and retained Playwright failure artifacts.
 - Added a typed Vitest/Playwright harness with starter coverage thresholds, deterministic test utilities, desktop/mobile E2E projects, and retained failure artifacts.
 - Added architecture-aligned auth, config, database, observability, UI, and test utility packages.

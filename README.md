@@ -15,6 +15,8 @@ pnpm dev
 
 Open the local URL printed by Vite.
 
+Fixture mode needs no `.env` file, provider key, AWS account, or paid service. See [local development](docs/local-development.md) for environment profiles, validation behavior, and troubleshooting.
+
 ## Quality gates
 
 ```sh

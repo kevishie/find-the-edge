@@ -1,5 +1,14 @@
 # Progress Log
 
+## 2026-07-29 — FTE-006 complete
+
+- Outcome: added typed local, provider, and AWS environment profiles with structured missing/malformed errors.
+- Outcome: added a secret-free `.env.example` and a complete local fixture-mode setup/troubleshooting guide.
+- Security: local mode requires no values; provider and AWS values become required only when those adapters are selected; real env files remain ignored.
+- Gates: four config schema tests and full `pnpm check` passed.
+- Blockers: none.
+- Next: `FTE-007`, synth-only base AWS CDK skeleton; no deployment or chargeable resources.
+
 ## 2026-07-29 — FTE-005 complete
 
 - Outcome: added GitHub Actions jobs for frozen installation, formatting, lint, dependency boundaries, typechecks, unit tests, coverage, builds, and desktop/mobile E2E smoke.
