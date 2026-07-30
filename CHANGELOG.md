@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Expanded pure odds conversion coverage across even, extreme, malformed, boundary, and property-style round-trip cases.
 - Added a resource-free, environment-aware AWS CDK foundation that synthesizes without credentials and exposes no deploy command.
 - Added typed local/provider/AWS environment profiles, structured validation errors, a secret-free example env file, and local development documentation.
 - Added secret-free GitHub Actions quality and browser jobs with frozen installs, coverage enforcement, and retained Playwright failure artifacts.

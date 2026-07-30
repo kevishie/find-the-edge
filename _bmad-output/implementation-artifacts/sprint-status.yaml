@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-027
+nextReadyStory: null
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -423,7 +423,7 @@ stories:
   - id: FTE-027
     title: Pure Odds Conversion and Implied Probability Functions
     epic: Deterministic betting engine
-    status: ready
+    status: done
     dependencies: [FTE-003]
     risk: Medium
     approvalRequiredBeforeMerge: false

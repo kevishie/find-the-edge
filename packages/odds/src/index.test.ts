@@ -7,6 +7,7 @@ import {
   evaluateEdge,
   expectedValue,
   impliedProbability,
+  probabilityToAmerican,
   removeVig,
 } from "./index";
 
@@ -27,11 +28,54 @@ describe("odds conversion", () => {
   it("rejects invalid American odds", () => {
     expect(() => americanToDecimal(0)).toThrow(RangeError);
     expect(() => americanToDecimal(99)).toThrow(RangeError);
+    expect(() => americanToDecimal(-99)).toThrow(RangeError);
+    expect(() => americanToDecimal(Number.NaN)).toThrow(RangeError);
+    expect(() => americanToDecimal(Number.POSITIVE_INFINITY)).toThrow(
+      RangeError,
+    );
+  });
+
+  it("rejects invalid decimal odds", () => {
+    expect(() => decimalToAmerican(1)).toThrow(RangeError);
+    expect(() => decimalToAmerican(0)).toThrow(RangeError);
+    expect(() => decimalToAmerican(Number.NaN)).toThrow(RangeError);
+    expect(() => decimalToAmerican(Number.NEGATIVE_INFINITY)).toThrow(
+      RangeError,
+    );
   });
 
   it("calculates implied probability", () => {
     expect(impliedProbability(-150)).toBeCloseTo(0.6);
     expect(impliedProbability(150)).toBeCloseTo(0.4);
+    expect(impliedProbability(100)).toBeCloseTo(0.5);
+    expect(impliedProbability(-100)).toBeCloseTo(0.5);
+  });
+
+  it.each([-100_000, -5000, -250, -110, -100, 100, 110, 250, 5000, 100_000])(
+    "round-trips boundary and representative American odds %s",
+    (american) => {
+      const roundTrip = decimalToAmerican(americanToDecimal(american));
+      const canonicalAmerican = american === -100 ? 100 : american;
+      expect(
+        Math.abs(roundTrip - canonicalAmerican) / Math.abs(canonicalAmerican),
+      ).toBeLessThan(1e-12);
+    },
+  );
+
+  it.each([0.000_001, 0.01, 0.25, 0.5, 0.75, 0.99, 0.999_999])(
+    "round-trips representative probability %s",
+    (probability) => {
+      expect(
+        impliedProbability(probabilityToAmerican(probability)),
+      ).toBeCloseTo(probability, 10);
+    },
+  );
+
+  it("rejects impossible probabilities", () => {
+    expect(() => probabilityToAmerican(0)).toThrow(RangeError);
+    expect(() => probabilityToAmerican(1)).toThrow(RangeError);
+    expect(() => probabilityToAmerican(-0.1)).toThrow(RangeError);
+    expect(() => probabilityToAmerican(1.1)).toThrow(RangeError);
   });
 });
 

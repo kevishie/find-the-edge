@@ -1,5 +1,13 @@
 # Progress Log
 
+## 2026-07-29 — FTE-027 complete
+
+- Outcome: reconciled the existing pure odds conversion implementation against the full story acceptance criteria.
+- Coverage: positive, negative, even, zero, malformed, non-finite, extreme-boundary, probability, and property-style round-trip cases now pass.
+- Gates: 33 odds tests and full `pnpm check` passed; package boundaries remain valid.
+- Planning note: new uncommitted user-owned BMAD work appeared for `FTE-DATA-*`, `FTE-PICK-*`, and `FTE-LEARN-*`. It was preserved untouched. Legacy `FTE-028` remains gated by approval-required `FTE-032`, so no new default policy was invented.
+- Next: reconcile the new planning additions into sprint status after their ownership/editing state is clear.
+
 ## 2026-07-29 — FTE-007 complete
 
 - Outcome: added an environment-aware AWS CDK app and foundation stack with deterministic stage naming.
