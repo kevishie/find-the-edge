@@ -88,6 +88,252 @@ This rebaseline is authoritative over soccer-first scope guardrails below. Exist
 
 Old sport-catalog, ingestion, scouting, and opportunity stories must depend on the applicable FTE-SPORT stories before implementation. Product/provider approval gates remain in force.
 
+### Epic 0A: Multi-Sport Feed and Result Spine
+
+This is an early platform epic. It establishes reusable acquisition and truth data before broad UI work or sport-by-sport prediction tuning.
+
+#### FTE-DATA-001: Feed Coverage Registry and League Allowlist
+
+- Epic: Multi-sport feed and result spine.
+- Outcome: Each enabled league resolves to explicit schedule, odds, and results capabilities instead of assuming one universal feed.
+- Context: MLB, tennis, NFL, NBA, MLS, international soccer, and future sports have different provider coverage and identifiers.
+- In scope: league/competition registry, provider capability resolution, allowlists, maturity, refresh cadence, market coverage, unsupported-state reasons, quota estimates.
+- Out of scope: Paid-provider purchase, production polling, prediction logic.
+- Dependencies: FTE-SPORT-001, FTE-SPORT-003.
+- Acceptance criteria: MLB and MLS resolve schedule/odds/results capabilities; tennis, NFL, NBA, and international soccer can be planned or enabled explicitly; missing coverage fails with a reason; adding a league requires registration rather than orchestrator edits.
+- Required automated tests: Registry, duplicate-key, unsupported-capability, and test-league contract tests.
+- Likely files/packages affected: `packages/domain`, `packages/providers`, `packages/config`.
+- Observability: Coverage resolution logs include sport, league, capability, provider, and reason.
+- Security: Provider secrets and commercial terms are excluded from registry output.
+- Data migration/backfill impact: Existing sport/league configuration requires a one-time mapping.
+- Definition of done: A versioned coverage report can be generated without calling a paid API.
+- Risk: Medium.
+- Approval required before merge: No.
+
+#### FTE-DATA-002: Checkpointed Upcoming-Event Ingestion Orchestrator
+
+- Epic: Multi-sport feed and result spine.
+- Outcome: Enabled feeds import and normalize upcoming games through one retry-safe workflow.
+- Context: Event import must begin early so odds history and evaluation datasets accumulate before strategy tuning.
+- In scope: ingestion-run contract, provider cursor/checkpoint, event upsert, canonical/provider ID mapping, schedule/status changes, manual trigger, scheduler-ready handler, fixture-backed MLB and soccer adapters.
+- Out of scope: Odds snapshots, result grading, automatic AI picks, production scheduler activation.
+- Dependencies: FTE-DATA-001, FTE-007.
+- Acceptance criteria: Replaying a page is idempotent; checkpoints advance only after durable writes; rescheduled/cancelled events retain identity and history; one failing league does not discard successful league progress.
+- Required automated tests: Fixture integration tests for new, duplicate, rescheduled, cancelled, partial, retry, and checkpoint-resume cases.
+- Likely files/packages affected: `apps/workers`, `packages/providers`, `packages/database`, `packages/domain`, `infra/cdk`.
+- Observability: Run records expose provider requests, created/updated/skipped events, checkpoint, quota, duration, and failure reasons.
+- Security: Keys remain server-side; raw payload logs are redacted.
+- Data migration/backfill impact: Initial bounded event backfill per enabled league.
+- Definition of done: MLB and soccer fixture runs persist canonical events through the shared orchestrator.
+- Risk: High.
+- Approval required before merge: No.
+
+#### FTE-DATA-003: Multi-Sport Odds Collection Policy and Snapshot Jobs
+
+- Epic: Multi-sport feed and result spine.
+- Outcome: Moneyline and spread evidence begins accumulating consistently for enabled leagues.
+- Context: Picks cannot be reproduced or evaluated for CLV without immutable pregame price history.
+- In scope: market collection policy by sport/league, scheduled/manual job contract, The Odds API adapter integration, immutable snapshots, offered-book and comparison-book prices, freshness and suspended/partial states.
+- Out of scope: Live betting, player props, sportsbook placement, pick generation.
+- Dependencies: FTE-DATA-002, FTE-SPORT-007.
+- Acceptance criteria: Two-way, three-way, and spread selections normalize through registered market contracts; snapshots retain provider/retrieval timestamps; retries do not duplicate evidence; unsupported markets are explicit.
+- Required automated tests: Adapter fixtures plus idempotency, stale, partial, suspended, and out-of-order snapshot tests.
+- Likely files/packages affected: `apps/workers`, `packages/providers`, `packages/database`, `packages/odds`, `infra/cdk`.
+- Observability: Requests, quota, snapshots, stale inputs, market gaps, and job lag are measurable by league.
+- Security: Provider credentials and raw licensed payloads are not exposed to clients or logs.
+- Data migration/backfill impact: Odds history begins at activation; no synthetic pre-activation history.
+- Definition of done: An enabled event accumulates auditable moneyline/spread snapshots without manual database edits.
+- Risk: High.
+- Approval required before merge: No.
+
+#### FTE-DATA-004: Completed-Event Result Ingestion and Correction History
+
+- Epic: Multi-sport feed and result spine.
+- Outcome: Final scores and official outcome state arrive automatically and remain auditable when corrected.
+- Context: Next-day grading requires an independent, provenance-backed results truth source.
+- In scope: completed-event polling, result normalization, regulation/overtime scope metadata, postponed/cancelled/no-contest states, idempotent persistence, correction versions, unresolved mapping queue.
+- Out of scope: Bet grading rules, performance aggregation, unofficial live scores.
+- Dependencies: FTE-DATA-002.
+- Acceptance criteria: Repeated finals are idempotent; corrected scores append history; unknown event mappings remain unresolved rather than creating a duplicate event; sport modules validate result shape.
+- Required automated tests: Fixture tests for final, delayed final, postponed, cancelled, correction, duplicate, and unmapped events.
+- Likely files/packages affected: `apps/workers`, `packages/providers`, `packages/domain`, `packages/database`.
+- Observability: Finalized, corrected, unresolved, stale, and failed counts are queryable by league and run.
+- Security: Provider access stays server-side; correction audit is append-only.
+- Data migration/backfill impact: Bounded result backfill for ingested historical events.
+- Definition of done: Fixture-backed MLB and soccer results persist with provenance and correction history.
+- Risk: High.
+- Approval required before merge: No.
+
+### Epic 0B: Versioned AI Paper-Pick Pipeline
+
+This early epic turns verified event and price evidence into reproducible Play/No Bet decisions. AI supplies structured sport analysis; deterministic code owns pricing and qualification.
+
+#### FTE-PICK-001: Reproducible Evaluation and Paper-Bet Records
+
+- Epic: Versioned AI paper-pick pipeline.
+- Outcome: Every decision can be reconstructed exactly after models, prompts, odds, or strategies change.
+- Context: A trustworthy learning loop needs immutable decision-time inputs before generating picks at scale.
+- In scope: evaluation input manifest, prediction probability/range, candidate selection, Play/No Bet reason, paper-bet entity, offered price snapshot reference, module/strategy/model/prompt/calculation versions, input hash and provenance.
+- Out of scope: LLM invocation, grading, real-money bet entry.
+- Dependencies: FTE-SPORT-002, FTE-SPORT-004, FTE-DATA-003.
+- Acceptance criteria: Records cannot reference mutable current odds; No Bet is first-class; identical manifests hash identically; strategy changes do not rewrite historical decisions.
+- Required automated tests: Schema, hash stability, immutability, version completeness, and repository condition tests.
+- Likely files/packages affected: `packages/domain`, `packages/database`, `packages/scouting`, `packages/odds`.
+- Observability: Evaluation logs include safe version IDs, input hash, decision, and reason codes.
+- Security: Prompts and evidence are stored without provider keys or secrets.
+- Data migration/backfill impact: Existing fixture evaluations map to a legacy version or remain explicitly non-reproducible.
+- Definition of done: A fixture evaluation and paper bet round-trip with complete version provenance.
+- Risk: High.
+- Approval required before merge: No.
+
+#### FTE-PICK-002: Sport-Rule Analysis Contracts for ML and Spread
+
+- Epic: Versioned AI paper-pick pipeline.
+- Outcome: Each sport supplies explicit evidence, rules, prohibited claims, and structured output for moneyline/spread analysis.
+- Context: Baseball, tennis, football, basketball, and soccer cannot share one generic handicapping prompt.
+- In scope: versioned module contracts for required/optional evidence, market eligibility, probability range, uncertainty, contraindications, citations/provenance, abstention; initial MLB and soccer contracts; planned tennis/NFL/NBA contracts.
+- Out of scope: Claiming production readiness without provider evidence, player props, LLM-owned EV math.
+- Dependencies: FTE-SPORT-004, FTE-DATA-001.
+- Acceptance criteria: Missing required evidence forces abstain or reduced maturity; output schema rejects unsupported selections and unbounded confidence; prompt snapshots are deterministic; each assertion links to evidence or is marked inference.
+- Required automated tests: Prompt snapshots, schema validation, missing-evidence, unsupported-market, injection, and abstention tests.
+- Likely files/packages affected: `packages/sports`, `packages/scouting`, `prompts`, `models`.
+- Observability: Analysis records expose evidence completeness, validation failures, latency, token use, and model version.
+- Security: Provider content is delimited as untrusted data; prompt injection defenses are tested.
+- Data migration/backfill impact: New prompt/contract versions apply prospectively.
+- Definition of done: MLB and soccer fixture analyses validate; planned modules fail safely until enabled.
+- Risk: High.
+- Approval required before merge: No.
+
+#### FTE-PICK-003: AI Analysis, Deterministic +EV Qualification, and No-Bet Gate
+
+- Epic: Versioned AI paper-pick pipeline.
+- Outcome: Eligible events produce auditable ML/spread paper picks only when price and evidence justify them.
+- Context: The AI must estimate a structured probability, while deterministic code compares it with offered odds and consensus.
+- In scope: manual/batch evaluation worker, structured model call, evidence validation, deterministic vig/EV calculations, configurable edge and uncertainty thresholds, data-quality gates, Play/No Bet output, idempotent paper-bet creation.
+- Out of scope: Autonomous bankroll sizing, sportsbook placement, tuning on future results.
+- Dependencies: FTE-PICK-001, FTE-PICK-002, FTE-SPORT-007.
+- Acceptance criteria: The LLM cannot override calculation results; stale/partial/unsupported inputs cannot create a Play; repeated manifests do not duplicate picks; every Play includes offered price, estimated probability, EV, uncertainty, reasons, and versions.
+- Required automated tests: End-to-end fixture tests for Play, No Bet, stale data, missing evidence, model failure, invalid output, negative EV, and duplicate run.
+- Likely files/packages affected: `apps/workers`, `packages/scouting`, `packages/odds`, `packages/domain`, `packages/database`.
+- Observability: Counts and rates for evaluated, Play, No Bet, invalid, failed, latency, cost, and reason codes.
+- Security: Model credentials remain server-side; model output is schema-validated and never executed.
+- Data migration/backfill impact: None; historical replay must be labeled backtest rather than decision-time paper play.
+- Definition of done: A fixture event can produce a reproducible Play or No Bet without manual calculation.
+- Risk: High.
+- Approval required before merge: No.
+
+#### FTE-PICK-004: Scheduled Shadow and Paper-Pick Runs
+
+- Epic: Versioned AI paper-pick pipeline.
+- Outcome: Approved paper strategies evaluate eligible upcoming events consistently without pretending to place wagers.
+- Context: Dataset accumulation needs repeatable automation, budget controls, and clear separation between shadow, paper, and money modes.
+- In scope: EventBridge/Step Functions schedule, eligibility window, strategy allowlist, concurrency and cost limits, run ledger, replay protection, kill switch, shadow/paper mode labels.
+- Out of scope: Real-money mode, sportsbook integration, automatic strategy promotion.
+- Dependencies: FTE-PICK-003, FTE-007.
+- Acceptance criteria: Scheduler evaluates only approved sport/league/strategy combinations; kill switch prevents new calls; retries do not duplicate picks; budget/concurrency limits fail closed; all outputs are labeled shadow or paper.
+- Required automated tests: Scheduler/CDK assertions, allowlist, retry, duplicate, budget-limit, and kill-switch tests.
+- Likely files/packages affected: `apps/workers`, `infra/cdk`, `packages/config`, `packages/database`.
+- Observability: Run status, eligible/evaluated counts, paper picks, model cost, quota, failures, and kill-switch state are alarmable.
+- Security: Least-privilege job roles; no client-triggered arbitrary prompts or strategy versions.
+- Data migration/backfill impact: None.
+- Definition of done: A controlled scheduled run creates only idempotent shadow/paper decisions.
+- Risk: High.
+- Approval required before merge: Yes.
+
+### Epic 0C: Automated Grading and Learning Governance
+
+This early epic closes the feedback loop while preventing hindsight edits, leakage, and promotion based only on a headline win percentage.
+
+#### FTE-LEARN-001: Deterministic ML and Spread Grading
+
+- Epic: Automated grading and learning governance.
+- Outcome: Imported finals settle eligible paper picks accurately and idempotently.
+- Context: Grading rules vary by market and event scope but must never be delegated to an LLM.
+- In scope: moneyline/two-way/three-way and spread grading, win/loss/push/void/unresolved, price-based units and ROI, result-version reference, regrade audit after official correction.
+- Out of scope: Props, live bets, subjective grading, sportsbook settlement imports.
+- Dependencies: FTE-DATA-004, FTE-PICK-001.
+- Acceptance criteria: Sport/market fixtures cover ties, pushes, overtime/regulation scope, cancellations and corrections; duplicate grading is safe; corrections append a regrade record; unresolved rules never default to loss.
+- Required automated tests: Table/property tests for supported market outcomes plus idempotency and correction integration tests.
+- Likely files/packages affected: `packages/odds`, `packages/domain`, `packages/database`, `apps/workers`.
+- Observability: Graded, regraded, unresolved, void, and failed counts with reason codes.
+- Security: Grading records and audit history are append-only.
+- Data migration/backfill impact: Existing reproducible paper picks may be graded from retained official results.
+- Definition of done: A final result grades fixture paper picks with verified P/L and audit history.
+- Risk: High.
+- Approval required before merge: No.
+
+#### FTE-LEARN-002: Cohort Metrics, Calibration, CLV, and Uncertainty
+
+- Epic: Automated grading and learning governance.
+- Outcome: Strategy quality is visible beyond raw win percentage.
+- Context: A 60–70% hit rate can still lose money at expensive prices and can be meaningless at small sample sizes.
+- In scope: immutable cohort definitions; sample size, W/L/P/V, win rate, average odds, units, ROI, estimated EV, CLV, Brier/calibration buckets, confidence intervals, drawdown; segments by sport, league, market, odds band, strategy/model, and paper/money mode.
+- Out of scope: Causal claims, automatic tuning, public leaderboards.
+- Dependencies: FTE-LEARN-001, FTE-DATA-003.
+- Acceptance criteria: Voids/pushes use documented denominators; price-aware break-even is shown; small samples display uncertainty; aggregates trace to immutable pick/result records; unavailable closing lines do not become zero CLV.
+- Required automated tests: Golden aggregate fixtures, denominator edge cases, confidence interval/calibration tests, and cohort reproducibility tests.
+- Likely files/packages affected: `packages/domain`, `packages/odds`, `packages/database`, `apps/api`, `apps/web`.
+- Observability: Aggregate version, cohort hash, source counts, query latency, and failures are recorded.
+- Security: Private user data remains scoped; reports expose no credentials or licensed raw payloads.
+- Data migration/backfill impact: Versioned aggregate backfill from immutable records.
+- Definition of done: A paper cohort report distinguishes hit rate, profitability, calibration, CLV, and uncertainty.
+- Risk: High.
+- Approval required before merge: No.
+
+#### FTE-LEARN-003: Versioned Retrospective and Error Taxonomy
+
+- Epic: Automated grading and learning governance.
+- Outcome: Losing and winning cohorts produce structured, evidence-backed lessons without rewriting history.
+- Context: Retrospectives should identify data, price, model, rule, and execution failures rather than merely ask the LLM why a pick lost.
+- In scope: retrospective record, frozen cohort manifest, error taxonomy, per-sport/market slices, false-positive/false-negative review, evidence gaps, proposed strategy/prompt/data changes, human approval state.
+- Out of scope: Automatic production edits, tuning on evaluation cohorts, outcome-based narrative certainty.
+- Dependencies: FTE-LEARN-002.
+- Acceptance criteria: Retros use frozen cohort hashes; proposed changes create new version candidates; result knowledge is separated from decision-time evidence; no single game can trigger automatic promotion; reviewer decisions are audited.
+- Required automated tests: Cohort freeze, version lineage, leakage guard, state transition, and audit tests.
+- Likely files/packages affected: `packages/domain`, `packages/scouting`, `packages/database`, `apps/api`, `apps/web`.
+- Observability: Retrospective version, cohort, proposal count, approval state, and validation failures are logged.
+- Security: Only authorized users can approve candidates; prior retrospective versions remain readable.
+- Data migration/backfill impact: None.
+- Definition of done: A completed cohort can produce a reviewable retrospective and versioned change proposals.
+- Risk: High.
+- Approval required before merge: Yes.
+
+#### FTE-LEARN-004: Walk-Forward Experiment and Strategy Promotion Gates
+
+- Epic: Automated grading and learning governance.
+- Outcome: Challenger strategies earn promotion through leakage-resistant evidence.
+- Context: Repeatedly tuning against the same history inflates apparent win rate and creates false confidence.
+- In scope: chronological train/tune/holdout windows, shadow comparison, baseline/challenger registry, minimum sample, ROI/CLV/calibration/drawdown criteria, regression guards, draft-to-approved transitions, rollback.
+- Out of scope: Fully autonomous model training, guaranteed 60–70% outcomes, real-money activation.
+- Dependencies: FTE-LEARN-003.
+- Acceptance criteria: Holdout events cannot appear in tuning inputs; promotion requires configured multi-metric gates and human approval; failing challengers remain recorded; rollback changes future runs only; baseline history remains immutable.
+- Required automated tests: Temporal leakage, cohort overlap, gate boundary, approval, rollback, and reproducibility tests.
+- Likely files/packages affected: `packages/domain`, `packages/scouting`, `packages/database`, `apps/workers`, `apps/web`.
+- Observability: Experiment window/version, overlap checks, gate results, approvals, promotion, and rollback are auditable.
+- Security: Promotion is permission-gated and cannot be triggered by model output alone.
+- Data migration/backfill impact: Existing strategies begin as unvalidated legacy or fixture baselines.
+- Definition of done: A challenger can be rejected or promoted from frozen walk-forward evidence with an audit trail.
+- Risk: High.
+- Approval required before merge: Yes.
+
+#### FTE-LEARN-005: Real-Money Readiness Gate and Kill Switch
+
+- Epic: Automated grading and learning governance.
+- Outcome: Paper success cannot silently enable real-money behavior.
+- Context: Legal availability, bankroll risk, provider terms, and statistical uncertainty require a separate human decision.
+- In scope: readiness checklist, jurisdiction/provider review record, bankroll and per-bet/daily/weekly loss limits, explicit mode indicator, dual confirmation, global kill switch, money-play ledger separation, rollback/runbook.
+- Out of scope: Sportsbook credential storage, direct bet placement, bypassing sportsbook controls, unattended wagering.
+- Dependencies: FTE-LEARN-004, FTE-056, FTE-058.
+- Acceptance criteria: Default mode is paper; no metric automatically enables money mode; missing/expired approval fails closed; limits and kill switch are enforced at every money-mode entry point; paper and money results remain separately reportable.
+- Required automated tests: Default-off, authorization, expired approval, limit, kill-switch, separation, and CDK/config tests.
+- Likely files/packages affected: `packages/domain`, `packages/config`, `packages/database`, `apps/api`, `apps/web`, `infra/cdk`, `docs/runbooks`.
+- Observability: Mode changes, approvals, limit decisions, and kill-switch actions are immutable audit events.
+- Security: Human approval required; money-mode access is least privilege and separately feature-flagged.
+- Data migration/backfill impact: All historical picks default to paper or legacy; none are inferred as money plays.
+- Definition of done: A reviewed readiness artifact exists and the system demonstrably fails closed.
+- Risk: Critical.
+- Approval required before merge: Yes.
+
 ## 1. Purpose
 
 This artifact decomposes the private, soccer-first FIND THE EDGE MVP into small, testable, implementation-ready stories suitable for a future Codex automation loop:
@@ -119,6 +365,9 @@ Out of MVP scope: NFL, NBA, esports, live betting, player props, corners, cards,
 
 ## 3. Epic Sequence
 
+0A. Multi-sport feed and result spine.
+0B. Versioned AI paper-pick pipeline.
+0C. Automated grading and learning governance.
 1. Engineering foundation.
 2. Authentication and application shell.
 3. Sports catalog and event ingestion.

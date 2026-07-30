@@ -90,6 +90,10 @@ When a story is merged:
 
 Human approval is required before merge for:
 
+- `FTE-PICK-004` Scheduled Shadow and Paper-Pick Runs.
+- `FTE-LEARN-003` Versioned Retrospective and Error Taxonomy.
+- `FTE-LEARN-004` Walk-Forward Experiment and Strategy Promotion Gates.
+- `FTE-LEARN-005` Real-Money Readiness Gate and Kill Switch.
 - `FTE-008` Cognito Private Authentication Infrastructure.
 - `FTE-019` Initial Soccer Competitions Allowlist spike.
 - `FTE-032` Consensus and Qualification Defaults spike.

@@ -2,7 +2,7 @@
 title: "PRD: FIND THE EDGE"
 status: "final"
 created: "2026-07-15"
-updated: "2026-07-26"
+updated: "2026-07-29"
 source: "_bmad-output/planning-artifacts/product-brief.md"
 ---
 
@@ -49,6 +49,40 @@ These declarations describe platform scope, not claims that all modules or data 
 5. No paid API, infrastructure, or AI service is required for local contract and fixture tests.
 
 The remaining original PRD is retained for detailed workflow requirements. References to a fixed Hard Rock target become configurable target-sportsbook requirements; soccer-specific requirements belong to the soccer module.
+
+## 0B. Binding Paper-Pick Learning Loop Amendment (2026-07-29)
+
+This amendment makes the measurable paper-pick feedback loop an early product capability. It supersedes original statements that restrict event ingestion, result settlement, and scheduled analysis to manual soccer-only workflows. It does not authorize sportsbook bet placement or unattended real-money wagering.
+
+### Learning-loop requirements
+
+**FR-LOOP-001 — Multi-sport schedule ingestion.** Enabled sport modules can import upcoming events from capability-matched feeds for MLB, tennis, NFL, NBA, soccer/MLS/international competitions, and later registered sports. League/competition allowlists, provider coverage, cursor/checkpoint state, and refresh cadence are explicit and configurable.
+
+**FR-LOOP-002 — Immutable odds evidence.** The system imports timestamped moneyline and spread prices from The Odds API or another capability-matched provider, preserves provider and retrieval timestamps, and never overwrites the evidence used by a historical pick.
+
+**FR-LOOP-003 — Versioned probability and pick records.** A candidate evaluation stores the estimated probability, offered price, no-vig comparison, expected value, decision threshold, Play/No Bet result, sport module version, strategy version, calculation version, prompt bundle, model version, input hash, and complete provenance needed for reproduction.
+
+**FR-LOOP-004 — Sport-specific AI policy.** AI analysis follows versioned instructions and structured output contracts owned by each sport module. The LLM may synthesize verified evidence and estimate a probability range, but deterministic code owns odds conversion, vig removal, EV, qualification, payout, and grading.
+
+**FR-LOOP-005 — Paper ledger first.** Every qualified recommendation can be recorded in an immutable paper-bet ledger independently of manually entered or real-money bets. Paper records preserve the exact available price and decision timestamp and cannot be retroactively rewritten by a new strategy.
+
+**FR-LOOP-006 — Automated result ingestion and grading.** Completed-event results are imported on a scheduled, idempotent basis. Moneyline and spread selections are graded deterministically as win, loss, push, void, or unresolved, with correction history and explicit provider provenance.
+
+**FR-LOOP-007 — Evaluation beyond win rate.** Performance is measured by sample size, win rate, average price, units and ROI, expected value at pick time, closing-line value when available, probability calibration, confidence intervals, maximum drawdown, and segments including sport, league, market, odds band, strategy, model, and paper-versus-money mode.
+
+**FR-LOOP-008 — Leakage-resistant retrospectives.** Retrospectives use frozen cohorts and walk-forward or holdout evaluation. A strategy may not tune on a result and then count that same result as validation evidence. Every proposed change creates a new version and leaves prior picks immutable.
+
+**FR-LOOP-009 — Controlled promotion.** Strategy versions move through draft, shadow, paper, candidate, and approved states using minimum-sample, ROI, CLV, calibration, and risk criteria. A raw 60–70% win rate is a research target, not an automatic promotion rule, because break-even win rate depends on price.
+
+**FR-LOOP-010 — Real-money safety boundary.** Real-money mode is disabled by default and requires explicit human approval, jurisdiction/provider review, bankroll and loss limits, a kill switch, and a separately approved release story. The system does not place sportsbook bets in the initial learning loop.
+
+### Early acceptance outcomes
+
+1. At least one MLB and one soccer fixture feed run through the same ingestion/checkpoint contract; planned modules can be added without changing the orchestrator.
+2. Moneyline and spread snapshots used for a paper pick remain reproducible after later odds and strategy updates.
+3. A completed fixture result grades an eligible paper bet idempotently and records corrections without deleting history.
+4. A performance cohort distinguishes hit rate from profitability and reports uncertainty for small samples.
+5. A retrospective can compare a challenger with a frozen baseline without training/evaluation leakage.
 
 ## 0. Document Purpose
 
