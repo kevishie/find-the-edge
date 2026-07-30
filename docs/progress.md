@@ -1,5 +1,13 @@
 # Progress Log
 
+## 2026-07-29 — FTE-005 complete
+
+- Outcome: added GitHub Actions jobs for frozen installation, formatting, lint, dependency boundaries, typechecks, unit tests, coverage, builds, and desktop/mobile E2E smoke.
+- Reliability: CI cancels stale runs, has bounded timeouts, grants read-only repository permissions, and uploads Playwright diagnostics only on failure.
+- Gates: workflow YAML parsed successfully; the full CI command sequence passed locally, including four E2E scenarios.
+- Blockers: none; the workflow requires no secrets or external providers.
+- Next: `FTE-006`, environment validation and local development documentation.
+
 ## 2026-07-29 — FTE-004 complete
 
 - Outcome: added a typed Playwright harness with desktop and mobile Chromium projects plus a deterministic test utility sample.

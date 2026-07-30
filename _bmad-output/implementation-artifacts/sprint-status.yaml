@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-005
+nextReadyStory: FTE-006
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -126,7 +126,7 @@ stories:
   - id: FTE-005
     title: GitHub Actions CI Quality Gates
     epic: Engineering foundation
-    status: ready
+    status: done
     dependencies: [FTE-001, FTE-004]
     risk: Low
     approvalRequiredBeforeMerge: false
