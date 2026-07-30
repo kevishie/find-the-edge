@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-003
+nextReadyStory: FTE-004
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -112,14 +112,14 @@ stories:
   - id: FTE-003
     title: Shared Package Structure and Dependency Boundaries
     epic: Engineering foundation
-    status: ready
+    status: done
     dependencies: [FTE-001]
     risk: Medium
     approvalRequiredBeforeMerge: false
   - id: FTE-004
     title: Unit, Integration, and E2E Test Harness
     epic: Engineering foundation
-    status: backlog
+    status: ready
     dependencies: [FTE-001, FTE-002]
     risk: Low
     approvalRequiredBeforeMerge: false

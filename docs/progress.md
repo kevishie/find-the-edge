@@ -1,5 +1,15 @@
 # Progress Log
 
+## 2026-07-29 — FTE-003 complete
+
+- Outcome: added all architecture-aligned package skeletons and documented each package responsibility.
+- Outcome: added a manifest-based dependency allowlist plus negative tests proving UI-to-database and domain-to-provider edges fail.
+- Files: `packages/{auth,config,database,observability,ui,test-utils}`, all package READMEs, `scripts/check-boundaries*`, root scripts, lint config, lockfile, and status docs.
+- Gates: `pnpm check` passed across 12 workspace packages, including the boundary gate, strict typecheck, tests, and builds.
+- Decisions: keep universal domain dependency-free and enforce frontend/infrastructure separation at the manifest graph.
+- Blockers: none.
+- Next: `FTE-004`, unit, integration, and E2E test harness.
+
 ## 2026-07-29 — FTE-002, FTE-SPORT-005, FTE-SPORT-006, FTE-SPORT-007 complete
 
 - Outcome: completed the generic TanStack Router app shell without removing the working local Edge Lab.

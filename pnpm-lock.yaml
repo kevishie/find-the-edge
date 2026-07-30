@@ -82,7 +82,31 @@ importers:
         specifier: ^4.0.18
         version: 4.1.10(jsdom@28.1.0)(vite@7.3.6)
 
+  packages/auth:
+    devDependencies:
+      vitest:
+        specifier: ^4.0.18
+        version: 4.1.10(jsdom@28.1.0)(vite@7.3.6)
+
+  packages/config:
+    devDependencies:
+      vitest:
+        specifier: ^4.0.18
+        version: 4.1.10(jsdom@28.1.0)(vite@7.3.6)
+
+  packages/database:
+    devDependencies:
+      vitest:
+        specifier: ^4.0.18
+        version: 4.1.10(jsdom@28.1.0)(vite@7.3.6)
+
   packages/domain:
+    devDependencies:
+      vitest:
+        specifier: ^4.0.18
+        version: 4.1.10(jsdom@28.1.0)(vite@7.3.6)
+
+  packages/observability:
     devDependencies:
       vitest:
         specifier: ^4.0.18
@@ -115,6 +139,18 @@ importers:
       '@find-the-edge/domain':
         specifier: workspace:*
         version: link:../domain
+    devDependencies:
+      vitest:
+        specifier: ^4.0.18
+        version: 4.1.10(jsdom@28.1.0)(vite@7.3.6)
+
+  packages/test-utils:
+    devDependencies:
+      vitest:
+        specifier: ^4.0.18
+        version: 4.1.10(jsdom@28.1.0)(vite@7.3.6)
+
+  packages/ui:
     devDependencies:
       vitest:
         specifier: ^4.0.18

@@ -1,5 +1,13 @@
 # Decision Log
 
+## 2026-07-29 — Enforced package dependency direction
+
+Reason: Naming package boundaries does not prevent domain, provider, persistence, and frontend responsibilities from coupling over time.
+
+Decision: declare an allowlist for every workspace package, validate workspace manifest edges in `pnpm check`, and test representative forbidden edges. Production packages cannot depend on `test-utils`; domain remains dependency-free; UI cannot import auth implementations, providers, database, or infrastructure.
+
+Hypothesis: architecture violations fail locally before they become cross-package refactors.
+
 ## 2026-07-29 — Consensus quality and fixture publication
 
 Reason: A consensus price is not trustworthy if it includes the offered book or silently absorbs stale, suspended, sparse, or materially divergent inputs.

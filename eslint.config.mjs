@@ -14,6 +14,7 @@ export default tseslint.config(
       "_bmad-output/**",
       ".agents/**",
       "eslint.config.mjs",
+      "scripts/*.mjs",
     ],
   },
   eslint.configs.recommended,

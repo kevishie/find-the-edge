@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added architecture-aligned auth, config, database, observability, UI, and test utility packages.
+- Added an enforced package dependency graph with negative boundary tests to the root quality gate.
 - Completed the generic TanStack Router app shell while preserving the local Edge Lab.
 - Added weighted two-way and three-way no-vig consensus with offered-book exclusion and explicit market-quality states.
 - Added a registry-driven sport selector and `/sports/:sportKey/events` fixture explorer with module terminology and maturity.
