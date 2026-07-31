@@ -9,6 +9,7 @@ export default tseslint.config(
     ignores: [
       "**/dist/**",
       "**/coverage/**",
+      "**/cdk.out/**",
       "design/**",
       "_bmad/**",
       "_bmad-output/**",

@@ -12,8 +12,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint src",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run src --passWithNoTests",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/lib-dynamodb": "^3.883.0",
+    "@find-the-edge/domain": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^4.0.18"

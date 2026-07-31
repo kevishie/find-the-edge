@@ -1,20 +1,117 @@
-import { Template } from "aws-cdk-lib/assertions";
+import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 
 import { createFoundationApp } from "./foundation";
 
 describe("foundation CDK app", () => {
-  it("synthesizes a deterministic environment-aware empty foundation", () => {
+  it("synthesizes the full durable ingestion contract", () => {
     const { stack } = createFoundationApp({ stage: "test" });
-    const template = Template.fromStack(stack).toJSON();
+    const template = Template.fromStack(stack);
 
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
-    expect(template["Resources"] ?? {}).toEqual({});
+    template.resourceCountIs("AWS::DynamoDB::Table", 1);
+    template.resourceCountIs("AWS::SQS::Queue", 2);
+    template.resourceCountIs("AWS::Lambda::Function", 2);
+    template.resourceCountIs("AWS::Events::Rule", 1);
+    template.hasResource("AWS::DynamoDB::Table", {
+      DeletionPolicy: "Retain",
+      UpdateReplacePolicy: "Retain",
+    });
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      BillingMode: "PAY_PER_REQUEST",
+      PointInTimeRecoverySpecification: {
+        PointInTimeRecoveryEnabled: true,
+      },
+    });
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      SqsManagedSseEnabled: true,
+      MessageRetentionPeriod: 1209600,
+    });
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      RedrivePolicy: Match.objectLike({ maxReceiveCount: 5 }),
+      VisibilityTimeout: 180,
+      FifoQueue: true,
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Timeout: 60,
+      Environment: {
+        Variables: {
+          FTE_EVENT_TABLE: Match.anyValue(),
+          FTE_UPCOMING_QUEUE_URL: Match.anyValue(),
+        },
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Timeout: 30,
+      Environment: {
+        Variables: { FTE_UPCOMING_QUEUE_URL: Match.anyValue() },
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      BatchSize: 1,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+      ScalingConfig: { MaximumConcurrency: 5 },
+    });
+    template.hasResourceProperties("AWS::Events::Rule", {
+      State: "DISABLED",
+      Targets: Match.arrayWith([
+        Match.objectLike({
+          Arn: Match.anyValue(),
+        }),
+      ]),
+    });
+    const rendered = JSON.stringify(template.toJSON());
+    expect(rendered).toContain("dynamodb:TransactWriteItems");
+    expect(rendered).toContain("sqs:ReceiveMessage");
+    expect(rendered).toContain("sqs:SendMessage");
+    expect(rendered).toContain("FindTheEdge/UpcomingEvents");
+    expect(rendered).toContain("FailedRecords");
+    expect(rendered).not.toContain('"Action":"sqs:*"');
+    expect(rendered).not.toContain('"Action":"dynamodb:*"');
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: [
+              "sqs:SendMessage",
+              "sqs:GetQueueAttributes",
+              "sqs:GetQueueUrl",
+            ],
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
+    expect(rendered).not.toContain("2026-08-01T00:00:00.000Z");
   });
 
   it("rejects unsafe stage names", () => {
     expect(() => createFoundationApp({ stage: "Production!" })).toThrow(
       "FTE_AWS_STAGE",
     );
+  });
+
+  it("enables scheduling only by config and wires configured SNS alarm actions", () => {
+    const { stack } = createFoundationApp({
+      stage: "alerts",
+      schedulerEnabled: true,
+      alarmTopicArn: "arn:aws:sns:us-east-1:123456789012:fte-alerts",
+    });
+    const template = Template.fromStack(stack);
+    template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 6);
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
+    });
+  });
+
+  it("rejects an alarm topic outside the configured stack region", () => {
+    expect(() =>
+      createFoundationApp({
+        stage: "alerts",
+        region: "us-east-1",
+        alarmTopicArn: "arn:aws:sns:us-west-2:123456789012:fte-alerts",
+      }),
+    ).toThrow("stack region");
   });
 });

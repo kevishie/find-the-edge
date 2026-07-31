@@ -269,3 +269,175 @@ export interface FeedCoverageReport {
   readonly version: string;
   readonly entries: readonly FeedCoverageReportEntry[];
 }
+
+export type EventStatus =
+  "scheduled" | "postponed" | "cancelled" | "started" | "completed" | "unknown";
+export interface ProviderRevision {
+  readonly providerId: string;
+  readonly authorityRank: number;
+  readonly updatedAt: IsoTimestamp;
+  readonly sequence: number;
+  readonly token: string;
+}
+export interface CanonicalEvent extends Event {
+  readonly leagueKey: string;
+  readonly status: EventStatus;
+  readonly revisions: Readonly<Record<string, ProviderRevision>>;
+  readonly updatedAt: IsoTimestamp;
+  readonly candidateIdentity: string;
+  readonly authoritativeRevision?: ProviderRevision;
+  readonly bootstrapRevision?: ProviderRevision;
+  readonly version: number;
+}
+export interface CanonicalEventBootstrap {
+  readonly id: EntityId;
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly leagueId: EntityId;
+  readonly participantIds: readonly [EntityId, EntityId, ...EntityId[]];
+  readonly participantLabels: readonly [string, string, ...string[]];
+  readonly startsAt: IsoTimestamp;
+  readonly phase: string;
+  readonly status: EventStatus;
+  readonly normalizedIdentity: string;
+  readonly canonicalKey: string;
+  readonly revision: ProviderRevision;
+}
+export interface ProviderEventMapping {
+  readonly id: string;
+  readonly providerId: string;
+  readonly providerEventId: string;
+  readonly canonicalEventId: EntityId;
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly createdAt: IsoTimestamp;
+}
+export interface EventHistoryEntry {
+  readonly id: string;
+  readonly eventId: EntityId;
+  readonly providerId: string;
+  readonly revision: ProviderRevision;
+  readonly changedAt: IsoTimestamp;
+  readonly previousStartsAt: IsoTimestamp;
+  readonly startsAt: IsoTimestamp;
+  readonly previousStatus: EventStatus;
+  readonly status: EventStatus;
+}
+export interface UnresolvedEventMapping {
+  readonly id: string;
+  readonly providerId: string;
+  readonly providerEventId: string;
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly normalizedIdentity: string;
+  readonly reason: "no-candidate" | "ambiguous-candidates";
+  readonly candidateEventIds: readonly EntityId[];
+  readonly observations: readonly {
+    readonly observedAt: IsoTimestamp;
+    readonly reason: "no-candidate" | "ambiguous-candidates";
+    readonly candidateEventIds: readonly EntityId[];
+  }[];
+  readonly version: number;
+}
+export type CheckpointPosition =
+  | { readonly state: "start" }
+  | { readonly state: "cursor"; readonly cursor: string }
+  | { readonly state: "terminal" };
+export interface IngestionCheckpoint {
+  readonly key: string;
+  readonly providerId: string;
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly checkpointScope: string;
+  readonly windowStart: IsoTimestamp;
+  readonly windowEnd: IsoTimestamp;
+  readonly position: CheckpointPosition;
+  readonly continuationCycle: number;
+  readonly continuationCount: number;
+  readonly bootstrapRequestCount: number;
+  readonly bootstrapQuotaUsed?: number;
+  readonly bootstrapCursor?: string;
+  readonly bootstrapPageOrdinal?: number;
+  readonly bootstrapCursorHistory?: readonly string[];
+  readonly bootstrapCursorChain?: string;
+  readonly bootstrapCompletedPositionDigest?: string;
+  readonly bootstrapReservation?: {
+    readonly id: string;
+    readonly status: "reserved" | "succeeded" | "failed";
+    readonly cursor?: string;
+    readonly pageOrdinal: number;
+    readonly identities: readonly string[];
+    readonly authorityRank: number;
+    readonly requestDigest: string;
+    readonly claimedAt?: IsoTimestamp;
+    readonly leaseUntil?: IsoTimestamp;
+    readonly responseRef?: string;
+    readonly responseDigest?: string;
+    readonly providerRequests?: number;
+    readonly quotaUsed?: number;
+  };
+  readonly cursorHistory?: readonly string[];
+  readonly cursorChain?: string;
+  readonly lastRunId: string;
+  readonly updatedAt: IsoTimestamp;
+}
+export interface UpcomingEventIngestionCommand {
+  readonly attemptId: string;
+  readonly checkpointScope: string;
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly windowStart: IsoTimestamp;
+  readonly windowEnd: IsoTimestamp;
+  readonly pageLimit: number;
+  readonly maxPages: number;
+  readonly expectedContinuation?: {
+    readonly cycle: number;
+    readonly epoch: number;
+    readonly position: CheckpointPosition;
+  };
+}
+export interface IngestionCounters {
+  readonly providerRequests: number;
+  readonly pages: number;
+  readonly bootstrapped: number;
+  readonly repaired: number;
+  readonly updated: number;
+  readonly skipped: number;
+  readonly unresolved: number;
+  readonly quotaUsed: number;
+}
+export type IngestionFailureCode =
+  | "invalid-command"
+  | "coverage-unavailable"
+  | "adapter-unavailable"
+  | "invalid-provider-output"
+  | "provider-failed"
+  | "continuation-delivery-failed"
+  | "continuation-delivery-required"
+  | "persistence-failed"
+  | "checkpoint-conflict"
+  | "cursor-stalled"
+  | "retry-required"
+  | "run-record-failed";
+export interface LeagueIngestionRun {
+  readonly id: string;
+  readonly attemptId: string;
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly providerId?: string;
+  readonly startedAt: IsoTimestamp;
+  readonly finishedAt: IsoTimestamp;
+  readonly status:
+    | "succeeded"
+    | "continuation-queued"
+    | "delivery-required"
+    | "no-op"
+    | "retry-required"
+    | "failed";
+  readonly counters: IngestionCounters;
+  readonly finalPosition?: CheckpointPosition;
+  readonly failureCode?: IngestionFailureCode;
+  readonly runRecordPersisted: boolean;
+  readonly durationMs: number;
+  readonly checkpointKey?: string;
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@find-the-edge/workers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint src",
+    "test": "vitest run src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.883.0",
+    "@aws-sdk/client-sqs": "^3.1098.0",
+    "@aws-sdk/lib-dynamodb": "^3.883.0",
+    "@find-the-edge/database": "workspace:*",
+    "@find-the-edge/domain": "workspace:*",
+    "@find-the-edge/providers": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.152",
+    "vitest": "^4.0.18"
+  }
+}

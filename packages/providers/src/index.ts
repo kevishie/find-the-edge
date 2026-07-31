@@ -119,3 +119,8 @@ export function supportsRequest(
 }
 
 export * from "./coverage-registry";
+export * from "./upcoming-events";
+export * from "./fixtures/mlb-schedule";
+export * from "./fixtures/mls-schedule";
+
+export * from "./coverage-registry";
