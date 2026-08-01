@@ -1,4 +1,5 @@
 export type SportKey = string & { readonly __sportKey: unique symbol };
+export * from "./fixture-odds.js";
 export type EntityId = string & { readonly __entityId: unique symbol };
 export type IsoTimestamp = string & { readonly __isoTimestamp: unique symbol };
 
