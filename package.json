@@ -12,6 +12,7 @@
     "dev": "turbo run dev --parallel",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "generate:web-runtime-config": "node scripts/generate-web-runtime-config.mjs",
     "lint": "eslint . --max-warnings 0",
     "synth": "pnpm --filter @find-the-edge/infra-cdk synth",
     "test": "turbo run test",

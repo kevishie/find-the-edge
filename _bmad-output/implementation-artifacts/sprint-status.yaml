@@ -243,6 +243,19 @@ stories:
     blockerReason:
     risk: Medium
     approvalRequiredBeforeMerge: false
+  - id: FTE-MVP-001B2
+    title: Production Web Runtime Configuration and Auth Bootstrap
+    epic: MVP games explorer corrective slices
+    sport: core
+    league: [mlb, mls]
+    module: web-runtime-auth
+    priority: P0
+    status: done
+    dependencies: [FTE-MVP-001B]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
   - id: FTE-DATA-004
     title: Completed-Event Result Ingestion and Correction History
     epic: Multi-sport feed and result spine

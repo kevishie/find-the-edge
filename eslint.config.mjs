@@ -16,6 +16,7 @@ export default tseslint.config(
       ".agents/**",
       "eslint.config.mjs",
       "scripts/*.mjs",
+      "apps/web/public/*.js",
     ],
   },
   eslint.configs.recommended,
