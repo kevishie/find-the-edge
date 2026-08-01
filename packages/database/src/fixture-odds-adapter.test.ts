@@ -1,0 +1,519 @@
+import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { describe, expect, it, vi } from "vitest";
+import { normalizeFixtureOddsObservation } from "@find-the-edge/domain";
+import {
+  DynamoFixtureOddsAdapter,
+  AwsFixtureOddsGateway,
+  FixtureOddsBindingConflictError,
+  FixtureOddsStorageError,
+  FixtureOddsTransactionCanceledError,
+  type FixtureOddsCurrentWrite,
+  type FixtureOddsDynamoGateway,
+  type FixtureOddsItem,
+  type FixtureOddsSnapshotTransaction,
+} from "./fixture-odds-adapter";
+import { mappingId } from "./event-ingestion";
+
+const input = (observedAt = "2026-08-01T12:00:00.000Z", odds = -110) => ({
+  providerId: "fixture",
+  providerEventId: "mlb-1",
+  leagueKey: "mlb",
+  observation: {
+    canonicalEventId: "event-1",
+    canonicalEventVersion: 3,
+    sportKey: "baseball",
+    marketKey: "moneyline",
+    selectionKey: "home",
+    selectionLabel: "Home",
+    sportsbookId: "fixture-book",
+    sportsbookLabel: "Fixture Book",
+    americanOdds: odds,
+    observedAt,
+    retrievedAt: "2026-08-01T12:01:00.000Z",
+  },
+});
+
+class ConditionHarness implements FixtureOddsDynamoGateway {
+  readonly items = new Map<string, FixtureOddsItem>();
+  readonly transactions: FixtureOddsSnapshotTransaction[] = [];
+  readonly currents: FixtureOddsCurrentWrite[] = [];
+  beforeSnapshot?: (request: FixtureOddsSnapshotTransaction) => void;
+  beforeCurrent?: (request: FixtureOddsCurrentWrite) => void;
+  snapshotFailure?: FixtureOddsTransactionCanceledError;
+  currentFailure?: FixtureOddsTransactionCanceledError;
+  getFailure?: Error;
+  key(pk: string, sk: string) {
+    return JSON.stringify([pk, sk]);
+  }
+  seed(pk: string, sk: string, value: unknown) {
+    this.items.set(this.key(pk, sk), { pk, sk, value } as FixtureOddsItem);
+  }
+  getExact(pk: string, sk: string) {
+    if (this.getFailure) throw this.getFailure;
+    return Promise.resolve(this.items.get(this.key(pk, sk)) ?? null);
+  }
+  transactSnapshot(request: FixtureOddsSnapshotTransaction) {
+    this.transactions.push(request);
+    this.beforeSnapshot?.(request);
+    if (this.snapshotFailure) throw this.snapshotFailure;
+    const mapping = this.items.get(
+      this.key(request.mapping.key.pk, request.mapping.key.sk),
+    );
+    const event = this.items.get(
+      this.key(request.canonicalEvent.key.pk, request.canonicalEvent.key.sk),
+    );
+    const matches = (
+      actual: FixtureOddsItem | undefined,
+      expected: Readonly<Record<string, string | number>>,
+    ) =>
+      !!actual &&
+      Object.entries(expected).every(
+        ([key, value]) =>
+          (actual.value as unknown as Record<string, unknown>)[key] === value,
+      );
+    const reasons = [
+      matches(mapping, request.mapping.expected)
+        ? "None"
+        : "ConditionalCheckFailed",
+      matches(event, request.canonicalEvent.expected)
+        ? "None"
+        : "ConditionalCheckFailed",
+      this.items.has(this.key(request.snapshot.pk, request.snapshot.sk))
+        ? "ConditionalCheckFailed"
+        : "None",
+    ] as const;
+    if (reasons.some((code) => code !== "None"))
+      throw new FixtureOddsTransactionCanceledError(
+        reasons.map((code) => ({ code })),
+      );
+    this.items.set(
+      this.key(request.snapshot.pk, request.snapshot.sk),
+      request.snapshot,
+    );
+    return Promise.resolve();
+  }
+  putCurrent(request: FixtureOddsCurrentWrite) {
+    this.currents.push(request);
+    this.beforeCurrent?.(request);
+    if (this.currentFailure) throw this.currentFailure;
+    const key = this.key(request.item.pk, request.item.sk);
+    const existing = this.items.get(key)?.value;
+    if (existing) {
+      const old = existing;
+      const wins =
+        old.observedAt < request.advanceAfter.observedAt ||
+        (old.observedAt === request.advanceAfter.observedAt &&
+          old.snapshotId < request.advanceAfter.snapshotId);
+      if (!wins)
+        throw new FixtureOddsTransactionCanceledError([
+          { code: "ConditionalCheckFailed" },
+        ]);
+    }
+    this.items.set(key, request.item);
+    return Promise.resolve();
+  }
+}
+
+function boundHarness() {
+  const gateway = new ConditionHarness();
+  const value = input();
+  const mid = mappingId({
+    ...value,
+    sportKey: value.observation.sportKey as never,
+  });
+  gateway.seed(`MAPPING#${mid}`, "CURRENT", {
+    id: mid,
+    providerId: value.providerId,
+    providerEventId: value.providerEventId,
+    canonicalEventId: "event-1",
+    sportKey: "baseball",
+    leagueKey: "mlb",
+  });
+  gateway.seed("EVENT#event-1", "CURRENT", {
+    id: "event-1",
+    version: 3,
+    sportKey: "baseball",
+    leagueKey: "mlb",
+  });
+  return gateway;
+}
+
+describe("DynamoFixtureOddsAdapter", () => {
+  it("uses exact DATA002 binding keys and protected condition shapes", async () => {
+    const gateway = boundHarness();
+    const result = await new DynamoFixtureOddsAdapter(gateway).persist(input());
+    expect(result).toMatchObject({ snapshot: "created", current: "advanced" });
+    const request = gateway.transactions[0]!;
+    expect(request.mapping).toMatchObject({
+      key: { sk: "CURRENT" },
+      expected: {
+        providerId: "fixture",
+        providerEventId: "mlb-1",
+        canonicalEventId: "event-1",
+        sportKey: "baseball",
+        leagueKey: "mlb",
+      },
+    });
+    expect(request.mapping.key.pk).toMatch(/^MAPPING#[a-f0-9]{64}$/);
+    expect(request.canonicalEvent).toEqual({
+      key: { pk: "EVENT#event-1", sk: "CURRENT" },
+      expected: {
+        id: "event-1",
+        version: 3,
+        sportKey: "baseball",
+        leagueKey: "mlb",
+      },
+    });
+  });
+
+  it("rejects mapping and canonical races without storing a snapshot", async () => {
+    for (const changed of ["mapping", "event"] as const) {
+      const gateway = boundHarness();
+      gateway.beforeSnapshot = (request) => {
+        const target =
+          changed === "mapping"
+            ? request.mapping.key
+            : request.canonicalEvent.key;
+        gateway.seed(target.pk, target.sk, { changed: true });
+      };
+      await expect(
+        new DynamoFixtureOddsAdapter(gateway).persist(input()),
+      ).rejects.toBeInstanceOf(FixtureOddsBindingConflictError);
+      const snapshot = normalizeFixtureOddsObservation(input().observation);
+      expect(
+        await gateway.getExact(snapshot.partitionKey, snapshot.sortKey),
+      ).toBeNull();
+    }
+  });
+
+  it("converges an identical create race through one exact reread", async () => {
+    const gateway = boundHarness();
+    gateway.beforeSnapshot = (request) =>
+      gateway.items.set(
+        gateway.key(request.snapshot.pk, request.snapshot.sk),
+        request.snapshot,
+      );
+    await expect(
+      new DynamoFixtureOddsAdapter(gateway).persist(input()),
+    ).resolves.toMatchObject({ snapshot: "existing", current: "advanced" });
+  });
+
+  it("detects immutable snapshot content collisions", async () => {
+    const gateway = boundHarness();
+    gateway.beforeSnapshot = (request) =>
+      gateway.items.set(gateway.key(request.snapshot.pk, request.snapshot.sk), {
+        ...request.snapshot,
+        value: { ...request.snapshot.value, americanOdds: -999 },
+      });
+    await expect(
+      new DynamoFixtureOddsAdapter(gateway).persist(input()),
+    ).rejects.toThrow(/stored odds row is forged|identity maps/);
+  });
+
+  it("stores late history independently while retaining the newer CURRENT", async () => {
+    const gateway = boundHarness();
+    const adapter = new DynamoFixtureOddsAdapter(gateway);
+    await adapter.persist(input("2026-08-01T13:00:00.000Z", 120));
+    const late = await adapter.persist(input("2026-08-01T12:00:00.000Z", -110));
+    expect(late).toMatchObject({ snapshot: "created", current: "retained" });
+    const normalizedLate = late.value;
+    expect(
+      await gateway.getExact(
+        normalizedLate.partitionKey,
+        normalizedLate.sortKey,
+      ),
+    ).not.toBeNull();
+    const current = await gateway.getExact(
+      normalizedLate.partitionKey,
+      "CURRENT",
+    );
+    expect(current?.value.observedAt).toBe("2026-08-01T13:00:00.000Z");
+  });
+
+  it("uses A1 snapshot-id ordering for equal observed times", async () => {
+    const first = input("2026-08-01T12:00:00.000Z", -110);
+    const second = input("2026-08-01T12:00:00.000Z", 130);
+    const expected = [first, second]
+      .map((value) => normalizeFixtureOddsObservation(value.observation))
+      .sort((a, b) => (a.snapshotId < b.snapshotId ? -1 : 1))[1]!;
+    const gateway = boundHarness();
+    const adapter = new DynamoFixtureOddsAdapter(gateway);
+    await adapter.persist(first);
+    await adapter.persist(second);
+    expect(
+      (await gateway.getExact(expected.partitionKey, "CURRENT"))?.value
+        .snapshotId,
+    ).toBe(expected.snapshotId);
+  });
+
+  it("converges a CURRENT race on the deterministic winning snapshot", async () => {
+    const gateway = boundHarness();
+    const contender = normalizeFixtureOddsObservation(
+      input("2026-08-01T14:00:00.000Z", 140).observation,
+    );
+    gateway.beforeCurrent = (request) => {
+      gateway.items.set(
+        gateway.key(contender.partitionKey, contender.sortKey),
+        { pk: contender.partitionKey, sk: contender.sortKey, value: contender },
+      );
+      gateway.items.set(gateway.key(request.item.pk, "CURRENT"), {
+        pk: request.item.pk,
+        sk: "CURRENT",
+        value: contender,
+      });
+    };
+    await expect(
+      new DynamoFixtureOddsAdapter(gateway).persist(input()),
+    ).resolves.toMatchObject({ snapshot: "created", current: "retained" });
+    expect(
+      (await gateway.getExact(contender.partitionKey, "CURRENT"))?.value
+        .snapshotId,
+    ).toBe(contender.snapshotId);
+  });
+
+  it("propagates nonconditional cancellation categories", async () => {
+    for (const code of [
+      "TransactionConflict",
+      "ThrottlingError",
+      "ValidationError",
+      "AccessDenied",
+      "Mystery",
+    ]) {
+      const gateway = boundHarness();
+      gateway.snapshotFailure = new FixtureOddsTransactionCanceledError([
+        { code },
+        { code: "None" },
+        { code: "None" },
+      ]);
+      await expect(
+        new DynamoFixtureOddsAdapter(gateway).persist(input()),
+      ).rejects.toBeInstanceOf(FixtureOddsStorageError);
+    }
+  });
+
+  it("does not misclassify mixed conditional and throttling cancellation", async () => {
+    const gateway = boundHarness();
+    gateway.snapshotFailure = new FixtureOddsTransactionCanceledError([
+      { code: "ConditionalCheckFailed" },
+      { code: "None" },
+      { code: "ThrottlingError" },
+    ]);
+    await expect(
+      new DynamoFixtureOddsAdapter(gateway).persist(input()),
+    ).rejects.toBeInstanceOf(FixtureOddsStorageError);
+  });
+
+  it("rejects a conditional snapshot loss with no exact visible winner", async () => {
+    const gateway = boundHarness();
+    gateway.snapshotFailure = new FixtureOddsTransactionCanceledError([
+      { code: "None" },
+      { code: "None" },
+      { code: "ConditionalCheckFailed" },
+    ]);
+    await expect(
+      new DynamoFixtureOddsAdapter(gateway).persist(input()),
+    ).rejects.toBeInstanceOf(FixtureOddsBindingConflictError);
+  });
+
+  it("gives a simultaneous binding and snapshot condition loss binding precedence", async () => {
+    const gateway = boundHarness();
+    gateway.snapshotFailure = new FixtureOddsTransactionCanceledError([
+      { code: "ConditionalCheckFailed" },
+      { code: "None" },
+      { code: "ConditionalCheckFailed" },
+    ]);
+    await expect(
+      new DynamoFixtureOddsAdapter(gateway).persist(input()),
+    ).rejects.toBeInstanceOf(FixtureOddsBindingConflictError);
+  });
+
+  it("rejects truncated or reordered cancellation reason vectors", async () => {
+    for (const reasons of [
+      [{ code: "ConditionalCheckFailed" }],
+      [
+        { code: "None" },
+        { code: "ConditionalCheckFailed" },
+        { code: "None" },
+        { code: "None" },
+      ],
+    ]) {
+      const gateway = boundHarness();
+      gateway.snapshotFailure = new FixtureOddsTransactionCanceledError(
+        reasons,
+      );
+      await expect(
+        new DynamoFixtureOddsAdapter(gateway).persist(input()),
+      ).rejects.toBeInstanceOf(FixtureOddsStorageError);
+    }
+  });
+
+  it("does not treat missing or empty cancellation codes as None", async () => {
+    for (const first of [{}, { code: "" }]) {
+      const gateway = boundHarness();
+      gateway.snapshotFailure = new FixtureOddsTransactionCanceledError([
+        first,
+        { code: "None" },
+        { code: "ConditionalCheckFailed" },
+      ] as unknown as ConstructorParameters<
+        typeof FixtureOddsTransactionCanceledError
+      >[0]);
+      await expect(
+        new DynamoFixtureOddsAdapter(gateway).persist(input()),
+      ).rejects.toBeInstanceOf(FixtureOddsStorageError);
+    }
+  });
+
+  it("wraps failed snapshot and CURRENT recovery reads", async () => {
+    for (const phase of ["snapshot", "current"] as const) {
+      const gateway = boundHarness();
+      if (phase === "snapshot")
+        gateway.snapshotFailure = new FixtureOddsTransactionCanceledError([
+          { code: "None" },
+          { code: "None" },
+          { code: "ConditionalCheckFailed" },
+        ]);
+      else
+        gateway.currentFailure = new FixtureOddsTransactionCanceledError([
+          { code: "ConditionalCheckFailed" },
+        ]);
+      gateway.getFailure = new Error("read-down");
+      await expect(
+        new DynamoFixtureOddsAdapter(gateway).persist(input()),
+      ).rejects.toMatchObject({ name: "FixtureOddsStorageError" });
+    }
+  });
+
+  it("rejects malformed rows and orphan CURRENT pointers but accepts property reordering", async () => {
+    const malformed = boundHarness();
+    malformed.beforeSnapshot = (request) =>
+      malformed.seed(
+        request.snapshot.pk,
+        request.snapshot.sk,
+        Object.defineProperty({}, "x", { get: () => 1, enumerable: true }),
+      );
+    await expect(
+      new DynamoFixtureOddsAdapter(malformed).persist(input()),
+    ).rejects.toMatchObject({ name: "FixtureOddsStateCorruptionError" });
+
+    const reordered = boundHarness();
+    reordered.beforeSnapshot = (request) => {
+      const reversed = Object.fromEntries(
+        Object.entries(request.snapshot.value).reverse(),
+      );
+      reordered.seed(request.snapshot.pk, request.snapshot.sk, reversed);
+    };
+    await expect(
+      new DynamoFixtureOddsAdapter(reordered).persist(input()),
+    ).resolves.toMatchObject({ snapshot: "existing" });
+
+    const orphan = boundHarness();
+    const contender = normalizeFixtureOddsObservation(
+      input("2026-08-01T14:00:00.000Z", 140).observation,
+    );
+    orphan.beforeCurrent = (request) =>
+      orphan.items.set(orphan.key(request.item.pk, "CURRENT"), {
+        pk: request.item.pk,
+        sk: "CURRENT",
+        value: contender,
+      });
+    await expect(
+      new DynamoFixtureOddsAdapter(orphan).persist(input()),
+    ).rejects.toMatchObject({ name: "FixtureOddsStateCorruptionError" });
+  });
+});
+
+describe("AwsFixtureOddsGateway", () => {
+  it("emits consistent exact reads and exact transaction/current conditions", async () => {
+    const send = vi.fn().mockResolvedValue({});
+    const gateway = new AwsFixtureOddsGateway(
+      { send } as unknown as DynamoDBDocumentClient,
+      "events",
+    );
+    await gateway.getExact("pk", "sk");
+    const snapshot = normalizeFixtureOddsObservation(input().observation);
+    await gateway.transactSnapshot({
+      mapping: {
+        key: { pk: "mapping", sk: "CURRENT" },
+        expected: { canonicalEventId: "event-1" },
+      },
+      canonicalEvent: {
+        key: { pk: "event", sk: "CURRENT" },
+        expected: { version: 3 },
+      },
+      snapshot: {
+        pk: snapshot.partitionKey,
+        sk: snapshot.sortKey,
+        value: snapshot,
+      },
+    });
+    await gateway.putCurrent({
+      item: { pk: snapshot.partitionKey, sk: "CURRENT", value: snapshot },
+      advanceAfter: {
+        observedAt: snapshot.observedAt,
+        snapshotId: snapshot.snapshotId,
+      },
+    });
+    const getInput = (
+      send.mock.calls[0]![0] as { input: Record<string, unknown> }
+    ).input;
+    expect(getInput).toMatchObject({
+      TableName: "events",
+      Key: { pk: "pk", sk: "sk" },
+      ConsistentRead: true,
+    });
+    const transaction = (
+      send.mock.calls[1]![0] as { input: { TransactItems: unknown[] } }
+    ).input;
+    expect(transaction.TransactItems).toHaveLength(3);
+    expect(transaction).toMatchObject({
+      TransactItems: [
+        { ConditionCheck: { Key: { pk: "mapping", sk: "CURRENT" } } },
+        { ConditionCheck: { Key: { pk: "event", sk: "CURRENT" } } },
+        { Put: { ConditionExpression: "attribute_not_exists(pk)" } },
+      ],
+    });
+    const putInput = (
+      send.mock.calls[2]![0] as { input: Record<string, unknown> }
+    ).input;
+    expect(putInput.ConditionExpression).toContain(
+      "#value.#snapshotId < :snapshotId",
+    );
+  });
+
+  it("translates SDK cancellation reasons without hiding nontransaction errors", async () => {
+    const canceled = Object.assign(new Error("cancel"), {
+      name: "TransactionCanceledException",
+      CancellationReasons: [
+        { Code: "None" },
+        { Code: "None" },
+        { Code: "ConditionalCheckFailed", Message: "lost" },
+      ],
+    });
+    const send = vi.fn().mockRejectedValue(canceled);
+    const gateway = new AwsFixtureOddsGateway(
+      { send } as unknown as DynamoDBDocumentClient,
+      "events",
+    );
+    await expect(
+      gateway.transactSnapshot({
+        mapping: { key: { pk: "m", sk: "CURRENT" }, expected: { id: "x" } },
+        canonicalEvent: {
+          key: { pk: "e", sk: "CURRENT" },
+          expected: { id: "e" },
+        },
+        snapshot: {
+          pk: "o",
+          sk: "s",
+          value: normalizeFixtureOddsObservation(input().observation),
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "FixtureOddsTransactionCanceledError",
+      reasons: [
+        { code: "None" },
+        { code: "None" },
+        { code: "ConditionalCheckFailed", message: "lost" },
+      ],
+    });
+  });
+});

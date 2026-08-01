@@ -11,3 +11,4 @@ export * from "./event-read-projection";
 export * from "./event-repository";
 export * from "./dynamodb-event-repository";
 export * from "./memory-event-repository";
+export * from "./fixture-odds-adapter";
