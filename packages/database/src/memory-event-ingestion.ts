@@ -269,6 +269,18 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
       throw new Error("mapping-canonical-scope-mismatch");
     return { canonicalEventId: mapping.canonicalEventId };
   }
+  async resolveExactCanonicalBinding(
+    input: Pick<
+      EventIngestionInput,
+      "providerId" | "providerEventId" | "sportKey" | "leagueKey"
+    >,
+  ) {
+    const mapping = await this.getExactMapping(input);
+    if (!mapping) return null;
+    const event = this.events.get(mapping.canonicalEventId);
+    if (!event) throw new Error("mapping-canonical-missing");
+    return validateCanonicalEvent(event);
+  }
   async getProviderEventFence(
     checkpointKey: string,
     providerEventId: string,

@@ -525,6 +525,28 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
       throw new Error("mapping-canonical-scope-mismatch");
     return { canonicalEventId: mapping.canonicalEventId };
   }
+  async resolveExactCanonicalBinding(
+    input: Pick<
+      EventIngestionInput,
+      "providerId" | "providerEventId" | "sportKey" | "leagueKey"
+    >,
+  ) {
+    const mapping = await this.getExactMapping(input);
+    if (!mapping) return null;
+    const item = await this.gateway.get(
+      eventKey(mapping.canonicalEventId),
+      "CURRENT",
+    );
+    if (!item) throw new Error("mapping-canonical-missing");
+    const event = validateCanonicalEvent(item.value);
+    if (
+      event.id !== mapping.canonicalEventId ||
+      event.sportKey !== input.sportKey ||
+      event.leagueKey !== input.leagueKey
+    )
+      throw new Error("mapping-canonical-scope-mismatch");
+    return event;
+  }
   async getCanonicalByIdentity(
     sportKey: SportKey,
     leagueKey: string,

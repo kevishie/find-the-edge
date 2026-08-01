@@ -590,6 +590,14 @@ function contract(name: string, create: () => EventIngestionStore) {
       await store.ingestEvent(original);
       const mapping = await store.getExactMapping(original);
       expect(mapping?.canonicalEventId).toBe(bootstrap.id);
+      await expect(
+        store.resolveExactCanonicalBinding(original),
+      ).resolves.toMatchObject({
+        id: bootstrap.id,
+        version: 2,
+        sportKey: bootstrap.sportKey,
+        leagueKey: bootstrap.leagueKey,
+      });
       const postponed = {
         ...original,
         normalizedIdentity: "rescheduled",
@@ -604,6 +612,13 @@ function contract(name: string, create: () => EventIngestionStore) {
       await expect(store.ingestEvent(postponed)).resolves.toMatchObject({
         kind: "updated",
         eventId: bootstrap.id,
+      });
+      await expect(
+        store.resolveExactCanonicalBinding(original),
+      ).resolves.toMatchObject({
+        id: bootstrap.id,
+        version: 3,
+        startsAt: postponed.startsAt,
       });
       await expect(
         store.getCanonicalByIdentity(

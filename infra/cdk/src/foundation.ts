@@ -3,6 +3,7 @@ import {
   Duration,
   RemovalPolicy,
   Stack,
+  CfnOutput,
   type StackProps,
 } from "aws-cdk-lib";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
@@ -39,6 +40,7 @@ export interface FoundationConfig {
   jwtIssuer?: string;
   jwtAudience?: string;
   cursorSecretArn?: string;
+  fixtureOddsSeedEnabled?: boolean;
 }
 
 interface FoundationStackProps extends StackProps {
@@ -48,6 +50,7 @@ interface FoundationStackProps extends StackProps {
   jwtIssuer: string;
   jwtAudience: string;
   cursorSecretArn: string;
+  fixtureOddsSeedEnabled: boolean;
 }
 
 export class FoundationStack extends Stack {
@@ -109,6 +112,37 @@ export class FoundationStack extends Stack {
         reportBatchItemFailures: true,
       }),
     );
+    if (props.fixtureOddsSeedEnabled) {
+      const fixtureSeed = new NodejsFunction(this, "FixtureOddsSeed", {
+        entry: path.resolve(
+          directory,
+          "../../../apps/workers/src/fixture-odds-seed-lambda.ts",
+        ),
+        handler: "handler",
+        runtime: Runtime.NODEJS_24_X,
+        timeout: Duration.seconds(60),
+        memorySize: 256,
+        environment: {
+          FTE_AWS_STAGE: props.stageName,
+          FTE_FIXTURE_ODDS_SEED_ENABLED: "true",
+          FTE_EVENT_TABLE: table.tableName,
+        },
+      });
+      fixtureSeed.addToRolePolicy(
+        new PolicyStatement({
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:Query",
+            "dynamodb:PutItem",
+            "dynamodb:TransactWriteItems",
+          ],
+          resources: [table.tableArn],
+        }),
+      );
+      new CfnOutput(this, "FixtureOddsSeedFunctionName", {
+        value: fixtureSeed.functionName,
+      });
+    }
     const producer = new NodejsFunction(this, "UpcomingEventsProducer", {
       entry: path.resolve(
         directory,
@@ -294,6 +328,8 @@ export function createFoundationApp(config: FoundationConfig): {
       "FTE_AWS_STAGE must start with a lowercase letter and contain only lowercase letters, numbers, or hyphens",
     );
   }
+  if (config.fixtureOddsSeedEnabled && config.stage !== "dev")
+    throw new Error("fixture odds seed can only be enabled for the dev stage");
   if (!config.jwtIssuer || !config.jwtAudience || !config.cursorSecretArn)
     throw new Error("JWT issuer, audience, and cursor secret ARN are required");
   const alarmArn = config.alarmTopicArn;
@@ -324,6 +360,7 @@ export function createFoundationApp(config: FoundationConfig): {
       jwtIssuer: config.jwtIssuer,
       jwtAudience: config.jwtAudience,
       cursorSecretArn: config.cursorSecretArn,
+      fixtureOddsSeedEnabled: config.fixtureOddsSeedEnabled ?? false,
       ...(config.alarmTopicArn ? { alarmTopicArn: config.alarmTopicArn } : {}),
       ...(environment ? { env: environment } : {}),
     },

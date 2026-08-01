@@ -11,6 +11,56 @@ const eventConfig = {
 };
 
 describe("foundation CDK app", () => {
+  it("creates the fixture seed only for explicitly enabled dev", () => {
+    const { stack } = createFoundationApp({
+      stage: "dev",
+      fixtureOddsSeedEnabled: true,
+      ...eventConfig,
+    });
+    const template = Template.fromStack(stack);
+    template.resourceCountIs("AWS::Lambda::Function", 4);
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: {
+          FTE_AWS_STAGE: "dev",
+          FTE_FIXTURE_ODDS_SEED_ENABLED: "true",
+          FTE_EVENT_TABLE: Match.anyValue(),
+        },
+      },
+    });
+    template.hasOutput("FixtureOddsSeedFunctionName", {});
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: [
+              "dynamodb:GetItem",
+              "dynamodb:Query",
+              "dynamodb:PutItem",
+              "dynamodb:TransactWriteItems",
+            ],
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
+    const rendered = JSON.stringify(template.toJSON());
+    expect(rendered).toContain("dynamodb:TransactWriteItems");
+    expect(rendered).not.toContain("dynamodb:Scan");
+  });
+
+  it("omits the fixture seed by default and rejects non-dev enablement", () => {
+    const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 3);
+    expect(() =>
+      createFoundationApp({
+        stage: "prod",
+        fixtureOddsSeedEnabled: true,
+        ...eventConfig,
+      }),
+    ).toThrow("only be enabled for the dev stage");
+  });
+
   it("synthesizes the full durable ingestion contract", () => {
     const { stack } = createFoundationApp({ stage: "test", ...eventConfig });
     const template = Template.fromStack(stack);

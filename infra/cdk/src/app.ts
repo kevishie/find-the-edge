@@ -2,15 +2,23 @@ import { createFoundationApp } from "./foundation.js";
 
 const stage = process.env["FTE_AWS_STAGE"] ?? "local";
 const rawSchedulerEnabled = process.env["FTE_UPCOMING_SCHEDULER_ENABLED"];
+const rawFixtureOddsSeedEnabled = process.env["FTE_FIXTURE_ODDS_SEED_ENABLED"];
 if (
   rawSchedulerEnabled !== undefined &&
   rawSchedulerEnabled !== "true" &&
   rawSchedulerEnabled !== "false"
 )
   throw new Error("FTE_UPCOMING_SCHEDULER_ENABLED must be true or false");
+if (
+  rawFixtureOddsSeedEnabled !== undefined &&
+  rawFixtureOddsSeedEnabled !== "true" &&
+  rawFixtureOddsSeedEnabled !== "false"
+)
+  throw new Error("FTE_FIXTURE_ODDS_SEED_ENABLED must be true or false");
 const { app } = createFoundationApp({
   stage,
   schedulerEnabled: rawSchedulerEnabled === "true",
+  fixtureOddsSeedEnabled: rawFixtureOddsSeedEnabled === "true",
   ...(process.env["FTE_JWT_ISSUER"]
     ? { jwtIssuer: process.env["FTE_JWT_ISSUER"] }
     : {}),

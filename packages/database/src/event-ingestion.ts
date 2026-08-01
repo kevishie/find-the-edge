@@ -38,6 +38,12 @@ export type EventIngestionOutcome =
       readonly reason: "no-candidate" | "ambiguous-candidates";
     };
 export interface EventIngestionStore {
+  resolveExactCanonicalBinding(
+    input: Pick<
+      EventIngestionInput,
+      "providerId" | "providerEventId" | "sportKey" | "leagueKey"
+    >,
+  ): Promise<CanonicalEvent | null>;
   getExactMapping(
     input: Pick<
       EventIngestionInput,
