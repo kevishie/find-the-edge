@@ -237,6 +237,7 @@ export const toEventDisplayDto = (
   value: EventProjectionValue,
 ): EventDisplayDto => ({
   id: value.eventId,
+  version: value.materialVersion,
   sportKey: value.sportKey,
   leagueKey: value.leagueKey,
   competition: { key: value.leagueKey, state: "provisional" },

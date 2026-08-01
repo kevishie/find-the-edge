@@ -344,7 +344,7 @@ type FixtureOddsPartitionDimensions = Pick<
   | "sportsbookId"
 >;
 
-function partitionFrom(
+export function fixtureOddsPartition(
   observation: FixtureOddsPartitionDimensions,
 ): FixtureOddsPartition {
   const canonicalEventId = normalizeIdentifier(
@@ -415,7 +415,7 @@ export function normalizeFixtureOddsObservation(
   observation: FixtureOddsObservation,
 ): NormalizedFixtureOddsSnapshot {
   const captured = captureObservation(observation);
-  const partition = partitionFrom(captured);
+  const partition = fixtureOddsPartition(captured);
   if (
     !Number.isSafeInteger(captured.americanOdds) ||
     captured.americanOdds === 0 ||
@@ -624,7 +624,7 @@ function validatePriorState(state: FixtureOddsState): FixtureOddsState {
   }
   let rebuiltPartition: FixtureOddsPartition;
   try {
-    rebuiltPartition = partitionFrom(capturedPartition);
+    rebuiltPartition = fixtureOddsPartition(capturedPartition);
   } catch (error) {
     throw new FixtureOddsStateCorruptionError(
       `partition is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
@@ -647,7 +647,7 @@ export function transitionFixtureOdds(
   observation: FixtureOddsObservation,
 ): FixtureOddsTransitionResult {
   const snapshot = normalizeFixtureOddsObservation(observation);
-  const partition = partitionFrom(snapshot);
+  const partition = fixtureOddsPartition(snapshot);
   if (priorState === undefined) {
     const snapshots = Object.create(null) as Record<
       string,

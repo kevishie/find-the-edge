@@ -3,6 +3,7 @@ import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
   AwsDynamoGateway,
+  DynamoGamesRepository,
   DynamoEventRepository,
   EventCursorCodec,
 } from "@find-the-edge/database";
@@ -44,14 +45,22 @@ export const handler = async (event: LambdaEvent) => {
       );
     },
   );
+  const games = new DynamoGamesRepository(repository, gateway);
   const claims = event.requestContext?.authorizer?.jwt?.claims;
-  const route = event.routeKey?.includes("/{eventId}") ? "detail" : "list";
+  const route = event.routeKey?.startsWith("GET /games")
+    ? "games"
+    : event.routeKey?.includes("/{eventId}")
+      ? "detail"
+      : "list";
   const subject =
     typeof claims?.["sub"] === "string" ? claims["sub"] : undefined;
   const scopes = event.requestContext?.authorizer?.jwt?.scopes;
   const eventId = event.pathParameters?.eventId;
   const query = event.queryStringParameters;
-  return createEventHandler(repository)({
+  return createEventHandler(
+    repository,
+    games,
+  )({
     route,
     ...(subject ? { subject } : {}),
     ...(scopes ? { scopes } : {}),

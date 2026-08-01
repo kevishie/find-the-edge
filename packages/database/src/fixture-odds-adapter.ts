@@ -328,6 +328,14 @@ function validateStoredSnapshot(
   return normalized;
 }
 
+/** Read-side validation for an exact CURRENT item; performs the full A1 replay check. */
+export function validateFixtureOddsCurrentItem(
+  item: FixtureOddsItem | null,
+  expectedPartitionKey: string,
+): NormalizedFixtureOddsSnapshot | null {
+  return validateStoredSnapshot(item, expectedPartitionKey, "CURRENT");
+}
+
 function capturePlainData(
   value: unknown,
   required: readonly string[],

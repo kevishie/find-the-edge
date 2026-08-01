@@ -1,10 +1,11 @@
 import {
   EventCursorError,
   EventInputError,
+  type GamesRepository,
   type EventRepository,
 } from "@find-the-edge/database";
 export interface ApiRequest {
-  readonly route: "list" | "detail";
+  readonly route: "list" | "detail" | "games";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
@@ -23,9 +24,17 @@ const response = (statusCode: number, body: unknown): ApiResponse => ({
 export const createEventHandler =
   (
     repository: EventRepository,
-    log: (entry: Readonly<Record<string, unknown>>) => void = console.log,
+    gamesOrLog?:
+      GamesRepository | ((entry: Readonly<Record<string, unknown>>) => void),
+    suppliedLog?: (entry: Readonly<Record<string, unknown>>) => void,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
+    const gamesRepository =
+      typeof gamesOrLog === "function" ? undefined : gamesOrLog;
+    const log =
+      typeof gamesOrLog === "function"
+        ? gamesOrLog
+        : (suppliedLog ?? console.log);
     const started = Date.now();
     let status = 200;
     try {
@@ -42,11 +51,27 @@ export const createEventHandler =
         return response(200, result);
       }
       const query = request.query ?? {};
+      if (
+        request.route === "games" &&
+        (Object.keys(query).some(
+          (key) =>
+            !["sport", "league", "status", "day", "limit", "cursor"].includes(
+              key,
+            ),
+        ) ||
+          query["status"] !== "scheduled" ||
+          !["mlb", "soccer"].includes(query["sport"] ?? "") ||
+          (query["league"] !== undefined &&
+            query["league"] !== (query["sport"] === "mlb" ? "mlb" : "mls")))
+      )
+        throw new EventInputError("invalid-games-filter");
       if (query["cursor"] === "") throw new EventCursorError("invalid-cursor");
       const rawLimit = query["limit"] ?? "20";
       if (!/^(?:[1-9]|[1-4][0-9]|50)$/.test(rawLimit))
         throw new EventInputError("invalid-event-limit");
-      const page = await repository.list(
+      const target = request.route === "games" ? gamesRepository : repository;
+      if (!target) throw new Error("games-repository-not-configured");
+      const page = await target.list(
         {
           sportKey: query["sport"] ?? "",
           ...(query["league"] ? { leagueKey: query["league"] } : {}),

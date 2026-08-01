@@ -22,6 +22,84 @@ const repository: EventRepository = {
   },
 };
 describe("event API", () => {
+  it("serves games through the scoped authenticated repository", async () => {
+    const games = {
+      list: async () => ({
+        ...(await Promise.resolve({})),
+        items: [],
+        nextCursor: null,
+        projectionState: "ready" as const,
+        evaluationState: "complete" as const,
+        hasMoreUnknown: false,
+        snapshotAt: null,
+        freshness: null,
+      }),
+    };
+    const result = await createEventHandler(
+      repository,
+      games,
+    )({
+      route: "games",
+      subject: "u",
+      scopes: ["events:read"],
+      query: {
+        sport: "mlb",
+        status: "scheduled",
+        day: "2026-08-01",
+        limit: "50",
+      },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toMatchObject({
+      items: [],
+      projectionState: "ready",
+    });
+  });
+  it("rejects unsupported games sports and non-scheduled status before reading", async () => {
+    let reads = 0;
+    const games = {
+      list: async () => {
+        await Promise.resolve();
+        reads += 1;
+        return {
+          items: [],
+          nextCursor: null,
+          projectionState: "ready" as const,
+          evaluationState: "complete" as const,
+          hasMoreUnknown: false,
+          snapshotAt: null,
+          freshness: null,
+        };
+      },
+    };
+    const result = await createEventHandler(
+      repository,
+      games,
+    )({
+      route: "games",
+      subject: "u",
+      scopes: ["events:read"],
+      query: { sport: "nfl", status: "completed", day: "2026-08-01" },
+    });
+    expect(result.statusCode).toBe(400);
+    expect(reads).toBe(0);
+    const unknown = await createEventHandler(
+      repository,
+      games,
+    )({
+      route: "games",
+      subject: "u",
+      scopes: ["events:read"],
+      query: {
+        sport: "mlb",
+        status: "scheduled",
+        day: "2026-08-01",
+        extra: "ignored",
+      },
+    });
+    expect(unknown.statusCode).toBe(400);
+    expect(reads).toBe(0);
+  });
   it("authenticates and requires scope before reads", async () => {
     expect(
       (await createEventHandler(repository)({ route: "list" })).statusCode,

@@ -293,6 +293,7 @@ export interface CanonicalEvent extends Event {
 }
 export interface EventDisplayDto {
   readonly id: string;
+  readonly version: number;
   readonly sportKey: string;
   readonly leagueKey: string;
   readonly competition: { readonly key: string; readonly state: "provisional" };
@@ -308,6 +309,26 @@ export interface EventDisplayDto {
   };
   readonly status: EventStatus;
   readonly freshness: string | null;
+}
+
+export interface GameOddsSelectionDto {
+  readonly marketKey: string;
+  readonly selectionKey: string;
+  readonly selectionLabel?: string;
+  readonly sportsbookId: string;
+  readonly sportsbookLabel?: string;
+  readonly americanOdds: number;
+  readonly observedAt: string;
+  readonly retrievedAt: string;
+}
+
+export interface GameDisplayDto extends EventDisplayDto {
+  readonly odds:
+    | {
+        readonly state: "available";
+        readonly selections: readonly GameOddsSelectionDto[];
+      }
+    | { readonly state: "unavailable" };
 }
 export interface CanonicalEventBootstrap {
   readonly id: EntityId;

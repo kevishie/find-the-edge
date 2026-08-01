@@ -19,6 +19,7 @@ import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { Topic } from "aws-cdk-lib/aws-sns";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
+  CorsHttpMethod,
   HttpApi,
   HttpMethod,
   HttpStage,
@@ -177,6 +178,7 @@ export class FoundationStack extends Stack {
       new PolicyStatement({
         actions: [
           "dynamodb:GetItem",
+          "dynamodb:BatchGetItem",
           "dynamodb:Query",
           "dynamodb:TransactGetItems",
         ],
@@ -191,6 +193,11 @@ export class FoundationStack extends Stack {
     );
     const api = new HttpApi(this, "EventsHttpApi", {
       createDefaultStage: false,
+      corsPreflight: {
+        allowOrigins: ["*"],
+        allowHeaders: ["authorization", "content-type"],
+        allowMethods: [CorsHttpMethod.GET],
+      },
     });
     const authorizer = new HttpJwtAuthorizer("EventsJwt", props.jwtIssuer, {
       jwtAudience: [props.jwtAudience],
@@ -208,6 +215,13 @@ export class FoundationStack extends Stack {
     });
     api.addRoutes({
       path: "/events/{eventId}",
+      methods: [HttpMethod.GET],
+      integration,
+      authorizer,
+      authorizationScopes: ["events:read"],
+    });
+    api.addRoutes({
+      path: "/games",
       methods: [HttpMethod.GET],
       integration,
       authorizer,

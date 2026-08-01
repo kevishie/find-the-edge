@@ -204,6 +204,19 @@ stories:
     blockerReason:
     risk: High
     approvalRequiredBeforeMerge: false
+  - id: FTE-MVP-001B
+    title: Games and Odds Read API
+    epic: MVP games explorer corrective slices
+    sport: core
+    league: [mlb, mls]
+    module: games-read-api
+    priority: P0
+    status: done
+    dependencies: [FTE-MVP-001A2, FTE-MVP-001A3, FTE-016]
+    validationCommands: [pnpm check, pnpm synth]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: false
   - id: FTE-DATA-004
     title: Completed-Event Result Ingestion and Correction History
     epic: Multi-sport feed and result spine

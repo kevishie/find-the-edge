@@ -124,6 +124,29 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("FindTheEdge/UpcomingEvents");
     expect(rendered).toContain("FailedRecords");
     expect(rendered).toContain("FindTheEdge/EventApi");
+    expect(rendered).toContain("GET /games");
+    template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
+      CorsConfiguration: {
+        AllowHeaders: ["authorization", "content-type"],
+        AllowMethods: ["GET"],
+        AllowOrigins: ["*"],
+      },
+    });
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: [
+              "dynamodb:GetItem",
+              "dynamodb:BatchGetItem",
+              "dynamodb:Query",
+              "dynamodb:TransactGetItems",
+            ],
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
     expect(rendered).toContain("Caught5xx");
     expect(rendered).not.toContain("dynamodb:Scan");
     template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
