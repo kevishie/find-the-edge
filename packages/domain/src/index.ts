@@ -281,6 +281,7 @@ export interface ProviderRevision {
 }
 export interface CanonicalEvent extends Event {
   readonly leagueKey: string;
+  readonly participantLabels?: readonly string[];
   readonly status: EventStatus;
   readonly revisions: Readonly<Record<string, ProviderRevision>>;
   readonly updatedAt: IsoTimestamp;
@@ -288,6 +289,24 @@ export interface CanonicalEvent extends Event {
   readonly authoritativeRevision?: ProviderRevision;
   readonly bootstrapRevision?: ProviderRevision;
   readonly version: number;
+}
+export interface EventDisplayDto {
+  readonly id: string;
+  readonly sportKey: string;
+  readonly leagueKey: string;
+  readonly competition: { readonly key: string; readonly state: "provisional" };
+  readonly participants: readonly {
+    readonly id: string;
+    readonly label: string;
+  }[];
+  readonly startsAt: string;
+  readonly eastern: {
+    readonly timeZone: "America/New_York";
+    readonly calendarDay: string;
+    readonly display: string;
+  };
+  readonly status: EventStatus;
+  readonly freshness: string | null;
 }
 export interface CanonicalEventBootstrap {
   readonly id: EntityId;

@@ -22,6 +22,7 @@ export interface EventIngestionInput {
   readonly normalizedIdentity: string;
   readonly startsAt: IsoTimestamp;
   readonly status: EventStatus;
+  readonly participantLabels?: readonly string[];
   readonly revision: ProviderRevision;
   readonly observedAt: IsoTimestamp;
   readonly providerEventFence?: {
@@ -585,6 +586,7 @@ export function validateCanonicalEvent(value: unknown): CanonicalEvent {
     "leagueKey",
     "leagueId",
     "participantIds",
+    "participantLabels",
     "startsAt",
     "phase",
     "evidence",
@@ -636,6 +638,16 @@ export function validateCanonicalEvent(value: unknown): CanonicalEvent {
         typeof id === "string" && !!id && id.length <= 512 && id === id.trim(),
     ) ||
     new Set(item["participantIds"]).size !== item["participantIds"].length ||
+    (item["participantLabels"] !== undefined &&
+      (!Array.isArray(item["participantLabels"]) ||
+        item["participantLabels"].length !== item["participantIds"].length ||
+        !item["participantLabels"].every(
+          (label) =>
+            typeof label === "string" &&
+            label === label.trim() &&
+            label.length > 0 &&
+            label.length <= 120,
+        ))) ||
     !Array.isArray(item["evidence"]) ||
     item["evidence"].length > 50 ||
     !item["evidence"].every((raw) => {

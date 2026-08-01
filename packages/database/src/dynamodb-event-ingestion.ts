@@ -46,6 +46,12 @@ import {
   type ContinuationOutbox,
   type ProviderEventFence,
 } from "./event-ingestion";
+import {
+  closeProjection,
+  projectionItems,
+  validateProjection,
+  type EventDetailPointer,
+} from "./event-read-projection";
 
 const waitForIdentityRetry = (attempt: number) =>
   new Promise<void>((resolve) => {
@@ -71,6 +77,12 @@ export interface DynamoItem {
 }
 export type DynamoWrite =
   | { readonly kind: "insert"; readonly item: DynamoItem }
+  | {
+      readonly kind: "put-projection";
+      readonly item: DynamoItem;
+      readonly expectedValue?: unknown;
+      readonly requireAbsent?: boolean;
+    }
   | {
       readonly kind: "claim-identity";
       readonly item: DynamoItem;
@@ -131,6 +143,17 @@ export interface DynamoGateway {
     keys: readonly { readonly pk: string; readonly sk: string }[],
   ): Promise<readonly DynamoItem[]>;
   queryUpTo(pk: string, limit: number): Promise<readonly DynamoItem[]>;
+  queryPage(
+    pk: string,
+    startSk: string | undefined,
+    limit: number,
+  ): Promise<{
+    readonly items: readonly DynamoItem[];
+    readonly lastEvaluatedSk?: string;
+  }>;
+  transactGet(
+    keys: readonly { readonly pk: string; readonly sk: string }[],
+  ): Promise<readonly (DynamoItem | null)[]>;
   queryAll(pk: string): Promise<readonly DynamoItem[]>;
   insert(item: DynamoItem): Promise<"inserted" | "exists">;
   transact(writes: readonly DynamoWrite[]): Promise<void>;
@@ -855,6 +878,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
       leagueKey: input.leagueKey,
       leagueId: input.leagueId,
       participantIds: [...input.participantIds],
+      participantLabels: [...input.participantLabels],
       startsAt: input.startsAt,
       phase: input.phase,
       evidence: [],
@@ -867,11 +891,23 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
       version: 1,
     };
     validateCanonicalEvent(event);
+    const projections = projectionItems(event, observedAt);
     try {
       await this.gateway.transact([
         {
           kind: "insert",
           item: { pk: eventKey(event.id), sk: "CURRENT", value: event },
+        },
+        { kind: "put-projection", item: projections.pointer },
+        { kind: "put-projection", item: projections.sport },
+        { kind: "put-projection", item: projections.league },
+        {
+          kind: "put-projection",
+          item: {
+            pk: "EVENT_PROJECTIONS",
+            sk: "READINESS",
+            value: { schemaVersion: 1, state: "initialized" },
+          },
         },
         identityResolution.physicallyMissing
           ? {
@@ -1518,7 +1554,12 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         : [];
     const revisionSk = `PROVIDER_REVISION#${stableDigest(input.providerId)}`;
     const materialFingerprint = stableDigest(
-      JSON.stringify([input.normalizedIdentity, input.startsAt, input.status]),
+      JSON.stringify([
+        input.normalizedIdentity,
+        input.startsAt,
+        input.status,
+        input.participantLabels ?? current.participantLabels,
+      ]),
     );
     const revisionItem = await this.gateway.get(eventKey(id), revisionSk);
     const persistedRevision = revisionItem
@@ -1724,6 +1765,9 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     }
     const next: CanonicalEvent = {
       ...current,
+      participantLabels: [
+        ...(input.participantLabels ?? current.participantLabels ?? []),
+      ],
       startsAt: input.startsAt,
       status: input.status,
       revisions: { ...current.revisions, [input.providerId]: input.revision },
@@ -1744,6 +1788,62 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     )
       throw new Error("canonical-revision-provider-limit");
     validateCanonicalEvent(next);
+    const pointerItem = await this.gateway.get(
+      `EVENT_DETAIL#${current.id}`,
+      "CURRENT",
+    );
+    if (
+      !pointerItem ||
+      !pointerItem.value ||
+      typeof pointerItem.value !== "object" ||
+      Array.isArray(pointerItem.value)
+    )
+      throw new Error("event-projection-pointer-missing");
+    const pointer = pointerItem.value as EventDetailPointer;
+    if (
+      pointer.eventId !== current.id ||
+      pointer.materialVersion !== current.version
+    )
+      throw new Error("event-projection-pointer-corrupt");
+    const activeRows = await this.gateway.batchGet([
+      { pk: pointer.sportPk, sk: pointer.sportSk },
+      { pk: pointer.leaguePk, sk: pointer.leagueSk },
+    ]);
+    const sportItem = activeRows.find(
+      (row) => row.pk === pointer.sportPk && row.sk === pointer.sportSk,
+    );
+    const leagueItem = activeRows.find(
+      (row) => row.pk === pointer.leaguePk && row.sk === pointer.leagueSk,
+    );
+    if (!sportItem || !leagueItem)
+      throw new Error("event-projection-active-missing");
+    const sportProjection = validateProjection(
+      sportItem,
+      "sport",
+      input.observedAt,
+    );
+    const leagueProjection = validateProjection(
+      leagueItem,
+      "league",
+      input.observedAt,
+    );
+    if (
+      sportProjection.visibleUntil !== null ||
+      leagueProjection.visibleUntil !== null ||
+      sportProjection.eventId !== current.id ||
+      leagueProjection.eventId !== current.id ||
+      sportProjection.materialVersion !== current.version ||
+      leagueProjection.materialVersion !== current.version
+    )
+      throw new Error("event-projection-active-corrupt");
+    const commitAt = new Date(
+      Math.max(
+        Date.parse(input.observedAt),
+        Date.parse(sportProjection.visibleFrom) + 1,
+        Date.parse(leagueProjection.visibleFrom) + 1,
+      ),
+    ).toISOString() as IsoTimestamp;
+    const nextProjections = projectionItems(next, commitAt);
     const history: EventHistoryEntry | undefined =
       current.startsAt !== next.startsAt || current.status !== next.status
         ? {
@@ -1780,6 +1880,31 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         kind: "replace",
         item: { ...item, value: next },
         expectedVersion: current.version,
+      },
+      {
+        kind: "put-projection",
+        item: closeProjection(sportItem, commitAt),
+        expectedValue: sportItem.value,
+      },
+      {
+        kind: "put-projection",
+        item: closeProjection(leagueItem, commitAt),
+        expectedValue: leagueItem.value,
+      },
+      {
+        kind: "put-projection",
+        item: nextProjections.pointer,
+        expectedValue: pointerItem.value,
+      },
+      {
+        kind: "put-projection",
+        item: nextProjections.sport,
+        requireAbsent: true,
+      },
+      {
+        kind: "put-projection",
+        item: nextProjections.league,
+        requireAbsent: true,
       },
       ...(current.candidateIdentity !== input.normalizedIdentity
         ? [

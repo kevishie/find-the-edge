@@ -51,6 +51,25 @@ class ContractGateway implements DynamoGateway {
       .sort((left, right) => left.sk.localeCompare(right.sk))
       .slice(0, limit);
   }
+  async queryPage(pk: string, startSk: string | undefined, limit: number) {
+    await Promise.resolve();
+    const all = [...this.items.values()]
+      .filter((item) => item.pk === pk && (!startSk || item.sk > startSk))
+      .sort((left, right) => left.sk.localeCompare(right.sk));
+    const items = all.slice(0, limit);
+    return {
+      items,
+      ...(all.length > limit && items.length
+        ? { lastEvaluatedSk: items.at(-1)!.sk }
+        : {}),
+    };
+  }
+  async transactGet(
+    keys: readonly { readonly pk: string; readonly sk: string }[],
+  ) {
+    await Promise.resolve();
+    return keys.map(({ pk, sk }) => this.items.get(this.key(pk, sk)) ?? null);
+  }
   async queryAll(pk: string) {
     await Promise.resolve();
     return [...this.items.values()].filter((item) => item.pk === pk);
@@ -70,6 +89,7 @@ class ContractGateway implements DynamoGateway {
         write.kind === "insert" ||
         write.kind === "claim-identity" ||
         write.kind === "replace" ||
+        write.kind === "put-projection" ||
         write.kind === "put-provider-event-fence" ||
         write.kind === "put-bootstrap-marker"
           ? this.key(write.item.pk, write.item.sk)
@@ -141,6 +161,19 @@ class ContractGateway implements DynamoGateway {
         continue;
       }
       const key = this.key(write.item.pk, write.item.sk);
+      if (
+        write.kind === "put-projection" &&
+        write.expectedValue !== undefined &&
+        JSON.stringify(snapshot.get(key)?.value) !==
+          JSON.stringify(write.expectedValue)
+      )
+        throw new DynamoConditionalConflict();
+      if (
+        write.kind === "put-projection" &&
+        write.requireAbsent &&
+        snapshot.has(key)
+      )
+        throw new DynamoConditionalConflict();
       if (write.kind === "insert" && snapshot.has(key))
         throw new DynamoConditionalConflict();
       if (write.kind === "claim-identity" && snapshot.has(key)) {
@@ -990,6 +1023,69 @@ function contract(name: string, create: () => EventIngestionStore) {
     });
   });
 }
+
+describe("projection temporal fences", () => {
+  const runRepeated = async (
+    store: EventIngestionStore,
+    rows: () => readonly DynamoItem[],
+  ) => {
+    await store.bootstrapCanonicalEvent(bootstrap, observedAt);
+    const statuses = ["postponed", "scheduled", "cancelled"] as const;
+    for (let index = 0; index < statuses.length; index++) {
+      await store.ingestEvent({
+        providerId: "provider",
+        providerEventId: "repeated-clock",
+        sportKey: bootstrap.sportKey,
+        leagueKey: bootstrap.leagueKey,
+        normalizedIdentity: bootstrap.normalizedIdentity,
+        startsAt: bootstrap.startsAt,
+        status: statuses[index]!,
+        participantLabels: bootstrap.participantLabels,
+        revision: {
+          providerId: "provider",
+          authorityRank: 101,
+          updatedAt: observedAt,
+          sequence: index + 1,
+          token: `repeat-${index}`,
+        },
+        observedAt,
+      });
+    }
+    const values = rows()
+      .flatMap((row) =>
+        row.value && typeof row.value === "object" && "family" in row.value
+          ? [
+              row.value as {
+                family: string;
+                visibleFrom: string;
+                visibleUntil: string | null;
+              },
+            ]
+          : [],
+      )
+      .filter((row) => row.family === "sport")
+      .sort((left, right) => left.visibleFrom.localeCompare(right.visibleFrom));
+    expect(values).toHaveLength(4);
+    expect(new Set(values.map((row) => row.visibleFrom)).size).toBe(4);
+    for (let index = 1; index < values.length; index++)
+      expect(Date.parse(values[index]!.visibleFrom)).toBeGreaterThan(
+        Date.parse(values[index - 1]!.visibleFrom),
+      );
+    expect(values.filter((row) => row.visibleUntil === null)).toHaveLength(1);
+  };
+
+  it("stays strictly monotonic across three repeated timestamps in memory", async () => {
+    const store = new MemoryEventIngestionStore();
+    await runRepeated(store, () => [...store.eventReadItems.values()]);
+  });
+
+  it("stays strictly monotonic across three repeated timestamps in Dynamo", async () => {
+    const gateway = new ContractGateway();
+    await runRepeated(new DynamoEventIngestionStore(gateway), () => [
+      ...gateway.items.values(),
+    ]);
+  });
+});
 
 contract("memory", () => new MemoryEventIngestionStore());
 contract("dynamo", () => new DynamoEventIngestionStore(new ContractGateway()));

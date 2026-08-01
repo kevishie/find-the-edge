@@ -11,6 +11,15 @@ if (
 const { app } = createFoundationApp({
   stage,
   schedulerEnabled: rawSchedulerEnabled === "true",
+  ...(process.env["FTE_JWT_ISSUER"]
+    ? { jwtIssuer: process.env["FTE_JWT_ISSUER"] }
+    : {}),
+  ...(process.env["FTE_JWT_AUDIENCE"]
+    ? { jwtAudience: process.env["FTE_JWT_AUDIENCE"] }
+    : {}),
+  ...(process.env["FTE_EVENT_CURSOR_SECRET_ARN"]
+    ? { cursorSecretArn: process.env["FTE_EVENT_CURSOR_SECRET_ARN"] }
+    : {}),
   ...(process.env["FTE_UPCOMING_ALARM_TOPIC_ARN"]
     ? { alarmTopicArn: process.env["FTE_UPCOMING_ALARM_TOPIC_ARN"] }
     : {}),

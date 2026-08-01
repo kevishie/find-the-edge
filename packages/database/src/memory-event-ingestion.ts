@@ -44,7 +44,79 @@ import {
   type ProviderEventFence,
   type IdentityClaim,
 } from "./event-ingestion";
+import {
+  closeProjection,
+  projectionItems,
+  validateProjection,
+  type EventDetailPointer,
+} from "./event-read-projection";
 export class MemoryEventIngestionStore implements EventIngestionStore {
+  readonly eventReadItems = new Map<
+    string,
+    import("./dynamodb-event-ingestion").DynamoItem
+  >();
+  eventReadInitialized = false;
+  private putProjection(item: import("./dynamodb-event-ingestion").DynamoItem) {
+    this.eventReadItems.set(`${item.pk}\0${item.sk}`, item);
+  }
+  private initializeProjection(event: CanonicalEvent, commitAt: string) {
+    const projected = projectionItems(event, commitAt as IsoTimestamp);
+    this.putProjection(projected.pointer);
+    this.putProjection(projected.sport);
+    this.putProjection(projected.league);
+    this.eventReadInitialized = true;
+  }
+  private transitionProjection(
+    previous: CanonicalEvent,
+    next: CanonicalEvent,
+    trustedNow: string,
+  ) {
+    const pointerItem = this.eventReadItems.get(
+      `EVENT_DETAIL#${previous.id}\0CURRENT`,
+    );
+    if (
+      !pointerItem ||
+      !pointerItem.value ||
+      typeof pointerItem.value !== "object" ||
+      Array.isArray(pointerItem.value)
+    )
+      throw new Error("event-projection-pointer-missing");
+    const pointer = pointerItem.value as EventDetailPointer;
+    if (
+      pointer.eventId !== previous.id ||
+      pointer.materialVersion !== previous.version
+    )
+      throw new Error("event-projection-pointer-corrupt");
+    const sportItem = this.eventReadItems.get(
+      `${pointer.sportPk}\0${pointer.sportSk}`,
+    );
+    const leagueItem = this.eventReadItems.get(
+      `${pointer.leaguePk}\0${pointer.leagueSk}`,
+    );
+    if (!sportItem || !leagueItem)
+      throw new Error("event-projection-active-missing");
+    const sport = validateProjection(sportItem, "sport", trustedNow);
+    const league = validateProjection(leagueItem, "league", trustedNow);
+    if (
+      sport.visibleUntil !== null ||
+      league.visibleUntil !== null ||
+      sport.eventId !== previous.id ||
+      league.eventId !== previous.id ||
+      sport.materialVersion !== previous.version ||
+      league.materialVersion !== previous.version
+    )
+      throw new Error("event-projection-active-corrupt");
+    const commitAt = new Date(
+      Math.max(
+        Date.parse(trustedNow),
+        Date.parse(sport.visibleFrom) + 1,
+        Date.parse(league.visibleFrom) + 1,
+      ),
+    ).toISOString();
+    this.putProjection(closeProjection(sportItem, commitAt));
+    this.putProjection(closeProjection(leagueItem, commitAt));
+    this.initializeProjection(next, commitAt);
+  }
   readonly events = new Map<string, CanonicalEvent>();
   readonly identityAggregates = new Map<string, IdentityClaim>();
   readonly providerEventFences = new Map<string, ProviderEventFence>();
@@ -483,6 +555,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
       leagueKey: input.leagueKey,
       leagueId: input.leagueId,
       participantIds: [...input.participantIds],
+      participantLabels: [...input.participantLabels],
       startsAt: input.startsAt,
       phase: input.phase,
       evidence: [],
@@ -496,6 +569,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
     };
     validateCanonicalEvent(event);
     this.events.set(event.id, event);
+    this.initializeProjection(event, observedAt);
     this.identityAggregates.set(key, {
       candidateEventIds: [event.id],
       sportKey: input.sportKey,
@@ -603,7 +677,12 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
         ? persistedEvidence.revision
         : persistedEvidence;
     const materialFingerprint = stableDigest(
-      JSON.stringify([input.normalizedIdentity, input.startsAt, input.status]),
+      JSON.stringify([
+        input.normalizedIdentity,
+        input.startsAt,
+        input.status,
+        input.participantLabels ?? current.participantLabels,
+      ]),
     );
     const providerPrior = [
       persistedRevision,
@@ -727,6 +806,9 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
     }
     const next: CanonicalEvent = {
       ...current,
+      participantLabels: [
+        ...(input.participantLabels ?? current.participantLabels ?? []),
+      ],
       startsAt: input.startsAt,
       status: input.status,
       revisions: { ...current.revisions, [input.providerId]: input.revision },
@@ -797,6 +879,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
       { revision: input.revision, materialFingerprint },
     );
     this.events.set(id, next);
+    this.transitionProjection(current, next, input.observedAt);
     if (current.candidateIdentity !== input.normalizedIdentity) {
       const oldKey = identityKey(
         input.sportKey,

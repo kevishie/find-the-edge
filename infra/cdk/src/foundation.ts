@@ -11,10 +11,21 @@ import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
 import { Rule, Schedule } from "aws-cdk-lib/aws-events";
 import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
 import { Runtime } from "aws-cdk-lib/aws-lambda";
+import { PolicyStatement } from "aws-cdk-lib/aws-iam";
 import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { Topic } from "aws-cdk-lib/aws-sns";
+import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
+import {
+  HttpApi,
+  HttpMethod,
+  HttpStage,
+  LogGroupLogDestination,
+} from "aws-cdk-lib/aws-apigatewayv2";
+import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
+import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import type { Construct } from "constructs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,11 +36,18 @@ export interface FoundationConfig {
   region?: string;
   schedulerEnabled?: boolean;
   alarmTopicArn?: string;
+  jwtIssuer?: string;
+  jwtAudience?: string;
+  cursorSecretArn?: string;
 }
 
 interface FoundationStackProps extends StackProps {
   schedulerEnabled: boolean;
   alarmTopicArn?: string;
+  stageName: string;
+  jwtIssuer: string;
+  jwtAudience: string;
+  cursorSecretArn: string;
 }
 
 export class FoundationStack extends Stack {
@@ -68,8 +86,21 @@ export class FoundationStack extends Stack {
       },
       bundling: { minify: true, sourceMap: true },
     });
-    table.grantReadWriteData(worker);
-    table.grant(worker, "dynamodb:TransactWriteItems");
+    worker.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:BatchGetItem",
+          "dynamodb:Query",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:TransactGetItems",
+          "dynamodb:TransactWriteItems",
+        ],
+        resources: [table.tableArn],
+      }),
+    );
     queue.grantSendMessages(worker);
     worker.addEventSource(
       new SqsEventSource(queue, {
@@ -96,6 +127,79 @@ export class FoundationStack extends Stack {
       schedule: Schedule.rate(Duration.hours(1)),
     });
     schedulerReady.addTarget(new LambdaFunction(producer));
+    const eventApi = new NodejsFunction(this, "EventApi", {
+      entry: path.resolve(directory, "../../../apps/api/src/lambda.ts"),
+      handler: "handler",
+      runtime: Runtime.NODEJS_24_X,
+      timeout: Duration.seconds(10),
+      memorySize: 256,
+      environment: {
+        FTE_EVENT_TABLE_NAME: table.tableName,
+        FTE_EVENT_CURSOR_SECRET_ARN: props.cursorSecretArn,
+      },
+      bundling: { minify: true, sourceMap: true },
+    });
+    eventApi.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:TransactGetItems",
+        ],
+        resources: [table.tableArn],
+      }),
+    );
+    eventApi.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [props.cursorSecretArn],
+      }),
+    );
+    const api = new HttpApi(this, "EventsHttpApi", {
+      createDefaultStage: false,
+    });
+    const authorizer = new HttpJwtAuthorizer("EventsJwt", props.jwtIssuer, {
+      jwtAudience: [props.jwtAudience],
+    });
+    const integration = new HttpLambdaIntegration(
+      "EventsIntegration",
+      eventApi,
+    );
+    api.addRoutes({
+      path: "/events",
+      methods: [HttpMethod.GET],
+      integration,
+      authorizer,
+      authorizationScopes: ["events:read"],
+    });
+    api.addRoutes({
+      path: "/events/{eventId}",
+      methods: [HttpMethod.GET],
+      integration,
+      authorizer,
+      authorizationScopes: ["events:read"],
+    });
+    const accessLogs = new LogGroup(this, "EventApiAccessLogs", {
+      retention: RetentionDays.ONE_MONTH,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    new HttpStage(this, "EventApiStage", {
+      httpApi: api,
+      stageName: props.stageName,
+      autoDeploy: true,
+      accessLogSettings: {
+        destination: new LogGroupLogDestination(accessLogs),
+        format: AccessLogFormat.custom(
+          JSON.stringify({
+            requestId: "$context.requestId",
+            routeKey: "$context.routeKey",
+            status: "$context.status",
+            responseLatency: "$context.responseLatency",
+            authorizerStatus: "$context.authorizer.status",
+          }),
+        ),
+      },
+    });
     const alarms = [
       new Alarm(this, "UpcomingEventsDlqAlarm", {
         metric: dlq.metricApproximateNumberOfMessagesVisible(),
@@ -145,6 +249,30 @@ export class FoundationStack extends Stack {
         comparisonOperator:
           ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       }),
+      new Alarm(this, "EventApiErrorsAlarm", {
+        metric: eventApi.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+      }),
+      new Alarm(this, "EventApiLatencyAlarm", {
+        metric: eventApi.metricDuration(),
+        threshold: 2000,
+        evaluationPeriods: 2,
+      }),
+      ...(["list", "detail"] as const).map(
+        (route) =>
+          new Alarm(this, `EventApiCaught5xx${route}Alarm`, {
+            metric: new Metric({
+              namespace: "FindTheEdge/EventApi",
+              metricName: "Caught5xx",
+              dimensionsMap: { Route: route },
+              statistic: "Sum",
+              period: Duration.minutes(1),
+            }),
+            threshold: 1,
+            evaluationPeriods: 1,
+          }),
+      ),
     ];
     if (props.alarmTopicArn) {
       const topic = Topic.fromTopicArn(
@@ -166,6 +294,8 @@ export function createFoundationApp(config: FoundationConfig): {
       "FTE_AWS_STAGE must start with a lowercase letter and contain only lowercase letters, numbers, or hyphens",
     );
   }
+  if (!config.jwtIssuer || !config.jwtAudience || !config.cursorSecretArn)
+    throw new Error("JWT issuer, audience, and cursor secret ARN are required");
   const alarmArn = config.alarmTopicArn;
   const alarmMatch = alarmArn?.match(
     /^arn:(aws|aws-us-gov|aws-cn):sns:([a-z]{2}(?:-gov)?-[a-z]+-\d):\d{12}:[A-Za-z0-9_-]{1,256}$/,
@@ -190,6 +320,10 @@ export function createFoundationApp(config: FoundationConfig): {
       description:
         "FIND THE EDGE checkpointed upcoming-event ingestion with a config-controlled scheduler producer.",
       schedulerEnabled: config.schedulerEnabled ?? false,
+      stageName: config.stage,
+      jwtIssuer: config.jwtIssuer,
+      jwtAudience: config.jwtAudience,
+      cursorSecretArn: config.cursorSecretArn,
       ...(config.alarmTopicArn ? { alarmTopicArn: config.alarmTopicArn } : {}),
       ...(environment ? { env: environment } : {}),
     },

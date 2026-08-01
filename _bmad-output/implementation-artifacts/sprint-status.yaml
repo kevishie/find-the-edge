@@ -346,8 +346,8 @@ stories:
   - id: FTE-016
     title: Event Repository, API, and Pagination
     epic: Sports catalog and event ingestion
-    status: backlog
-    dependencies: [FTE-013, FTE-015]
+    status: done
+    dependencies: [FTE-DATA-002]
     risk: Medium
     approvalRequiredBeforeMerge: false
   - id: FTE-017

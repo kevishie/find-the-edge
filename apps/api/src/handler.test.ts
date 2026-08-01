@@ -1,0 +1,142 @@
+import { describe, expect, it } from "vitest";
+import {
+  EventStorageError,
+  type EventRepository,
+} from "@find-the-edge/database";
+import { createEventHandler } from "./handler";
+import { parseCursorSecretRing } from "./secrets";
+const repository: EventRepository = {
+  list: async () => ({
+    ...(await Promise.resolve({})),
+    items: [],
+    nextCursor: null,
+    projectionState: "ready",
+    evaluationState: "complete",
+    hasMoreUnknown: false,
+    snapshotAt: new Date().toISOString(),
+    freshness: null,
+  }),
+  detail: async () => {
+    await Promise.resolve();
+    return { projectionState: "ready", item: null };
+  },
+};
+describe("event API", () => {
+  it("authenticates and requires scope before reads", async () => {
+    expect(
+      (await createEventHandler(repository)({ route: "list" })).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await createEventHandler(repository)({
+          route: "list",
+          subject: "u",
+          scopes: [],
+        })
+      ).statusCode,
+    ).toBe(403);
+  });
+  it("maps only input errors to 400 and redacts storage errors", async () => {
+    expect(
+      (
+        await createEventHandler(repository)({
+          route: "list",
+          subject: "u",
+          scopes: ["events:read"],
+          query: {
+            sport: "mlb",
+            status: "scheduled",
+            day: "2026-02-30",
+            cursor: "",
+          },
+        })
+      ).statusCode,
+    ).toBe(400);
+    const broken = {
+      ...repository,
+      list: async () => {
+        await Promise.resolve();
+        throw new EventStorageError("secret-storage-detail");
+      },
+    };
+    const result = await createEventHandler(broken)({
+      route: "list",
+      subject: "u",
+      scopes: ["events:read"],
+      query: { sport: "mlb", status: "scheduled", day: "2026-08-01" },
+    });
+    expect(result.statusCode).toBe(500);
+    expect(result.body).not.toContain("secret-storage-detail");
+  });
+  it("requires an exact all-or-none canonically encoded secret ring", () => {
+    const secret = Buffer.alloc(32, 7).toString("base64");
+    expect(
+      parseCursorSecretRing(
+        JSON.stringify({
+          currentId: "current",
+          currentSecret: secret,
+          currentCreatedAt: "2026-07-31T00:00:00.000Z",
+        }),
+      ).current.secret,
+    ).toHaveLength(32);
+    expect(() =>
+      parseCursorSecretRing(
+        JSON.stringify({
+          currentId: "current",
+          currentSecret: secret,
+          currentCreatedAt: "2026-07-31T00:00:00.000Z",
+          previousId: "old",
+        }),
+      ),
+    ).toThrow("invalid-cursor-secret-ring");
+    expect(() =>
+      parseCursorSecretRing(
+        JSON.stringify({
+          currentId: "current",
+          currentSecret: secret.replace(/=$/, ""),
+          currentCreatedAt: "2026-07-31T00:00:00.000Z",
+        }),
+      ),
+    ).toThrow("invalid-cursor-secret");
+    expect(() =>
+      parseCursorSecretRing(
+        JSON.stringify({
+          currentId: "current",
+          currentSecret: secret,
+          currentCreatedAt: "not-an-instant",
+        }),
+      ),
+    ).toThrow("invalid-cursor-secret-ring");
+    expect(() =>
+      parseCursorSecretRing(
+        JSON.stringify({
+          currentId: "current",
+          currentSecret: secret,
+          currentCreatedAt: "2026-07-31T00:00:00.000Z",
+          previousId: "old",
+          previousSecret: Buffer.alloc(32, 8).toString("base64"),
+          previousAcceptUntil: "2026-07-31T00:10:00.000Z",
+        }),
+      ),
+    ).toThrow("invalid-cursor-secret-ring");
+  });
+  it("emits deployable route-dimensional Caught5xx EMF for caught server errors", async () => {
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const broken: EventRepository = {
+      ...repository,
+      list: () => Promise.reject(new EventStorageError("storage-secret")),
+    };
+    await createEventHandler(broken, (entry) => logs.push(entry))({
+      route: "list",
+      subject: "u",
+      scopes: ["events:read"],
+      query: { sport: "mlb", status: "scheduled", day: "2026-08-01" },
+    });
+    expect(logs).toHaveLength(1);
+    const serialized = JSON.stringify(logs[0]);
+    expect(serialized).toContain('"Namespace":"FindTheEdge/EventApi"');
+    expect(serialized).toContain('"Dimensions":[["Route"]]');
+    expect(serialized).toContain('"Name":"Caught5xx","Unit":"Count"');
+    expect(serialized).toContain('"Route":"list"');
+  });
+});

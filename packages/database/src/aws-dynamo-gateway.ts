@@ -3,6 +3,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactGetCommand,
   TransactWriteCommand,
   UpdateCommand,
   type DynamoDBDocumentClient,
@@ -79,6 +80,39 @@ export class AwsDynamoGateway implements DynamoGateway {
       cursor = result.LastEvaluatedKey;
     } while (cursor && items.length < limit);
     return items.slice(0, limit);
+  }
+  async queryPage(pk: string, startSk: string | undefined, limit: number) {
+    const result = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: "pk = :pk",
+        ExpressionAttributeValues: { ":pk": pk },
+        ConsistentRead: true,
+        ScanIndexForward: true,
+        Limit: limit,
+        ...(startSk ? { ExclusiveStartKey: { pk, sk: startSk } } : {}),
+      }),
+    );
+    return {
+      items: (result.Items as DynamoItem[] | undefined) ?? [],
+      ...(result.LastEvaluatedKey?.["sk"]
+        ? { lastEvaluatedSk: String(result.LastEvaluatedKey["sk"]) }
+        : {}),
+    };
+  }
+  async transactGet(
+    keys: readonly { readonly pk: string; readonly sk: string }[],
+  ) {
+    const result = await this.client.send(
+      new TransactGetCommand({
+        TransactItems: keys.map((Key) => ({
+          Get: { TableName: this.tableName, Key },
+        })),
+      }),
+    );
+    return (result.Responses ?? []).map(
+      (response) => (response.Item as DynamoItem | undefined) ?? null,
+    );
   }
   async queryAll(pk: string) {
     const items: DynamoItem[] = [];
@@ -228,30 +262,55 @@ export class AwsDynamoGateway implements DynamoGateway {
                               : {}),
                           },
                         }
-                      : write.kind === "insert" ||
-                          write.kind === "claim-identity"
+                      : write.kind === "put-projection"
                         ? {
                             Put: {
                               TableName: this.tableName,
                               Item: write.item,
-                              ConditionExpression: "attribute_not_exists(pk)",
+                              ...(write.expectedValue !== undefined
+                                ? {
+                                    ConditionExpression:
+                                      "#value = :projectionExpected",
+                                    ExpressionAttributeNames: {
+                                      "#value": "value",
+                                    },
+                                    ExpressionAttributeValues: {
+                                      ":projectionExpected":
+                                        write.expectedValue,
+                                    },
+                                  }
+                                : write.requireAbsent
+                                  ? {
+                                      ConditionExpression:
+                                        "attribute_not_exists(pk)",
+                                    }
+                                  : {}),
                             },
                           }
-                        : {
-                            Put: {
-                              TableName: this.tableName,
-                              Item: write.item,
-                              ConditionExpression:
-                                "#value.#version = :expected",
-                              ExpressionAttributeNames: {
-                                "#value": "value",
-                                "#version": "version",
+                        : write.kind === "insert" ||
+                            write.kind === "claim-identity"
+                          ? {
+                              Put: {
+                                TableName: this.tableName,
+                                Item: write.item,
+                                ConditionExpression: "attribute_not_exists(pk)",
                               },
-                              ExpressionAttributeValues: {
-                                ":expected": write.expectedVersion,
+                            }
+                          : {
+                              Put: {
+                                TableName: this.tableName,
+                                Item: write.item,
+                                ConditionExpression:
+                                  "#value.#version = :expected",
+                                ExpressionAttributeNames: {
+                                  "#value": "value",
+                                  "#version": "version",
+                                },
+                                ExpressionAttributeValues: {
+                                  ":expected": write.expectedVersion,
+                                },
                               },
                             },
-                          },
           ),
         }),
       );
@@ -443,20 +502,46 @@ export class AwsDynamoGateway implements DynamoGateway {
                                   : {}),
                               },
                             }
-                          : {
-                              Put: {
-                                TableName: this.tableName,
-                                Item: write.item,
-                                ConditionExpression: "#value.#version=:version",
-                                ExpressionAttributeNames: {
-                                  "#value": "value",
-                                  "#version": "version",
+                          : write.kind === "put-projection"
+                            ? {
+                                Put: {
+                                  TableName: this.tableName,
+                                  Item: write.item,
+                                  ...(write.expectedValue !== undefined
+                                    ? {
+                                        ConditionExpression:
+                                          "#value = :projectionExpected",
+                                        ExpressionAttributeNames: {
+                                          "#value": "value",
+                                        },
+                                        ExpressionAttributeValues: {
+                                          ":projectionExpected":
+                                            write.expectedValue,
+                                        },
+                                      }
+                                    : write.requireAbsent
+                                      ? {
+                                          ConditionExpression:
+                                            "attribute_not_exists(pk)",
+                                        }
+                                      : {}),
                                 },
-                                ExpressionAttributeValues: {
-                                  ":version": write.expectedVersion,
+                              }
+                            : {
+                                Put: {
+                                  TableName: this.tableName,
+                                  Item: write.item,
+                                  ConditionExpression:
+                                    "#value.#version=:version",
+                                  ExpressionAttributeNames: {
+                                    "#value": "value",
+                                    "#version": "version",
+                                  },
+                                  ExpressionAttributeValues: {
+                                    ":version": write.expectedVersion,
+                                  },
                                 },
                               },
-                            },
             ),
           ],
         }),

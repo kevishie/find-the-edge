@@ -3,15 +3,22 @@ import { describe, expect, it } from "vitest";
 
 import { createFoundationApp } from "./foundation";
 
+const eventConfig = {
+  jwtIssuer: "https://issuer.example.com",
+  jwtAudience: "find-the-edge",
+  cursorSecretArn:
+    "arn:aws:secretsmanager:us-east-1:123456789012:secret:event-cursor",
+};
+
 describe("foundation CDK app", () => {
   it("synthesizes the full durable ingestion contract", () => {
-    const { stack } = createFoundationApp({ stage: "test" });
+    const { stack } = createFoundationApp({ stage: "test", ...eventConfig });
     const template = Template.fromStack(stack);
 
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
     template.resourceCountIs("AWS::SQS::Queue", 2);
-    template.resourceCountIs("AWS::Lambda::Function", 2);
+    template.resourceCountIs("AWS::Lambda::Function", 3);
     template.resourceCountIs("AWS::Events::Rule", 1);
     template.hasResource("AWS::DynamoDB::Table", {
       DeletionPolicy: "Retain",
@@ -66,6 +73,17 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("sqs:SendMessage");
     expect(rendered).toContain("FindTheEdge/UpcomingEvents");
     expect(rendered).toContain("FailedRecords");
+    expect(rendered).toContain("FindTheEdge/EventApi");
+    expect(rendered).toContain("Caught5xx");
+    expect(rendered).not.toContain("dynamodb:Scan");
+    template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
+      StageName: "test",
+      AutoDeploy: true,
+      AccessLogSettings: Match.objectLike({
+        Format: Match.stringLikeRegexp("requestId.*routeKey.*status"),
+      }),
+    });
+    template.hasResource("AWS::Logs::LogGroup", { DeletionPolicy: "Retain" });
     expect(rendered).not.toContain('"Action":"sqs:*"');
     expect(rendered).not.toContain('"Action":"dynamodb:*"');
     template.hasResourceProperties("AWS::IAM::Policy", {
@@ -94,12 +112,13 @@ describe("foundation CDK app", () => {
   it("enables scheduling only by config and wires configured SNS alarm actions", () => {
     const { stack } = createFoundationApp({
       stage: "alerts",
+      ...eventConfig,
       schedulerEnabled: true,
       alarmTopicArn: "arn:aws:sns:us-east-1:123456789012:fte-alerts",
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 6);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 10);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });
@@ -109,6 +128,7 @@ describe("foundation CDK app", () => {
     expect(() =>
       createFoundationApp({
         stage: "alerts",
+        ...eventConfig,
         region: "us-east-1",
         alarmTopicArn: "arn:aws:sns:us-west-2:123456789012:fte-alerts",
       }),

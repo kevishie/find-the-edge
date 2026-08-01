@@ -991,6 +991,7 @@ export class UpcomingEventIngestionOrchestrator {
                   normalizedIdentity: normalizedUpcomingEventIdentity(event),
                   startsAt: event.startsAt,
                   status: event.status,
+                  participantLabels: event.participantLabels,
                   revision: event.revision,
                   observedAt,
                   providerEventFence: {
