@@ -1,5 +1,11 @@
 import { normalizeFixtureOddsObservation } from "@find-the-edge/domain";
-import { MemoryEventIngestionStore } from "@find-the-edge/database";
+import { createEventHandler } from "@find-the-edge/api";
+import {
+  EventCursorCodec,
+  MemoryEventIngestionStore,
+  MemoryEventRepository,
+  MemoryGamesRepository,
+} from "@find-the-edge/database";
 import { mvpFixtureOdds } from "@find-the-edge/providers";
 import { describe, expect, it } from "vitest";
 import {
@@ -32,6 +38,17 @@ class MemoryOdds implements FixtureOddsPersister {
       value,
     };
   }
+  async batchGet(
+    keys: readonly { readonly pk: string; readonly sk: "CURRENT" }[],
+  ) {
+    await Promise.resolve();
+    return keys.flatMap((key) => {
+      const value = [...this.snapshots.values()].find(
+        (snapshot) => snapshot.partitionKey === key.pk,
+      );
+      return value ? [{ pk: key.pk, sk: key.sk, value }] : [];
+    });
+  }
 }
 
 describe("fixture odds seed", () => {
@@ -47,6 +64,168 @@ describe("fixture odds seed", () => {
     });
     expect(second).toMatchObject({ snapshotsExisting: 7, currentRetained: 7 });
     expect(odds.snapshots.size).toBe(7);
+  });
+
+  it("reads unchanged MLB and MLS semantic IDs through the joined games repository", async () => {
+    const store = new MemoryEventIngestionStore();
+    const odds = new MemoryOdds();
+    await seedFixtureOdds(store, odds);
+    const events = new MemoryEventRepository(
+      store,
+      new EventCursorCodec({
+        current: { id: "test", secret: Buffer.alloc(32, 7) },
+      }),
+      () => new Date("2026-08-01T12:31:00.000Z"),
+    );
+    const games = new MemoryGamesRepository(events, odds);
+
+    const mlbFirstDay = await games.list(
+      {
+        sportKey: "mlb",
+        leagueKey: "mlb",
+        status: "scheduled",
+        day: "2026-08-01",
+      },
+      50,
+    );
+    const mlbSecondDay = await games.list(
+      {
+        sportKey: "mlb",
+        leagueKey: "mlb",
+        status: "scheduled",
+        day: "2026-08-02",
+      },
+      50,
+    );
+    const mls = await games.list(
+      {
+        sportKey: "soccer",
+        leagueKey: "mls",
+        status: "scheduled",
+        day: "2026-08-01",
+      },
+      50,
+    );
+    expect(mlbFirstDay.items).toHaveLength(1);
+    expect(mlbSecondDay.items).toHaveLength(1);
+    expect(mls.items).toHaveLength(1);
+    const allGames = [
+      ...mlbFirstDay.items,
+      ...mlbSecondDay.items,
+      ...mls.items,
+    ];
+    expect(
+      allGames.map((game) => ({
+        id: game.id,
+        version: game.version,
+        participants: game.participants.map(({ id, label }) => ({ id, label })),
+        odds: game.odds,
+      })),
+    ).toEqual([
+      {
+        id: "event:mlb%3Amlb:2026-regular-boston-new-york-001",
+        version: 1,
+        participants: [
+          { id: "participant:mlb%3Amlb:boston", label: "Boston" },
+          { id: "participant:mlb%3Amlb:new%20york", label: "New York" },
+        ],
+        odds: {
+          state: "available",
+          selections: [
+            {
+              marketKey: "moneyline",
+              selectionKey: "away",
+              selectionLabel: "Boston",
+              sportsbookId: "fixture-book",
+              sportsbookLabel: "Fixture Book",
+              americanOdds: 120,
+              observedAt: "2026-08-01T12:00:00.000Z",
+              retrievedAt: "2026-08-01T12:00:00.000Z",
+            },
+          ],
+        },
+      },
+      {
+        id: "event:mlb%3Amlb:2026-regular-chicago-detroit-001",
+        version: 1,
+        participants: [
+          { id: "participant:mlb%3Amlb:chicago", label: "Chicago" },
+          { id: "participant:mlb%3Amlb:detroit", label: "Detroit" },
+        ],
+        odds: {
+          state: "available",
+          selections: [
+            {
+              marketKey: "moneyline",
+              selectionKey: "away",
+              selectionLabel: "Chicago",
+              sportsbookId: "fixture-book",
+              sportsbookLabel: "Fixture Book",
+              americanOdds: -105,
+              observedAt: "2026-08-01T12:01:00.000Z",
+              retrievedAt: "2026-08-01T12:01:00.000Z",
+            },
+          ],
+        },
+      },
+      {
+        id: "event:soccer%3Amls:2026-regular-miami-atlanta-001",
+        version: 1,
+        participants: [
+          { id: "participant:soccer%3Amls:miami", label: "Miami" },
+          { id: "participant:soccer%3Amls:atlanta", label: "Atlanta" },
+        ],
+        odds: {
+          state: "available",
+          selections: [
+            {
+              marketKey: "three_way_moneyline",
+              selectionKey: "away",
+              selectionLabel: "Miami",
+              sportsbookId: "fixture-book",
+              sportsbookLabel: "Fixture Book",
+              americanOdds: 145,
+              observedAt: "2026-08-01T12:02:00.000Z",
+              retrievedAt: "2026-08-01T12:02:00.000Z",
+            },
+          ],
+        },
+      },
+    ]);
+
+    const authenticated = createEventHandler(events, games, () => undefined);
+    const mlbResponse = await authenticated({
+      route: "games",
+      subject: "fixture-user",
+      scopes: ["events:read"],
+      query: {
+        sport: "mlb",
+        league: "mlb",
+        status: "scheduled",
+        day: "2026-08-01",
+        limit: "50",
+      },
+    });
+    const mlsResponse = await authenticated({
+      route: "games",
+      subject: "fixture-user",
+      scopes: ["events:read"],
+      query: {
+        sport: "soccer",
+        league: "mls",
+        status: "scheduled",
+        day: "2026-08-01",
+        limit: "50",
+      },
+    });
+    expect(mlbResponse.statusCode).toBe(200);
+    expect(mlsResponse.statusCode).toBe(200);
+    expect(JSON.parse(mlbResponse.body)).toMatchObject({
+      items: [mlbFirstDay.items[0]],
+    });
+    expect(JSON.parse(mlsResponse.body)).toMatchObject({
+      items: [mls.items[0]],
+    });
   });
 
   it("binds a rerun to the current canonical version", async () => {

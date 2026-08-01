@@ -19,6 +19,47 @@ const identifier = /^[a-z0-9](?:[a-z0-9._-]{0,63})$/;
 export const assertIdentifier = (value: string, name: string): void => {
   if (!identifier.test(value)) throw new Error(`invalid-${name}`);
 };
+const forbiddenSemanticSegments = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
+/**
+ * Validates IDs emitted by providers.semanticId without treating them as
+ * externally supplied filter slugs. Each colon-delimited component must be the
+ * canonical encodeURIComponent representation of normalized text.
+ */
+export const isCanonicalEntityId = (value: unknown): value is string => {
+  if (typeof value !== "string" || value.length < 1 || value.length > 512)
+    return false;
+  const segments = value.split(":");
+  if (segments.some((segment) => segment.length === 0)) return false;
+  return segments.every((segment) => {
+    if (!/^(?:[a-z0-9.!'()*_~-]|%[0-9A-F]{2})+$/.test(segment)) return false;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      return false;
+    }
+    if (
+      decoded.length === 0 ||
+      [...decoded].some((character) => {
+        const codePoint = character.codePointAt(0)!;
+        return (
+          codePoint <= 0x1f ||
+          codePoint === 0x7f ||
+          (codePoint >= 0x80 && codePoint <= 0x9f)
+        );
+      }) ||
+      forbiddenSemanticSegments.has(decoded) ||
+      decoded !==
+        decoded.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ")
+    )
+      return false;
+    return encodeURIComponent(decoded) === segment;
+  });
+};
 export const easternDay = (instant: string): string => {
   const date = new Date(instant);
   if (!Number.isFinite(date.valueOf()) || date.toISOString() !== instant)
@@ -179,11 +220,12 @@ export const validateProjection = (
     throw new EventStorageError("invalid-projection");
   for (const id of [
     value["eventId"],
-    value["sportKey"],
-    value["leagueKey"],
     ...(value["participantIds"] as unknown[]),
   ])
-    if (typeof id !== "string" || !identifier.test(id))
+    if (!isCanonicalEntityId(id))
+      throw new EventStorageError("invalid-projection");
+  for (const slug of [value["sportKey"], value["leagueKey"]])
+    if (typeof slug !== "string" || !identifier.test(slug))
       throw new EventStorageError("invalid-projection");
   for (const label of value["participantLabels"])
     if (

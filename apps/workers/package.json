@@ -18,6 +18,7 @@
     "@find-the-edge/providers": "workspace:*"
   },
   "devDependencies": {
+    "@find-the-edge/api": "workspace:*",
     "@types/aws-lambda": "^8.10.152",
     "vitest": "^4.0.18"
   }

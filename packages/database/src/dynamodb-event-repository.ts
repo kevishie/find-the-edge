@@ -7,7 +7,11 @@ import {
   type EventPage,
   type EventRepository,
 } from "./event-repository";
-import { toEventDisplayDto, validateProjection } from "./event-read-projection";
+import {
+  isCanonicalEntityId,
+  toEventDisplayDto,
+  validateProjection,
+} from "./event-read-projection";
 const pointerKeys = [
   "schemaVersion",
   "eventId",
@@ -172,7 +176,7 @@ export class DynamoEventRepository implements EventRepository {
   async detail(
     eventId: string,
   ): Promise<import("./event-repository").EventDetailResult> {
-    if (!/^[a-z0-9](?:[a-z0-9._-]{0,63})$/.test(eventId))
+    if (!isCanonicalEntityId(eventId))
       throw new EventInputError("invalid-event-id");
     if (!(await this.ready()))
       return { projectionState: "uninitialized", item: null };

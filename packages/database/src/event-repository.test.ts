@@ -7,7 +7,11 @@ import type {
 import type { DynamoItem } from "./dynamodb-event-ingestion";
 import { DynamoEventRepository } from "./dynamodb-event-repository";
 import { EventCursorCodec } from "./event-repository";
-import { projectionItems } from "./event-read-projection";
+import {
+  isCanonicalEntityId,
+  projectionItems,
+  validateProjection,
+} from "./event-read-projection";
 
 const instant = (value: string) => value as IsoTimestamp;
 const event = (id = "game-1"): CanonicalEvent => ({
@@ -31,6 +35,53 @@ const unusedQuery = () => Promise.resolve({ items: [] as DynamoItem[] });
 const unusedGet = () => Promise.resolve([] as (DynamoItem | null)[]);
 
 describe("event repository", () => {
+  it("separates canonical stored IDs from strict external filter slugs", async () => {
+    const semantic =
+      "event:mlb%3Amlb:%5B%22mlb%22%2C%5B%22boston%20red%20sox%22%2C%22new%20york%20yankees%22%5D%5D";
+    expect(isCanonicalEntityId(semantic)).toBe(true);
+    for (const invalid of [
+      "event::mlb",
+      "event:%3a",
+      "event:%61",
+      "event:%",
+      "event:%00",
+      "event:%C2%80",
+      "event:__proto__",
+      `event:${"a".repeat(507)}`,
+    ])
+      expect(isCanonicalEntityId(invalid), invalid).toBe(false);
+
+    const projected = projectionItems(event(semantic));
+    expect(
+      validateProjection(projected.sport, "sport", event().updatedAt),
+    ).toMatchObject({ eventId: semantic });
+    const bad = {
+      ...projected.sport,
+      value: { ...projected.sport.value, eventId: "event:%3a" },
+    };
+    expect(() => validateProjection(bad, "sport", event().updatedAt)).toThrow(
+      "invalid-projection",
+    );
+
+    const repository = new DynamoEventRepository(
+      { queryPage: unusedQuery, transactGet: unusedGet },
+      new EventCursorCodec({ current }),
+      () => Promise.resolve(true),
+    );
+    await expect(
+      repository.list(
+        { sportKey: "mlb:mls", status: "scheduled", day: "2026-08-01" },
+        1,
+      ),
+    ).rejects.toThrow("invalid-event-filter");
+    await expect(
+      repository.list(
+        { sportKey: "mlb%3Amls", status: "scheduled", day: "2026-08-01" },
+        1,
+      ),
+    ).rejects.toThrow("invalid-event-filter");
+  });
+
   it("returns a DTO only when one transaction proves exact active cross-family material", async () => {
     const projected = projectionItems(event());
     const transactGet = vi.fn((keys: readonly { pk: string; sk: string }[]) =>

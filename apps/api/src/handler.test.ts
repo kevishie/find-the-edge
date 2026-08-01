@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EventStorageError,
+  type GamesRepository,
   type EventRepository,
 } from "@find-the-edge/database";
 import { createEventHandler } from "./handler";
@@ -23,10 +24,33 @@ const repository: EventRepository = {
 };
 describe("event API", () => {
   it("serves games through the scoped authenticated repository", async () => {
-    const games = {
+    const canonicalId =
+      "event:mlb%3Amlb:%5B%22mlb%22%2C%5B%22boston%20red%20sox%22%2C%22new%20york%20yankees%22%5D%5D";
+    const games: GamesRepository = {
       list: async () => ({
         ...(await Promise.resolve({})),
-        items: [],
+        items: [
+          {
+            id: canonicalId,
+            version: 1,
+            sportKey: "mlb",
+            leagueKey: "mlb",
+            competition: { key: "mlb", state: "provisional" },
+            participants: [
+              { id: "participant:mlb%3Amlb:boston", label: "Boston" },
+              { id: "participant:mlb%3Amlb:new%20york", label: "New York" },
+            ],
+            startsAt: "2026-08-01T23:05:00.000Z",
+            eastern: {
+              timeZone: "America/New_York",
+              calendarDay: "2026-08-01",
+              display: "Aug 1, 2026, 7:05 PM",
+            },
+            status: "scheduled",
+            freshness: "2026-08-01T12:30:00.000Z",
+            odds: { state: "unavailable" },
+          },
+        ],
         nextCursor: null,
         projectionState: "ready" as const,
         evaluationState: "complete" as const,
@@ -51,9 +75,41 @@ describe("event API", () => {
     });
     expect(result.statusCode).toBe(200);
     expect(JSON.parse(result.body)).toMatchObject({
-      items: [],
+      items: [{ id: canonicalId }],
       projectionState: "ready",
     });
+  });
+  it("rejects colon and percent external filters before repository selection", async () => {
+    let reads = 0;
+    const games = {
+      list: async () => {
+        await Promise.resolve();
+        reads += 1;
+        throw new Error("must-not-read");
+      },
+    };
+    for (const query of [
+      { sport: "mlb:mls", status: "scheduled", day: "2026-08-01" },
+      { sport: "mlb%3Amls", status: "scheduled", day: "2026-08-01" },
+      {
+        sport: "mlb",
+        league: "mlb%3Amls",
+        status: "scheduled",
+        day: "2026-08-01",
+      },
+    ]) {
+      const result = await createEventHandler(
+        repository,
+        games,
+      )({
+        route: "games",
+        subject: "u",
+        scopes: ["events:read"],
+        query,
+      });
+      expect(result.statusCode).toBe(400);
+    }
+    expect(reads).toBe(0);
   });
   it("rejects unsupported games sports and non-scheduled status before reading", async () => {
     let reads = 0;
