@@ -2,8 +2,9 @@
 title: 'Phase 1 Full-Market Odds Read'
 type: 'bugfix'
 created: '2026-08-02'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'b55d9009de4e385315da9b73edc340245e23b262'
+final_revision: 'f6670ec'
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
