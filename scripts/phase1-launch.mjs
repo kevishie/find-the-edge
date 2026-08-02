@@ -640,7 +640,7 @@ export function validateStackOutputs(outputs) {
 }
 export function requireInvalidationId(response) {
   const id = response?.Invalidation?.Id;
-  if (!/^I[A-Z0-9]{8,20}$/.test(id ?? ""))
+  if (!/^I[A-Z0-9]{8,63}$/.test(id ?? ""))
     throw new Error(
       "CloudFront did not return a valid invalidation identifier",
     );

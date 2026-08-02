@@ -148,8 +148,10 @@ test("first launch safely distinguishes no stack from the exact active stack", (
 });
 test("CloudFront invalidation response must be captured before waiting", () => {
   assert.equal(
-    requireInvalidationId({ Invalidation: { Id: "IABCDEFGHI" } }),
-    "IABCDEFGHI",
+    requireInvalidationId({
+      Invalidation: { Id: "I1BWGQU3SW3T0OCHCNFC9MKOZL" },
+    }),
+    "I1BWGQU3SW3T0OCHCNFC9MKOZL",
   );
   for (const response of [
     {},
