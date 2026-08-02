@@ -19,6 +19,33 @@ const validConfig = {
 };
 
 describe("runtime bootstrap", () => {
+  it("accepts complete secret-free Cognito launch configuration", () => {
+    const config = {
+      schemaVersion: 1,
+      apiBase: "https://api.example.com/dev",
+      tokenProviderKey: "cognitoSession",
+      cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
+      cognitoClientId: "client",
+      cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
+      cognitoScope: "events/events:read",
+      callbackUrl: "https://app.example.com/auth/callback",
+      logoutUrl: "https://app.example.com",
+    };
+    const result = bootstrapRuntime({
+      __FTE_RUNTIME_CONFIG__: config,
+      __FTE_TOKEN_PROVIDERS__: { cognitoSession: () => "token" },
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      value: { config: { cognitoScope: "events/events:read" } },
+    });
+    expect(
+      bootstrapRuntime({
+        __FTE_RUNTIME_CONFIG__: { ...config, cognitoScope: "other/read" },
+        __FTE_TOKEN_PROVIDERS__: { cognitoSession: () => "token" },
+      }),
+    ).toMatchObject({ ok: false, error: { code: "invalid-config" } });
+  });
   it("resolves exact configuration and a trimmed async token", async () => {
     const result = bootstrapRuntime(hostWith(validConfig));
     expect(result).toMatchObject({

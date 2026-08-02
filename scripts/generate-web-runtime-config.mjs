@@ -55,18 +55,78 @@ export function createRuntimeConfigArtifact({
   apiBase,
   providerKey,
   localMode = false,
+  launch,
 }) {
   const normalizedApiBase = validateApiBase(apiBase, localMode);
   if (!PROVIDER_KEY.test(providerKey ?? ""))
     throw new Error(
       "Provider key must match the runtime provider-key contract.",
     );
+  const launchConfig = launch ? validateLaunchConfig(launch) : {};
   const data = JSON.stringify({
     schemaVersion: 1,
     apiBase: normalizedApiBase,
     tokenProviderKey: providerKey,
+    ...launchConfig,
   }).replaceAll("<", "\\u003c");
   return `window.__FTE_RUNTIME_CONFIG__ = Object.freeze(${data});\n`;
+}
+
+function validateLaunchConfig(value) {
+  const required = [
+    "cognitoIssuer",
+    "cognitoClientId",
+    "cognitoDomain",
+    "cognitoScope",
+    "callbackUrl",
+    "logoutUrl",
+  ];
+  if (
+    !value ||
+    required.some(
+      (key) =>
+        typeof value[key] !== "string" ||
+        !value[key] ||
+        /[\u0000-\u0020\u007f]/.test(value[key]),
+    )
+  )
+    throw new Error(
+      "Complete secret-free Cognito launch configuration is required.",
+    );
+  for (const key of [
+    "cognitoIssuer",
+    "cognitoDomain",
+    "callbackUrl",
+    "logoutUrl",
+  ]) {
+    const url = new URL(value[key]);
+    if (url.protocol !== "https:" || url.username || url.password)
+      throw new Error("Cognito launch URLs must be safe HTTPS URLs.");
+  }
+  const domain = new URL(value.cognitoDomain);
+  const callback = new URL(value.callbackUrl);
+  const logout = new URL(value.logoutUrl);
+  if (
+    domain.origin !== value.cognitoDomain ||
+    domain.pathname !== "/" ||
+    domain.search ||
+    domain.hash
+  )
+    throw new Error("Cognito domain must be an exact HTTPS origin.");
+  if (
+    logout.origin !== value.logoutUrl ||
+    logout.pathname !== "/" ||
+    logout.search ||
+    logout.hash ||
+    value.callbackUrl !== `${value.logoutUrl}/auth/callback` ||
+    callback.origin !== logout.origin
+  )
+    throw new Error(
+      "Callback and logout URLs must exactly match the web origin.",
+    );
+  if (value.cognitoScope !== "events/events:read")
+    throw new Error("Cognito scope must be events/events:read.");
+  return Object.fromEntries(required.map((key) => [key, value[key]]));
 }
 
 export async function generateRuntimeConfig(arguments_) {

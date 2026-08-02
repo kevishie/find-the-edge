@@ -8,14 +8,25 @@ export const projectRoot = resolve(new URL("..", import.meta.url).pathname);
 export function safeDevConfig(environment = process.env) {
   return {
     stage: environment.FTE_AWS_STAGE ?? "dev",
-    issuer: environment.FTE_JWT_ISSUER ?? "https://issuer.phase1.invalid",
-    audience: environment.FTE_JWT_AUDIENCE ?? "find-the-edge-dev",
+    issuer:
+      environment.FTE_JWT_ISSUER ??
+      "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_phase1",
+    audience: environment.FTE_JWT_AUDIENCE ?? "phase1-client",
     cursorSecretArn:
       environment.FTE_EVENT_CURSOR_SECRET_ARN ??
       "arn:aws:secretsmanager:us-east-1:000000000000:secret:phase1-cursor",
     webOrigin: environment.FTE_WEB_ORIGIN ?? "https://app.phase1.invalid",
     apiBase: environment.FTE_PHASE1_API_BASE ?? "https://api.phase1.invalid",
-    providerKey: environment.FTE_PHASE1_PROVIDER_KEY ?? "hostSession",
+    providerKey: environment.FTE_PHASE1_PROVIDER_KEY ?? "cognitoSession",
+    cognitoDomain:
+      environment.FTE_COGNITO_DOMAIN ??
+      "https://phase1.auth.us-east-1.amazoncognito.com",
+    cognitoScope: environment.FTE_COGNITO_SCOPE ?? "events/events:read",
+    callbackUrl:
+      environment.FTE_COGNITO_CALLBACK_URL ??
+      "https://app.phase1.invalid/auth/callback",
+    logoutUrl:
+      environment.FTE_COGNITO_LOGOUT_URL ?? "https://app.phase1.invalid",
     fixtureSeedEnabled:
       environment.FTE_FIXTURE_ODDS_SEED_ENABLED === undefined ||
       environment.FTE_FIXTURE_ODDS_SEED_ENABLED === "true",
@@ -62,6 +73,19 @@ export function validateSafeDevConfig(config) {
     throw new Error(
       "API base must be HTTPS (or explicit local HTTP) without credentials, query, or fragment",
     );
+  if (config.providerKey === "cognitoSession") {
+    if (config.cognitoScope !== "events/events:read")
+      throw new Error("Cognito scope must be events/events:read");
+    for (const [label, value] of [
+      ["Cognito domain", config.cognitoDomain],
+      ["Cognito callback", config.callbackUrl],
+      ["Cognito logout", config.logoutUrl],
+    ]) {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.username || url.password)
+        throw new Error(`${label} must be safe HTTPS`);
+    }
+  }
 }
 
 export function run(command, arguments_, options = {}) {
@@ -159,24 +183,254 @@ function requireActions(actual, expected, label) {
 }
 
 export function validateTemplate(template, config) {
+  const exactSpaCode =
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri === '/auth/callback') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const tables = entriesOfType(template, "AWS::DynamoDB::Table");
   const apis = entriesOfType(template, "AWS::ApiGatewayV2::Api");
   if (tables.length !== 1 || apis.length !== 1)
     throw new Error("Phase1 requires exactly one event table and HTTP API");
   const [tableId] = tables[0];
   const [apiId, api] = apis[0];
-  const cors = api.Properties?.CorsConfiguration;
+  const pools = entriesOfType(template, "AWS::Cognito::UserPool");
+  const clients = entriesOfType(template, "AWS::Cognito::UserPoolClient");
+  const servers = entriesOfType(
+    template,
+    "AWS::Cognito::UserPoolResourceServer",
+  );
+  const buckets = entriesOfType(template, "AWS::S3::Bucket");
+  const bucketPolicies = entriesOfType(template, "AWS::S3::BucketPolicy");
+  const domains = entriesOfType(template, "AWS::Cognito::UserPoolDomain");
+  const distributions = entriesOfType(
+    template,
+    "AWS::CloudFront::Distribution",
+  );
+  const oacs = entriesOfType(template, "AWS::CloudFront::OriginAccessControl");
+  const cloudFrontFunctions = entriesOfType(
+    template,
+    "AWS::CloudFront::Function",
+  );
+  const responsePolicies = entriesOfType(
+    template,
+    "AWS::CloudFront::ResponseHeadersPolicy",
+  );
   if (
-    !Array.isArray(cors?.AllowOrigins) ||
-    cors.AllowOrigins.length !== 1 ||
-    cors.AllowOrigins[0] !== config.webOrigin ||
-    JSON.stringify(cors.AllowMethods) !== JSON.stringify(["GET", "OPTIONS"]) ||
-    JSON.stringify(cors.AllowHeaders) !==
-      JSON.stringify(["authorization", "content-type"])
+    [
+      pools,
+      clients,
+      servers,
+      domains,
+      buckets,
+      bucketPolicies,
+      distributions,
+      oacs,
+      cloudFrontFunctions,
+    ].some((items) => items.length !== 1)
+  )
+    throw new Error(
+      "Phase1 requires exactly one Cognito pool/client/resource server and private web distribution",
+    );
+  const [poolId, pool] = pools[0];
+  const [clientId, client] = clients[0];
+  const [serverId, server] = servers[0];
+  const [domainId, cognitoDomain] = domains[0];
+  const [bucketId, bucket] = buckets[0];
+  const [, bucketPolicy] = bucketPolicies[0];
+  const [distributionId, distribution] = distributions[0];
+  const [spaFunctionId, spaFunction] = cloudFrontFunctions[0];
+  const [, oac] = oacs[0];
+  const expectedCsp = {
+    "Fn::Join": [
+      "",
+      [
+        "default-src 'self'; base-uri 'none'; connect-src 'self' ",
+        { "Fn::GetAtt": [apiId, "ApiEndpoint"] },
+        " https://",
+        { Ref: domainId },
+        ".auth.us-east-1.amazoncognito.com; form-action 'self' https://",
+        { Ref: domainId },
+        ".auth.us-east-1.amazoncognito.com; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+      ],
+    ],
+  };
+  if (
+    responsePolicies.length !== 2 ||
+    responsePolicies.some(
+      ([, policy]) =>
+        JSON.stringify(
+          policy.Properties?.ResponseHeadersPolicyConfig?.SecurityHeadersConfig
+            ?.ContentSecurityPolicy?.ContentSecurityPolicy,
+        ) !== JSON.stringify(expectedCsp),
+    )
+  )
+    throw new Error(
+      "Every CloudFront behavior must use the exact restrictive launch CSP",
+    );
+  const webOrigin = {
+    "Fn::Join": [
+      "",
+      ["https://", { "Fn::GetAtt": [distributionId, "DomainName"] }],
+    ],
+  };
+  if (
+    pool.Properties?.AdminCreateUserConfig?.AllowAdminCreateUserOnly !== true ||
+    pool.Properties?.Policies?.PasswordPolicy?.MinimumLength < 14
+  )
+    throw new Error(
+      "Cognito must disable public signup and enforce the strong password policy",
+    );
+  if (
+    server.Properties?.Identifier !== "events" ||
+    JSON.stringify(server.Properties?.Scopes) !==
+      JSON.stringify([
+        {
+          ScopeDescription: "Read FIND THE EDGE events and odds",
+          ScopeName: "events:read",
+        },
+      ])
+  )
+    throw new Error(
+      "Cognito must define only the events:read resource-server scope",
+    );
+  if (!isRef(cognitoDomain.Properties?.UserPoolId, poolId))
+    throw new Error("Cognito domain must bind to the selected user pool");
+  const oauth = client.Properties;
+  if (
+    oauth?.GenerateSecret !== false ||
+    JSON.stringify(oauth?.AllowedOAuthFlows) !== JSON.stringify(["code"]) ||
+    !isRef(oauth?.UserPoolId, poolId) ||
+    JSON.stringify(oauth?.CallbackURLs) !==
+      JSON.stringify([
+        {
+          "Fn::Join": [
+            "",
+            [
+              "https://",
+              { "Fn::GetAtt": [distributionId, "DomainName"] },
+              "/auth/callback",
+            ],
+          ],
+        },
+      ]) ||
+    JSON.stringify(oauth?.LogoutURLs) !== JSON.stringify([webOrigin])
+  )
+    throw new Error(
+      "Cognito web client must be a public authorization-code client with exact hosted URLs",
+    );
+  const publicBlock = bucket.Properties?.PublicAccessBlockConfiguration;
+  if (
+    ![
+      "BlockPublicAcls",
+      "BlockPublicPolicy",
+      "IgnorePublicAcls",
+      "RestrictPublicBuckets",
+    ].every((key) => publicBlock?.[key] === true) ||
+    bucket.Properties?.BucketEncryption?.ServerSideEncryptionConfiguration?.[0]
+      ?.ServerSideEncryptionByDefault?.SSEAlgorithm !== "AES256" ||
+    bucket.Properties?.VersioningConfiguration?.Status !== "Enabled"
+  )
+    throw new Error("Web bucket must be private, encrypted, and versioned");
+  const cloudFrontRead =
+    bucketPolicy.Properties?.PolicyDocument?.Statement?.find(
+      (statement) =>
+        statement.Effect === "Allow" &&
+        statement.Action === "s3:GetObject" &&
+        statement.Principal?.Service === "cloudfront.amazonaws.com",
+    );
+  if (
+    !isRef(bucketPolicy.Properties?.Bucket, bucketId) ||
+    !cloudFrontRead ||
+    !JSON.stringify(cloudFrontRead.Resource).includes(
+      JSON.stringify({ "Fn::GetAtt": [bucketId, "Arn"] }),
+    ) ||
+    !JSON.stringify(cloudFrontRead.Condition).includes(
+      JSON.stringify({ Ref: distributionId }),
+    )
+  )
+    throw new Error(
+      "Private web bucket policy must bind CloudFront OAC to the intended distribution",
+    );
+  const distributionConfig = distribution.Properties?.DistributionConfig;
+  const distributionOrigins = distributionConfig?.Origins ?? [];
+  if (
+    distributionConfig?.CustomErrorResponses !== undefined ||
+    distributionConfig?.DefaultRootObject !== "index.html" ||
+    distributionConfig?.DefaultCacheBehavior?.ViewerProtocolPolicy !==
+      "redirect-to-https" ||
+    distributionConfig?.DefaultCacheBehavior?.Compress !== true ||
+    !distributionOrigins.some((origin) => origin.OriginAccessControlId) ||
+    oac.Properties?.OriginAccessControlConfig?.SigningBehavior !== "always" ||
+    spaFunction.Properties?.AutoPublish !== true ||
+    spaFunction.Properties?.FunctionCode !== exactSpaCode ||
+    JSON.stringify(
+      distributionConfig?.DefaultCacheBehavior?.FunctionAssociations,
+    ) !==
+      JSON.stringify([
+        {
+          EventType: "viewer-request",
+          FunctionARN: { "Fn::GetAtt": [spaFunctionId, "FunctionARN"] },
+        },
+      ])
+  )
+    throw new Error(
+      "CloudFront must use exact SPA navigation, TLS redirect, compression, and signed OAC access",
+    );
+  if (api.Properties?.CorsConfiguration !== undefined)
+    throw new Error("HTTP API CORS must be applied without a dependency cycle");
+  const corsResources = entriesOfType(template, "Custom::AWS").filter(
+    ([, value]) => {
+      const rendered = JSON.stringify(value.Properties?.Create);
+      return (
+        rendered.includes("ApiGatewayV2") && rendered.includes("updateApi")
+      );
+    },
+  );
+  if (corsResources.length !== 1)
+    throw new Error("HTTP API CORS requires exactly one guarded configurator");
+  const [corsId, corsResource] = corsResources[0];
+  const createCors = corsResource.Properties?.Create;
+  const updateCors = corsResource.Properties?.Update;
+  const createRendered = JSON.stringify(createCors);
+  if (
+    JSON.stringify(updateCors) !== createRendered ||
+    corsResource.Properties?.Delete !== undefined ||
+    !createRendered.includes(JSON.stringify({ Ref: apiId })) ||
+    !createRendered.includes(
+      JSON.stringify({ "Fn::GetAtt": [distributionId, "DomainName"] }),
+    ) ||
+    !createRendered.includes('\\"AllowOrigins\\":[\\"https://') ||
+    !createRendered.includes('\\"AllowMethods\\":[\\"GET\\",\\"OPTIONS\\"]') ||
+    !createRendered.includes(
+      '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\"]',
+    ) ||
+    createRendered.includes("*")
   )
     throw new Error(
       "HTTP API CORS must contain only the exact origin, methods, and headers",
     );
+  const corsPolicies = entriesOfType(template, "AWS::IAM::Policy").filter(
+    ([, value]) =>
+      JSON.stringify(value.Properties?.PolicyDocument).includes(
+        '"apigateway:PATCH"',
+      ),
+  );
+  if (
+    corsPolicies.length !== 1 ||
+    corsPolicies[0][1].Properties?.PolicyDocument?.Statement?.length !== 1 ||
+    corsPolicies[0][1].Properties.PolicyDocument.Statement[0]?.Effect !==
+      "Allow" ||
+    corsPolicies[0][1].Properties.PolicyDocument.Statement[0]?.Action !==
+      "apigateway:PATCH" ||
+    !JSON.stringify(
+      corsPolicies[0][1].Properties.PolicyDocument.Statement[0]?.Resource,
+    ).includes(JSON.stringify({ Ref: apiId })) ||
+    JSON.stringify(
+      corsPolicies[0][1].Properties.PolicyDocument.Statement[0]?.Resource,
+    ).includes("*") ||
+    !JSON.stringify(corsResource.Properties?.ServiceToken).includes(
+      "Fn::GetAtt",
+    )
+  )
+    throw new Error("HTTP API CORS configurator IAM must be API-scoped");
   const authorizers = entriesOfType(
     template,
     "AWS::ApiGatewayV2::Authorizer",
@@ -184,9 +438,13 @@ export function validateTemplate(template, config) {
     ([, value]) =>
       isRef(value.Properties?.ApiId, apiId) &&
       value.Properties?.AuthorizerType === "JWT" &&
-      value.Properties?.JwtConfiguration?.Issuer === config.issuer &&
+      isGetAtt(
+        value.Properties?.JwtConfiguration?.Issuer,
+        poolId,
+        "ProviderURL",
+      ) &&
       JSON.stringify(value.Properties?.JwtConfiguration?.Audience) ===
-        JSON.stringify([config.audience]),
+        JSON.stringify([{ Ref: clientId }]),
   );
   if (authorizers.length !== 1)
     throw new Error("Intended API must have the exact JWT issuer and audience");
@@ -214,7 +472,7 @@ export function validateTemplate(template, config) {
         value.Properties?.AuthorizationType !== "JWT" ||
         !isRef(value.Properties?.AuthorizerId, authorizerId) ||
         JSON.stringify(value.Properties?.AuthorizationScopes) !==
-          JSON.stringify(["events:read"]),
+          JSON.stringify(["events/events:read"]),
     )
   )
     throw new Error(
@@ -262,6 +520,50 @@ export function validateTemplate(template, config) {
     apiOutput["Fn::Join"][1][1] !== "/dev"
   )
     throw new Error("API output must reference the real dev API endpoint");
+  for (const outputName of [
+    "WebOrigin",
+    "WebDistributionId",
+    "WebAssetsBucketName",
+    "CognitoIssuer",
+    "CognitoUserPoolId",
+    "CognitoClientId",
+    "CognitoDomain",
+    "CognitoScope",
+    "CognitoCallbackUrl",
+  ])
+    if (!template.Outputs?.[outputName]?.Value)
+      throw new Error(`Required launch output ${outputName} is missing`);
+  if (
+    JSON.stringify(template.Outputs.WebOrigin.Value) !==
+      JSON.stringify(webOrigin) ||
+    !isRef(template.Outputs.WebDistributionId.Value, distributionId) ||
+    !isRef(template.Outputs.WebAssetsBucketName.Value, bucketId) ||
+    !isGetAtt(template.Outputs.CognitoIssuer.Value, poolId, "ProviderURL") ||
+    !isRef(template.Outputs.CognitoClientId.Value, clientId) ||
+    !isRef(template.Outputs.CognitoUserPoolId.Value, poolId) ||
+    JSON.stringify(template.Outputs.CognitoCallbackUrl.Value) !==
+      JSON.stringify({
+        "Fn::Join": [
+          "",
+          [
+            "https://",
+            { "Fn::GetAtt": [distributionId, "DomainName"] },
+            "/auth/callback",
+          ],
+        ],
+      }) ||
+    JSON.stringify(template.Outputs.CognitoDomain.Value) !==
+      JSON.stringify({
+        "Fn::Join": [
+          "",
+          ["https://", { Ref: domainId }, ".auth.us-east-1.amazoncognito.com"],
+        ],
+      }) ||
+    template.Outputs.CognitoScope.Value !== "events/events:read"
+  )
+    throw new Error(
+      "Launch outputs must reference the exact created resources",
+    );
   for (const resource of Object.values(template.Resources ?? {})) {
     if (resource?.Type !== "AWS::IAM::Policy") continue;
     for (const statement of resource.Properties?.PolicyDocument?.Statement ??

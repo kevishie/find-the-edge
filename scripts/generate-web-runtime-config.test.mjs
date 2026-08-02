@@ -29,6 +29,59 @@ test("creates an exact, inert, non-secret artifact", () => {
   assert.doesNotMatch(artifact, /token-value|bearer|local-e2e-token/i);
 });
 
+test("creates complete stack-output-derived Cognito launch config", () => {
+  const artifact = createRuntimeConfigArtifact({
+    apiBase: "https://api.example.com/dev",
+    providerKey: "cognitoSession",
+    launch: {
+      cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
+      cognitoClientId: "client-id",
+      cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
+      cognitoScope: "events/events:read",
+      callbackUrl: "https://app.example.com/auth/callback",
+      logoutUrl: "https://app.example.com",
+    },
+  });
+  const context = vm.createContext({ window: {} });
+  vm.runInContext(artifact, context, { timeout: 100 });
+  assert.equal(
+    context.window.__FTE_RUNTIME_CONFIG__.cognitoScope,
+    "events/events:read",
+  );
+  assert.equal(
+    context.window.__FTE_RUNTIME_CONFIG__.tokenProviderKey,
+    "cognitoSession",
+  );
+  assert.doesNotMatch(
+    artifact,
+    /password|clientSecret|accessToken|refreshToken/,
+  );
+});
+
+test("rejects Cognito domain paths and callback/logout drift", () => {
+  const launch = {
+    cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
+    cognitoClientId: "client-id",
+    cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
+    cognitoScope: "events/events:read",
+    callbackUrl: "https://app.example.com/auth/callback",
+    logoutUrl: "https://app.example.com",
+  };
+  for (const change of [
+    { cognitoDomain: `${launch.cognitoDomain}/path` },
+    { cognitoDomain: `${launch.cognitoDomain}?x=1` },
+    { callbackUrl: "https://other.example.com/auth/callback" },
+    { logoutUrl: "https://app.example.com/path" },
+  ])
+    assert.throws(() =>
+      createRuntimeConfigArtifact({
+        apiBase: "https://api.example.com",
+        providerKey: "cognitoSession",
+        launch: { ...launch, ...change },
+      }),
+    );
+});
+
 test("production HTML preloads the non-secret placeholder before the module", async () => {
   const html = await readFile(
     new URL("../apps/web/index.html", import.meta.url),

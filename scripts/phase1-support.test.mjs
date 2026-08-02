@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import vm from "node:vm";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,17 +45,197 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
 });
 
 function validTemplate() {
+  const exactSpaCode =
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri === '/auth/callback') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+  const webOrigin = {
+    "Fn::Join": [
+      "",
+      ["https://", { "Fn::GetAtt": ["Distribution", "DomainName"] }],
+    ],
+  };
+  const exactCsp = {
+    "Fn::Join": [
+      "",
+      [
+        "default-src 'self'; base-uri 'none'; connect-src 'self' ",
+        { "Fn::GetAtt": ["Api", "ApiEndpoint"] },
+        " https://",
+        { Ref: "Domain" },
+        ".auth.us-east-1.amazoncognito.com; form-action 'self' https://",
+        { Ref: "Domain" },
+        ".auth.us-east-1.amazoncognito.com; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+      ],
+    ],
+  };
+  const corsCall = {
+    "Fn::Join": [
+      "",
+      [
+        '{"service":"ApiGatewayV2","action":"updateApi","parameters":{"ApiId":"',
+        { Ref: "Api" },
+        '","CorsConfiguration":{"AllowOrigins":["https://',
+        { "Fn::GetAtt": ["Distribution", "DomainName"] },
+        '"],"AllowHeaders":["authorization","content-type"],"AllowMethods":["GET","OPTIONS"]}},"physicalResourceId":{"id":"fixture-events-api-cors"}}',
+      ],
+    ],
+  };
   const template = {
     Resources: {
       Table: { Type: "AWS::DynamoDB::Table", Properties: {} },
+      Pool: {
+        Type: "AWS::Cognito::UserPool",
+        Properties: {
+          AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
+          Policies: { PasswordPolicy: { MinimumLength: 14 } },
+        },
+      },
+      Server: {
+        Type: "AWS::Cognito::UserPoolResourceServer",
+        Properties: {
+          Identifier: "events",
+          Scopes: [
+            {
+              ScopeDescription: "Read FIND THE EDGE events and odds",
+              ScopeName: "events:read",
+            },
+          ],
+        },
+      },
+      Domain: {
+        Type: "AWS::Cognito::UserPoolDomain",
+        Properties: { UserPoolId: { Ref: "Pool" } },
+      },
+      Client: {
+        Type: "AWS::Cognito::UserPoolClient",
+        Properties: {
+          GenerateSecret: false,
+          AllowedOAuthFlows: ["code"],
+          UserPoolId: { Ref: "Pool" },
+          CallbackURLs: [
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "https://",
+                  { "Fn::GetAtt": ["Distribution", "DomainName"] },
+                  "/auth/callback",
+                ],
+              ],
+            },
+          ],
+          LogoutURLs: [webOrigin],
+        },
+      },
+      Bucket: {
+        Type: "AWS::S3::Bucket",
+        Properties: {
+          PublicAccessBlockConfiguration: {
+            BlockPublicAcls: true,
+            BlockPublicPolicy: true,
+            IgnorePublicAcls: true,
+            RestrictPublicBuckets: true,
+          },
+          BucketEncryption: {
+            ServerSideEncryptionConfiguration: [
+              { ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } },
+            ],
+          },
+          VersioningConfiguration: { Status: "Enabled" },
+        },
+      },
+      BucketPolicy: {
+        Type: "AWS::S3::BucketPolicy",
+        Properties: {
+          Bucket: { Ref: "Bucket" },
+          PolicyDocument: {
+            Statement: [
+              {
+                Effect: "Allow",
+                Action: "s3:GetObject",
+                Principal: { Service: "cloudfront.amazonaws.com" },
+                Resource: {
+                  "Fn::Join": ["", [{ "Fn::GetAtt": ["Bucket", "Arn"] }, "/*"]],
+                },
+                Condition: {
+                  StringEquals: {
+                    "AWS:SourceArn": {
+                      "Fn::Join": [
+                        "",
+                        ["distribution/", { Ref: "Distribution" }],
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+      Oac: {
+        Type: "AWS::CloudFront::OriginAccessControl",
+        Properties: {
+          OriginAccessControlConfig: { SigningBehavior: "always" },
+        },
+      },
+      SpaFunction: {
+        Type: "AWS::CloudFront::Function",
+        Properties: { AutoPublish: true, FunctionCode: exactSpaCode },
+      },
+      Headers: {
+        Type: "AWS::CloudFront::ResponseHeadersPolicy",
+        Properties: {
+          ResponseHeadersPolicyConfig: {
+            SecurityHeadersConfig: {
+              ContentSecurityPolicy: {
+                ContentSecurityPolicy: exactCsp,
+              },
+            },
+          },
+        },
+      },
+      ImmutableHeaders: {
+        Type: "AWS::CloudFront::ResponseHeadersPolicy",
+        Properties: {
+          ResponseHeadersPolicyConfig: {
+            SecurityHeadersConfig: {
+              ContentSecurityPolicy: {
+                ContentSecurityPolicy: exactCsp,
+              },
+            },
+          },
+        },
+      },
+      Distribution: {
+        Type: "AWS::CloudFront::Distribution",
+        Properties: {
+          DistributionConfig: {
+            DefaultRootObject: "index.html",
+            DefaultCacheBehavior: {
+              ViewerProtocolPolicy: "redirect-to-https",
+              Compress: true,
+              FunctionAssociations: [
+                {
+                  EventType: "viewer-request",
+                  FunctionARN: {
+                    "Fn::GetAtt": ["SpaFunction", "FunctionARN"],
+                  },
+                },
+              ],
+            },
+            Origins: [{ OriginAccessControlId: { Ref: "Oac" } }],
+          },
+        },
+      },
       Api: {
         Type: "AWS::ApiGatewayV2::Api",
+        Properties: {},
+      },
+      CorsConfigurator: {
+        Type: "Custom::AWS",
         Properties: {
-          CorsConfiguration: {
-            AllowOrigins: ["https://app.example.com"],
-            AllowMethods: ["GET", "OPTIONS"],
-            AllowHeaders: ["authorization", "content-type"],
-          },
+          ServiceToken: { "Fn::GetAtt": ["CorsHandler", "Arn"] },
+          Create: corsCall,
+          Update: corsCall,
         },
       },
       Route: {
@@ -64,7 +245,7 @@ function validTemplate() {
           ApiId: { Ref: "Api" },
           AuthorizationType: "JWT",
           AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events:read"],
+          AuthorizationScopes: ["events/events:read"],
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -77,7 +258,7 @@ function validTemplate() {
           ApiId: { Ref: "Api" },
           AuthorizationType: "JWT",
           AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events:read"],
+          AuthorizationScopes: ["events/events:read"],
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -90,7 +271,7 @@ function validTemplate() {
           ApiId: { Ref: "Api" },
           AuthorizationType: "JWT",
           AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events:read"],
+          AuthorizationScopes: ["events/events:read"],
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -102,8 +283,8 @@ function validTemplate() {
           ApiId: { Ref: "Api" },
           AuthorizerType: "JWT",
           JwtConfiguration: {
-            Issuer: "https://issuer.example.com",
-            Audience: ["audience"],
+            Issuer: { "Fn::GetAtt": ["Pool", "ProviderURL"] },
+            Audience: [{ Ref: "Client" }],
           },
         },
       },
@@ -147,6 +328,25 @@ function validTemplate() {
           },
         },
       },
+      CorsPolicy: {
+        Type: "AWS::IAM::Policy",
+        Properties: {
+          PolicyDocument: {
+            Statement: [
+              {
+                Effect: "Allow",
+                Action: "apigateway:PATCH",
+                Resource: {
+                  "Fn::Join": [
+                    "",
+                    ["arn:aws:apigateway:us-east-1::/apis/", { Ref: "Api" }],
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
       SeedPolicy: {
         Type: "AWS::IAM::Policy",
         Properties: {
@@ -175,6 +375,37 @@ function validTemplate() {
         },
       },
       FixtureOddsSeedFunctionName: { Value: { Ref: "Seed" } },
+      WebOrigin: { Value: webOrigin },
+      WebDistributionId: { Value: { Ref: "Distribution" } },
+      WebAssetsBucketName: { Value: { Ref: "Bucket" } },
+      CognitoIssuer: { Value: { "Fn::GetAtt": ["Pool", "ProviderURL"] } },
+      CognitoUserPoolId: { Value: { Ref: "Pool" } },
+      CognitoClientId: { Value: { Ref: "Client" } },
+      CognitoDomain: {
+        Value: {
+          "Fn::Join": [
+            "",
+            [
+              "https://",
+              { Ref: "Domain" },
+              ".auth.us-east-1.amazoncognito.com",
+            ],
+          ],
+        },
+      },
+      CognitoScope: { Value: "events/events:read" },
+      CognitoCallbackUrl: {
+        Value: {
+          "Fn::Join": [
+            "",
+            [
+              "https://",
+              { "Fn::GetAtt": ["Distribution", "DomainName"] },
+              "/auth/callback",
+            ],
+          ],
+        },
+      },
     },
   };
   return template;
@@ -189,20 +420,117 @@ const templateConfig = {
 test("template validation structurally binds API, auth, outputs, and scoped IAM", () => {
   const template = validTemplate();
   assert.doesNotThrow(() => validateTemplate(template, templateConfig));
+  const handler = vm.runInNewContext(
+    `${template.Resources.SpaFunction.Properties.FunctionCode}; handler`,
+  );
+  for (const [uri, expected] of [
+    ["/games", "/index.html"],
+    ["/auth/callback", "/index.html"],
+    ["/assets/missing.hash.js", "/assets/missing.hash.js"],
+    ["/runtime-config.js", "/runtime-config.js"],
+    ["/cognito-token-provider.js", "/cognito-token-provider.js"],
+    ["/any.dotted/path", "/any.dotted/path"],
+  ])
+    assert.equal(handler({ request: { uri } }).uri, expected);
+  for (const mutate of [
+    (copy) =>
+      (copy.Resources.Distribution.Properties.DistributionConfig.CustomErrorResponses =
+        [{ ErrorCode: 404, ResponsePagePath: "/index.html" }]),
+    (copy) =>
+      (copy.Resources.SpaFunction.Properties.FunctionCode =
+        "function handler(event){return event.request;}"),
+    (copy) =>
+      delete copy.Resources.Distribution.Properties.DistributionConfig
+        .DefaultCacheBehavior.FunctionAssociations,
+  ]) {
+    const unsafeNavigation = structuredClone(template);
+    mutate(unsafeNavigation);
+    assert.throws(
+      () => validateTemplate(unsafeNavigation, templateConfig),
+      /SPA navigation|CloudFront/,
+    );
+  }
   assert.throws(
     () => validateTemplate({ ...template, Outputs: {} }, templateConfig),
     /output/i,
   );
   const wildcard = structuredClone(template);
-  wildcard.Resources.Api.Properties.CorsConfiguration.AllowOrigins = ["*"];
+  wildcard.Resources.CorsConfigurator.Properties.Create["Fn::Join"][1][2] =
+    '","CorsConfiguration":{"AllowOrigins":["*';
+  wildcard.Resources.CorsConfigurator.Properties.Update =
+    wildcard.Resources.CorsConfigurator.Properties.Create;
   assert.throws(() => validateTemplate(wildcard, templateConfig), /CORS/);
+  for (const mutate of [
+    (copy) => delete copy.Resources.BucketPolicy,
+    (copy) =>
+      (copy.Resources.BucketPolicy.Properties.PolicyDocument.Statement[0].Condition.StringEquals[
+        "AWS:SourceArn"
+      ] = "*"),
+    (copy) =>
+      (copy.Resources.BucketPolicy.Properties.PolicyDocument.Statement[0].Principal.Service =
+        "*"),
+  ]) {
+    const weakenedOac = structuredClone(template);
+    mutate(weakenedOac);
+    assert.throws(
+      () => validateTemplate(weakenedOac, templateConfig),
+      /private|bucket|OAC/i,
+    );
+  }
+  for (const mutate of [
+    (copy) => (copy.Outputs.CognitoUserPoolId.Value = { Ref: "OtherPool" }),
+    (copy) =>
+      (copy.Resources.Domain.Properties.UserPoolId = { Ref: "OtherPool" }),
+    (copy) => (copy.Outputs.CognitoDomain.Value = "https://other.example.com"),
+    (copy) =>
+      (copy.Outputs.CognitoCallbackUrl.Value =
+        "https://other.example.com/auth/callback"),
+  ]) {
+    const crossBound = structuredClone(template);
+    mutate(crossBound);
+    assert.throws(
+      () => validateTemplate(crossBound, templateConfig),
+      /Cognito|Launch outputs/,
+    );
+  }
+  for (const resourceId of ["Headers", "ImmutableHeaders"]) {
+    const wrongCsp = structuredClone(template);
+    wrongCsp.Resources[
+      resourceId
+    ].Properties.ResponseHeadersPolicyConfig.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy[
+      "Fn::Join"
+    ][1][1] = { "Fn::GetAtt": ["OtherApi", "ApiEndpoint"] };
+    assert.throws(() => validateTemplate(wrongCsp, templateConfig), /CSP/);
+  }
   for (const [property, value] of [
     ["AllowMethods", ["GET"]],
     ["AllowHeaders", ["authorization", "content-type", "*"]],
   ]) {
     const wrongCors = structuredClone(template);
-    wrongCors.Resources.Api.Properties.CorsConfiguration[property] = value;
+    const parts =
+      wrongCors.Resources.CorsConfigurator.Properties.Create["Fn::Join"][1];
+    parts[4] = parts[4].replace(
+      new RegExp(`"${property}":\\[[^\\]]*\\]`),
+      `"${property}":${JSON.stringify(value)}`,
+    );
+    wrongCors.Resources.CorsConfigurator.Properties.Update =
+      wrongCors.Resources.CorsConfigurator.Properties.Create;
     assert.throws(() => validateTemplate(wrongCors, templateConfig), /CORS/);
+  }
+  for (const mutate of [
+    (statement) => (statement.Action = "apigateway:UpdateApi"),
+    (statement) => (statement.Action = ["apigateway:PATCH", "apigateway:GET"]),
+    (statement) => (statement.Resource = "*"),
+    (statement) => (statement.Effect = "Deny"),
+  ]) {
+    const wrongCorsIam = structuredClone(template);
+    mutate(
+      wrongCorsIam.Resources.CorsPolicy.Properties.PolicyDocument.Statement[0],
+    );
+    assert.throws(
+      () => validateTemplate(wrongCorsIam, templateConfig),
+      /CORS configurator IAM/,
+    );
   }
   const wrongApi = structuredClone(template);
   wrongApi.Resources.Route.Properties.ApiId = { Ref: "OtherApi" };

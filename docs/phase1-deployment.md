@@ -1,12 +1,17 @@
 # Phase1 deployment and environment smoke
 
-Phase1 packages the existing fixture-backed games UI and validates the dev infrastructure without deploying by default. The repository commands never create credentials, secrets, or cloud resources. Run cloud commands only with an explicitly selected AWS account and region.
+Phase1 packages the existing fixture-backed games UI. Preflight, bundle, and test commands are credential-free; `phase1:launch` explicitly creates and updates cloud resources when its opt-in guard is enabled.
+
+The AWS-native launch layer uses Cognito authorization-code flow with PKCE and
+public signup disabled. CloudFront serves an encrypted, private S3 bucket through
+signed origin access; direct S3 access is never an application fallback. The API
+issuer, client audience, scope, and CORS origin are derived from these resources.
 
 ## Prerequisites
 
 - Node 20.19 or newer and pnpm 10.28.2.
 - For local validation: no AWS login is required.
-- For deployment: an authenticated AWS profile/role, a 12-digit account, region, existing Secrets Manager cursor-signing secret, HTTPS JWT issuer, JWT audience, and exact HTTPS web origin.
+- For deployment: an authenticated AWS profile/role in account `228246988391`, region `us-east-1`, and the existing Secrets Manager cursor-signing secret.
 - For environment smoke: the deployed API and fixture-seed outputs, issuer/audience/cursor-secret identifiers, exact hosted browser origin, plus an `events:read` JWT in the process environment. The full smoke requires the browser URL; it is not an optional partial check. Never put tokens in command arguments, files, shell history, or logs.
 
 ## Credential-free preflight and bundle
@@ -21,19 +26,25 @@ Preflight synthesizes `FindTheEdge-dev-Foundation` with safe placeholder identif
 
 For an explicit local-only bundle, set `FTE_PHASE1_LOCAL_MODE=1` and use an `http://localhost` or `http://127.0.0.1` API base. HTTP is rejected for every non-local host.
 
-## Explicit deploy and outputs
+## Guarded launch and outputs
 
-Verify identity before mutation, then synthesize and deploy noninteractively:
+Set `AWS_ACCOUNT_ID=228246988391`, `AWS_REGION=us-east-1`,
+`FTE_EVENT_CURSOR_SECRET_ARN`, an explicit email in `FTE_PHASE1_USERNAME`, and
+`FTE_PHASE1_LAUNCH=1`, then run `pnpm phase1:launch`. The command rechecks STS
+identity immediately before every mutation, rejects retained-table destructive
+diffs, deploys the dev stack, generates runtime configuration from stack outputs,
+uploads and invalidates the private site, and bootstraps the admin-created user
+through a mode-0600 temporary request file. It never prints a password or token
+and deletes temporary material on every exit.
+
+The underlying operator commands are shown for diagnosis only:
 
 ```sh
 aws sts get-caller-identity
-export CDK_DEFAULT_ACCOUNT=123456789012
+export CDK_DEFAULT_ACCOUNT=228246988391
 export CDK_DEFAULT_REGION=us-east-1
 export FTE_AWS_STAGE=dev
-export FTE_JWT_ISSUER=https://issuer.example.com
-export FTE_JWT_AUDIENCE=find-the-edge-dev
-export FTE_EVENT_CURSOR_SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:fte-dev-cursor
-export FTE_WEB_ORIGIN=https://app.example.com
+export FTE_EVENT_CURSOR_SECRET_ARN=arn:aws:secretsmanager:us-east-1:228246988391:secret:fte-dev-cursor
 export FTE_FIXTURE_ODDS_SEED_ENABLED=true
 export FTE_UPCOMING_SCHEDULER_ENABLED=false
 pnpm --filter @find-the-edge/infra-cdk synth
@@ -41,14 +52,18 @@ pnpm --filter @find-the-edge/infra-cdk exec cdk deploy FindTheEdge-dev-Foundatio
 aws cloudformation describe-stacks --stack-name FindTheEdge-dev-Foundation --region "$CDK_DEFAULT_REGION" --query 'Stacks[0].Outputs' --output table
 ```
 
-Copy `EventsApiEndpoint` and `FixtureOddsSeedFunctionName` from the outputs. Deployment is intentionally not wrapped by a repository command: the operator must issue the mutating CDK command explicitly.
+The launch command consumes all stack outputs directly. Rotate or delete the MVP
+user with the Cognito admin APIs using restricted JSON input files, never a
+password argument. Roll back assets by uploading the prior checksum-verified
+bundle and invalidating `/*`. Infrastructure rollback requires a reviewed CDK
+diff; the event table, user pool, web bucket, and logs are retained.
 
 ## Seed, API, CORS, auth, and browser smoke
 
-Install/upload the static bundle first. Register the configured `hostSession` async token provider in the hosting shell as documented in `docs/web-runtime-configuration.md`. Then keep the scoped token only in the process environment:
+`phase1:launch` performs this proof automatically. It creates a private temporary user, completes Cognito Hosted UI PKCE login, keeps its access/ID tokens and password only in process memory or restricted temporary files, seeds twice, runs API/CORS/browser smoke, then deletes the user and temporary material. Standalone smoke requires both the scoped access token and a valid Cognito ID token as the mandatory wrong-scope proof:
 
 ```sh
-export AWS_ACCOUNT_ID=123456789012
+export AWS_ACCOUNT_ID=228246988391
 export AWS_REGION=us-east-1
 export FTE_PHASE1_API_BASE=https://abc.execute-api.us-east-1.amazonaws.com
 export FTE_FIXTURE_SEED_FUNCTION_NAME=FindTheEdge-dev-FixtureOddsSeed...
@@ -56,14 +71,17 @@ export FTE_WEB_ORIGIN=https://app.example.com
 export FTE_PHASE1_BROWSER_BASE_URL=https://app.example.com
 export FTE_JWT_ISSUER=https://issuer.example.com
 export FTE_JWT_AUDIENCE=find-the-edge-dev
-export FTE_EVENT_CURSOR_SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:fte-dev-cursor
-export FTE_PHASE1_ACCESS_TOKEN='obtain-from-your-identity-provider'
+export FTE_EVENT_CURSOR_SECRET_ARN=arn:aws:secretsmanager:us-east-1:228246988391:secret:fte-dev-cursor
+export FTE_PHASE1_ACCESS_TOKEN='short-lived-access-token'
+export FTE_PHASE1_WRONG_SCOPE_TOKEN='short-lived-id-token'
+export FTE_PHASE1_USERNAME='private-user@example.com'
+export FTE_PHASE1_PASSWORD='process-only-password'
 export FTE_PHASE1_SMOKE=1
 pnpm phase1:smoke
 unset FTE_PHASE1_ACCESS_TOKEN FTE_PHASE1_WRONG_SCOPE_TOKEN
 ```
 
-The smoke command validates every input before its first AWS call, checks AWS identity, invokes the seed twice to prove convergence, verifies exact unchanged MLB/MLS fixture identifiers, markets, selections, books, prices, and timestamps, requires 401 without a token, rejects an unconfigured CORS origin, optionally tests denial with `FTE_PHASE1_WRONG_SCOPE_TOKEN`, and always runs the real hosted browser flow. Browser traces, videos, screenshots, and retained output are disabled so the injected process token cannot enter an artifact. Without `FTE_PHASE1_SMOKE=1` it reports a skip and performs no mutation.
+The smoke command validates every input, checks AWS identity again immediately before each seed mutation, proves convergence, verifies the exact fixtures and odds, requires denial for missing, malformed, and valid wrong-scope authentication, rejects an unconfigured CORS origin, and runs the real hosted browser flow. Browser artifacts are disabled. Without `FTE_PHASE1_SMOKE=1` it reports a skip and performs no mutation.
 
 ## Rollback
 

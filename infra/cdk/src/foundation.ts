@@ -1,5 +1,6 @@
 import {
   App,
+  ArnFormat,
   Duration,
   RemovalPolicy,
   Stack,
@@ -13,13 +14,42 @@ import { Rule, Schedule } from "aws-cdk-lib/aws-events";
 import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
 import { Runtime } from "aws-cdk-lib/aws-lambda";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
+import {
+  AccountRecovery,
+  OAuthScope,
+  UserPool,
+  UserPoolClient,
+  UserPoolClientIdentityProvider,
+  UserPoolDomain,
+  UserPoolResourceServer,
+  ResourceServerScope,
+} from "aws-cdk-lib/aws-cognito";
+import {
+  BlockPublicAccess,
+  Bucket,
+  BucketEncryption,
+} from "aws-cdk-lib/aws-s3";
+import {
+  AllowedMethods,
+  CachePolicy,
+  CfnResponseHeadersPolicy,
+  Distribution,
+  Function as CloudFrontFunction,
+  FunctionCode,
+  FunctionEventType,
+  HeadersFrameOption,
+  HeadersReferrerPolicy,
+  ResponseHeadersPolicy,
+  SecurityPolicyProtocol,
+  ViewerProtocolPolicy,
+} from "aws-cdk-lib/aws-cloudfront";
+import { S3BucketOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
 import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { Topic } from "aws-cdk-lib/aws-sns";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
-  CorsHttpMethod,
   HttpApi,
   HttpMethod,
   HttpStage,
@@ -28,6 +58,11 @@ import {
 import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
+import {
+  AwsCustomResource,
+  AwsCustomResourcePolicy,
+  PhysicalResourceId,
+} from "aws-cdk-lib/custom-resources";
 import type { Construct } from "constructs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,8 +73,6 @@ export interface FoundationConfig {
   region?: string;
   schedulerEnabled?: boolean;
   alarmTopicArn?: string;
-  jwtIssuer?: string;
-  jwtAudience?: string;
   cursorSecretArn?: string;
   fixtureOddsSeedEnabled?: boolean;
   webOrigin?: string;
@@ -49,11 +82,8 @@ interface FoundationStackProps extends StackProps {
   schedulerEnabled: boolean;
   alarmTopicArn?: string;
   stageName: string;
-  jwtIssuer: string;
-  jwtAudience: string;
   cursorSecretArn: string;
   fixtureOddsSeedEnabled: boolean;
-  webOrigin: string;
 }
 
 export class FoundationStack extends Stack {
@@ -66,6 +96,179 @@ export class FoundationStack extends Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: RemovalPolicy.RETAIN,
       timeToLiveAttribute: "expiresAt",
+    });
+    const userPool = new UserPool(this, "MvpUserPool", {
+      selfSignUpEnabled: false,
+      accountRecovery: AccountRecovery.NONE,
+      signInAliases: { email: true },
+      passwordPolicy: {
+        minLength: 14,
+        requireDigits: true,
+        requireLowercase: true,
+        requireSymbols: true,
+        requireUppercase: true,
+        tempPasswordValidity: Duration.days(1),
+      },
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const readScope = new ResourceServerScope({
+      scopeName: "events:read",
+      scopeDescription: "Read FIND THE EDGE events and odds",
+    });
+    const resourceServer = new UserPoolResourceServer(
+      this,
+      "EventsResourceServer",
+      {
+        identifier: "events",
+        userPool,
+        scopes: [readScope],
+      },
+    );
+    const assets = new Bucket(this, "WebAssets", {
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      encryption: BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+      autoDeleteObjects: false,
+      versioned: true,
+    });
+    const securityHeaders = new ResponseHeadersPolicy(
+      this,
+      "WebSecurityHeaders",
+      {
+        securityHeadersBehavior: {
+          contentSecurityPolicy: {
+            contentSecurityPolicy: "default-src 'none'",
+            override: true,
+          },
+          contentTypeOptions: { override: true },
+          frameOptions: {
+            frameOption: HeadersFrameOption.DENY,
+            override: true,
+          },
+          referrerPolicy: {
+            referrerPolicy:
+              HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+            override: true,
+          },
+          strictTransportSecurity: {
+            accessControlMaxAge: Duration.days(365),
+            includeSubdomains: true,
+            preload: true,
+            override: true,
+          },
+          xssProtection: { protection: true, modeBlock: true, override: true },
+        },
+        customHeadersBehavior: {
+          customHeaders: [
+            { header: "Cache-Control", value: "no-store", override: true },
+            {
+              header: "Permissions-Policy",
+              value: "camera=(), microphone=(), geolocation=()",
+              override: true,
+            },
+          ],
+        },
+      },
+    );
+    const immutableHeaders = new ResponseHeadersPolicy(
+      this,
+      "WebImmutableSecurityHeaders",
+      {
+        securityHeadersBehavior: {
+          contentSecurityPolicy: {
+            contentSecurityPolicy: "default-src 'none'",
+            override: true,
+          },
+          contentTypeOptions: { override: true },
+          frameOptions: {
+            frameOption: HeadersFrameOption.DENY,
+            override: true,
+          },
+          referrerPolicy: {
+            referrerPolicy:
+              HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+            override: true,
+          },
+          strictTransportSecurity: {
+            accessControlMaxAge: Duration.days(365),
+            includeSubdomains: true,
+            preload: true,
+            override: true,
+          },
+        },
+        customHeadersBehavior: {
+          customHeaders: [
+            {
+              header: "Cache-Control",
+              value: "public, max-age=31536000, immutable",
+              override: true,
+            },
+          ],
+        },
+      },
+    );
+    const webAssetOrigin = S3BucketOrigin.withOriginAccessControl(assets);
+    const spaNavigation = new CloudFrontFunction(this, "WebSpaNavigation", {
+      code: FunctionCode.fromInline(
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri === '/auth/callback') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+      ),
+    });
+    const distribution = new Distribution(this, "WebDistribution", {
+      defaultRootObject: "index.html",
+      minimumProtocolVersion: SecurityPolicyProtocol.TLS_V1_2_2021,
+      defaultBehavior: {
+        origin: webAssetOrigin,
+        viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        allowedMethods: AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+        cachePolicy: CachePolicy.CACHING_DISABLED,
+        responseHeadersPolicy: securityHeaders,
+        functionAssociations: [
+          {
+            function: spaNavigation,
+            eventType: FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
+        compress: true,
+      },
+      additionalBehaviors: {
+        "assets/*": {
+          origin: webAssetOrigin,
+          viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+          cachePolicy: CachePolicy.CACHING_OPTIMIZED,
+          responseHeadersPolicy: immutableHeaders,
+          compress: true,
+        },
+      },
+    });
+    const webOrigin = `https://${distribution.distributionDomainName}`;
+    const callbackUrl = `${webOrigin}/auth/callback`;
+    const userPoolClient = new UserPoolClient(this, "MvpWebClient", {
+      userPool,
+      generateSecret: false,
+      supportedIdentityProviders: [UserPoolClientIdentityProvider.COGNITO],
+      oAuth: {
+        flows: {
+          authorizationCodeGrant: true,
+          implicitCodeGrant: false,
+          clientCredentials: false,
+        },
+        scopes: [
+          OAuthScope.OPENID,
+          OAuthScope.EMAIL,
+          OAuthScope.resourceServer(resourceServer, readScope),
+        ],
+        callbackUrls: [callbackUrl],
+        logoutUrls: [webOrigin],
+      },
+      preventUserExistenceErrors: true,
+    });
+    const domain = new UserPoolDomain(this, "MvpHostedUiDomain", {
+      userPool,
+      cognitoDomain: {
+        domainPrefix: `find-the-edge-${props.stageName}-${this.account}`,
+      },
     });
     const dlq = new Queue(this, "UpcomingEventsDlq", {
       fifo: true,
@@ -195,15 +398,22 @@ export class FoundationStack extends Stack {
     );
     const api = new HttpApi(this, "EventsHttpApi", {
       createDefaultStage: false,
-      corsPreflight: {
-        allowOrigins: [props.webOrigin],
-        allowHeaders: ["authorization", "content-type"],
-        allowMethods: [CorsHttpMethod.GET, CorsHttpMethod.OPTIONS],
+    });
+    const exactCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${api.apiEndpoint} ${domain.baseUrl()}; form-action 'self' ${domain.baseUrl()}; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
+    for (const policy of [securityHeaders, immutableHeaders]) {
+      const resource = policy.node.defaultChild as CfnResponseHeadersPolicy;
+      resource.addPropertyOverride(
+        "ResponseHeadersPolicyConfig.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy",
+        exactCsp,
+      );
+    }
+    const authorizer = new HttpJwtAuthorizer(
+      "EventsJwt",
+      userPool.userPoolProviderUrl,
+      {
+        jwtAudience: [userPoolClient.userPoolClientId],
       },
-    });
-    const authorizer = new HttpJwtAuthorizer("EventsJwt", props.jwtIssuer, {
-      jwtAudience: [props.jwtAudience],
-    });
+    );
     const integration = new HttpLambdaIntegration(
       "EventsIntegration",
       eventApi,
@@ -213,21 +423,55 @@ export class FoundationStack extends Stack {
       methods: [HttpMethod.GET],
       integration,
       authorizer,
-      authorizationScopes: ["events:read"],
+      authorizationScopes: ["events/events:read"],
     });
     api.addRoutes({
       path: "/events/{eventId}",
       methods: [HttpMethod.GET],
       integration,
       authorizer,
-      authorizationScopes: ["events:read"],
+      authorizationScopes: ["events/events:read"],
     });
     api.addRoutes({
       path: "/games",
       methods: [HttpMethod.GET],
       integration,
       authorizer,
-      authorizationScopes: ["events:read"],
+      authorizationScopes: ["events/events:read"],
+    });
+    const configureCorsCall = {
+      service: "ApiGatewayV2",
+      action: "updateApi",
+      parameters: {
+        ApiId: api.apiId,
+        CorsConfiguration: {
+          AllowOrigins: [webOrigin],
+          AllowHeaders: ["authorization", "content-type"],
+          AllowMethods: ["GET", "OPTIONS"],
+        },
+      },
+      physicalResourceId: PhysicalResourceId.of(
+        `${this.stackName}-events-api-cors`,
+      ),
+    };
+    new AwsCustomResource(this, "ConfigureEventsApiCors", {
+      onCreate: configureCorsCall,
+      onUpdate: configureCorsCall,
+      installLatestAwsSdk: false,
+      policy: AwsCustomResourcePolicy.fromStatements([
+        new PolicyStatement({
+          actions: ["apigateway:PATCH"],
+          resources: [
+            this.formatArn({
+              service: "apigateway",
+              resource: "/apis",
+              resourceName: api.apiId,
+              arnFormat: ArnFormat.SLASH_RESOURCE_NAME,
+              account: "",
+            }),
+          ],
+        }),
+      ]),
     });
     const accessLogs = new LogGroup(this, "EventApiAccessLogs", {
       retention: RetentionDays.ONE_MONTH,
@@ -253,6 +497,21 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "EventsApiEndpoint", {
       value: `${api.apiEndpoint}/${props.stageName}`,
     });
+    new CfnOutput(this, "WebOrigin", { value: webOrigin });
+    new CfnOutput(this, "WebDistributionId", {
+      value: distribution.distributionId,
+    });
+    new CfnOutput(this, "WebAssetsBucketName", { value: assets.bucketName });
+    new CfnOutput(this, "CognitoIssuer", {
+      value: userPool.userPoolProviderUrl,
+    });
+    new CfnOutput(this, "CognitoUserPoolId", { value: userPool.userPoolId });
+    new CfnOutput(this, "CognitoClientId", {
+      value: userPoolClient.userPoolClientId,
+    });
+    new CfnOutput(this, "CognitoDomain", { value: domain.baseUrl() });
+    new CfnOutput(this, "CognitoScope", { value: "events/events:read" });
+    new CfnOutput(this, "CognitoCallbackUrl", { value: callbackUrl });
     const alarms = [
       new Alarm(this, "UpcomingEventsDlqAlarm", {
         metric: dlq.metricApproximateNumberOfMessagesVisible(),
@@ -349,30 +608,24 @@ export function createFoundationApp(config: FoundationConfig): {
   }
   if (config.fixtureOddsSeedEnabled && config.stage !== "dev")
     throw new Error("fixture odds seed can only be enabled for the dev stage");
-  if (
-    !config.jwtIssuer ||
-    !config.jwtAudience ||
-    !config.cursorSecretArn ||
-    !config.webOrigin
-  )
-    throw new Error(
-      "JWT issuer, audience, cursor secret ARN, and web origin are required",
-    );
-  let webOrigin: URL;
-  try {
-    webOrigin = new URL(config.webOrigin);
-  } catch {
-    throw new Error("FTE_WEB_ORIGIN must be an exact HTTPS origin");
+  if (!config.cursorSecretArn) throw new Error("cursor secret ARN is required");
+  if (config.webOrigin) {
+    let legacyOrigin: URL;
+    try {
+      legacyOrigin = new URL(config.webOrigin);
+    } catch {
+      throw new Error("FTE_WEB_ORIGIN must be an exact HTTPS origin");
+    }
+    if (
+      legacyOrigin.origin !== config.webOrigin ||
+      (legacyOrigin.protocol !== "https:" &&
+        !(
+          legacyOrigin.protocol === "http:" &&
+          ["localhost", "127.0.0.1"].includes(legacyOrigin.hostname)
+        ))
+    )
+      throw new Error("FTE_WEB_ORIGIN must be an exact HTTPS origin");
   }
-  if (
-    webOrigin.origin !== config.webOrigin ||
-    (webOrigin.protocol !== "https:" &&
-      !(
-        webOrigin.protocol === "http:" &&
-        ["localhost", "127.0.0.1"].includes(webOrigin.hostname)
-      ))
-  )
-    throw new Error("FTE_WEB_ORIGIN must be an exact HTTPS origin");
   const alarmArn = config.alarmTopicArn;
   const alarmMatch = alarmArn?.match(
     /^arn:(aws|aws-us-gov|aws-cn):sns:([a-z]{2}(?:-gov)?-[a-z]+-\d):\d{12}:[A-Za-z0-9_-]{1,256}$/,
@@ -398,11 +651,8 @@ export function createFoundationApp(config: FoundationConfig): {
         "FIND THE EDGE checkpointed upcoming-event ingestion with a config-controlled scheduler producer.",
       schedulerEnabled: config.schedulerEnabled ?? false,
       stageName: config.stage,
-      jwtIssuer: config.jwtIssuer,
-      jwtAudience: config.jwtAudience,
       cursorSecretArn: config.cursorSecretArn,
       fixtureOddsSeedEnabled: config.fixtureOddsSeedEnabled ?? false,
-      webOrigin: config.webOrigin,
       ...(config.alarmTopicArn ? { alarmTopicArn: config.alarmTopicArn } : {}),
       ...(environment ? { env: environment } : {}),
     },

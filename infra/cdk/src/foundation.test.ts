@@ -19,7 +19,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 4);
+    template.resourceCountIs("AWS::Lambda::Function", 5);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -52,7 +52,7 @@ describe("foundation CDK app", () => {
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 3);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 4);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -69,7 +69,7 @@ describe("foundation CDK app", () => {
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
     template.resourceCountIs("AWS::SQS::Queue", 2);
-    template.resourceCountIs("AWS::Lambda::Function", 3);
+    template.resourceCountIs("AWS::Lambda::Function", 4);
     template.resourceCountIs("AWS::Events::Rule", 1);
     template.hasResource("AWS::DynamoDB::Table", {
       DeletionPolicy: "Retain",
@@ -126,11 +126,29 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("FailedRecords");
     expect(rendered).toContain("FindTheEdge/EventApi");
     expect(rendered).toContain("GET /games");
-    template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
-      CorsConfiguration: {
-        AllowHeaders: ["authorization", "content-type"],
-        AllowMethods: ["GET", "OPTIONS"],
-        AllowOrigins: ["https://app.example.com"],
+    template.hasResourceProperties("AWS::CloudFront::Function", {
+      AutoPublish: true,
+      FunctionCode:
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri === '/auth/callback') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+    });
+    expect(rendered).not.toContain("CustomErrorResponses");
+    template.hasResourceProperties("Custom::AWS", {
+      Create: Match.anyValue(),
+      Update: Match.anyValue(),
+    });
+    expect(rendered).toContain("ApiGatewayV2");
+    expect(rendered).toContain("updateApi");
+    expect(rendered).toContain("AllowOrigins");
+    expect(rendered).toContain("authorization");
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "apigateway:PATCH",
+            Effect: "Allow",
+            Resource: Match.anyValue(),
+          }),
+        ]),
       },
     });
     template.hasResourceProperties("AWS::IAM::Policy", {
@@ -158,6 +176,88 @@ describe("foundation CDK app", () => {
       }),
     });
     template.hasOutput("EventsApiEndpoint", {});
+    template.hasResourceProperties("AWS::Cognito::UserPool", {
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
+      Policies: {
+        PasswordPolicy: {
+          MinimumLength: 14,
+          RequireLowercase: true,
+          RequireNumbers: true,
+          RequireSymbols: true,
+          RequireUppercase: true,
+          TemporaryPasswordValidityDays: 1,
+        },
+      },
+    });
+    template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
+      AllowedOAuthFlows: ["code"],
+      AllowedOAuthFlowsUserPoolClient: true,
+      GenerateSecret: false,
+      CallbackURLs: [Match.anyValue()],
+      LogoutURLs: [Match.anyValue()],
+    });
+    template.hasResourceProperties("AWS::Cognito::UserPoolResourceServer", {
+      Identifier: "events",
+      Scopes: [
+        {
+          ScopeName: "events:read",
+          ScopeDescription: "Read FIND THE EDGE events and odds",
+        },
+      ],
+    });
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      VersioningConfiguration: { Status: "Enabled" },
+    });
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketEncryption: Match.anyValue(),
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+    });
+    template.hasResourceProperties("AWS::CloudFront::OriginAccessControl", {
+      OriginAccessControlConfig: Match.objectLike({
+        SigningBehavior: "always",
+        SigningProtocol: "sigv4",
+      }),
+    });
+    template.hasResourceProperties("AWS::CloudFront::Distribution", {
+      DistributionConfig: Match.objectLike({
+        DefaultRootObject: "index.html",
+        DefaultCacheBehavior: Match.objectLike({
+          Compress: true,
+          ViewerProtocolPolicy: "redirect-to-https",
+        }),
+      }),
+    });
+    template.hasResourceProperties("AWS::CloudFront::ResponseHeadersPolicy", {
+      ResponseHeadersPolicyConfig: {
+        SecurityHeadersConfig: Match.objectLike({
+          ContentSecurityPolicy: {
+            ContentSecurityPolicy: Match.anyValue(),
+            Override: true,
+          },
+        }),
+      },
+    });
+    expect(rendered).not.toContain("https://*.");
+    expect(rendered).toContain("ApiEndpoint");
+    expect(rendered).toContain("amazoncognito.com; form-action");
+    for (const output of [
+      "WebOrigin",
+      "WebDistributionId",
+      "WebAssetsBucketName",
+      "CognitoIssuer",
+      "CognitoUserPoolId",
+      "CognitoClientId",
+      "CognitoDomain",
+      "CognitoScope",
+      "CognitoCallbackUrl",
+    ])
+      template.hasOutput(output, {});
+    expect(rendered).toContain("events/events:read");
     template.hasResource("AWS::Logs::LogGroup", { DeletionPolicy: "Retain" });
     expect(rendered).not.toContain('"Action":"sqs:*"');
     expect(rendered).not.toContain('"Action":"dynamodb:*"');

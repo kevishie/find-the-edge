@@ -9,6 +9,12 @@ export interface RuntimeConfig {
   schemaVersion: 1;
   apiBase: string;
   tokenProviderKey: string;
+  cognitoIssuer?: string;
+  cognitoClientId?: string;
+  cognitoDomain?: string;
+  cognitoScope?: string;
+  callbackUrl?: string;
+  logoutUrl?: string;
 }
 
 export type RuntimeConfigErrorCode =
@@ -122,10 +128,23 @@ function parseConfig(
   if (!isPlainRecord(value))
     return configError("invalid-config", "Runtime configuration is invalid.");
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  const expected = ["apiBase", "schemaVersion", "tokenProviderKey"];
+  const legacy = ["apiBase", "schemaVersion", "tokenProviderKey"];
+  const launch = [
+    "apiBase",
+    "callbackUrl",
+    "cognitoClientId",
+    "cognitoDomain",
+    "cognitoIssuer",
+    "cognitoScope",
+    "logoutUrl",
+    "schemaVersion",
+    "tokenProviderKey",
+  ];
+  const actual = Object.keys(descriptors).sort();
   if (
     Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    Object.keys(descriptors).sort().join("|") !== expected.join("|") ||
+    (actual.join("|") !== legacy.join("|") &&
+      actual.join("|") !== launch.join("|")) ||
     Object.values(descriptors).some((descriptor) => !("value" in descriptor))
   )
     return configError("invalid-config", "Runtime configuration is invalid.");
@@ -148,9 +167,65 @@ function parseConfig(
       "invalid-provider-key",
       "The session provider is not configured.",
     );
+  const launchConfig =
+    actual.length === launch.length
+      ? Object.fromEntries(
+          launch
+            .filter((key) => !legacy.includes(key))
+            .map((key) => [key, ownDataValue(value, key).value]),
+        )
+      : {};
+  if (actual.length === launch.length) {
+    for (const [key, item] of Object.entries(launchConfig)) {
+      if (
+        typeof item !== "string" ||
+        item.length === 0 ||
+        Array.from(item).some((character) => {
+          const code = character.charCodeAt(0);
+          return code <= 0x20 || code === 0x7f;
+        })
+      )
+        return configError(
+          "invalid-config",
+          `Launch configuration ${key} is invalid.`,
+        );
+    }
+    try {
+      for (const key of [
+        "cognitoIssuer",
+        "cognitoDomain",
+        "callbackUrl",
+        "logoutUrl",
+      ]) {
+        const url = new URL(launchConfig[key] as string);
+        if (url.protocol !== "https:" || url.username || url.password)
+          throw new Error();
+      }
+      const domain = new URL(launchConfig["cognitoDomain"] as string);
+      const callback = new URL(launchConfig["callbackUrl"] as string);
+      const logout = new URL(launchConfig["logoutUrl"] as string);
+      if (
+        launchConfig["cognitoScope"] !== "events/events:read" ||
+        domain.origin !== launchConfig["cognitoDomain"] ||
+        domain.pathname !== "/" ||
+        domain.search ||
+        domain.hash ||
+        logout.origin !== launchConfig["logoutUrl"] ||
+        logout.pathname !== "/" ||
+        logout.search ||
+        logout.hash ||
+        launchConfig["callbackUrl"] !==
+          `${launchConfig["logoutUrl"]}/auth/callback` ||
+        callback.origin !== logout.origin
+      )
+        throw new Error();
+    } catch {
+      return configError("invalid-config", "Launch configuration is invalid.");
+    }
+  }
   return {
     ok: true,
-    value: { schemaVersion: 1, apiBase, tokenProviderKey },
+    value: { schemaVersion: 1, apiBase, tokenProviderKey, ...launchConfig },
   };
 }
 

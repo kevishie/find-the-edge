@@ -34,6 +34,8 @@ export async function phase1Preflight(environment = process.env) {
     FTE_WEB_ORIGIN: config.webOrigin,
     FTE_FIXTURE_ODDS_SEED_ENABLED: config.fixtureSeedEnabled ? "true" : "false",
     FTE_UPCOMING_SCHEDULER_ENABLED: "false",
+    CDK_DEFAULT_ACCOUNT: "228246988391",
+    CDK_DEFAULT_REGION: "us-east-1",
   };
   run("pnpm", ["--filter", "@find-the-edge/infra-cdk", "synth"], {
     env: synthEnvironment,
