@@ -1,9 +1,51 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
 
 const expectedApiBase = process.env["FTE_PHASE1_API_BASE"];
 const expectedWebOrigin = process.env["FTE_WEB_ORIGIN"];
 if (!expectedApiBase) throw new Error("FTE_PHASE1_API_BASE is required");
 if (!expectedWebOrigin) throw new Error("FTE_WEB_ORIGIN is required");
+const apiBase = expectedApiBase.replace(/\/$/, "");
+
+const easternDay = (offset: number) => {
+  const date = new Date(Date.now() + offset * 86_400_000);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+};
+
+type Game = {
+  id: string;
+  participants: { label: string }[];
+  odds: {
+    state: "available" | "unavailable";
+    selections?: { sportsbookLabel: string }[];
+  };
+};
+
+async function findProviderGame(
+  request: APIRequestContext,
+  sport: "mlb" | "soccer",
+  requireOdds: boolean,
+) {
+  for (let offset = 0; offset <= 21; offset += 1) {
+    const day = easternDay(offset);
+    const response = await request.get(
+      `${apiBase}/games?sport=${sport}&status=scheduled&day=${day}`,
+    );
+    expect(response.ok()).toBe(true);
+    const body = (await response.json()) as { items?: Game[] };
+    const game = body.items?.find(
+      (candidate) =>
+        !candidate.id.includes("2026-regular-") &&
+        (!requireOdds || candidate.odds.state === "available"),
+    );
+    if (game) return { day, game };
+  }
+  throw new Error(`no provider-backed ${sport} game was available`);
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -15,8 +57,9 @@ test.beforeEach(async ({ page }) => {
   await page.waitForURL(/\/games$/);
 });
 
-test("real hosted bundle loads MLB, MLS, another day, and empty state", async ({
+test("real hosted bundle loads provider MLB and MLS games by day", async ({
   page,
+  request,
 }) => {
   await expect
     .poll(() =>
@@ -27,32 +70,31 @@ test("real hosted bundle loads MLB, MLS, another day, and empty state", async ({
         return config?.apiBase;
       }),
     )
-    .toBe(expectedApiBase.replace(/\/$/, ""));
-  await expect(
-    page.getByRole("heading", { name: "Boston vs New York" }),
-  ).toBeVisible();
-  await expect(
-    page.locator("article", { hasText: "Boston vs New York" }),
-  ).toHaveAttribute(
+    .toBe(apiBase);
+  const mlb = await findProviderGame(request, "mlb", true);
+  await page.getByLabel("Eastern calendar day").fill(mlb.day);
+  const mlbTitle = mlb.game.participants.map(({ label }) => label).join(" vs ");
+  await expect(page.getByRole("heading", { name: mlbTitle })).toBeVisible();
+  await expect(page.locator("article", { hasText: mlbTitle })).toHaveAttribute(
     "data-event-id",
-    "event:mlb%3Amlb:2026-regular-boston-new-york-001",
+    mlb.game.id,
   );
-  await expect(page.getByText("+120")).toBeVisible();
-  await expect(page.getByText("-135")).toBeVisible();
+  await expect(
+    page.getByText(mlb.game.odds.selections![0]!.sportsbookLabel).first(),
+  ).toBeVisible();
+
+  const mls = await findProviderGame(request, "soccer", false);
   await page.getByRole("button", { name: "MLS" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Miami vs Atlanta" }),
-  ).toBeVisible();
-  await expect(page.getByText("+145")).toBeVisible();
-  await expect(page.getByText("+220")).toBeVisible();
-  await expect(page.getByText("+175")).toBeVisible();
+  await page.getByLabel("Eastern calendar day").fill(mls.day);
+  const mlsTitle = mls.game.participants.map(({ label }) => label).join(" vs ");
+  await expect(page.getByRole("heading", { name: mlsTitle })).toBeVisible();
+  await expect(page.locator("article", { hasText: mlsTitle })).toHaveAttribute(
+    "data-event-id",
+    mls.game.id,
+  );
+
   await page.getByRole("button", { name: "MLB" }).click();
-  await page.getByLabel("Eastern calendar day").fill("2026-08-02");
-  await expect(
-    page.getByRole("heading", { name: "Chicago vs Detroit" }),
-  ).toBeVisible();
-  await expect(page.getByText("-105").first()).toBeVisible();
-  await page.getByLabel("Eastern calendar day").fill("2026-08-03");
+  await page.getByLabel("Eastern calendar day").fill(easternDay(60));
   await expect(
     page.getByText("No MLB games are scheduled for this day."),
   ).toBeVisible();
@@ -60,11 +102,13 @@ test("real hosted bundle loads MLB, MLS, another day, and empty state", async ({
 
 test("anonymous session survives reload without Cognito state or redirects", async ({
   page,
+  request,
 }) => {
+  const mlb = await findProviderGame(request, "mlb", true);
+  await page.getByLabel("Eastern calendar day").fill(mlb.day);
   await page.reload();
-  await expect(
-    page.getByRole("heading", { name: "Boston vs New York" }),
-  ).toBeVisible();
+  const title = mlb.game.participants.map(({ label }) => label).join(" vs ");
+  await expect(page.getByRole("heading", { name: title })).toBeVisible();
   expect(
     await page.evaluate(() => ({
       session: sessionStorage.getItem("fte.oauth.session"),
