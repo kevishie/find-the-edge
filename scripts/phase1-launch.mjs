@@ -839,6 +839,7 @@ export async function phase1Launch(environment = process.env) {
       "never",
     ],
     deployEnvironment,
+    { timeout: 1_800_000 },
   );
   const outputs = stackOutputs(deployEnvironment);
   const required = [
