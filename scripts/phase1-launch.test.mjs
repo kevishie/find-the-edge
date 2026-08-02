@@ -12,6 +12,7 @@ import {
   planReleaseRollback,
   validateStackOutputs,
   validateLaunchEnvironment,
+  waitForStackDriftResult,
 } from "./phase1-launch.mjs";
 
 const valid = {
@@ -51,6 +52,32 @@ test("launch blocks modified, deleted, unknown, or incomplete drift", () => {
     { DetectionStatus: "DETECTION_IN_PROGRESS" },
   ])
     assert.throws(() => assertStackDriftSafe(result), /drift/);
+});
+test("drift polling is bounded and requires a final in-sync result", async () => {
+  const statuses = [
+    { DetectionStatus: "DETECTION_IN_PROGRESS" },
+    { DetectionStatus: "DETECTION_COMPLETE", StackDriftStatus: "IN_SYNC" },
+  ];
+  let delays = 0;
+  assert.equal(
+    (
+      await waitForStackDriftResult(() => statuses.shift(), {
+        attempts: 2,
+        delay: async () => {
+          delays += 1;
+        },
+      })
+    ).StackDriftStatus,
+    "IN_SYNC",
+  );
+  assert.equal(delays, 1);
+  await assert.rejects(
+    waitForStackDriftResult(
+      () => ({ DetectionStatus: "DETECTION_IN_PROGRESS" }),
+      { attempts: 2, delay: async () => {} },
+    ),
+    /did not complete/,
+  );
 });
 test("first launch safely distinguishes no stack from the exact active stack", () => {
   assert.equal(resolveExistingStackSummary([]), undefined);

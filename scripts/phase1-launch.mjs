@@ -400,7 +400,26 @@ function existingStack(environment) {
   return resolveExistingStackSummary(response.StackSummaries);
 }
 
-function verifyStackDrift(environment) {
+export async function waitForStackDriftResult(
+  readStatus,
+  {
+    attempts = 150,
+    delay = (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  } = {},
+) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = readStatus();
+    if (result.DetectionStatus !== "DETECTION_IN_PROGRESS") {
+      assertStackDriftSafe(result);
+      return result;
+    }
+    await delay(2_000);
+  }
+  throw new Error("Intended stack drift detection did not complete in time");
+}
+
+async function verifyStackDrift(environment) {
   verifyIdentity(environment);
   const stack = JSON.parse(
     run(
@@ -442,36 +461,24 @@ function verifyStackDrift(environment) {
   ).StackDriftDetectionId;
   if (!/^[0-9a-f-]{36}$/i.test(detectionId ?? ""))
     throw new Error("Stack drift detection did not start safely");
-  run(
-    "aws",
-    [
-      "cloudformation",
-      "wait",
-      "stack-drift-detection-complete",
-      "--stack-drift-detection-id",
-      detectionId,
-      "--region",
-      LAUNCH_REGION,
-    ],
-    { capture: true, env: environment, timeout: 300_000 },
-  );
-  const result = JSON.parse(
-    run(
-      "aws",
-      [
-        "cloudformation",
-        "describe-stack-drift-detection-status",
-        "--stack-drift-detection-id",
-        detectionId,
-        "--region",
-        LAUNCH_REGION,
-        "--output",
-        "json",
-      ],
-      { capture: true, env: environment },
+  await waitForStackDriftResult(() =>
+    JSON.parse(
+      run(
+        "aws",
+        [
+          "cloudformation",
+          "describe-stack-drift-detection-status",
+          "--stack-drift-detection-id",
+          detectionId,
+          "--region",
+          LAUNCH_REGION,
+          "--output",
+          "json",
+        ],
+        { capture: true, env: environment },
+      ),
     ),
   );
-  assertStackDriftSafe(result);
 }
 
 export function assertDeployedOutputBindings(outputs, resources, distribution) {
@@ -822,7 +829,7 @@ export async function phase1Launch(environment = process.env) {
         : deployedTemplate,
       proposedTemplate,
     );
-    verifyStackDrift(deployEnvironment);
+    await verifyStackDrift(deployEnvironment);
   }
   guardedRun(
     "pnpm",
