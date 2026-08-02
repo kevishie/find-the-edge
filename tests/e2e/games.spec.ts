@@ -37,6 +37,7 @@ test("shows unchanged seeded MLB and MLS identifiers through the authenticated h
     "event:mlb%3Amlb:2026-regular-boston-new-york-001",
   );
   await expect(page.getByText("+120")).toBeVisible();
+  await expect(page.getByText("-135")).toBeVisible();
   await expect(page.getByText("Aug 1, 2026, 7:05 PM Eastern")).toBeVisible();
 
   await page.getByRole("button", { name: "MLS" }).click();
@@ -50,6 +51,8 @@ test("shows unchanged seeded MLB and MLS identifiers through the authenticated h
     "event:soccer%3Amls:2026-regular-miami-atlanta-001",
   );
   await expect(page.getByText("+145")).toBeVisible();
+  await expect(page.getByText("+220")).toBeVisible();
+  await expect(page.getByText("+175")).toBeVisible();
 
   await page.getByLabel("Eastern calendar day").fill("2026-08-03");
   await expect(
@@ -63,5 +66,5 @@ test("uses an explicit second MLB Eastern day", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Chicago vs Detroit" }),
   ).toBeVisible();
-  await expect(page.getByText("-105")).toBeVisible();
+  await expect(page.getByText("-105").first()).toBeVisible();
 });

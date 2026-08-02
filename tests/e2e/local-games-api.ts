@@ -97,7 +97,7 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
     const result = await handler({
       route: "games",
       ...(authenticated
-        ? { subject: "fixture-user", scopes: ["events:read"] }
+        ? { subject: "fixture-user", scopes: ["events/events:read"] }
         : {}),
       query: Object.fromEntries(requestUrl.searchParams),
     });
