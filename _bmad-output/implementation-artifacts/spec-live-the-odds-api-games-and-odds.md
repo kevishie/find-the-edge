@@ -54,7 +54,7 @@ context:
 - [x] `apps/workers`, `packages/database`, `packages/config` -- add replay-safe combined live ingestion, provider-neutral complete-market reads, and league/proximity cadence decisions with durable quota reserve; test schedule-before-odds, participant mapping, multi-book selection, due/skip decisions, malformed inputs, and replay.
 - [x] `infra/cdk`, deployment workflow/scripts -- read the retained AWS secret only from the worker, expose a safe manual trigger, enable a frequent scheduler tick governed by durable cadence/quota state, stop fixture seeding, and assert no plaintext secret reaches synthesized/deployed artifacts.
 - [x] `apps/web`, environment smoke, docs -- default to the current Eastern day, render compact responsive rows/cards for many simultaneous games, remove fixture claims, verify actual provider-backed MLB/MLS games and bookmaker odds, and document quota/cadence operations.
-- [ ] AWS operations -- create/update `find-the-edge/dev/the-odds-api` from local `.env`, deploy, run initial ingest, back up and delete only exact fixture-development rows, and validate the anonymous live UI.
+- [x] AWS operations -- create/update `find-the-edge/dev/the-odds-api` from local `.env`, deploy, run initial ingest, back up and delete only exact fixture-development rows, and validate the anonymous live UI.
 
 **Acceptance Criteria:**
 - Given the retained secret and a supported live slate, when manual or scheduled ingestion runs, then `/games` and the UI show real provider event identities, start times, bookmaker names, and complete MLB/MLS moneylines without mock records.
