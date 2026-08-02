@@ -277,10 +277,12 @@ async function acquireHostedUiToken(outputs, username, password) {
       waitUntil: "domcontentloaded",
     });
     const usernameInput = page
-      .locator('input[name="username"], input[type="email"]')
+      .locator('input[name="username"]:visible, input[type="email"]:visible')
       .first();
     const passwordInput = page
-      .locator('input[name="password"], input[type="password"]')
+      .locator(
+        'input[name="password"]:visible, input[type="password"]:visible',
+      )
       .first();
     await usernameInput.fill(username);
     await passwordInput.fill(password);
