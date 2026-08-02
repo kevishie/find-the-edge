@@ -8,6 +8,7 @@ const eventConfig = {
   jwtAudience: "find-the-edge",
   cursorSecretArn:
     "arn:aws:secretsmanager:us-east-1:123456789012:secret:event-cursor",
+  webOrigin: "https://app.example.com",
 };
 
 describe("foundation CDK app", () => {
@@ -128,8 +129,8 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::ApiGatewayV2::Api", {
       CorsConfiguration: {
         AllowHeaders: ["authorization", "content-type"],
-        AllowMethods: ["GET"],
-        AllowOrigins: ["*"],
+        AllowMethods: ["GET", "OPTIONS"],
+        AllowOrigins: ["https://app.example.com"],
       },
     });
     template.hasResourceProperties("AWS::IAM::Policy", {
@@ -156,6 +157,7 @@ describe("foundation CDK app", () => {
         Format: Match.stringLikeRegexp("requestId.*routeKey.*status"),
       }),
     });
+    template.hasOutput("EventsApiEndpoint", {});
     template.hasResource("AWS::Logs::LogGroup", { DeletionPolicy: "Retain" });
     expect(rendered).not.toContain('"Action":"sqs:*"');
     expect(rendered).not.toContain('"Action":"dynamodb:*"');
@@ -177,9 +179,26 @@ describe("foundation CDK app", () => {
   });
 
   it("rejects unsafe stage names", () => {
-    expect(() => createFoundationApp({ stage: "Production!" })).toThrow(
-      "FTE_AWS_STAGE",
-    );
+    expect(() =>
+      createFoundationApp({ stage: "Production!", ...eventConfig }),
+    ).toThrow("FTE_AWS_STAGE");
+  });
+
+  it("rejects wildcard and non-local HTTP web origins", () => {
+    expect(() =>
+      createFoundationApp({
+        stage: "dev",
+        ...eventConfig,
+        webOrigin: "*",
+      }),
+    ).toThrow("FTE_WEB_ORIGIN");
+    expect(() =>
+      createFoundationApp({
+        stage: "dev",
+        ...eventConfig,
+        webOrigin: "http://app.example.com",
+      }),
+    ).toThrow("FTE_WEB_ORIGIN");
   });
 
   it("enables scheduling only by config and wires configured SNS alarm actions", () => {

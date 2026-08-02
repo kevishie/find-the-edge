@@ -28,6 +28,9 @@ const { app } = createFoundationApp({
   ...(process.env["FTE_EVENT_CURSOR_SECRET_ARN"]
     ? { cursorSecretArn: process.env["FTE_EVENT_CURSOR_SECRET_ARN"] }
     : {}),
+  ...(process.env["FTE_WEB_ORIGIN"]
+    ? { webOrigin: process.env["FTE_WEB_ORIGIN"] }
+    : {}),
   ...(process.env["FTE_UPCOMING_ALARM_TOPIC_ARN"]
     ? { alarmTopicArn: process.env["FTE_UPCOMING_ALARM_TOPIC_ARN"] }
     : {}),

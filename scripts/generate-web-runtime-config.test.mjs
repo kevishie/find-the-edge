@@ -87,6 +87,24 @@ test("rejects unsafe URLs, provider keys, and unexpected arguments", async () =>
   );
 });
 
+test("allows HTTP localhost only in explicit local mode", () => {
+  assert.match(
+    createRuntimeConfigArtifact({
+      apiBase: "http://127.0.0.1:3000",
+      providerKey: "hostSession",
+      localMode: true,
+    }),
+    /http:\/\/127\.0\.0\.1:3000/,
+  );
+  assert.throws(() =>
+    createRuntimeConfigArtifact({
+      apiBase: "http://api.example.com",
+      providerKey: "hostSession",
+      localMode: true,
+    }),
+  );
+});
+
 test("writes atomically and leaves an existing artifact intact on validation failure", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "fte-runtime-config-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

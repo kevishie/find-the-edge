@@ -42,6 +42,7 @@ export interface FoundationConfig {
   jwtAudience?: string;
   cursorSecretArn?: string;
   fixtureOddsSeedEnabled?: boolean;
+  webOrigin?: string;
 }
 
 interface FoundationStackProps extends StackProps {
@@ -52,6 +53,7 @@ interface FoundationStackProps extends StackProps {
   jwtAudience: string;
   cursorSecretArn: string;
   fixtureOddsSeedEnabled: boolean;
+  webOrigin: string;
 }
 
 export class FoundationStack extends Stack {
@@ -194,9 +196,9 @@ export class FoundationStack extends Stack {
     const api = new HttpApi(this, "EventsHttpApi", {
       createDefaultStage: false,
       corsPreflight: {
-        allowOrigins: ["*"],
+        allowOrigins: [props.webOrigin],
         allowHeaders: ["authorization", "content-type"],
-        allowMethods: [CorsHttpMethod.GET],
+        allowMethods: [CorsHttpMethod.GET, CorsHttpMethod.OPTIONS],
       },
     });
     const authorizer = new HttpJwtAuthorizer("EventsJwt", props.jwtIssuer, {
@@ -247,6 +249,9 @@ export class FoundationStack extends Stack {
           }),
         ),
       },
+    });
+    new CfnOutput(this, "EventsApiEndpoint", {
+      value: `${api.apiEndpoint}/${props.stageName}`,
     });
     const alarms = [
       new Alarm(this, "UpcomingEventsDlqAlarm", {
@@ -344,8 +349,30 @@ export function createFoundationApp(config: FoundationConfig): {
   }
   if (config.fixtureOddsSeedEnabled && config.stage !== "dev")
     throw new Error("fixture odds seed can only be enabled for the dev stage");
-  if (!config.jwtIssuer || !config.jwtAudience || !config.cursorSecretArn)
-    throw new Error("JWT issuer, audience, and cursor secret ARN are required");
+  if (
+    !config.jwtIssuer ||
+    !config.jwtAudience ||
+    !config.cursorSecretArn ||
+    !config.webOrigin
+  )
+    throw new Error(
+      "JWT issuer, audience, cursor secret ARN, and web origin are required",
+    );
+  let webOrigin: URL;
+  try {
+    webOrigin = new URL(config.webOrigin);
+  } catch {
+    throw new Error("FTE_WEB_ORIGIN must be an exact HTTPS origin");
+  }
+  if (
+    webOrigin.origin !== config.webOrigin ||
+    (webOrigin.protocol !== "https:" &&
+      !(
+        webOrigin.protocol === "http:" &&
+        ["localhost", "127.0.0.1"].includes(webOrigin.hostname)
+      ))
+  )
+    throw new Error("FTE_WEB_ORIGIN must be an exact HTTPS origin");
   const alarmArn = config.alarmTopicArn;
   const alarmMatch = alarmArn?.match(
     /^arn:(aws|aws-us-gov|aws-cn):sns:([a-z]{2}(?:-gov)?-[a-z]+-\d):\d{12}:[A-Za-z0-9_-]{1,256}$/,
@@ -375,6 +402,7 @@ export function createFoundationApp(config: FoundationConfig): {
       jwtAudience: config.jwtAudience,
       cursorSecretArn: config.cursorSecretArn,
       fixtureOddsSeedEnabled: config.fixtureOddsSeedEnabled ?? false,
+      webOrigin: config.webOrigin,
       ...(config.alarmTopicArn ? { alarmTopicArn: config.alarmTopicArn } : {}),
       ...(environment ? { env: environment } : {}),
     },

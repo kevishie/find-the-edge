@@ -30,12 +30,16 @@ function parseArguments(arguments_) {
   };
 }
 
-function validateApiBase(value) {
+function validateApiBase(value, localMode = false) {
   if (!value || /[\u0000-\u0020\u007f]/.test(value))
     throw new Error("API base must be an absolute HTTPS URL.");
   const url = new URL(value);
+  const allowedLocalHttp =
+    localMode &&
+    url.protocol === "http:" &&
+    ["localhost", "127.0.0.1"].includes(url.hostname);
   if (
-    url.protocol !== "https:" ||
+    (url.protocol !== "https:" && !allowedLocalHttp) ||
     url.username ||
     url.password ||
     url.search ||
@@ -47,8 +51,12 @@ function validateApiBase(value) {
   return url.toString().replace(/\/$/, "");
 }
 
-export function createRuntimeConfigArtifact({ apiBase, providerKey }) {
-  const normalizedApiBase = validateApiBase(apiBase);
+export function createRuntimeConfigArtifact({
+  apiBase,
+  providerKey,
+  localMode = false,
+}) {
+  const normalizedApiBase = validateApiBase(apiBase, localMode);
   if (!PROVIDER_KEY.test(providerKey ?? ""))
     throw new Error(
       "Provider key must match the runtime provider-key contract.",
