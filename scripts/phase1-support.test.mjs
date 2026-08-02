@@ -356,6 +356,7 @@ function validTemplate() {
               {
                 Effect: "Allow",
                 Action: [
+                  "dynamodb:ConditionCheckItem",
                   "dynamodb:GetItem",
                   "dynamodb:Query",
                   "dynamodb:PutItem",

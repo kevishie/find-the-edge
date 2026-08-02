@@ -421,7 +421,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
     }
     const apiBase = environment.FTE_PHASE1_API_BASE.replace(/\/$/, "");
     const unauthenticated = await request(
-      `${apiBase}/games?sport=mlb&day=2026-08-01`,
+      `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
       { headers: { origin: environment.FTE_WEB_ORIGIN } },
     );
     if (unauthenticated.status !== 401)
@@ -429,7 +429,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
         `unauthenticated API expected 401, received ${String(unauthenticated.status)}`,
       );
     const invalidAuthentication = await request(
-      `${apiBase}/games?sport=mlb&day=2026-08-01`,
+      `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
       {
         headers: {
           authorization: "Bearer invalid-phase1-proof",
@@ -443,7 +443,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       );
     for (const expected of expectedGames) {
       const response = await request(
-        `${apiBase}/games?sport=${expected.sport}&day=${expected.day}`,
+        `${apiBase}/games?sport=${expected.sport}&status=scheduled&day=${expected.day}`,
         {
           headers: {
             authorization: `Bearer ${token}`,
@@ -482,7 +482,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
         );
     }
     const wrongOrigin = await request(
-      `${apiBase}/games?sport=mlb&day=2026-08-01`,
+      `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
       {
         method: "OPTIONS",
         headers: {
@@ -494,7 +494,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
     assertWrongOriginDenied(wrongOrigin.headers);
     {
       const denied = await request(
-        `${apiBase}/games?sport=mlb&day=2026-08-01`,
+        `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
         {
           headers: {
             authorization: `Bearer ${environment.FTE_PHASE1_WRONG_SCOPE_TOKEN}`,
