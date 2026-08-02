@@ -411,12 +411,33 @@ export async function waitForStackDriftResult(
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const result = readStatus();
     if (result.DetectionStatus !== "DETECTION_IN_PROGRESS") {
-      assertStackDriftSafe(result);
+      if (result.DetectionStatus !== "DETECTION_COMPLETE")
+        throw new Error("Intended stack has unresolved resource drift");
       return result;
     }
     await delay(2_000);
   }
   throw new Error("Intended stack drift detection did not complete in time");
+}
+
+export function assertStackResourceDriftsSafe(drifts) {
+  if (
+    drifts.length !== 1 ||
+    drifts[0].ResourceType !== "AWS::ApiGatewayV2::Stage" ||
+    drifts[0].StackResourceDriftStatus !== "MODIFIED" ||
+    drifts[0].PropertyDifferences?.length !== 1
+  )
+    throw new Error("Intended stack has unresolved resource drift");
+  const difference = drifts[0].PropertyDifferences[0];
+  if (
+    difference.PropertyPath !== "/AccessLogSettings/DestinationArn" ||
+    difference.DifferenceType !== "NOT_EQUAL" ||
+    difference.ExpectedValue !== `${difference.ActualValue}:*` ||
+    !difference.ActualValue?.startsWith(
+      `arn:aws:logs:${LAUNCH_REGION}:${LAUNCH_ACCOUNT}:log-group:${LAUNCH_STACK}-`,
+    )
+  )
+    throw new Error("Intended stack has unresolved resource drift");
 }
 
 async function verifyStackDrift(environment) {
@@ -461,7 +482,7 @@ async function verifyStackDrift(environment) {
   ).StackDriftDetectionId;
   if (!/^[0-9a-f-]{36}$/i.test(detectionId ?? ""))
     throw new Error("Stack drift detection did not start safely");
-  await waitForStackDriftResult(() =>
+  const result = await waitForStackDriftResult(() =>
     JSON.parse(
       run(
         "aws",
@@ -479,6 +500,29 @@ async function verifyStackDrift(environment) {
       ),
     ),
   );
+  if (result.StackDriftStatus === "IN_SYNC") return;
+  if (result.StackDriftStatus !== "DRIFTED")
+    throw new Error("Intended stack has unresolved resource drift");
+  const drifts = JSON.parse(
+    run(
+      "aws",
+      [
+        "cloudformation",
+        "describe-stack-resource-drifts",
+        "--stack-name",
+        stack.StackId,
+        "--region",
+        LAUNCH_REGION,
+        "--stack-resource-drift-status-filters",
+        "MODIFIED",
+        "DELETED",
+        "--output",
+        "json",
+      ],
+      { capture: true, env: environment },
+    ),
+  ).StackResourceDrifts;
+  assertStackResourceDriftsSafe(drifts ?? []);
 }
 
 export function assertDeployedOutputBindings(outputs, resources, distribution) {

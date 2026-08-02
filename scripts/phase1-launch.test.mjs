@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   assertRetainedResourcesSafe,
   assertStackDriftSafe,
+  assertStackResourceDriftsSafe,
   assertDeployedOutputBindings,
   combineLaunchAndCleanupFailures,
   combineLaunchAndRollbackFailures,
@@ -78,6 +79,37 @@ test("drift polling is bounded and requires a final in-sync result", async () =>
     ),
     /did not complete/,
   );
+});
+test("drift guard permits only AWS API log ARN normalization", () => {
+  const actual =
+    "arn:aws:logs:us-east-1:228246988391:log-group:FindTheEdge-dev-Foundation-EventApiAccessLogs-abc";
+  const benign = {
+    ResourceType: "AWS::ApiGatewayV2::Stage",
+    StackResourceDriftStatus: "MODIFIED",
+    PropertyDifferences: [
+      {
+        PropertyPath: "/AccessLogSettings/DestinationArn",
+        DifferenceType: "NOT_EQUAL",
+        ExpectedValue: `${actual}:*`,
+        ActualValue: actual,
+      },
+    ],
+  };
+  assert.doesNotThrow(() => assertStackResourceDriftsSafe([benign]));
+  for (const drift of [
+    { ...benign, ResourceType: "AWS::DynamoDB::Table" },
+    { ...benign, StackResourceDriftStatus: "DELETED" },
+    {
+      ...benign,
+      PropertyDifferences: [
+        { ...benign.PropertyDifferences[0], ActualValue: `${actual}-other` },
+      ],
+    },
+  ])
+    assert.throws(
+      () => assertStackResourceDriftsSafe([drift]),
+      /unresolved resource drift/,
+    );
 });
 test("first launch safely distinguishes no stack from the exact active stack", () => {
   assert.equal(resolveExistingStackSummary([]), undefined);
