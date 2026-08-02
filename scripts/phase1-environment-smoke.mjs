@@ -478,7 +478,16 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
         JSON.stringify(actualSelections) !== JSON.stringify(expected.selections)
       )
         throw new Error(
-          `authenticated ${expected.sport} API did not contain exact fixture identity and odds`,
+          `authenticated ${expected.sport} API did not contain exact fixture identity and odds: ${JSON.stringify(
+            {
+              expectedId: expected.id,
+              returnedIds: (body.items ?? [])
+                .slice(0, 20)
+                .map((item) => item.id),
+              oddsState: game?.odds?.state ?? null,
+              actualSelections: actualSelections ?? null,
+            },
+          )}`,
         );
     }
     const wrongOrigin = await request(
