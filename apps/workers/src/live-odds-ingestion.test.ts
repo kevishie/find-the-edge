@@ -38,4 +38,28 @@ describe("live odds cadence", () => {
       }),
     ).toBe(false);
   });
+
+  it("retries a failed paid refresh after a short reservation window", () => {
+    const state = {
+      lastOddsRefreshAt: "2026-08-02T19:00:00.000Z",
+      lastOddsAttemptAt: "2026-08-02T19:49:00.000Z",
+      quotaRemaining: 399,
+    };
+    expect(
+      liveOddsRefreshDue({
+        now: new Date("2026-08-02T19:55:00.000Z"),
+        leagueKey: "mlb",
+        startsAt: ["2026-08-02T21:00:00.000Z"],
+        state,
+      }),
+    ).toBe(false);
+    expect(
+      liveOddsRefreshDue({
+        now: new Date("2026-08-02T20:00:00.000Z"),
+        leagueKey: "mlb",
+        startsAt: ["2026-08-02T21:00:00.000Z"],
+        state,
+      }),
+    ).toBe(true);
+  });
 });

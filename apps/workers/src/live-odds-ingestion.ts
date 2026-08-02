@@ -23,6 +23,7 @@ export interface LiveOddsPersister {
 }
 export interface LiveOddsState {
   readonly lastOddsRefreshAt?: string;
+  readonly lastOddsAttemptAt?: string;
   readonly lastDiscoveryAt?: string;
   readonly upcomingStartsAt?: readonly string[];
   readonly quotaRemaining?: number;
@@ -72,6 +73,12 @@ export function liveOddsRefreshDue(input: {
   if (
     (effectiveQuota(input.state, input.now) ?? LIVE_ODDS_MONTHLY_RESERVE + 1) <=
     LIVE_ODDS_MONTHLY_RESERVE
+  )
+    return false;
+  if (
+    input.state?.lastOddsAttemptAt &&
+    input.now.getTime() - Date.parse(input.state.lastOddsAttemptAt) <
+      10 * 60_000
   )
     return false;
   if (!input.state?.lastOddsRefreshAt) return true;
@@ -157,7 +164,7 @@ export async function ingestLiveOdds(
       // single concurrency this makes retries fail closed against the quota.
       await stateStore.write(league.leagueKey, {
         ...previous,
-        lastOddsRefreshAt: observedAt,
+        lastOddsAttemptAt: observedAt,
         quotaRemaining: remaining - 1,
         ...(discoveryDue ? { lastDiscoveryAt: observedAt } : {}),
         upcomingStartsAt: discoveredStarts,
@@ -239,6 +246,7 @@ export async function ingestLiveOdds(
     quotaRemaining = response.quota.remaining ?? quotaRemaining;
     await stateStore.write(league.leagueKey, {
       lastOddsRefreshAt: observedAt,
+      lastOddsAttemptAt: observedAt,
       ...(discoveryDue ? { lastDiscoveryAt: observedAt } : {}),
       upcomingStartsAt: discoveredStarts,
       ...(response.quota.remaining === undefined
