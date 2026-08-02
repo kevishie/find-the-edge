@@ -8,6 +8,7 @@ import {
   combineLaunchAndRollbackFailures,
   cleanupTemporaryLaunch,
   requireInvalidationId,
+  resolveExistingStackSummary,
   planReleaseRollback,
   validateStackOutputs,
   validateLaunchEnvironment,
@@ -50,6 +51,41 @@ test("launch blocks modified, deleted, unknown, or incomplete drift", () => {
     { DetectionStatus: "DETECTION_IN_PROGRESS" },
   ])
     assert.throws(() => assertStackDriftSafe(result), /drift/);
+});
+test("first launch safely distinguishes no stack from the exact active stack", () => {
+  assert.equal(resolveExistingStackSummary([]), undefined);
+  assert.equal(
+    resolveExistingStackSummary([
+      {
+        StackName: "FindTheEdge-dev-Foundation",
+        StackStatus: "DELETE_COMPLETE",
+        StackId:
+          "arn:aws:cloudformation:us-east-1:228246988391:stack/FindTheEdge-dev-Foundation/deleted",
+      },
+    ]),
+    undefined,
+  );
+  const active = {
+    StackName: "FindTheEdge-dev-Foundation",
+    StackStatus: "CREATE_COMPLETE",
+    StackId:
+      "arn:aws:cloudformation:us-east-1:228246988391:stack/FindTheEdge-dev-Foundation/active",
+  };
+  assert.equal(resolveExistingStackSummary([active]), active);
+  assert.throws(
+    () =>
+      resolveExistingStackSummary([
+        {
+          ...active,
+          StackId: active.StackId.replace("228246988391", "000000000000"),
+        },
+      ]),
+    /escaped/,
+  );
+  assert.throws(
+    () => resolveExistingStackSummary([active, { ...active }]),
+    /multiple/,
+  );
 });
 test("CloudFront invalidation response must be captured before waiting", () => {
   assert.equal(

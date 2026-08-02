@@ -362,6 +362,44 @@ export function assertStackDriftSafe(result) {
     throw new Error("Intended stack has unresolved resource drift");
 }
 
+export function resolveExistingStackSummary(summaries) {
+  const matches = (summaries ?? []).filter(
+    (summary) =>
+      summary.StackName === LAUNCH_STACK &&
+      summary.StackStatus !== "DELETE_COMPLETE",
+  );
+  if (matches.length > 1)
+    throw new Error("CloudFormation returned multiple active launch stacks");
+  const match = matches[0];
+  if (
+    match &&
+    !match.StackId?.startsWith(
+      `arn:aws:cloudformation:${LAUNCH_REGION}:${LAUNCH_ACCOUNT}:stack/${LAUNCH_STACK}/`,
+    )
+  )
+    throw new Error("CloudFormation stack discovery escaped the launch target");
+  return match;
+}
+
+function existingStack(environment) {
+  verifyIdentity(environment);
+  const response = JSON.parse(
+    run(
+      "aws",
+      [
+        "cloudformation",
+        "list-stacks",
+        "--region",
+        LAUNCH_REGION,
+        "--output",
+        "json",
+      ],
+      { capture: true, env: environment },
+    ),
+  );
+  return resolveExistingStackSummary(response.StackSummaries);
+}
+
 function verifyStackDrift(environment) {
   verifyIdentity(environment);
   const stack = JSON.parse(
@@ -752,38 +790,40 @@ export async function phase1Launch(environment = process.env) {
     ],
     { env: deployEnvironment },
   );
-  verifyIdentity(deployEnvironment);
-  const deployedTemplate = JSON.parse(
-    run(
-      "aws",
-      [
-        "cloudformation",
-        "get-template",
-        "--stack-name",
-        LAUNCH_STACK,
-        "--region",
-        LAUNCH_REGION,
-        "--template-stage",
-        "Original",
-        "--output",
-        "json",
-      ],
-      { capture: true, env: deployEnvironment },
-    ),
-  ).TemplateBody;
   const proposedTemplate = JSON.parse(
     await readFile(
       resolve("infra/cdk/cdk.out", `${LAUNCH_STACK}.template.json`),
       "utf8",
     ),
   );
-  assertRetainedResourcesSafe(
-    typeof deployedTemplate === "string"
-      ? JSON.parse(deployedTemplate)
-      : deployedTemplate,
-    proposedTemplate,
-  );
-  verifyStackDrift(deployEnvironment);
+  const deployedStack = existingStack(deployEnvironment);
+  if (deployedStack) {
+    const deployedTemplate = JSON.parse(
+      run(
+        "aws",
+        [
+          "cloudformation",
+          "get-template",
+          "--stack-name",
+          deployedStack.StackId,
+          "--region",
+          LAUNCH_REGION,
+          "--template-stage",
+          "Original",
+          "--output",
+          "json",
+        ],
+        { capture: true, env: deployEnvironment },
+      ),
+    ).TemplateBody;
+    assertRetainedResourcesSafe(
+      typeof deployedTemplate === "string"
+        ? JSON.parse(deployedTemplate)
+        : deployedTemplate,
+      proposedTemplate,
+    );
+    verifyStackDrift(deployEnvironment);
+  }
   guardedRun(
     "pnpm",
     [
