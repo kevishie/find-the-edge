@@ -39,8 +39,8 @@ jobs:
       - name: Enforce starter coverage policy
         run: pnpm coverage
 
-      - name: Synthesize resource-free CDK foundation
-        run: pnpm synth
+      - name: Synthesize and validate credential-free Phase 1 foundation
+        run: pnpm phase1:preflight
 
   e2e:
     name: Desktop and mobile browser smoke
