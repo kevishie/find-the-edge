@@ -35,9 +35,55 @@ const game = {
         observedAt: "2026-08-01T12:00:00.000Z",
         retrievedAt: "2026-08-01T12:00:00.000Z",
       },
+      {
+        marketKey: "moneyline",
+        selectionKey: "home",
+        selectionLabel: "New York",
+        sportsbookId: "fixture-book",
+        sportsbookLabel: "Fixture Book",
+        americanOdds: -135,
+        observedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:00:00.000Z",
+      },
     ],
   },
 } as const;
+
+const soccerGame: GamesPageDto["items"][number] = {
+  ...game,
+  id: "event:soccer%3Amls:fixture-1",
+  sportKey: "soccer",
+  leagueKey: "mls",
+  competition: { key: "mls", state: "provisional" },
+  participants: [
+    { id: "participant:soccer:miami", label: "Miami" },
+    { id: "participant:soccer:atlanta", label: "Atlanta" },
+  ],
+  odds: {
+    state: "available",
+    selections: [
+      {
+        ...game.odds.selections[0],
+        marketKey: "three_way_moneyline",
+        selectionLabel: "Miami",
+        americanOdds: 145,
+      },
+      {
+        ...game.odds.selections[0],
+        marketKey: "three_way_moneyline",
+        selectionKey: "draw",
+        selectionLabel: "Draw",
+        americanOdds: 220,
+      },
+      {
+        ...game.odds.selections[1],
+        marketKey: "three_way_moneyline",
+        selectionLabel: "Atlanta",
+        americanOdds: 175,
+      },
+    ],
+  },
+};
 
 const page = (items: GamesPageDto["items"] = [game]): GamesPageDto => ({
   items,
@@ -84,6 +130,7 @@ describe("Games", () => {
       await screen.findByRole("heading", { name: "Boston vs New York" }),
     ).toBeInTheDocument();
     expect(screen.getByText("+120")).toBeInTheDocument();
+    expect(screen.getByText("-135")).toBeInTheDocument();
     expect(
       screen.getByText("Aug 1, 2026, 7:05 PM Eastern"),
     ).toBeInTheDocument();
@@ -123,6 +170,25 @@ describe("Games", () => {
       await screen.findByText("Aug 1, 2026, 7:05 PM Eastern"),
     ).toBeInTheDocument();
     expect(screen.queryByText(/UNTRUSTED/)).not.toBeInTheDocument();
+  });
+
+  it("renders every three-way soccer selection", async () => {
+    const list = vi
+      .fn<GamesClient["list"]>()
+      .mockResolvedValue(page([soccerGame]));
+    render(
+      <App
+        initialPath="/games?sport=soccer"
+        gamesClient={{ ok: true, value: { list } }}
+      />,
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Miami vs Atlanta" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("+145")).toBeInTheDocument();
+    expect(screen.getByText("+220")).toBeInTheDocument();
+    expect(screen.getByText("+175")).toBeInTheDocument();
+    expect(screen.getByText("Draw")).toBeInTheDocument();
   });
 
   it("shows configuration failure without making a request", async () => {

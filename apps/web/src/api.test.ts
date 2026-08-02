@@ -36,6 +36,16 @@ const payload = {
             observedAt: "2026-08-01T12:00:00.000Z",
             retrievedAt: "2026-08-01T12:00:00.000Z",
           },
+          {
+            marketKey: "moneyline",
+            selectionKey: "home",
+            selectionLabel: "New York",
+            sportsbookId: "fixture-book",
+            sportsbookLabel: "Fixture Book",
+            americanOdds: -135,
+            observedAt: "2026-08-01T12:00:00.000Z",
+            retrievedAt: "2026-08-01T12:00:00.000Z",
+          },
         ],
       },
     },
@@ -77,6 +87,74 @@ describe("games client", () => {
         headers: { authorization: "Bearer safe-token" },
       }),
     );
+  });
+
+  it("accepts a complete ordered soccer three-way market", async () => {
+    const soccerPayload = {
+      ...payload,
+      items: [
+        {
+          ...payload.items[0],
+          id: "event:soccer%3Amls:fixture-1",
+          sportKey: "soccer",
+          leagueKey: "mls",
+          competition: { key: "mls", state: "provisional" },
+          participants: [
+            { id: "participant:soccer:miami", label: "Miami" },
+            { id: "participant:soccer:atlanta", label: "Atlanta" },
+          ],
+          odds: {
+            state: "available",
+            selections: [
+              {
+                ...payload.items[0]!.odds.selections[0],
+                marketKey: "three_way_moneyline",
+                selectionLabel: "Miami",
+              },
+              {
+                ...payload.items[0]!.odds.selections[0],
+                marketKey: "three_way_moneyline",
+                selectionKey: "draw",
+                selectionLabel: "Draw",
+                americanOdds: 220,
+              },
+              {
+                ...payload.items[0]!.odds.selections[0],
+                marketKey: "three_way_moneyline",
+                selectionKey: "home",
+                selectionLabel: "Atlanta",
+                americanOdds: 175,
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(soccerPayload))),
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.list(
+        { sport: "soccer", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({
+      items: [
+        {
+          odds: {
+            selections: [
+              { selectionKey: "away" },
+              { selectionKey: "draw" },
+              { selectionKey: "home" },
+            ],
+          },
+        },
+      ],
+    });
   });
 
   it.each([
@@ -163,6 +241,36 @@ describe("games client", () => {
                   selectionLabel: "New York",
                 },
               ],
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "incomplete market",
+      {
+        ...payload,
+        items: [
+          {
+            ...payload.items[0],
+            odds: {
+              ...payload.items[0]!.odds,
+              selections: [payload.items[0]!.odds.selections[0]],
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "wrong market order",
+      {
+        ...payload,
+        items: [
+          {
+            ...payload.items[0],
+            odds: {
+              ...payload.items[0]!.odds,
+              selections: [...payload.items[0]!.odds.selections].reverse(),
             },
           },
         ],

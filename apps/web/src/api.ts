@@ -166,6 +166,7 @@ const validGame = (
     return false;
   const participantIds = new Set<string>();
   let awayLabel: string | undefined;
+  let homeLabel: string | undefined;
   for (const participant of participants) {
     if (
       !plain(participant) ||
@@ -176,9 +177,10 @@ const validGame = (
     )
       return false;
     if (participantIds.size === 0) awayLabel = participant["label"];
+    if (participantIds.size === 1) homeLabel = participant["label"];
     participantIds.add(participant["id"]);
   }
-  if (!awayLabel) return false;
+  if (!awayLabel || !homeLabel) return false;
   const odds = value["odds"];
   if (!plain(odds) || !boundedString(odds["state"], 16)) return false;
   if (odds["state"] === "unavailable") return exact(odds, ["state"]);
@@ -186,19 +188,30 @@ const validGame = (
     odds["state"] !== "available" ||
     !exact(odds, ["state", "selections"]) ||
     !Array.isArray(odds["selections"]) ||
-    odds["selections"].length !== 1 ||
+    odds["selections"].length !== (filter.sport === "mlb" ? 2 : 3) ||
     !odds["selections"].every(validSelection)
   )
     return false;
-  const selection = odds["selections"][0]!;
   const expectedMarket =
     filter.sport === "mlb" ? "moneyline" : "three_way_moneyline";
-  return (
-    selection.marketKey === expectedMarket &&
-    selection.selectionKey === "away" &&
-    selection.sportsbookId === "fixture-book" &&
-    selection.selectionLabel === awayLabel &&
-    selection.observedAt <= selection.retrievedAt
+  const expectedSelections =
+    filter.sport === "mlb"
+      ? ([
+          ["away", awayLabel],
+          ["home", homeLabel],
+        ] as const)
+      : ([
+          ["away", awayLabel],
+          ["draw", "Draw"],
+          ["home", homeLabel],
+        ] as const);
+  return odds["selections"].every(
+    (selection, index) =>
+      selection.marketKey === expectedMarket &&
+      selection.selectionKey === expectedSelections[index]![0] &&
+      selection.sportsbookId === "fixture-book" &&
+      selection.selectionLabel === expectedSelections[index]![1] &&
+      selection.observedAt <= selection.retrievedAt,
   );
 };
 

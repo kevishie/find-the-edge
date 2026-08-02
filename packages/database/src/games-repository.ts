@@ -30,20 +30,31 @@ export interface CurrentOddsReadGateway {
   ): Promise<readonly unknown[]>;
 }
 
-const primarySelection = (sportKey: string) => {
+const marketSpecification = (sportKey: string) => {
   if (sportKey === "mlb")
-    return { marketKey: "moneyline", selectionKey: "away" };
+    return {
+      marketKey: "moneyline",
+      selectionKeys: ["away", "home"] as const,
+    };
   if (sportKey === "soccer")
-    return { marketKey: "three_way_moneyline", selectionKey: "away" };
+    return {
+      marketKey: "three_way_moneyline",
+      selectionKeys: ["away", "draw", "home"] as const,
+    };
   throw new EventStorageError("unsupported-games-sport");
 };
 
-const currentKey = (event: EventPage["items"][number]) => ({
+const currentKey = (
+  event: EventPage["items"][number],
+  marketKey: string,
+  selectionKey: string,
+) => ({
   pk: fixtureOddsPartition({
     canonicalEventId: event.id,
     canonicalEventVersion: event.version,
     sportKey: event.sportKey,
-    ...primarySelection(event.sportKey),
+    marketKey,
+    selectionKey,
     sportsbookId: "fixture-book",
   }).key,
   sk: "CURRENT" as const,
@@ -113,7 +124,13 @@ export class JoinedGamesRepository implements GamesRepository {
   ): Promise<GamesPage> {
     const page = await this.events.list(filter, limit, cursor);
     if (!page.items.length) return { ...page, items: [] };
-    const requested = page.items.map(currentKey);
+    const requestedByEvent = page.items.map((event) => {
+      const specification = marketSpecification(event.sportKey);
+      return specification.selectionKeys.map((selectionKey) =>
+        currentKey(event, specification.marketKey, selectionKey),
+      );
+    });
+    const requested = requestedByEvent.flat();
     let rows: readonly unknown[];
     try {
       rows = await this.odds.batchGet(requested);
@@ -139,13 +156,21 @@ export class JoinedGamesRepository implements GamesRepository {
     return {
       ...page,
       items: page.items.map((event, index) => {
-        const row = byKey.get(requested[index]!.pk);
+        const eventKeys = requestedByEvent[index]!;
+        const eventRows = eventKeys.map(({ pk }) => byKey.get(pk));
+        const presentCount = eventRows.filter(
+          (row) => row !== undefined,
+        ).length;
+        if (presentCount > 0 && presentCount !== eventKeys.length)
+          throw new EventStorageError("partial-current-odds-market");
         return {
           ...event,
-          odds: row
+          odds: presentCount
             ? {
                 state: "available" as const,
-                selections: [validateCurrent(row, requested[index]!, event)],
+                selections: eventRows.map((row, selectionIndex) =>
+                  validateCurrent(row, eventKeys[selectionIndex]!, event),
+                ),
               }
             : { state: "unavailable" as const },
         };

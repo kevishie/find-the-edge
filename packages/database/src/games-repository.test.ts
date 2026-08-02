@@ -26,12 +26,15 @@ const event: EventDisplayDto = {
   status: "scheduled",
   freshness: "2026-08-01T12:00:00.000Z",
 };
-const events = (seen: { cursor: string | undefined }): EventRepository => ({
+const events = (
+  items: readonly EventDisplayDto[] = [event],
+  seen: { cursor: string | undefined } = { cursor: undefined },
+): EventRepository => ({
   list: async (_filter, _limit, cursor) => {
     await Promise.resolve();
     seen.cursor = cursor;
     return {
-      items: [event],
+      items,
       nextCursor: "next",
       projectionState: "ready",
       evaluationState: "complete",
@@ -40,84 +43,145 @@ const events = (seen: { cursor: string | undefined }): EventRepository => ({
       freshness: event.freshness,
     };
   },
-  detail: async () => ({
-    ...(await Promise.resolve({})),
-    projectionState: "ready",
-    item: null,
-  }),
+  detail: () => Promise.resolve({ projectionState: "ready", item: null }),
 });
-const current = normalizeFixtureOddsObservation({
-  canonicalEventId: event.id,
-  canonicalEventVersion: event.version,
-  sportKey: event.sportKey,
-  marketKey: "moneyline",
-  selectionKey: "away",
-  selectionLabel: "Boston",
-  sportsbookId: "fixture-book",
-  sportsbookLabel: "Fixture Book",
-  americanOdds: 120,
-  observedAt: "2026-08-01T12:00:00.000Z",
-  retrievedAt: "2026-08-01T12:00:00.000Z",
+const current = (
+  source: EventDisplayDto,
+  selectionKey: string,
+  selectionLabel: string,
+  marketKey = source.sportKey === "mlb" ? "moneyline" : "three_way_moneyline",
+) =>
+  normalizeFixtureOddsObservation({
+    canonicalEventId: source.id,
+    canonicalEventVersion: source.version,
+    sportKey: source.sportKey,
+    marketKey,
+    selectionKey,
+    selectionLabel,
+    sportsbookId: "fixture-book",
+    sportsbookLabel: "Fixture Book",
+    americanOdds: selectionKey === "home" ? -135 : 120,
+    observedAt: "2026-08-01T12:00:00.000Z",
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+  });
+const row = (value: ReturnType<typeof current>) => ({
+  pk: value.partitionKey,
+  sk: "CURRENT",
+  value,
 });
 
 describe("joined games repository", () => {
-  it("preserves the event page/cursor and exact-reads one validated CURRENT per game", async () => {
-    const seen: { cursor: string | undefined; keys?: readonly unknown[] } = {
-      cursor: undefined,
-    };
-    const repository = new JoinedGamesRepository(events(seen), {
-      batchGet: async (keys) => {
-        await Promise.resolve();
+  it("preserves page metadata and rebuilds MLB away/home order independently of response order", async () => {
+    const seen: {
+      cursor: string | undefined;
+      keys?: readonly unknown[];
+    } = { cursor: undefined };
+    const away = current(event, "away", "Boston");
+    const home = current(event, "home", "New York");
+    const page = await new JoinedGamesRepository(events([event], seen), {
+      batchGet: (keys) => {
         seen.keys = keys;
-        return [{ pk: current.partitionKey, sk: "CURRENT", value: current }];
+        return Promise.resolve([row(home), row(away)]);
       },
-    });
-    const page = await repository.list(
-      {
-        sportKey: "mlb",
-        leagueKey: "mlb",
-        status: "scheduled",
-        day: "2026-08-01",
-      },
+    }).list(
+      { sportKey: "mlb", status: "scheduled", day: "2026-08-01" },
       50,
       "cursor",
     );
     expect(seen.cursor).toBe("cursor");
-    expect(seen.keys).toEqual([{ pk: current.partitionKey, sk: "CURRENT" }]);
-    expect(page.nextCursor).toBe("next");
+    expect(seen.keys).toEqual([
+      { pk: away.partitionKey, sk: "CURRENT" },
+      { pk: home.partitionKey, sk: "CURRENT" },
+    ]);
+    expect(page).toMatchObject({
+      nextCursor: "next",
+      snapshotAt: "2026-08-01T12:00:00.000Z",
+    });
     expect(page.items[0]?.odds).toMatchObject({
       state: "available",
-      selections: [{ americanOdds: 120, observedAt: current.observedAt }],
+      selections: [
+        { selectionKey: "away", americanOdds: 120 },
+        { selectionKey: "home", americanOdds: -135 },
+      ],
     });
   });
 
-  it("uses explicit unavailable for a missing current row", async () => {
-    const page = await new JoinedGamesRepository(
-      events({ cursor: undefined }),
-      {
-        batchGet: async () => await Promise.resolve([]),
-      },
-    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+  it("rebuilds soccer away/draw/home order", async () => {
+    const soccer = {
+      ...event,
+      id: "event-mls",
+      sportKey: "soccer",
+      leagueKey: "mls",
+      participants: [
+        { id: "mia", label: "Miami" },
+        { id: "atl", label: "Atlanta" },
+      ],
+    } as EventDisplayDto;
+    const selections = [
+      current(soccer, "away", "Miami"),
+      current(soccer, "draw", "Draw"),
+      current(soccer, "home", "Atlanta"),
+    ];
+    const page = await new JoinedGamesRepository(events([soccer]), {
+      batchGet: () => Promise.resolve([...selections].reverse().map(row)),
+    }).list({ sportKey: "soccer", status: "scheduled", day: "2026-08-01" }, 1);
+    expect(page.items[0]?.odds).toMatchObject({
+      state: "available",
+      selections: [
+        { selectionKey: "away" },
+        { selectionKey: "draw" },
+        { selectionKey: "home" },
+      ],
+    });
+  });
+
+  it("uses unavailable only when the whole market is absent", async () => {
+    const page = await new JoinedGamesRepository(events(), {
+      batchGet: () => Promise.resolve([]),
+    }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
     expect(page.items[0]?.odds).toEqual({ state: "unavailable" });
   });
 
-  it("rejects malformed or event/version-mismatched current rows", async () => {
-    const bad = { ...current, canonicalEventVersion: 1 };
-    await expect(
-      new JoinedGamesRepository(events({ cursor: undefined }), {
-        batchGet: async () =>
-          await Promise.resolve([
-            { pk: current.partitionKey, sk: "CURRENT", value: bad },
-          ]),
-      }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1),
-    ).rejects.toBeInstanceOf(EventStorageError);
-    await expect(
-      new JoinedGamesRepository(events({ cursor: undefined }), {
-        batchGet: async () =>
-          await Promise.resolve([
-            { pk: "unexpected", sk: "CURRENT", value: current },
-          ]),
-      }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1),
-    ).rejects.toBeInstanceOf(EventStorageError);
+  it("fails closed for partial, malformed, mismatched, duplicate, and unexpected rows", async () => {
+    const away = current(event, "away", "Boston");
+    const home = current(event, "home", "New York");
+    const cases: readonly (readonly unknown[])[] = [
+      [row(away)],
+      [
+        {
+          pk: away.partitionKey,
+          sk: "CURRENT",
+          value: { ...away, canonicalEventVersion: 1 },
+        },
+        row(home),
+      ],
+      [row(away), row(away), row(home)],
+      [row(away), row(home), { pk: "unexpected", sk: "CURRENT", value: away }],
+      [{ pk: away.partitionKey, sk: "CURRENT", value: null }, row(home)],
+    ];
+    for (const rows of cases) {
+      await expect(
+        new JoinedGamesRepository(events(), {
+          batchGet: () => Promise.resolve(rows),
+        }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1),
+      ).rejects.toBeInstanceOf(EventStorageError);
+    }
+  });
+
+  it("requests at most 150 exact keys for a maximum soccer page", async () => {
+    const soccerEvents = Array.from({ length: 50 }, (_, index) => ({
+      ...event,
+      id: `event-${index}`,
+      sportKey: "soccer",
+      leagueKey: "mls",
+    })) as EventDisplayDto[];
+    let requested = 0;
+    await new JoinedGamesRepository(events(soccerEvents), {
+      batchGet: (keys) => {
+        requested = keys.length;
+        return Promise.resolve([]);
+      },
+    }).list({ sportKey: "soccer", status: "scheduled", day: "2026-08-01" }, 50);
+    expect(requested).toBe(150);
   });
 });

@@ -12,15 +12,28 @@ if (!expectedWebOrigin) throw new Error("FTE_WEB_ORIGIN is required");
 test.beforeEach(async ({ page }) => {
   await page.goto("/games");
   await page
-    .locator('input[name="username"], input[type="email"]')
+    .locator('input[name="username"]:visible, input[type="email"]:visible')
     .first()
     .fill(username);
   await page
-    .locator('input[name="password"], input[type="password"]')
+    .locator('input[name="password"]:visible, input[type="password"]:visible')
     .first()
     .fill(password);
-  await page.getByRole("button", { name: /sign in/i }).click();
+  await page
+    .locator('button:visible, input[type="submit"][value="Sign in"]:visible')
+    .first()
+    .click();
   await page.waitForURL(/\/games$/);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = sessionStorage.getItem("fte.oauth.session");
+        if (!raw) return false;
+        const session = JSON.parse(raw) as Record<string, unknown>;
+        return typeof session["accessToken"] === "string";
+      }),
+    )
+    .toBe(true);
 });
 
 test("real hosted bundle loads MLB, MLS, another day, and empty state", async ({
@@ -46,11 +59,14 @@ test("real hosted bundle loads MLB, MLS, another day, and empty state", async ({
     "event:mlb%3Amlb:2026-regular-boston-new-york-001",
   );
   await expect(page.getByText("+120")).toBeVisible();
+  await expect(page.getByText("-135")).toBeVisible();
   await page.getByRole("button", { name: "MLS" }).click();
   await expect(
     page.getByRole("heading", { name: "Miami vs Atlanta" }),
   ).toBeVisible();
   await expect(page.getByText("+145")).toBeVisible();
+  await expect(page.getByText("+220")).toBeVisible();
+  await expect(page.getByText("+175")).toBeVisible();
   await page.getByRole("button", { name: "MLB" }).click();
   await page.getByLabel("Eastern calendar day").fill("2026-08-02");
   await expect(
@@ -118,28 +134,27 @@ test("real Cognito session survives reload, refreshes, and logout requires re-au
   const refreshed = await readSession();
   expect(refreshed?.refreshToken).toBe(initial?.refreshToken);
 
-  await Promise.all([
-    page.waitForURL(/\/logout\?/),
-    page
-      .evaluate(() => {
-        const host = window as unknown as { __FTE_LOGOUT__?: () => void };
-        host.__FTE_LOGOUT__?.();
-        return {
-          session: sessionStorage.getItem("fte.oauth.session"),
-          state: sessionStorage.getItem("fte.oauth.state"),
-          verifier: sessionStorage.getItem("fte.oauth.verifier"),
-        };
-      })
-      .then((cleared) =>
-        expect(cleared).toEqual({ session: null, state: null, verifier: null }),
-      ),
-  ]);
-  await page.waitForURL(/\/oauth2\/authorize\?/);
+  await page.evaluate(() => {
+    const host = window as unknown as { __FTE_LOGOUT__?: () => void };
+    host.__FTE_LOGOUT__?.();
+  });
+  await page.waitForURL(`${expectedWebOrigin}/`);
+  expect(
+    await page.evaluate(() => ({
+      session: sessionStorage.getItem("fte.oauth.session"),
+      state: sessionStorage.getItem("fte.oauth.state"),
+      verifier: sessionStorage.getItem("fte.oauth.verifier"),
+    })),
+  ).toEqual({ session: null, state: null, verifier: null });
+  await page.goto("/games");
+  await page.waitForURL(/\/(?:oauth2\/authorize|login)\?/);
   const authorize = new URL(page.url());
   expect(authorize.searchParams.get("redirect_uri")).toBe(
     `${expectedWebOrigin}/auth/callback`,
   );
   await expect(
-    page.locator('input[name="username"], input[type="email"]').first(),
+    page
+      .locator('input[name="username"]:visible, input[type="email"]:visible')
+      .first(),
   ).toBeVisible();
 });
