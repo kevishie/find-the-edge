@@ -337,6 +337,7 @@ export class FoundationStack extends Stack {
       fixtureSeed.addToRolePolicy(
         new PolicyStatement({
           actions: [
+            "dynamodb:ConditionCheckItem",
             "dynamodb:GetItem",
             "dynamodb:Query",
             "dynamodb:PutItem",

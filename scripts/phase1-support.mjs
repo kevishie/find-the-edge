@@ -609,6 +609,7 @@ export function validateTemplate(template, config) {
   requireActions(
     dynamoActionsForRole(template, seedRoleId, tableId),
     [
+      "dynamodb:ConditionCheckItem",
       "dynamodb:GetItem",
       "dynamodb:Query",
       "dynamodb:PutItem",

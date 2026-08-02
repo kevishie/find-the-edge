@@ -280,16 +280,12 @@ async function acquireHostedUiToken(outputs, username, password) {
       .locator('input[name="username"]:visible, input[type="email"]:visible')
       .first();
     const passwordInput = page
-      .locator(
-        'input[name="password"]:visible, input[type="password"]:visible',
-      )
+      .locator('input[name="password"]:visible, input[type="password"]:visible')
       .first();
     await usernameInput.fill(username);
     await passwordInput.fill(password);
     await page
-      .locator(
-        'button:visible, input[type="submit"][value="Sign in"]:visible',
-      )
+      .locator('button:visible, input[type="submit"][value="Sign in"]:visible')
       .first()
       .click();
     await page.waitForURL(`${outputs.WebOrigin}/games`, { timeout: 30_000 });

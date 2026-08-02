@@ -35,6 +35,7 @@ describe("foundation CDK app", () => {
         Statement: Match.arrayWith([
           Match.objectLike({
             Action: [
+              "dynamodb:ConditionCheckItem",
               "dynamodb:GetItem",
               "dynamodb:Query",
               "dynamodb:PutItem",
