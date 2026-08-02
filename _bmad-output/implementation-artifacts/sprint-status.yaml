@@ -224,8 +224,8 @@ stories:
     league: [mlb, mls]
     module: games-ui
     priority: P0
-    status: blocked
-    dependencies: [FTE-MVP-001B]
+    status: done
+    dependencies: [FTE-MVP-001B, FTE-MVP-001B1, FTE-MVP-001B2]
     validationCommands: [pnpm check, pnpm test:e2e]
     blockerReason:
     risk: Medium

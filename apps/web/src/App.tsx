@@ -1,4 +1,11 @@
-import { useMemo, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Link,
   Outlet,
@@ -14,13 +21,7 @@ import {
   removeVig,
   type EdgeEvaluation,
 } from "@find-the-edge/odds";
-import {
-  mlbFindTheEdgeStrategy,
-  sportRegistry,
-  strategyRegistry,
-} from "@find-the-edge/sports";
-
-import { fixtureEventsBySport } from "./fixtures";
+import { mlbFindTheEdgeStrategy, sportRegistry } from "@find-the-edge/sports";
 
 const reasonLabels: Record<string, string> = {
   "positive-ev": "Qualified positive EV",
@@ -104,6 +105,46 @@ function NumberField({
   );
 }
 
+type GamesSport = "mlb" | "soccer";
+interface UiGamesPage {
+  readonly items: readonly {
+    readonly id: string;
+    readonly startsAt: string;
+    readonly participants: readonly { readonly label: string }[];
+    readonly eastern: { readonly display: string };
+    readonly odds:
+      | {
+          readonly state: "available";
+          readonly selections: readonly {
+            readonly marketKey: string;
+            readonly selectionKey: string;
+            readonly selectionLabel?: string;
+            readonly sportsbookId: string;
+            readonly sportsbookLabel?: string;
+            readonly americanOdds: number;
+            readonly observedAt: string;
+          }[];
+        }
+      | { readonly state: "unavailable" };
+  }[];
+}
+interface UiGamesClient {
+  list(
+    filter: { readonly sport: GamesSport; readonly day: string },
+    signal: AbortSignal,
+  ): Promise<UiGamesPage>;
+}
+
+type GamesClientResult =
+  | { readonly ok: true; readonly value: UiGamesClient }
+  | { readonly ok: false; readonly error: { readonly message: string } };
+
+const defaultGamesClient: GamesClientResult = {
+  ok: false,
+  error: { message: "Runtime configuration has not been installed." },
+};
+const GamesClientContext = createContext<GamesClientResult>(defaultGamesClient);
+
 function AppShell() {
   const modules = sportRegistry.list();
 
@@ -121,12 +162,8 @@ function AppShell() {
           <Link to="/" activeProps={{ className: "active" }}>
             Edge Lab
           </Link>
-          <Link
-            to="/sports/$sportKey/events"
-            params={{ sportKey: String(modules[0]?.key ?? "mlb") }}
-            activeProps={{ className: "active" }}
-          >
-            Event Explorer
+          <Link to="/games" activeProps={{ className: "active" }}>
+            Games
           </Link>
           <span>Scout Reports</span>
           <span>Performance</span>
@@ -334,112 +371,188 @@ function EdgeLab() {
   );
 }
 
-function EventExplorer() {
-  const { sportKey } = eventsRoute.useParams();
-  let module;
-  try {
-    module = sportRegistry.get(sportKey);
-  } catch {
-    return (
-      <section className="empty-state">
-        <p className="eyebrow">UNKNOWN MODULE</p>
-        <h1>Sport not registered</h1>
-        <p>Select a registered sport to continue.</p>
-      </section>
-    );
-  }
-  const strategy = strategyRegistry.find(module.key);
-  const events = fixtureEventsBySport.get(module.key) ?? [];
+const sportLabels: Record<GamesSport, string> = { mlb: "MLB", soccer: "MLS" };
+
+const validDay = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
+};
+
+const oddsPrice = (value: number) =>
+  value > 0 ? `+${String(value)}` : String(value);
+
+const easternDisplay = (value: string) =>
+  new Date(value).toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+function GamesExplorer() {
+  const client = useContext(GamesClientContext);
+  const [sport, setSport] = useState<GamesSport>("mlb");
+  const [day, setDay] = useState("2026-08-01");
+  const [state, setState] = useState<
+    | { readonly kind: "loading" }
+    | { readonly kind: "ready"; readonly page: UiGamesPage }
+    | { readonly kind: "error"; readonly message: string }
+  >({ kind: "loading" });
+  const requestId = useRef(0);
+
+  useEffect(() => {
+    const id = ++requestId.current;
+    const controller = new AbortController();
+    const activeClient = client.ok ? client.value : undefined;
+    const clientError = client.ok ? undefined : client.error.message;
+    const load = async (): Promise<void> => {
+      await Promise.resolve();
+      if (controller.signal.aborted) return;
+      if (!activeClient) {
+        setState({
+          kind: "error",
+          message: clientError ?? "Runtime configuration is unavailable.",
+        });
+        return;
+      }
+      if (!validDay(day)) {
+        setState({
+          kind: "error",
+          message: "Choose a valid Eastern calendar day.",
+        });
+        return;
+      }
+      try {
+        const page = await activeClient.list({ sport, day }, controller.signal);
+        if (id === requestId.current && !controller.signal.aborted)
+          setState({ kind: "ready", page });
+      } catch (error: unknown) {
+        if (id !== requestId.current || controller.signal.aborted) return;
+        setState({
+          kind: "error",
+          message:
+            error instanceof Error && error.name === "GamesClientError"
+              ? error.message
+              : "Games are temporarily unavailable.",
+        });
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [client, day, sport]);
 
   return (
     <>
       <header className="explorer-header">
         <div>
-          <p className="eyebrow">GENERIC EVENT EXPLORER · FIXTURE MODE</p>
-          <h1>
-            {module.metadata.displayName} {module.ui.events}
-          </h1>
+          <p className="eyebrow">FIXTURE-BACKED GAMES · EASTERN TIME</p>
+          <h1>Games and current odds</h1>
           <p className="lede">
-            Registered module terminology and universal event records drive this
-            view.
+            Browse the seeded MLB and MLS slate by Eastern calendar day.
           </p>
         </div>
-        <span className={`maturity ${module.metadata.maturity}`}>
-          {module.metadata.maturity}
-        </span>
+        <span className="maturity active">fixture data</span>
       </header>
 
-      <nav className="sport-selector" aria-label="Sport selector">
-        {sportRegistry.list().map((item) => (
-          <Link
-            key={String(item.key)}
-            to="/sports/$sportKey/events"
-            params={{ sportKey: String(item.key) }}
-            activeProps={{ className: "selected" }}
-          >
-            <strong>{item.metadata.displayName}</strong>
-            <small>{item.metadata.maturity}</small>
-          </Link>
-        ))}
-      </nav>
-
-      {module.metadata.maturity === "planned" && (
-        <div className="planned-notice" role="status">
-          Fixture {module.ui.events.toLowerCase()} are visible for module
-          development. Recommendations remain unpublished until maturity and
-          calibration advance.
-        </div>
-      )}
-
-      <section
-        className="event-grid"
-        aria-label={`${module.ui.event} fixtures`}
-      >
-        {events.map((fixture) => (
-          <article className="event-card" key={String(fixture.event.id)}>
-            <div className="event-meta">
-              <span>{fixture.leagueName}</span>
-              <span>{fixture.event.phase}</span>
-            </div>
-            <h2>{fixture.participants.join(" vs ")}</h2>
-            <p>
-              {module.ui.participants} ·{" "}
-              {new Date(fixture.event.startsAt).toLocaleString()}
-            </p>
-            <dl>
-              <div>
-                <dt>Sport module</dt>
-                <dd>
-                  {String(module.key)} · {module.metadata.version}
-                </dd>
-              </div>
-              <div>
-                <dt>Strategy</dt>
-                <dd>
-                  {strategy
-                    ? `${strategy.id} · ${strategy.version}`
-                    : "Not published"}
-                </dd>
-              </div>
-            </dl>
-            {fixture.recommendation ? (
-              <div className="fixture-decision">
-                <span>{fixture.recommendation.decision}</span>
-                <strong>{fixture.recommendation.marketLabel}</strong>
-                <p>{fixture.recommendation.reasons[0]}</p>
-                <small>
-                  Model {fixture.recommendation.versions.model.version} · Calc{" "}
-                  {fixture.recommendation.versions.calculation.version}
-                </small>
-              </div>
-            ) : (
-              <div className="no-recommendation">
-                No recommendation published
-              </div>
-            )}
-          </article>
-        ))}
+      <section className="game-filters" aria-label="Game filters">
+        <fieldset>
+          <legend>Sport</legend>
+          {(Object.keys(sportLabels) as GamesSport[]).map((key) => (
+            <button
+              key={key}
+              type="button"
+              className={sport === key ? "selected" : ""}
+              aria-pressed={sport === key}
+              onClick={() => {
+                if (key === sport) return;
+                setState({ kind: "loading" });
+                setSport(key);
+              }}
+            >
+              {sportLabels[key]}
+            </button>
+          ))}
+        </fieldset>
+        <label>
+          <span>Eastern calendar day</span>
+          <input
+            type="date"
+            value={day}
+            onChange={(event) => {
+              if (event.currentTarget.value === day) return;
+              setState({ kind: "loading" });
+              setDay(event.currentTarget.value);
+            }}
+          />
+        </label>
       </section>
+
+      <div className="games-status" aria-live="polite" aria-atomic="true">
+        {state.kind === "loading" && <p role="status">Loading games…</p>}
+        {state.kind === "error" && <p role="alert">{state.message}</p>}
+        {state.kind === "ready" && state.page.items.length === 0 && (
+          <p role="status">
+            No {sportLabels[sport]} games are scheduled for this day.
+          </p>
+        )}
+      </div>
+
+      {state.kind === "ready" && state.page.items.length > 0 && (
+        <section
+          className="event-grid"
+          aria-label={`${sportLabels[sport]} games`}
+        >
+          {state.page.items.map((game) => (
+            <article
+              className="event-card"
+              data-event-id={game.id}
+              key={game.id}
+            >
+              <div className="event-meta">
+                <span>{sportLabels[sport]}</span>
+                <span>fixture</span>
+              </div>
+              <h2>
+                {game.participants.map(({ label }) => label).join(" vs ")}
+              </h2>
+              <p>{easternDisplay(game.startsAt)} Eastern</p>
+              {game.odds.state === "available" ? (
+                <div className="game-odds">
+                  <span>Current odds</span>
+                  {game.odds.selections.map((selection) => (
+                    <div
+                      className="odds-selection"
+                      key={`${selection.marketKey}:${selection.selectionKey}:${selection.sportsbookId}`}
+                    >
+                      <strong>
+                        {selection.selectionLabel ?? selection.selectionKey}
+                      </strong>
+                      <b>{oddsPrice(selection.americanOdds)}</b>
+                      <small>
+                        {selection.sportsbookLabel ?? selection.sportsbookId}
+                      </small>
+                      <small>
+                        Observed {easternDisplay(selection.observedAt)} Eastern
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="no-recommendation">Odds unavailable</div>
+              )}
+            </article>
+          ))}
+        </section>
+      )}
     </>
   );
 }
@@ -453,12 +566,12 @@ const indexRoute = createRoute({
   path: "/",
   component: EdgeLab,
 });
-const eventsRoute = createRoute({
+const gamesRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/sports/$sportKey/events",
-  component: EventExplorer,
+  path: "/games",
+  component: GamesExplorer,
 });
-const routeTree = rootRoute.addChildren([indexRoute, eventsRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, gamesRoute]);
 const registeredRouter = createRouter({ routeTree });
 void registeredRouter;
 
@@ -468,7 +581,13 @@ declare module "@tanstack/react-router" {
   }
 }
 
-export function App({ initialPath }: { initialPath?: string }) {
+export function App({
+  initialPath,
+  gamesClient,
+}: {
+  initialPath?: string;
+  gamesClient?: GamesClientResult;
+}) {
   const [router] = useState(() =>
     createRouter({
       routeTree,
@@ -481,5 +600,9 @@ export function App({ initialPath }: { initialPath?: string }) {
         : {}),
     }),
   );
-  return <RouterProvider router={router} />;
+  return (
+    <GamesClientContext.Provider value={gamesClient ?? defaultGamesClient}>
+      <RouterProvider router={router} />
+    </GamesClientContext.Provider>
+  );
 }

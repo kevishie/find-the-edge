@@ -14,13 +14,3 @@ test("keeps the Edge Lab usable", async ({ page }) => {
     await page.locator("html").evaluate((element) => element.clientWidth),
   );
 });
-
-test("withholds recommendations for planned modules", async ({ page }) => {
-  await page.goto("/sports/tennis/events");
-
-  await expect(
-    page.getByRole("heading", { name: "Tennis Matches" }),
-  ).toBeVisible();
-  await expect(page.getByText("No recommendation published")).toBeVisible();
-  await expect(page.getByText("Not published")).toBeVisible();
-});
