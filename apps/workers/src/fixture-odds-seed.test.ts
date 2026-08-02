@@ -197,7 +197,7 @@ describe("fixture odds seed", () => {
     const mlbResponse = await authenticated({
       route: "games",
       subject: "fixture-user",
-      scopes: ["events:read"],
+      scopes: ["events/events:read"],
       query: {
         sport: "mlb",
         league: "mlb",
@@ -209,7 +209,7 @@ describe("fixture odds seed", () => {
     const mlsResponse = await authenticated({
       route: "games",
       subject: "fixture-user",
-      scopes: ["events:read"],
+      scopes: ["events/events:read"],
       query: {
         sport: "soccer",
         league: "mls",

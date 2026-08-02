@@ -40,7 +40,7 @@ export const createEventHandler =
     try {
       if (!request.subject)
         return response((status = 401), { error: "unauthorized" });
-      if (!request.scopes?.includes("events:read"))
+      if (!request.scopes?.includes("events/events:read"))
         return response((status = 403), { error: "forbidden" });
       if (request.route === "detail") {
         const result = await repository.detail(request.eventId ?? "");

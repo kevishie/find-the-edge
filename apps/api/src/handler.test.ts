@@ -65,7 +65,7 @@ describe("event API", () => {
     )({
       route: "games",
       subject: "u",
-      scopes: ["events:read"],
+      scopes: ["events/events:read"],
       query: {
         sport: "mlb",
         status: "scheduled",
@@ -104,7 +104,7 @@ describe("event API", () => {
       )({
         route: "games",
         subject: "u",
-        scopes: ["events:read"],
+        scopes: ["events/events:read"],
         query,
       });
       expect(result.statusCode).toBe(400);
@@ -134,7 +134,7 @@ describe("event API", () => {
     )({
       route: "games",
       subject: "u",
-      scopes: ["events:read"],
+      scopes: ["events/events:read"],
       query: { sport: "nfl", status: "completed", day: "2026-08-01" },
     });
     expect(result.statusCode).toBe(400);
@@ -145,7 +145,7 @@ describe("event API", () => {
     )({
       route: "games",
       subject: "u",
-      scopes: ["events:read"],
+      scopes: ["events/events:read"],
       query: {
         sport: "mlb",
         status: "scheduled",
@@ -176,7 +176,7 @@ describe("event API", () => {
         await createEventHandler(repository)({
           route: "list",
           subject: "u",
-          scopes: ["events:read"],
+          scopes: ["events/events:read"],
           query: {
             sport: "mlb",
             status: "scheduled",
@@ -196,7 +196,7 @@ describe("event API", () => {
     const result = await createEventHandler(broken)({
       route: "list",
       subject: "u",
-      scopes: ["events:read"],
+      scopes: ["events/events:read"],
       query: { sport: "mlb", status: "scheduled", day: "2026-08-01" },
     });
     expect(result.statusCode).toBe(500);
@@ -263,7 +263,7 @@ describe("event API", () => {
     await createEventHandler(broken, (entry) => logs.push(entry))({
       route: "list",
       subject: "u",
-      scopes: ["events:read"],
+      scopes: ["events/events:read"],
       query: { sport: "mlb", status: "scheduled", day: "2026-08-01" },
     });
     expect(logs).toHaveLength(1);
