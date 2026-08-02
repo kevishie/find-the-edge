@@ -310,6 +310,7 @@ export class FoundationStack extends Stack {
     liveOdds.addToRolePolicy(
       new PolicyStatement({
         actions: [
+          "dynamodb:ConditionCheckItem",
           "dynamodb:GetItem",
           "dynamodb:Query",
           "dynamodb:PutItem",
