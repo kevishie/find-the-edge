@@ -286,7 +286,12 @@ async function acquireHostedUiToken(outputs, username, password) {
       .first();
     await usernameInput.fill(username);
     await passwordInput.fill(password);
-    await page.getByRole("button", { name: /sign in/i }).click();
+    await page
+      .locator(
+        'button:visible, input[type="submit"][value="Sign in"]:visible',
+      )
+      .first()
+      .click();
     await page.waitForURL(`${outputs.WebOrigin}/games`, { timeout: 30_000 });
     const tokens = await page.evaluate(async () => {
       const host = window;
