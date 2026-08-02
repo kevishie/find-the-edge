@@ -106,9 +106,10 @@ aws cloudformation deploy \
 The role currently has administrator permissions because the guarded launch can
 create and update IAM, CloudFormation, Lambda, API Gateway, Cognito, DynamoDB,
 S3, CloudFront, logs, alarms, queues, and deployment assets. Its OIDC trust is
-restricted to `kevishie/find-the-edge` on `refs/heads/main`; no static AWS access
-keys are stored in GitHub. Protect the `main` branch so only reviewed commits
-can reach this role.
+restricted to the immutable GitHub owner/repository IDs for
+`kevishie/find-the-edge` on `refs/heads/main`; no static AWS access keys are
+stored in GitHub. Protect the `main` branch so only reviewed commits can reach
+this role.
 
 ## Rollback
 

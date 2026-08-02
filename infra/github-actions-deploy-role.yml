@@ -23,7 +23,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: repo:kevishie/find-the-edge:ref:refs/heads/main
+                token.actions.githubusercontent.com:sub: repo:kevishie@880315/find-the-edge@1301138962:ref:refs/heads/main
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AdministratorAccess
       Tags:
