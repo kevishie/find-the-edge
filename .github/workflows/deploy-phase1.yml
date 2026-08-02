@@ -57,5 +57,4 @@ jobs:
           AWS_REGION: us-east-1
           FTE_EVENT_CURSOR_SECRET_ARN: arn:aws:secretsmanager:us-east-1:228246988391:secret:find-the-edge/dev/event-cursor-signing-rI0Nea
           FTE_PHASE1_LAUNCH: "1"
-          FTE_PHASE1_USERNAME: phase1-smoke@findtheedge.local
         run: pnpm phase1:launch

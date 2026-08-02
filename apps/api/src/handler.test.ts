@@ -156,7 +156,7 @@ describe("event API", () => {
     expect(unknown.statusCode).toBe(400);
     expect(reads).toBe(0);
   });
-  it("authenticates and requires scope before reads", async () => {
+  it("keeps internal listing scoped while serving public detail", async () => {
     expect(
       (await createEventHandler(repository)({ route: "list" })).statusCode,
     ).toBe(401);
@@ -169,6 +169,9 @@ describe("event API", () => {
         })
       ).statusCode,
     ).toBe(403);
+    expect(
+      (await createEventHandler(repository)({ route: "detail" })).statusCode,
+    ).toBe(404);
   });
   it("maps only input errors to 400 and redacts storage errors", async () => {
     expect(

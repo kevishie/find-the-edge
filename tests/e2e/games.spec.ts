@@ -15,15 +15,12 @@ test.afterAll(async () => {
 test.beforeEach(async ({ page }) => {
   await page.addInitScript((apiBase) => {
     Object.defineProperty(window, "__FTE_RUNTIME_CONFIG__", {
-      value: { schemaVersion: 1, apiBase, tokenProviderKey: "e2eSession" },
-    });
-    Object.defineProperty(window, "__FTE_TOKEN_PROVIDERS__", {
-      value: { e2eSession: () => Promise.resolve("local-e2e-token") },
+      value: { schemaVersion: 1, apiBase },
     });
   }, api.apiBase);
 });
 
-test("shows unchanged seeded MLB and MLS identifiers through the authenticated handler", async ({
+test("shows unchanged seeded MLB and MLS identifiers without authentication", async ({
   page,
 }) => {
   await page.goto("/games");

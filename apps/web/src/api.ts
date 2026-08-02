@@ -7,7 +7,6 @@ import type {
   Result,
   RuntimeBootstrap,
   RuntimeConfigError,
-  TokenError,
 } from "./runtime-config";
 
 export type GamesSport = "mlb" | "soccer";
@@ -256,15 +255,8 @@ function parsePage(value: unknown, filter: GamesFilter): GamesPageDto {
   return value as unknown as GamesPageDto;
 }
 
-function bootstrapFailure(
-  failure: RuntimeConfigError | TokenError,
-): GamesClientError {
-  return new GamesClientError(
-    failure.kind === "runtime-config-error"
-      ? "configuration"
-      : "authentication",
-    failure.message,
-  );
+function bootstrapFailure(failure: RuntimeConfigError): GamesClientError {
+  return new GamesClientError("configuration", failure.message);
 }
 
 export function createGamesClient(
@@ -277,8 +269,6 @@ export function createGamesClient(
     ok: true,
     value: {
       async list(filter, signal) {
-        const token = await bootstrap.value.acquireAccessToken({ signal });
-        if (!token.ok) throw bootstrapFailure(token.error);
         const query = new URLSearchParams({
           sport: filter.sport,
           league: filter.sport === "mlb" ? "mlb" : "mls",
@@ -290,10 +280,7 @@ export function createGamesClient(
         try {
           response = await fetcher(
             `${bootstrap.value.config.apiBase}/games?${query}`,
-            {
-              signal,
-              headers: { authorization: `Bearer ${token.value}` },
-            },
+            { signal },
           );
         } catch (error) {
           if (signal.aborted) throw error;
@@ -305,12 +292,12 @@ export function createGamesClient(
         if (response.status === 401)
           throw new GamesClientError(
             "unauthorized",
-            "Your session is not authorized.",
+            "Games are temporarily unavailable.",
           );
         if (response.status === 403)
           throw new GamesClientError(
             "forbidden",
-            "Your session cannot read games.",
+            "Games are temporarily unavailable.",
           );
         if (!response.ok)
           throw new GamesClientError(

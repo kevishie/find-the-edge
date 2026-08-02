@@ -12,15 +12,8 @@ const REQUIRED = [
   "FTE_WEB_ORIGIN",
   "FTE_PHASE1_STACK_ID",
   "FTE_WEB_ASSETS_BUCKET_NAME",
-  "FTE_PHASE1_ACCESS_TOKEN",
   "FTE_PHASE1_BROWSER_BASE_URL",
-  "FTE_JWT_ISSUER",
-  "FTE_JWT_AUDIENCE",
-  "FTE_COGNITO_DOMAIN",
   "FTE_EVENT_CURSOR_SECRET_ARN",
-  "FTE_PHASE1_USERNAME",
-  "FTE_PHASE1_PASSWORD",
-  "FTE_PHASE1_WRONG_SCOPE_TOKEN",
 ];
 const AUTHORIZED_ACCOUNT = "228246988391";
 const AUTHORIZED_REGION = "us-east-1";
@@ -121,17 +114,12 @@ export function validateEnvironment(environment) {
   let api;
   let origin;
   let browser;
-  let issuer;
   try {
     api = new URL(environment.FTE_PHASE1_API_BASE);
     origin = new URL(environment.FTE_WEB_ORIGIN);
     browser = new URL(environment.FTE_PHASE1_BROWSER_BASE_URL);
-    issuer = new URL(environment.FTE_JWT_ISSUER);
-    new URL(environment.FTE_COGNITO_DOMAIN);
   } catch {
-    throw new Error(
-      "API, browser, web origin, and JWT issuer must be valid URLs",
-    );
+    throw new Error("API, browser, and web origin must be valid URLs");
   }
   if (
     api.protocol !== "https:" ||
@@ -152,10 +140,6 @@ export function validateEnvironment(environment) {
     browser.href !== `${environment.FTE_WEB_ORIGIN}/`
   )
     throw new Error("Browser base must exactly match FTE_WEB_ORIGIN");
-  if (issuer.protocol !== "https:" || issuer.username || issuer.password)
-    throw new Error("FTE_JWT_ISSUER must be safe HTTPS");
-  if (/\s/.test(environment.FTE_JWT_AUDIENCE))
-    throw new Error("FTE_JWT_AUDIENCE must be nonblank without whitespace");
   const arn = environment.FTE_EVENT_CURSOR_SECRET_ARN;
   if (
     !new RegExp(
@@ -165,11 +149,6 @@ export function validateEnvironment(environment) {
     throw new Error(
       "Cursor secret ARN must match the configured account and region",
     );
-  if (
-    environment.FTE_PHASE1_ACCESS_TOKEN.trim().length === 0 ||
-    environment.FTE_PHASE1_ACCESS_TOKEN.length > 8192
-  )
-    throw new Error("Access token is empty or oversized");
 }
 
 export function assertSeedResourceBinding(resources, environment) {
@@ -280,7 +259,7 @@ export function assertWrongOriginDenied(headers) {
 }
 
 export function assertHostedIndexHeaders(headers, environment) {
-  const expectedCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${environment.FTE_PHASE1_API_BASE.replace(/\/dev\/?$/, "")} ${environment.FTE_COGNITO_DOMAIN}; form-action 'self' ${environment.FTE_COGNITO_DOMAIN}; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
+  const expectedCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${environment.FTE_PHASE1_API_BASE.replace(/\/dev\/?$/, "")}; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
   const exactHeaders = {
     "content-security-policy": expectedCsp,
     "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
@@ -303,11 +282,6 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
         "set FTE_PHASE1_SMOKE=1 with the documented environment to opt in",
     };
   validateEnvironment(environment);
-  await validateWrongScopeToken(
-    environment.FTE_PHASE1_WRONG_SCOPE_TOKEN,
-    environment,
-  );
-  const token = environment.FTE_PHASE1_ACCESS_TOKEN;
   const identity = JSON.parse(
     run("aws", ["sts", "get-caller-identity", "--output", "json"], {
       capture: true,
@@ -342,7 +316,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
     const assetPath = indexHtml.match(/(?:src|href)="(\/assets\/[^"]+)"/)?.[1];
     if (!assetPath)
       throw new Error("Hosted index did not identify a hashed asset");
-    for (const path of ["/runtime-config.js", "/cognito-token-provider.js"]) {
+    for (const path of ["/runtime-config.js"]) {
       const response = await request(`${webOrigin}${path}`, {});
       if (!response.ok || response.headers.get("cache-control") !== "no-store")
         throw new Error(`Hosted ${path} cache policy is invalid`);
@@ -424,43 +398,27 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
       { headers: { origin: environment.FTE_WEB_ORIGIN } },
     );
-    if (unauthenticated.status !== 401)
+    if (!unauthenticated.ok)
       throw new Error(
-        `unauthenticated API expected 401, received ${String(unauthenticated.status)}`,
-      );
-    const invalidAuthentication = await request(
-      `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
-      {
-        headers: {
-          authorization: "Bearer invalid-phase1-proof",
-          origin: environment.FTE_WEB_ORIGIN,
-        },
-      },
-    );
-    if (invalidAuthentication.status !== 401)
-      throw new Error(
-        `invalid authentication expected 401, received ${String(invalidAuthentication.status)}`,
+        `anonymous API returned ${String(unauthenticated.status)}`,
       );
     for (const expected of expectedGames) {
       const response = await request(
         `${apiBase}/games?sport=${expected.sport}&status=scheduled&day=${expected.day}`,
         {
-          headers: {
-            authorization: `Bearer ${token}`,
-            origin: environment.FTE_WEB_ORIGIN,
-          },
+          headers: { origin: environment.FTE_WEB_ORIGIN },
         },
       );
       if (!response.ok)
         throw new Error(
-          `authenticated ${expected.sport} API returned ${String(response.status)}`,
+          `anonymous ${expected.sport} API returned ${String(response.status)}`,
         );
       if (
         response.headers.get("access-control-allow-origin") !==
         environment.FTE_WEB_ORIGIN
       )
         throw new Error(
-          `authenticated ${expected.sport} API did not return exact CORS origin`,
+          `anonymous ${expected.sport} API did not return exact CORS origin`,
         );
       const body = await response.json();
       const game = body.items?.find((item) => item.id === expected.id);
@@ -478,7 +436,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
         JSON.stringify(actualSelections) !== JSON.stringify(expected.selections)
       )
         throw new Error(
-          `authenticated ${expected.sport} API did not contain exact fixture identity and odds: ${JSON.stringify(
+          `anonymous ${expected.sport} API did not contain exact fixture identity and odds: ${JSON.stringify(
             {
               expectedId: expected.id,
               returnedIds: (body.items ?? [])
@@ -501,18 +459,11 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       },
     );
     assertWrongOriginDenied(wrongOrigin.headers);
-    {
-      const denied = await request(
-        `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
-        {
-          headers: {
-            authorization: `Bearer ${environment.FTE_PHASE1_WRONG_SCOPE_TOKEN}`,
-          },
-        },
-      );
-      if (denied.status !== 403)
-        throw new Error("wrong-scope token was not denied");
-    }
+    const wrongOriginGet = await request(
+      `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
+      { headers: { origin: "https://wrong-origin.invalid" } },
+    );
+    assertWrongOriginDenied(wrongOriginGet.headers);
     run(
       "pnpm",
       ["exec", "playwright", "test", "--config", "playwright.phase1.config.ts"],

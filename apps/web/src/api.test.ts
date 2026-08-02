@@ -58,17 +58,16 @@ const payload = {
   freshness: "2026-08-01T12:30:00.000Z",
 };
 
-const bootstrap = (token = "safe-token"): RuntimeBootstrap => ({
+const bootstrap = (): RuntimeBootstrap => ({
   config: {
     schemaVersion: 1,
     apiBase: "https://api.example.test",
     tokenProviderKey: "session",
   },
-  acquireAccessToken: vi.fn().mockResolvedValue({ ok: true, value: token }),
 });
 
 describe("games client", () => {
-  it("uses the B2 bootstrap token and exact games request", async () => {
+  it("uses the runtime API base without an authorization header", async () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify(payload)));
@@ -81,12 +80,10 @@ describe("games client", () => {
         new AbortController().signal,
       ),
     ).resolves.toMatchObject({ items: [{ id: payload.items[0]!.id }] });
-    expect(fetcher).toHaveBeenCalledWith(
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
       "https://api.example.test/games?sport=mlb&league=mlb&status=scheduled&day=2026-08-01&limit=50",
-      expect.objectContaining({
-        headers: { authorization: "Bearer safe-token" },
-      }),
     );
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toBeUndefined();
   });
 
   it("accepts a complete ordered soccer three-way market", async () => {

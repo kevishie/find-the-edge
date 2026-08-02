@@ -184,7 +184,7 @@ function requireActions(actual, expected, label) {
 
 export function validateTemplate(template, config) {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri === '/auth/callback') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const tables = entriesOfType(template, "AWS::DynamoDB::Table");
   const apis = entriesOfType(template, "AWS::ApiGatewayV2::Api");
   if (tables.length !== 1 || apis.length !== 1)
@@ -244,11 +244,7 @@ export function validateTemplate(template, config) {
       [
         "default-src 'self'; base-uri 'none'; connect-src 'self' ",
         { "Fn::GetAtt": [apiId, "ApiEndpoint"] },
-        " https://",
-        { Ref: domainId },
-        ".auth.us-east-1.amazoncognito.com; form-action 'self' https://",
-        { Ref: domainId },
-        ".auth.us-east-1.amazoncognito.com; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+        "; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
       ],
     ],
   };
@@ -431,29 +427,31 @@ export function validateTemplate(template, config) {
     )
   )
     throw new Error("HTTP API CORS configurator IAM must be API-scoped");
-  const authorizers = entriesOfType(
-    template,
-    "AWS::ApiGatewayV2::Authorizer",
-  ).filter(
-    ([, value]) =>
-      isRef(value.Properties?.ApiId, apiId) &&
-      value.Properties?.AuthorizerType === "JWT" &&
-      isGetAtt(
-        value.Properties?.JwtConfiguration?.Issuer,
-        poolId,
-        "ProviderURL",
-      ) &&
-      JSON.stringify(value.Properties?.JwtConfiguration?.Audience) ===
-        JSON.stringify([{ Ref: clientId }]),
-  );
-  if (authorizers.length !== 1)
-    throw new Error("Intended API must have the exact JWT issuer and audience");
+  const authorizers = entriesOfType(template, "AWS::ApiGatewayV2::Authorizer");
+  if (
+    authorizers.length !== 1 ||
+    !isRef(authorizers[0][1].Properties?.ApiId, apiId) ||
+    authorizers[0][1].Properties?.AuthorizerType !== "JWT" ||
+    !isGetAtt(
+      authorizers[0][1].Properties?.JwtConfiguration?.Issuer,
+      poolId,
+      "ProviderURL",
+    ) ||
+    JSON.stringify(authorizers[0][1].Properties?.JwtConfiguration?.Audience) !==
+      JSON.stringify([{ Ref: clientId }])
+  )
+    throw new Error(
+      "Internal event listing must keep its exact JWT authorizer",
+    );
   const [authorizerId] = authorizers[0];
   const integrations = entriesOfType(
     template,
     "AWS::ApiGatewayV2::Integration",
   ).filter(([, value]) => isRef(value.Properties?.ApiId, apiId));
   const apiRoutes = entriesOfType(template, "AWS::ApiGatewayV2::Route").filter(
+    ([, value]) => isRef(value.Properties?.ApiId, apiId),
+  );
+  const apiStages = entriesOfType(template, "AWS::ApiGatewayV2::Stage").filter(
     ([, value]) => isRef(value.Properties?.ApiId, apiId),
   );
   const requiredRouteKeys = [
@@ -466,18 +464,32 @@ export function validateTemplate(template, config) {
     JSON.stringify(
       apiRoutes.map(([, value]) => value.Properties?.RouteKey).sort(),
     ) !== JSON.stringify([...requiredRouteKeys].sort()) ||
-    apiRoutes.some(
-      ([, value]) =>
-        value.Properties?.RouteKey === "$default" ||
-        value.Properties?.AuthorizationType !== "JWT" ||
-        !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-        JSON.stringify(value.Properties?.AuthorizationScopes) !==
-          JSON.stringify(["events/events:read"]),
-    )
+    apiRoutes.some(([, value]) => {
+      if (value.Properties?.RouteKey === "$default") return true;
+      if (value.Properties?.RouteKey === "GET /events")
+        return (
+          value.Properties?.AuthorizationType !== "JWT" ||
+          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
+          JSON.stringify(value.Properties?.AuthorizationScopes) !==
+            JSON.stringify(["events/events:read"])
+        );
+      return (
+        value.Properties?.AuthorizationType !== "NONE" ||
+        value.Properties?.AuthorizerId !== undefined ||
+        value.Properties?.AuthorizationScopes !== undefined
+      );
+    })
   )
     throw new Error(
-      "Intended API routes must all use the exact scoped JWT authorizer and must not include $default routes",
+      "Games and event detail must be public while event listing remains scoped",
     );
+  if (
+    apiStages.length !== 1 ||
+    apiStages[0][1].Properties?.DefaultRouteSettings?.ThrottlingBurstLimit !==
+      100 ||
+    apiStages[0][1].Properties?.DefaultRouteSettings?.ThrottlingRateLimit !== 50
+  )
+    throw new Error("Public read API must enforce bounded stage throttling");
   if (integrations.length !== 1)
     throw new Error(
       "Intended API routes must share exactly one API integration",

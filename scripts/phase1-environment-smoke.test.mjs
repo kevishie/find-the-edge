@@ -172,7 +172,7 @@ test("wrong-origin and hosting header proofs reject every weakening", () => {
     );
   const headers = new Headers({
     "content-security-policy":
-      "default-src 'self'; base-uri 'none'; connect-src 'self' https://api.example.com https://domain.auth.us-east-1.amazoncognito.com; form-action 'self' https://domain.auth.us-east-1.amazoncognito.com; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+      "default-src 'self'; base-uri 'none'; connect-src 'self' https://api.example.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
     "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
     "x-frame-options": "DENY",
     "x-content-type-options": "nosniff",

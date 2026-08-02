@@ -1,14 +1,10 @@
 const CONFIG_GLOBAL = "__FTE_RUNTIME_CONFIG__";
-const PROVIDERS_GLOBAL = "__FTE_TOKEN_PROVIDERS__";
 const PROVIDER_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
-const MAX_TOKEN_LENGTH = 8192;
-const DEFAULT_TOKEN_TIMEOUT_MS = 10_000;
-const MAX_TOKEN_TIMEOUT_MS = 30_000;
 
 export interface RuntimeConfig {
   schemaVersion: 1;
   apiBase: string;
-  tokenProviderKey: string;
+  tokenProviderKey?: string;
   cognitoIssuer?: string;
   cognitoClientId?: string;
   cognitoDomain?: string;
@@ -30,39 +26,15 @@ export interface RuntimeConfigError {
   message: string;
 }
 
-export type TokenErrorCode =
-  | "aborted"
-  | "timeout"
-  | "provider-rejected"
-  | "empty-token"
-  | "oversized-token";
-
-export interface TokenError {
-  kind: "token-error";
-  code: TokenErrorCode;
-  message: string;
-}
-
 export type Result<Value, Failure> =
   { ok: true; value: Value } | { ok: false; error: Failure };
 
-export type AccessTokenProvider = () => unknown;
-
 export interface RuntimeBootstrap {
   config: RuntimeConfig;
-  acquireAccessToken: (
-    options?: TokenAcquisitionOptions,
-  ) => Promise<Result<string, TokenError>>;
-}
-
-export interface TokenAcquisitionOptions {
-  signal?: AbortSignal;
-  timeoutMs?: number;
 }
 
 export interface BootstrapOptions {
   mode?: "production" | "development" | "test";
-  tokenTimeoutMs?: number;
 }
 
 function configError(
@@ -70,13 +42,6 @@ function configError(
   message: string,
 ): Result<never, RuntimeConfigError> {
   return { ok: false, error: { kind: "runtime-config-error", code, message } };
-}
-
-function tokenError(
-  code: TokenErrorCode,
-  message: string,
-): Result<never, TokenError> {
-  return { ok: false, error: { kind: "token-error", code, message } };
 }
 
 function ownDataValue(
@@ -129,6 +94,7 @@ function parseConfig(
     return configError("invalid-config", "Runtime configuration is invalid.");
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const legacy = ["apiBase", "schemaVersion", "tokenProviderKey"];
+  const anonymous = ["apiBase", "schemaVersion"];
   const launch = [
     "apiBase",
     "callbackUrl",
@@ -143,7 +109,8 @@ function parseConfig(
   const actual = Object.keys(descriptors).sort();
   if (
     Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    (actual.join("|") !== legacy.join("|") &&
+    (actual.join("|") !== anonymous.join("|") &&
+      actual.join("|") !== legacy.join("|") &&
       actual.join("|") !== launch.join("|")) ||
     Object.values(descriptors).some((descriptor) => !("value" in descriptor))
   )
@@ -160,8 +127,9 @@ function parseConfig(
     );
   const tokenProviderKey = ownDataValue(value, "tokenProviderKey").value;
   if (
-    typeof tokenProviderKey !== "string" ||
-    !PROVIDER_KEY.test(tokenProviderKey)
+    tokenProviderKey !== undefined &&
+    (typeof tokenProviderKey !== "string" ||
+      !PROVIDER_KEY.test(tokenProviderKey))
   )
     return configError(
       "invalid-provider-key",
@@ -225,81 +193,13 @@ function parseConfig(
   }
   return {
     ok: true,
-    value: { schemaVersion: 1, apiBase, tokenProviderKey, ...launchConfig },
+    value: {
+      schemaVersion: 1,
+      apiBase,
+      ...(typeof tokenProviderKey === "string" ? { tokenProviderKey } : {}),
+      ...launchConfig,
+    },
   };
-}
-
-function resolveProvider(
-  host: object,
-  key: string,
-): Result<AccessTokenProvider, RuntimeConfigError> {
-  const registryValue = ownDataValue(host, PROVIDERS_GLOBAL);
-  if (!registryValue.found || !isPlainRecord(registryValue.value))
-    return configError(
-      "missing-provider",
-      "The session provider is unavailable.",
-    );
-  const provider = ownDataValue(registryValue.value, key);
-  if (!provider.found || typeof provider.value !== "function")
-    return configError(
-      "missing-provider",
-      "The session provider is unavailable.",
-    );
-  return { ok: true, value: provider.value as AccessTokenProvider };
-}
-
-async function acquireToken(
-  provider: AccessTokenProvider,
-  options: TokenAcquisitionOptions,
-  defaultTimeoutMs: number,
-): Promise<Result<string, TokenError>> {
-  const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
-  if (
-    !Number.isSafeInteger(timeoutMs) ||
-    timeoutMs <= 0 ||
-    timeoutMs > MAX_TOKEN_TIMEOUT_MS
-  )
-    return tokenError("timeout", "Session acquisition timed out.");
-  if (options.signal?.aborted)
-    return tokenError("aborted", "Session acquisition was cancelled.");
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let abortListener: (() => void) | undefined;
-  const timeout = new Promise<Result<string, TokenError>>((resolve) => {
-    timer = setTimeout(
-      () => resolve(tokenError("timeout", "Session acquisition timed out.")),
-      timeoutMs,
-    );
-  });
-  const aborted = new Promise<Result<string, TokenError>>((resolve) => {
-    if (!options.signal) return;
-    abortListener = () =>
-      resolve(tokenError("aborted", "Session acquisition was cancelled."));
-    options.signal.addEventListener("abort", abortListener, { once: true });
-  });
-  const provided = Promise.resolve()
-    .then(provider)
-    .then((value): Result<string, TokenError> => {
-      if (typeof value !== "string")
-        return tokenError("provider-rejected", "Session acquisition failed.");
-      const token = value.trim();
-      if (token.length === 0)
-        return tokenError("empty-token", "Session acquisition failed.");
-      if (token.length > MAX_TOKEN_LENGTH)
-        return tokenError("oversized-token", "Session acquisition failed.");
-      return { ok: true, value: token };
-    })
-    .catch(() =>
-      tokenError("provider-rejected", "Session acquisition failed."),
-    );
-
-  try {
-    return await Promise.race([provided, timeout, aborted]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    if (abortListener && options.signal)
-      options.signal.removeEventListener("abort", abortListener);
-  }
 }
 
 export function bootstrapRuntime(
@@ -315,15 +215,10 @@ export function bootstrapRuntime(
       );
     const config = parseConfig(rawConfig.value, options.mode ?? "production");
     if (!config.ok) return config;
-    const provider = resolveProvider(host, config.value.tokenProviderKey);
-    if (!provider.ok) return provider;
-    const defaultTimeoutMs = options.tokenTimeoutMs ?? DEFAULT_TOKEN_TIMEOUT_MS;
     return {
       ok: true,
       value: {
         config: config.value,
-        acquireAccessToken: (tokenOptions = {}) =>
-          acquireToken(provider.value, tokenOptions, defaultTimeoutMs),
       },
     };
   } catch {

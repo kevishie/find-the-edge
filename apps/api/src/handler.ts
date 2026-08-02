@@ -38,9 +38,12 @@ export const createEventHandler =
     const started = Date.now();
     let status = 200;
     try {
-      if (!request.subject)
+      if (request.route === "list" && !request.subject)
         return response((status = 401), { error: "unauthorized" });
-      if (!request.scopes?.includes("events/events:read"))
+      if (
+        request.route === "list" &&
+        !request.scopes?.includes("events/events:read")
+      )
         return response((status = 403), { error: "forbidden" });
       if (request.route === "detail") {
         const result = await repository.detail(request.eventId ?? "");

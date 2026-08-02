@@ -256,11 +256,7 @@ test("release rollback restores prior versions and removes partial new keys", ()
   assert.match(combined.message, /rollback also failed/);
   assert.doesNotMatch(combined.message, /secret|\/path/);
 });
-test("launch validates private bootstrap inputs before AWS", () => {
-  assert.throws(
-    () => validateLaunchEnvironment({ ...valid, FTE_PHASE1_USERNAME: "bad" }),
-    /email/,
-  );
+test("launch validates cursor secret input before AWS", () => {
   assert.throws(
     () =>
       validateLaunchEnvironment({

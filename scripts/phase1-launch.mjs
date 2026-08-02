@@ -20,8 +20,6 @@ export function validateLaunchEnvironment(environment) {
     throw new Error(
       `Launch is restricted to account ${LAUNCH_ACCOUNT} in ${LAUNCH_REGION}`,
     );
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(environment.FTE_PHASE1_USERNAME ?? ""))
-    throw new Error("FTE_PHASE1_USERNAME must be an explicit email address");
   if (
     !environment.FTE_EVENT_CURSOR_SECRET_ARN?.startsWith(
       `arn:aws:secretsmanager:${LAUNCH_REGION}:${LAUNCH_ACCOUNT}:secret:`,
@@ -978,117 +976,18 @@ export async function phase1Launch(environment = process.env) {
       deployEnvironment,
       { capture: true, timeout: 600_000 },
     );
-    const temporary = await mkdtemp(resolve(tmpdir(), "fte-phase1-launch-"));
-    let userCreated = false;
-    let primaryFailure;
-    try {
-      const password = `${randomBytes(24).toString("base64url")}aA1!`;
-      const input = resolve(temporary, "create-user.json");
-      await writeFile(
-        input,
-        JSON.stringify({
-          UserPoolId: outputs.CognitoUserPoolId,
-          Username: environment.FTE_PHASE1_USERNAME,
-          TemporaryPassword: password,
-          MessageAction: "SUPPRESS",
-        }),
-        { mode: 0o600 },
-      );
-      await chmod(input, 0o600);
-      guardedRun(
-        "aws",
-        [
-          "cognito-idp",
-          "admin-create-user",
-          "--cli-input-json",
-          `file://${input}`,
-          "--region",
-          LAUNCH_REGION,
-          "--output",
-          "json",
-        ],
-        deployEnvironment,
-        { capture: true },
-      );
-      userCreated = true;
-      const permanentInput = resolve(temporary, "set-password.json");
-      await writeFile(
-        permanentInput,
-        JSON.stringify({
-          UserPoolId: outputs.CognitoUserPoolId,
-          Username: environment.FTE_PHASE1_USERNAME,
-          Password: password,
-          Permanent: true,
-        }),
-        { mode: 0o600 },
-      );
-      guardedRun(
-        "aws",
-        [
-          "cognito-idp",
-          "admin-set-user-password",
-          "--cli-input-json",
-          `file://${permanentInput}`,
-          "--region",
-          LAUNCH_REGION,
-          "--output",
-          "json",
-        ],
-        deployEnvironment,
-        { capture: true },
-      );
-      const tokens = await acquireHostedUiToken(
-        outputs,
-        environment.FTE_PHASE1_USERNAME,
-        password,
-      );
-      await phase1EnvironmentSmoke({
-        ...bundleEnvironment,
-        AWS_ACCOUNT_ID: LAUNCH_ACCOUNT,
-        AWS_REGION: LAUNCH_REGION,
-        FTE_PHASE1_SMOKE: "1",
-        FTE_PHASE1_API_BASE: outputs.EventsApiEndpoint,
-        FTE_FIXTURE_SEED_FUNCTION_NAME: outputs.FixtureOddsSeedFunctionName,
-        FTE_PHASE1_BROWSER_BASE_URL: outputs.WebOrigin,
-        FTE_PHASE1_STACK_ID: outputs.StackId,
-        FTE_WEB_ASSETS_BUCKET_NAME: outputs.WebAssetsBucketName,
-        FTE_PHASE1_ACCESS_TOKEN: tokens.accessToken,
-        FTE_PHASE1_WRONG_SCOPE_TOKEN: tokens.idToken,
-        FTE_PHASE1_USERNAME: environment.FTE_PHASE1_USERNAME,
-        FTE_PHASE1_PASSWORD: password,
-      });
-      return { webOrigin: outputs.WebOrigin, outputs };
-    } catch (error) {
-      primaryFailure = error;
-      throw error;
-    } finally {
-      try {
-        await cleanupTemporaryLaunch({
-          directory: temporary,
-          userCreated,
-          userPoolId: outputs.CognitoUserPoolId,
-          username: environment.FTE_PHASE1_USERNAME,
-          deleteUser: (deleteInput) =>
-            guardedRun(
-              "aws",
-              [
-                "cognito-idp",
-                "admin-delete-user",
-                "--cli-input-json",
-                `file://${deleteInput}`,
-                "--region",
-                LAUNCH_REGION,
-              ],
-              deployEnvironment,
-              { capture: true },
-            ),
-        });
-      } catch (cleanupFailure) {
-        if (primaryFailure)
-          throw combineLaunchAndCleanupFailures(primaryFailure, cleanupFailure);
-        throw cleanupFailure;
-      }
-    }
+    await phase1EnvironmentSmoke({
+      ...bundleEnvironment,
+      AWS_ACCOUNT_ID: LAUNCH_ACCOUNT,
+      AWS_REGION: LAUNCH_REGION,
+      FTE_PHASE1_SMOKE: "1",
+      FTE_PHASE1_API_BASE: outputs.EventsApiEndpoint,
+      FTE_FIXTURE_SEED_FUNCTION_NAME: outputs.FixtureOddsSeedFunctionName,
+      FTE_PHASE1_BROWSER_BASE_URL: outputs.WebOrigin,
+      FTE_PHASE1_STACK_ID: outputs.StackId,
+      FTE_WEB_ASSETS_BUCKET_NAME: outputs.WebAssetsBucketName,
+    });
+    return { webOrigin: outputs.WebOrigin, outputs };
   } catch (primaryFailure) {
     try {
       restoreRelease(snapshot, outputs, deployEnvironment);

@@ -10,132 +10,47 @@ import {
   generateRuntimeConfig,
 } from "./generate-web-runtime-config.mjs";
 
-test("creates an exact, inert, non-secret artifact", () => {
+test("creates an exact anonymous non-secret artifact", () => {
   const artifact = createRuntimeConfigArtifact({
     apiBase: "https://api.example.com/",
-    providerKey: "hostSession",
   });
   const context = vm.createContext({ window: {} });
   vm.runInContext(artifact, context, { timeout: 100 });
   assert.deepEqual(
     JSON.parse(JSON.stringify(context.window.__FTE_RUNTIME_CONFIG__)),
-    {
-      schemaVersion: 1,
-      apiBase: "https://api.example.com",
-      tokenProviderKey: "hostSession",
-    },
+    { schemaVersion: 1, apiBase: "https://api.example.com" },
   );
   assert.equal(Object.isFrozen(context.window.__FTE_RUNTIME_CONFIG__), true);
-  assert.doesNotMatch(artifact, /token-value|bearer|local-e2e-token/i);
+  assert.doesNotMatch(artifact, /token|cognito|password|bearer/i);
 });
 
-test("creates complete stack-output-derived Cognito launch config", () => {
-  const artifact = createRuntimeConfigArtifact({
-    apiBase: "https://api.example.com/dev",
-    providerKey: "cognitoSession",
-    launch: {
-      cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
-      cognitoClientId: "client-id",
-      cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
-      cognitoScope: "events/events:read",
-      callbackUrl: "https://app.example.com/auth/callback",
-      logoutUrl: "https://app.example.com",
-    },
-  });
-  const context = vm.createContext({ window: {} });
-  vm.runInContext(artifact, context, { timeout: 100 });
-  assert.equal(
-    context.window.__FTE_RUNTIME_CONFIG__.cognitoScope,
-    "events/events:read",
-  );
-  assert.equal(
-    context.window.__FTE_RUNTIME_CONFIG__.tokenProviderKey,
-    "cognitoSession",
-  );
-  assert.doesNotMatch(
-    artifact,
-    /password|clientSecret|accessToken|refreshToken/,
-  );
-});
-
-test("rejects Cognito domain paths and callback/logout drift", () => {
-  const launch = {
-    cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
-    cognitoClientId: "client-id",
-    cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
-    cognitoScope: "events/events:read",
-    callbackUrl: "https://app.example.com/auth/callback",
-    logoutUrl: "https://app.example.com",
-  };
-  for (const change of [
-    { cognitoDomain: `${launch.cognitoDomain}/path` },
-    { cognitoDomain: `${launch.cognitoDomain}?x=1` },
-    { callbackUrl: "https://other.example.com/auth/callback" },
-    { logoutUrl: "https://app.example.com/path" },
-  ])
-    assert.throws(() =>
-      createRuntimeConfigArtifact({
-        apiBase: "https://api.example.com",
-        providerKey: "cognitoSession",
-        launch: { ...launch, ...change },
-      }),
-    );
-});
-
-test("production HTML preloads the non-secret placeholder before the module", async () => {
+test("production HTML loads only runtime configuration before the module", async () => {
   const html = await readFile(
     new URL("../apps/web/index.html", import.meta.url),
-    "utf8",
-  );
-  const placeholder = await readFile(
-    new URL("../apps/web/public/runtime-config.js", import.meta.url),
     "utf8",
   );
   assert.ok(
     html.indexOf('src="/runtime-config.js"') < html.indexOf('type="module"'),
   );
-  assert.match(placeholder, /apiBase: ""/);
-  assert.doesNotMatch(placeholder, /bearer|local-e2e-token|eyJ[a-zA-Z0-9_-]+/i);
+  assert.doesNotMatch(html, /cognito|token-provider/i);
 });
 
-test("rejects unsafe URLs, provider keys, and unexpected arguments", async () => {
+test("rejects unsafe URLs and unexpected arguments", async () => {
   assert.throws(
-    () =>
-      createRuntimeConfigArtifact({
-        apiBase: "http://api.example.com",
-        providerKey: "valid",
-      }),
+    () => createRuntimeConfigArtifact({ apiBase: "http://api.example.com" }),
     /HTTPS/,
-  );
-  assert.throws(
-    () =>
-      createRuntimeConfigArtifact({
-        apiBase: "https://api.example.com",
-        providerKey: "bad key",
-      }),
-    /Provider key/,
   );
   for (const unsafe of [
     "https://api.example.com/\tpath",
     "https://api.example.com/\u0000path",
     "https://api.example.com/\u007fpath",
-  ]) {
+  ])
     assert.throws(
-      () =>
-        createRuntimeConfigArtifact({
-          apiBase: unsafe,
-          providerKey: "hostSession",
-        }),
+      () => createRuntimeConfigArtifact({ apiBase: unsafe }),
       /HTTPS/,
     );
-  }
   await assert.rejects(
-    generateRuntimeConfig([
-      "--api-base",
-      "https://api.example.com",
-      "--output",
-      "ignored",
-    ]),
+    generateRuntimeConfig(["--api-base", "https://api.example.com"]),
     /Expected unique/,
   );
 });
@@ -144,7 +59,6 @@ test("allows HTTP localhost only in explicit local mode", () => {
   assert.match(
     createRuntimeConfigArtifact({
       apiBase: "http://127.0.0.1:3000",
-      providerKey: "hostSession",
       localMode: true,
     }),
     /http:\/\/127\.0\.0\.1:3000/,
@@ -152,49 +66,28 @@ test("allows HTTP localhost only in explicit local mode", () => {
   assert.throws(() =>
     createRuntimeConfigArtifact({
       apiBase: "http://api.example.com",
-      providerKey: "hostSession",
       localMode: true,
     }),
   );
 });
 
-test("writes atomically and leaves an existing artifact intact on validation failure", async (t) => {
+test("writes atomically and preserves an existing artifact on failure", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "fte-runtime-config-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const output = join(directory, "runtime-config.js");
   await writeFile(output, "existing\n", "utf8");
 
   await assert.rejects(
-    generateRuntimeConfig([
-      "--api-base",
-      "not-a-url",
-      "--provider-key",
-      "hostSession",
-      "--output",
-      output,
-    ]),
+    generateRuntimeConfig(["--api-base", "not-a-url", "--output", output]),
   );
   assert.equal(await readFile(output, "utf8"), "existing\n");
 
   await generateRuntimeConfig([
     "--api-base",
     "https://api.example.com",
-    "--provider-key",
-    "hostSession",
     "--output",
     output,
   ]);
   assert.match(await readFile(output, "utf8"), /https:\/\/api\.example\.com/);
-  assert.equal((await stat(output)).mode & 0o777, 0o644);
-
-  await writeFile(output, "replacement target\n", { mode: 0o600 });
-  await generateRuntimeConfig([
-    "--api-base",
-    "https://api.example.com",
-    "--provider-key",
-    "hostSession",
-    "--output",
-    output,
-  ]);
   assert.equal((await stat(output)).mode & 0o777, 0o644);
 });

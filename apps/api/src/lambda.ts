@@ -52,10 +52,10 @@ export const handler = async (event: LambdaEvent) => {
     : event.routeKey?.includes("/{eventId}")
       ? "detail"
       : "list";
+  const eventId = event.pathParameters?.eventId;
   const subject =
     typeof claims?.["sub"] === "string" ? claims["sub"] : undefined;
   const scopes = event.requestContext?.authorizer?.jwt?.scopes;
-  const eventId = event.pathParameters?.eventId;
   const query = event.queryStringParameters;
   return createEventHandler(
     repository,

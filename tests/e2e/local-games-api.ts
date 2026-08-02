@@ -17,8 +17,6 @@ import {
   type FixtureOddsPersister,
 } from "../../apps/workers/src/index.js";
 
-const ACCESS_TOKEN = "local-e2e-token";
-
 class MemoryOdds implements FixtureOddsPersister {
   readonly snapshots = new Map<
     string,
@@ -78,7 +76,7 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
     const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     const headers = {
       "access-control-allow-origin": "http://127.0.0.1:4173",
-      "access-control-allow-headers": "authorization",
+      "access-control-allow-headers": "authorization,content-type",
       "content-type": "application/json",
       "cache-control": "no-store",
     };
@@ -92,13 +90,8 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
         .end(JSON.stringify({ error: "not-found" }));
       return;
     }
-    const authenticated =
-      request.headers.authorization === `Bearer ${ACCESS_TOKEN}`;
     const result = await handler({
       route: "games",
-      ...(authenticated
-        ? { subject: "fixture-user", scopes: ["events/events:read"] }
-        : {}),
       query: Object.fromEntries(requestUrl.searchParams),
     });
     response.writeHead(result.statusCode, { ...headers, ...result.headers });

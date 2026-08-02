@@ -50,13 +50,14 @@ import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { Topic } from "aws-cdk-lib/aws-sns";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
+  CfnStage,
   HttpApi,
   HttpMethod,
   HttpStage,
   LogGroupLogDestination,
 } from "aws-cdk-lib/aws-apigatewayv2";
-import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import {
   AwsCustomResource,
@@ -211,7 +212,7 @@ export class FoundationStack extends Stack {
     const webAssetOrigin = S3BucketOrigin.withOriginAccessControl(assets);
     const spaNavigation = new CloudFrontFunction(this, "WebSpaNavigation", {
       code: FunctionCode.fromInline(
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri === '/auth/callback') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
       ),
     });
     const distribution = new Distribution(this, "WebDistribution", {
@@ -400,7 +401,7 @@ export class FoundationStack extends Stack {
     const api = new HttpApi(this, "EventsHttpApi", {
       createDefaultStage: false,
     });
-    const exactCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${api.apiEndpoint} ${domain.baseUrl()}; form-action 'self' ${domain.baseUrl()}; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
+    const exactCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${api.apiEndpoint}; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
     for (const policy of [securityHeaders, immutableHeaders]) {
       const resource = policy.node.defaultChild as CfnResponseHeadersPolicy;
       resource.addPropertyOverride(
@@ -408,16 +409,14 @@ export class FoundationStack extends Stack {
         exactCsp,
       );
     }
-    const authorizer = new HttpJwtAuthorizer(
-      "EventsJwt",
-      userPool.userPoolProviderUrl,
-      {
-        jwtAudience: [userPoolClient.userPoolClientId],
-      },
-    );
     const integration = new HttpLambdaIntegration(
       "EventsIntegration",
       eventApi,
+    );
+    const authorizer = new HttpJwtAuthorizer(
+      "EventsJwt",
+      userPool.userPoolProviderUrl,
+      { jwtAudience: [userPoolClient.userPoolClientId] },
     );
     api.addRoutes({
       path: "/events",
@@ -430,15 +429,11 @@ export class FoundationStack extends Stack {
       path: "/events/{eventId}",
       methods: [HttpMethod.GET],
       integration,
-      authorizer,
-      authorizationScopes: ["events/events:read"],
     });
     api.addRoutes({
       path: "/games",
       methods: [HttpMethod.GET],
       integration,
-      authorizer,
-      authorizationScopes: ["events/events:read"],
     });
     const configureCorsCall = {
       service: "ApiGatewayV2",
@@ -478,7 +473,7 @@ export class FoundationStack extends Stack {
       retention: RetentionDays.ONE_MONTH,
       removalPolicy: RemovalPolicy.RETAIN,
     });
-    new HttpStage(this, "EventApiStage", {
+    const eventApiStage = new HttpStage(this, "EventApiStage", {
       httpApi: api,
       stageName: props.stageName,
       autoDeploy: true,
@@ -495,6 +490,11 @@ export class FoundationStack extends Stack {
         ),
       },
     });
+    const eventApiStageResource = eventApiStage.node.defaultChild as CfnStage;
+    eventApiStageResource.defaultRouteSettings = {
+      throttlingBurstLimit: 100,
+      throttlingRateLimit: 50,
+    };
     new CfnOutput(this, "EventsApiEndpoint", {
       value: `${api.apiEndpoint}/${props.stageName}`,
     });

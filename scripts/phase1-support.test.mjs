@@ -46,7 +46,7 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
 
 function validTemplate() {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri === '/auth/callback') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const webOrigin = {
     "Fn::Join": [
       "",
@@ -59,11 +59,7 @@ function validTemplate() {
       [
         "default-src 'self'; base-uri 'none'; connect-src 'self' ",
         { "Fn::GetAtt": ["Api", "ApiEndpoint"] },
-        " https://",
-        { Ref: "Domain" },
-        ".auth.us-east-1.amazoncognito.com; form-action 'self' https://",
-        { Ref: "Domain" },
-        ".auth.us-east-1.amazoncognito.com; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+        "; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
       ],
     ],
   };
@@ -230,6 +226,16 @@ function validTemplate() {
         Type: "AWS::ApiGatewayV2::Api",
         Properties: {},
       },
+      ApiStage: {
+        Type: "AWS::ApiGatewayV2::Stage",
+        Properties: {
+          ApiId: { Ref: "Api" },
+          DefaultRouteSettings: {
+            ThrottlingBurstLimit: 100,
+            ThrottlingRateLimit: 50,
+          },
+        },
+      },
       CorsConfigurator: {
         Type: "Custom::AWS",
         Properties: {
@@ -243,9 +249,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /games",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/events:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -269,9 +273,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /events/{eventId}",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/events:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -418,7 +420,7 @@ const templateConfig = {
   audience: "audience",
 };
 
-test("template validation structurally binds API, auth, outputs, and scoped IAM", () => {
+test("template validation structurally binds public reads, outputs, and scoped IAM", () => {
   const template = validTemplate();
   assert.doesNotThrow(() => validateTemplate(template, templateConfig));
   const handler = vm.runInNewContext(
@@ -426,7 +428,7 @@ test("template validation structurally binds API, auth, outputs, and scoped IAM"
   );
   for (const [uri, expected] of [
     ["/games", "/index.html"],
-    ["/auth/callback", "/index.html"],
+    ["/auth/callback", "/auth/callback"],
     ["/assets/missing.hash.js", "/assets/missing.hash.js"],
     ["/runtime-config.js", "/runtime-config.js"],
     ["/cognito-token-provider.js", "/cognito-token-provider.js"],
@@ -535,19 +537,25 @@ test("template validation structurally binds API, auth, outputs, and scoped IAM"
   }
   const wrongApi = structuredClone(template);
   wrongApi.Resources.Route.Properties.ApiId = { Ref: "OtherApi" };
-  assert.throws(() => validateTemplate(wrongApi, templateConfig), /intended/i);
+  assert.throws(
+    () => validateTemplate(wrongApi, templateConfig),
+    /public|scoped/i,
+  );
   for (const routeId of ["Route", "EventsRoute", "EventRoute"]) {
     const missingRoute = structuredClone(template);
     delete missingRoute.Resources[routeId];
     assert.throws(
       () => validateTemplate(missingRoute, templateConfig),
-      /routes/,
+      /public|scoped/,
     );
   }
   const extraRoute = structuredClone(template);
   extraRoute.Resources.ExtraRoute = structuredClone(template.Resources.Route);
   extraRoute.Resources.ExtraRoute.Properties.RouteKey = "GET /extra";
-  assert.throws(() => validateTemplate(extraRoute, templateConfig), /routes/);
+  assert.throws(
+    () => validateTemplate(extraRoute, templateConfig),
+    /public|scoped/,
+  );
   for (const mutate of [
     (copy) => delete copy.Resources.EventsRoute.Properties.Target,
     (copy) =>
@@ -576,7 +584,7 @@ test("template validation structurally binds API, auth, outputs, and scoped IAM"
   };
   assert.throws(
     () => validateTemplate(publicRoute, templateConfig),
-    /scoped JWT authorizer|\$default/,
+    /public|\$default/,
   );
   for (const change of [
     { AuthorizerId: { Ref: "OtherAuth" } },
@@ -592,10 +600,7 @@ test("template validation structurally binds API, auth, outputs, and scoped IAM"
         ...change,
       },
     };
-    assert.throws(
-      () => validateTemplate(weakRoute, templateConfig),
-      /scoped JWT authorizer/,
-    );
+    assert.throws(() => validateTemplate(weakRoute, templateConfig), /public/);
   }
   const wildcardIam = structuredClone(template);
   wildcardIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Resource =

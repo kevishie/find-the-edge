@@ -63,39 +63,24 @@ export async function buildPhase1Web(environment = process.env) {
     resolve(output, "runtime-config.js"),
     createRuntimeConfigArtifact({
       apiBase: config.apiBase,
-      providerKey: config.providerKey,
       localMode: config.localMode,
-      launch:
-        config.providerKey === "cognitoSession"
-          ? {
-              cognitoIssuer: config.issuer,
-              cognitoClientId: config.audience,
-              cognitoDomain: config.cognitoDomain,
-              cognitoScope: config.cognitoScope,
-              callbackUrl: config.callbackUrl,
-              logoutUrl: config.logoutUrl,
-            }
-          : undefined,
     }),
     { encoding: "utf8", mode: 0o644 },
   );
   const html = await readFile(resolve(output, "index.html"), "utf8");
   if (
     html.indexOf('src="/runtime-config.js"') < 0 ||
-    html.indexOf('src="/runtime-config.js"') >
-      html.indexOf('src="/cognito-token-provider.js"') ||
-    html.indexOf('src="/cognito-token-provider.js"') >
-      html.indexOf('type="module"')
+    html.indexOf('src="/runtime-config.js"') > html.indexOf('type="module"') ||
+    html.includes('src="/cognito-token-provider.js"')
   )
     throw new Error(
-      "runtime config and Cognito provider must load before the application module",
+      "runtime config must load before the application module without an authentication provider",
     );
   const digestMap = await checksums(output, new Set(["phase1-manifest.json"]));
   const manifest = {
     schemaVersion: 1,
     stage: "dev",
     apiBase: config.apiBase,
-    tokenProviderKey: config.providerKey,
     algorithm: "sha256",
     files: digestMap,
   };

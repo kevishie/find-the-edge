@@ -130,7 +130,7 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::CloudFront::Function", {
       AutoPublish: true,
       FunctionCode:
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri === '/auth/callback') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
     });
     expect(rendered).not.toContain("CustomErrorResponses");
     template.hasResourceProperties("Custom::AWS", {
@@ -140,7 +140,28 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("ApiGatewayV2");
     expect(rendered).toContain("updateApi");
     expect(rendered).toContain("AllowOrigins");
-    expect(rendered).toContain("authorization");
+    template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /games",
+      AuthorizationType: "NONE",
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /events/{eventId}",
+      AuthorizationType: "NONE",
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /events",
+      AuthorizationType: "JWT",
+    });
+    expect(rendered).toContain(
+      '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\"]',
+    );
+    template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
+      DefaultRouteSettings: {
+        ThrottlingBurstLimit: 100,
+        ThrottlingRateLimit: 50,
+      },
+    });
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
@@ -245,7 +266,7 @@ describe("foundation CDK app", () => {
     });
     expect(rendered).not.toContain("https://*.");
     expect(rendered).toContain("ApiEndpoint");
-    expect(rendered).toContain("amazoncognito.com; form-action");
+    expect(rendered).toContain("; form-action 'none'; frame-ancestors 'none'");
     for (const output of [
       "WebOrigin",
       "WebDistributionId",
