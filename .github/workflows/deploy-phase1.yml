@@ -1,0 +1,61 @@
+name: Deploy Phase 1
+
+on:
+  workflow_run:
+    workflows: [Quality gates]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-phase1
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy and run live smoke
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out verified revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.12"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Assume AWS deployment role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::228246988391:role/github-actions-find-the-edge-deploy
+          aws-region: us-east-1
+
+      - name: Deploy Phase 1 and run live smoke
+        env:
+          AWS_ACCOUNT_ID: "228246988391"
+          AWS_REGION: us-east-1
+          FTE_EVENT_CURSOR_SECRET_ARN: arn:aws:secretsmanager:us-east-1:228246988391:secret:find-the-edge/dev/event-cursor-signing-rI0Nea
+          FTE_PHASE1_LAUNCH: "1"
+          FTE_PHASE1_USERNAME: phase1-smoke@findtheedge.local
+        run: pnpm phase1:launch

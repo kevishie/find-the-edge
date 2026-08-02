@@ -1,0 +1,37 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: GitHub Actions OIDC deployment role for FIND THE EDGE Phase 1.
+
+Parameters:
+  GitHubOidcProviderArn:
+    Type: String
+    Default: arn:aws:iam::228246988391:oidc-provider/token.actions.githubusercontent.com
+
+Resources:
+  GitHubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-actions-find-the-edge-deploy
+      Description: Main-branch deployment role for kevishie/find-the-edge.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:kevishie/find-the-edge:ref:refs/heads/main
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Project
+          Value: find-the-edge
+        - Key: ManagedBy
+          Value: cloudformation
+
+Outputs:
+  DeployRoleArn:
+    Value: !GetAtt GitHubActionsDeployRole.Arn

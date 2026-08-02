@@ -83,6 +83,33 @@ unset FTE_PHASE1_ACCESS_TOKEN FTE_PHASE1_WRONG_SCOPE_TOKEN
 
 The smoke command validates every input, checks AWS identity again immediately before each seed mutation, proves convergence, verifies the exact fixtures and odds, requires denial for missing, malformed, and valid wrong-scope authentication, rejects an unconfigured CORS origin, and runs the real hosted browser flow. Browser artifacts are disabled. Without `FTE_PHASE1_SMOKE=1` it reports a skip and performs no mutation.
 
+## Automatic deployment from GitHub
+
+Pushes to `main` first run `.github/workflows/ci.yml`. After that workflow
+finishes successfully, `.github/workflows/deploy-phase1.yml` checks out the exact
+verified commit, assumes the repository-specific AWS role through GitHub OIDC,
+and runs the same guarded `pnpm phase1:launch` command documented above. A failed
+quality workflow never receives deployment credentials and never deploys.
+
+The one-time role bootstrap is tracked in
+`infra/github-actions-deploy-role.yml`. Deploy it only from the authorized AWS
+account after reviewing the main-branch-only trust policy:
+
+```sh
+aws cloudformation deploy \
+  --region us-east-1 \
+  --stack-name FindTheEdge-GitHubActionsDeployRole \
+  --template-file infra/github-actions-deploy-role.yml \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+The role currently has administrator permissions because the guarded launch can
+create and update IAM, CloudFormation, Lambda, API Gateway, Cognito, DynamoDB,
+S3, CloudFront, logs, alarms, queues, and deployment assets. Its OIDC trust is
+restricted to `kevishie/find-the-edge` on `refs/heads/main`; no static AWS access
+keys are stored in GitHub. Protect the `main` branch so only reviewed commits
+can reach this role.
+
 ## Rollback
 
 Rollback static hosting by restoring the previous versioned `dist/phase1-web` artifact. For infrastructure, use CloudFormation/CDK change-set history to redeploy the previous known-good template. The DynamoDB table and API log group are retained; do not delete them as part of rollback. Disable further fixture invocation by deploying with `FTE_FIXTURE_ODDS_SEED_ENABLED=false`. Keep the scheduler disabled for Phase1.
