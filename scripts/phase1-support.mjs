@@ -652,6 +652,7 @@ export function validateTemplate(template, config) {
   requireActions(
     dynamoActionsForRole(template, liveRoleId, tableId),
     [
+      "dynamodb:ConditionCheckItem",
       "dynamodb:GetItem",
       "dynamodb:Query",
       "dynamodb:PutItem",
