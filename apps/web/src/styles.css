@@ -588,14 +588,14 @@ footer {
 
 .event-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
 }
 
 .event-card {
   border: 1px solid #292532;
-  border-radius: 12px;
-  padding: 22px;
+  border-radius: 9px;
+  padding: 14px;
   background: rgba(15, 13, 20, 0.94);
 }
 
@@ -611,8 +611,9 @@ footer {
 }
 
 .event-card h2 {
-  margin-top: 22px;
-  font-size: 25px;
+  margin-top: 10px;
+  font-size: 19px;
+  line-height: 1.15;
 }
 
 .event-card > p {

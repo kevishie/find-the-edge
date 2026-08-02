@@ -48,6 +48,7 @@ import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { Topic } from "aws-cdk-lib/aws-sns";
+import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
   CfnStage,
@@ -284,6 +285,55 @@ export class FoundationStack extends Stack {
       visibilityTimeout: Duration.seconds(180),
     });
     const directory = path.dirname(fileURLToPath(import.meta.url));
+    const oddsSecret = Secret.fromSecretNameV2(
+      this,
+      "TheOddsApiSecret",
+      `find-the-edge/${props.stageName}/the-odds-api`,
+    );
+    const liveOdds = new NodejsFunction(this, "LiveOddsIngestion", {
+      entry: path.resolve(
+        directory,
+        "../../../apps/workers/src/live-odds-lambda.ts",
+      ),
+      handler: "handler",
+      runtime: Runtime.NODEJS_24_X,
+      timeout: Duration.minutes(5),
+      memorySize: 512,
+      reservedConcurrentExecutions: 1,
+      environment: {
+        FTE_EVENT_TABLE: table.tableName,
+        FTE_THE_ODDS_API_SECRET_ID: oddsSecret.secretName,
+      },
+      bundling: { minify: true, sourceMap: true },
+    });
+    oddsSecret.grantRead(liveOdds);
+    liveOdds.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:PutItem",
+          "dynamodb:TransactWriteItems",
+        ],
+        resources: [table.tableArn],
+      }),
+    );
+    const liveOddsScheduler = new Rule(this, "LiveOddsScheduler", {
+      enabled: props.schedulerEnabled,
+      schedule: Schedule.rate(Duration.minutes(15)),
+    });
+    liveOddsScheduler.addTarget(
+      new LambdaFunction(liveOdds, {
+        retryAttempts: 0,
+        maxEventAge: Duration.minutes(5),
+      }),
+    );
+    new CfnOutput(this, "LiveOddsIngestionFunctionName", {
+      value: liveOdds.functionName,
+    });
+    new CfnOutput(this, "TheOddsApiSecretName", {
+      value: oddsSecret.secretName,
+    });
     const worker = new NodejsFunction(this, "UpcomingEventsWorker", {
       entry: path.resolve(directory, "../../../apps/workers/src/lambda.ts"),
       handler: "handler",
@@ -365,7 +415,9 @@ export class FoundationStack extends Stack {
     });
     queue.grantSendMessages(producer);
     const schedulerReady = new Rule(this, "UpcomingEventsSchedulerReady", {
-      enabled: props.schedulerEnabled,
+      // The legacy producer uses fixture schedule adapters. Keep it disabled;
+      // live discovery and odds refreshes are owned by LiveOddsScheduler.
+      enabled: false,
       schedule: Schedule.rate(Duration.hours(1)),
     });
     schedulerReady.addTarget(new LambdaFunction(producer));
@@ -514,6 +566,13 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "CognitoScope", { value: "events/events:read" });
     new CfnOutput(this, "CognitoCallbackUrl", { value: callbackUrl });
     const alarms = [
+      new Alarm(this, "LiveOddsIngestionErrorsAlarm", {
+        metric: liveOdds.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
       new Alarm(this, "UpcomingEventsDlqAlarm", {
         metric: dlq.metricApproximateNumberOfMessagesVisible(),
         threshold: 1,

@@ -32,8 +32,8 @@ export async function phase1Preflight(environment = process.env) {
     FTE_JWT_AUDIENCE: config.audience,
     FTE_EVENT_CURSOR_SECRET_ARN: config.cursorSecretArn,
     FTE_WEB_ORIGIN: config.webOrigin,
-    FTE_FIXTURE_ODDS_SEED_ENABLED: config.fixtureSeedEnabled ? "true" : "false",
-    FTE_UPCOMING_SCHEDULER_ENABLED: "false",
+    FTE_FIXTURE_ODDS_SEED_ENABLED: "false",
+    FTE_UPCOMING_SCHEDULER_ENABLED: "true",
     CDK_DEFAULT_ACCOUNT: "228246988391",
     CDK_DEFAULT_REGION: "us-east-1",
   };

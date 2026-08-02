@@ -25,7 +25,8 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
     { webOrigin: "*" },
     { apiBase: "http://api.example.com" },
     { cursorSecretArn: "secret-value" },
-    { fixtureSeedEnabled: false },
+    { fixtureSeedEnabled: true },
+    { schedulerEnabled: false },
   ])
     assert.throws(() => validateSafeDevConfig({ ...base, ...change }));
   assert.doesNotThrow(() =>
@@ -307,7 +308,19 @@ function validTemplate() {
         Type: "AWS::Lambda::Function",
         Properties: {
           Role: { "Fn::GetAtt": ["SeedRole", "Arn"] },
-          Environment: { Variables: { FTE_FIXTURE_ODDS_SEED_ENABLED: "true" } },
+          Environment: {
+            Variables: {
+              FTE_THE_ODDS_API_SECRET_ID: "find-the-edge/dev/the-odds-api",
+            },
+          },
+        },
+      },
+      LiveRule: {
+        Type: "AWS::Events::Rule",
+        Properties: {
+          ScheduleExpression: "rate(15 minutes)",
+          State: "ENABLED",
+          Targets: [{ Arn: { "Fn::GetAtt": ["Seed", "Arn"] }, Id: "Target0" }],
         },
       },
       ApiPolicy: {
@@ -358,7 +371,6 @@ function validTemplate() {
               {
                 Effect: "Allow",
                 Action: [
-                  "dynamodb:ConditionCheckItem",
                   "dynamodb:GetItem",
                   "dynamodb:Query",
                   "dynamodb:PutItem",
@@ -377,7 +389,8 @@ function validTemplate() {
           "Fn::Join": ["", [{ "Fn::GetAtt": ["Api", "ApiEndpoint"] }, "/dev"]],
         },
       },
-      FixtureOddsSeedFunctionName: { Value: { Ref: "Seed" } },
+      LiveOddsIngestionFunctionName: { Value: { Ref: "Seed" } },
+      TheOddsApiSecretName: { Value: "find-the-edge/dev/the-odds-api" },
       WebOrigin: { Value: webOrigin },
       WebDistributionId: { Value: { Ref: "Distribution" } },
       WebAssetsBucketName: { Value: { Ref: "Bucket" } },

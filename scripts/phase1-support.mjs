@@ -27,9 +27,10 @@ export function safeDevConfig(environment = process.env) {
       "https://app.phase1.invalid/auth/callback",
     logoutUrl:
       environment.FTE_COGNITO_LOGOUT_URL ?? "https://app.phase1.invalid",
-    fixtureSeedEnabled:
-      environment.FTE_FIXTURE_ODDS_SEED_ENABLED === undefined ||
-      environment.FTE_FIXTURE_ODDS_SEED_ENABLED === "true",
+    fixtureSeedEnabled: environment.FTE_FIXTURE_ODDS_SEED_ENABLED === "true",
+    schedulerEnabled:
+      environment.FTE_UPCOMING_SCHEDULER_ENABLED === undefined ||
+      environment.FTE_UPCOMING_SCHEDULER_ENABLED === "true",
     localMode: environment.FTE_PHASE1_LOCAL_MODE === "1",
   };
 }
@@ -37,8 +38,10 @@ export function safeDevConfig(environment = process.env) {
 export function validateSafeDevConfig(config) {
   if (config.stage !== "dev")
     throw new Error("Phase1 requires FTE_AWS_STAGE=dev");
-  if (!config.fixtureSeedEnabled)
-    throw new Error("Phase1 requires FTE_FIXTURE_ODDS_SEED_ENABLED=true");
+  if (config.fixtureSeedEnabled)
+    throw new Error("Phase1 requires fixture odds seeding to be disabled");
+  if (!config.schedulerEnabled)
+    throw new Error("Phase1 requires live ingestion scheduling to be enabled");
   for (const [label, value] of [
     ["JWT issuer", config.issuer],
     ["JWT audience", config.audience],
@@ -513,15 +516,39 @@ export function validateTemplate(template, config) {
       value.Properties?.Environment?.Variables
         ?.FTE_FIXTURE_ODDS_SEED_ENABLED === "true",
   );
-  if (seedFunctions.length !== 1)
-    throw new Error("Exactly one enabled fixture seed function is required");
-  const [seedId] = seedFunctions[0];
-  const seedOutput = template.Outputs?.FixtureOddsSeedFunctionName?.Value;
+  if (seedFunctions.length !== 0)
+    throw new Error("Fixture seed function must be absent from live Phase1");
+  const liveFunctions = entriesOfType(template, "AWS::Lambda::Function").filter(
+    ([, value]) =>
+      value.Properties?.Environment?.Variables?.FTE_THE_ODDS_API_SECRET_ID,
+  );
+  if (liveFunctions.length !== 1)
+    throw new Error("Exactly one live odds ingestion function is required");
+  const [liveId, liveFunction] = liveFunctions[0];
+  const liveOutput = template.Outputs?.LiveOddsIngestionFunctionName?.Value;
   const apiOutput = template.Outputs?.EventsApiEndpoint?.Value;
-  if (!isRef(seedOutput, seedId))
+  if (!isRef(liveOutput, liveId))
     throw new Error(
-      "Fixture seed output must reference the real seed function",
+      "Live odds output must reference the real ingestion function",
     );
+  if (
+    liveFunction.Properties?.Environment?.Variables
+      ?.FTE_THE_ODDS_API_SECRET_ID === undefined ||
+    JSON.stringify(template).includes("apiKey")
+  )
+    throw new Error(
+      "Live odds secret reference is missing or plaintext leaked",
+    );
+  const liveRules = entriesOfType(template, "AWS::Events::Rule").filter(
+    ([, value]) =>
+      value.Properties?.ScheduleExpression === "rate(15 minutes)" &&
+      value.Properties?.State === "ENABLED" &&
+      value.Properties?.Targets?.some((target) =>
+        isGetAtt(target.Arn, liveId, "Arn"),
+      ),
+  );
+  if (liveRules.length !== 1)
+    throw new Error("Live odds ingestion must have one enabled 15-minute rule");
   if (
     !Array.isArray(apiOutput?.["Fn::Join"]) ||
     apiOutput["Fn::Join"].length !== 2 ||
@@ -542,6 +569,8 @@ export function validateTemplate(template, config) {
     "CognitoDomain",
     "CognitoScope",
     "CognitoCallbackUrl",
+    "LiveOddsIngestionFunctionName",
+    "TheOddsApiSecretName",
   ])
     if (!template.Outputs?.[outputName]?.Value)
       throw new Error(`Required launch output ${outputName} is missing`);
@@ -604,10 +633,12 @@ export function validateTemplate(template, config) {
       }
     }
   }
-  const seedRoleId = referencedRoleId(template.Resources?.[seedId]);
+  const liveRoleId = referencedRoleId(template.Resources?.[liveId]);
   const apiRoleId = referencedRoleId(template.Resources?.[apiLambdaId]);
-  if (!seedRoleId || !apiRoleId)
-    throw new Error("API and fixture seed functions must reference IAM roles");
+  if (!liveRoleId || !apiRoleId)
+    throw new Error(
+      "API and live ingestion functions must reference IAM roles",
+    );
   requireActions(
     dynamoActionsForRole(template, apiRoleId, tableId),
     [
@@ -619,15 +650,14 @@ export function validateTemplate(template, config) {
     "API DynamoDB IAM",
   );
   requireActions(
-    dynamoActionsForRole(template, seedRoleId, tableId),
+    dynamoActionsForRole(template, liveRoleId, tableId),
     [
-      "dynamodb:ConditionCheckItem",
       "dynamodb:GetItem",
       "dynamodb:Query",
       "dynamodb:PutItem",
       "dynamodb:TransactWriteItems",
     ],
-    "Fixture seed DynamoDB IAM",
+    "Live ingestion DynamoDB IAM",
   );
 }
 

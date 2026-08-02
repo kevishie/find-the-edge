@@ -149,7 +149,15 @@ describe("Games", () => {
       await screen.findByText("No MLS games are scheduled for this day."),
     ).toBeInTheDocument();
     expect(list).toHaveBeenLastCalledWith(
-      { sport: "soccer", day: "2026-08-01" },
+      {
+        sport: "soccer",
+        day: new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/New_York",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(new Date()),
+      },
       expect.any(AbortSignal),
     );
   });

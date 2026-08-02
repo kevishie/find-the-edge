@@ -3,7 +3,8 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 import {
   assertHostedIndexHeaders,
-  assertSeedResourceBinding,
+  assertLiveGame,
+  assertLiveIngestionResourceBinding,
   assertWrongOriginDenied,
   phase1EnvironmentSmoke,
   validateEnvironment,
@@ -30,7 +31,7 @@ const validEnvironment = {
   AWS_ACCOUNT_ID: "228246988391",
   AWS_REGION: "us-east-1",
   FTE_PHASE1_API_BASE: "https://api.example.com/dev",
-  FTE_FIXTURE_SEED_FUNCTION_NAME: "fte-dev-seed",
+  FTE_LIVE_ODDS_FUNCTION_NAME: "fte-dev-live-odds",
   FTE_WEB_ORIGIN: "https://app.example.com",
   FTE_PHASE1_STACK_ID:
     "arn:aws:cloudformation:us-east-1:228246988391:stack/FindTheEdge-dev-Foundation/12345678-1234-1234-1234-123456789012",
@@ -61,7 +62,7 @@ test("rejects unsafe full-smoke inputs before any AWS command", () => {
     { AWS_REGION: "not-a-region" },
     { AWS_ACCOUNT_ID: "123456789012" },
     { AWS_REGION: "us-west-2" },
-    { FTE_FIXTURE_SEED_FUNCTION_NAME: "bad/function" },
+    { FTE_LIVE_ODDS_FUNCTION_NAME: "bad/function" },
     { FTE_WEB_ASSETS_BUCKET_NAME: "bad/bucket" },
     { FTE_EVENT_CURSOR_SECRET_ARN: "secret-value" },
   ])
@@ -144,22 +145,44 @@ test("wrong-scope JWT signature and claims are validated before use", async () =
     );
 });
 
-test("seed binding rejects unrelated same-account Lambda names", () => {
+test("live ingestion binding rejects unrelated same-account Lambda names", () => {
   const exact = [
     {
       StackId: validEnvironment.FTE_PHASE1_STACK_ID,
       StackName: "FindTheEdge-dev-Foundation",
       ResourceType: "AWS::Lambda::Function",
-      PhysicalResourceId: validEnvironment.FTE_FIXTURE_SEED_FUNCTION_NAME,
+      PhysicalResourceId: validEnvironment.FTE_LIVE_ODDS_FUNCTION_NAME,
     },
   ];
-  assert.doesNotThrow(() => assertSeedResourceBinding(exact, validEnvironment));
+  assert.doesNotThrow(() =>
+    assertLiveIngestionResourceBinding(exact, validEnvironment),
+  );
   assert.throws(() =>
-    assertSeedResourceBinding(
+    assertLiveIngestionResourceBinding(
       [{ ...exact[0], PhysicalResourceId: "unrelated" }],
       validEnvironment,
     ),
   );
+});
+
+test("live game proof accepts complete real sportsbook markets and rejects fixtures", () => {
+  const game = {
+    id: "event:mlb:provider-event",
+    participants: [{ label: "Away" }, { label: "Home" }],
+    odds: {
+      state: "available",
+      selections: ["away", "home"].map((selectionKey) => ({
+        marketKey: "moneyline",
+        selectionKey,
+        sportsbookId: "draftkings",
+        americanOdds: selectionKey === "away" ? 120 : -135,
+        observedAt: "2026-08-02T12:00:00.000Z",
+        retrievedAt: "2026-08-02T12:00:01.000Z",
+      })),
+    },
+  };
+  assert.doesNotThrow(() => assertLiveGame(game, "mlb"));
+  assert.throws(() => assertLiveGame({ ...game, id: "fixture-game" }, "mlb"));
 });
 
 test("wrong-origin and hosting header proofs reject every weakening", () => {

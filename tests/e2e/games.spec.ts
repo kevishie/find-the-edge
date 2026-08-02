@@ -24,6 +24,7 @@ test("shows unchanged seeded MLB and MLS identifiers without authentication", as
   page,
 }) => {
   await page.goto("/games");
+  await page.getByLabel("Eastern calendar day").fill("2026-08-01");
   await expect(
     page.getByRole("heading", { name: "Boston vs New York" }),
   ).toBeVisible();

@@ -8,7 +8,7 @@ const REQUIRED = [
   "AWS_ACCOUNT_ID",
   "AWS_REGION",
   "FTE_PHASE1_API_BASE",
-  "FTE_FIXTURE_SEED_FUNCTION_NAME",
+  "FTE_LIVE_ODDS_FUNCTION_NAME",
   "FTE_WEB_ORIGIN",
   "FTE_PHASE1_STACK_ID",
   "FTE_WEB_ASSETS_BUCKET_NAME",
@@ -103,8 +103,8 @@ export function validateEnvironment(environment) {
     )
   )
     throw new Error("FTE_PHASE1_STACK_ID must identify the intended stack");
-  if (!/^[A-Za-z0-9-_]{1,64}$/.test(environment.FTE_FIXTURE_SEED_FUNCTION_NAME))
-    throw new Error("FTE_FIXTURE_SEED_FUNCTION_NAME is invalid");
+  if (!/^[A-Za-z0-9-_]{1,64}$/.test(environment.FTE_LIVE_ODDS_FUNCTION_NAME))
+    throw new Error("FTE_LIVE_ODDS_FUNCTION_NAME is invalid");
   if (
     !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(
       environment.FTE_WEB_ASSETS_BUCKET_NAME,
@@ -151,99 +151,63 @@ export function validateEnvironment(environment) {
     );
 }
 
-export function assertSeedResourceBinding(resources, environment) {
+export function assertLiveIngestionResourceBinding(resources, environment) {
   if (
     !resources.some(
       (resource) =>
         resource.StackId === environment.FTE_PHASE1_STACK_ID &&
         resource.StackName === "FindTheEdge-dev-Foundation" &&
         resource.ResourceType === "AWS::Lambda::Function" &&
-        resource.PhysicalResourceId ===
-          environment.FTE_FIXTURE_SEED_FUNCTION_NAME,
+        resource.PhysicalResourceId === environment.FTE_LIVE_ODDS_FUNCTION_NAME,
     )
   )
-    throw new Error("Fixture seed is not the intended stack Lambda");
+    throw new Error("Live ingestion is not the intended stack Lambda");
 }
 
-const expectedGames = [
-  {
-    sport: "mlb",
-    day: "2026-08-01",
-    id: "event:mlb%3Amlb:2026-regular-boston-new-york-001",
-    selections: [
-      [
-        "moneyline",
-        "away",
-        "Boston",
-        "fixture-book",
-        120,
-        "2026-08-01T12:00:00.000Z",
-      ],
-      [
-        "moneyline",
-        "home",
-        "New York",
-        "fixture-book",
-        -135,
-        "2026-08-01T12:00:00.000Z",
-      ],
-    ],
-  },
-  {
-    sport: "mlb",
-    day: "2026-08-02",
-    id: "event:mlb%3Amlb:2026-regular-chicago-detroit-001",
-    selections: [
-      [
-        "moneyline",
-        "away",
-        "Chicago",
-        "fixture-book",
-        -105,
-        "2026-08-01T12:01:00.000Z",
-      ],
-      [
-        "moneyline",
-        "home",
-        "Detroit",
-        "fixture-book",
-        -105,
-        "2026-08-01T12:01:00.000Z",
-      ],
-    ],
-  },
-  {
-    sport: "soccer",
-    day: "2026-08-01",
-    id: "event:soccer%3Amls:2026-regular-miami-atlanta-001",
-    selections: [
-      [
-        "three_way_moneyline",
-        "away",
-        "Miami",
-        "fixture-book",
-        145,
-        "2026-08-01T12:02:00.000Z",
-      ],
-      [
-        "three_way_moneyline",
-        "draw",
-        "Draw",
-        "fixture-book",
-        220,
-        "2026-08-01T12:02:00.000Z",
-      ],
-      [
-        "three_way_moneyline",
-        "home",
-        "Atlanta",
-        "fixture-book",
-        175,
-        "2026-08-01T12:02:00.000Z",
-      ],
-    ],
-  },
-];
+export function assertLiveGame(game, sport) {
+  if (
+    !game ||
+    !game.id ||
+    !Array.isArray(game.participants) ||
+    game.participants.length !== 2
+  )
+    throw new Error("live game identity is invalid");
+  if (game.id.includes("fixture") || game.odds?.state !== "available")
+    throw new Error("live game contains fixture or unavailable odds");
+  const selections = game.odds.selections;
+  const expected =
+    sport === "mlb" ? ["away", "home"] : ["away", "draw", "home"];
+  const market = sport === "mlb" ? "moneyline" : "three_way_moneyline";
+  if (
+    !Array.isArray(selections) ||
+    selections.length !== expected.length ||
+    selections.some(
+      (selection, index) =>
+        selection.marketKey !== market ||
+        selection.selectionKey !== expected[index] ||
+        !["draftkings", "fanduel", "betmgm", "williamhill_us"].includes(
+          selection.sportsbookId,
+        ) ||
+        !Number.isInteger(selection.americanOdds) ||
+        selection.americanOdds === 0 ||
+        !Number.isFinite(Date.parse(selection.observedAt)) ||
+        !Number.isFinite(Date.parse(selection.retrievedAt)),
+    )
+  )
+    throw new Error("live game odds are incomplete or invalid");
+}
+
+const easternDays = (count = 8) => {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return Array.from({ length: count }, (_, index) =>
+    formatter.format(new Date(Date.now() + index * 86_400_000)),
+  );
+};
 
 async function request(url, options, timeoutMs = 10_000) {
   const response = await fetch(url, {
@@ -333,7 +297,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       throw new Error(
         "Hosted hashed asset cache/compression policy is invalid",
       );
-    for (let invocation = 1; invocation <= 2; invocation += 1) {
+    for (let invocation = 1; invocation <= 1; invocation += 1) {
       const mutationIdentity = JSON.parse(
         run("aws", ["sts", "get-caller-identity", "--output", "json"], {
           capture: true,
@@ -361,7 +325,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
           { capture: true, env: environment },
         ),
       ).StackResources;
-      assertSeedResourceBinding(stackResources ?? [], environment);
+      assertLiveIngestionResourceBinding(stackResources ?? [], environment);
       const responseFile = resolve(
         temporary,
         `seed-response-${String(invocation)}.json`,
@@ -373,7 +337,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
             "lambda",
             "invoke",
             "--function-name",
-            environment.FTE_FIXTURE_SEED_FUNCTION_NAME,
+            environment.FTE_LIVE_ODDS_FUNCTION_NAME,
             "--region",
             environment.AWS_REGION,
             "--output",
@@ -384,72 +348,61 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
         ),
       );
       if (invocationResult.StatusCode !== 200 || invocationResult.FunctionError)
-        throw new Error("fixture seed Lambda invocation failed");
-      const seed = JSON.parse(await readFile(responseFile, "utf8"));
-      if (seed.events !== 3 || seed.observations < 3)
-        throw new Error("fixture seed returned an invalid summary");
-      if (invocation === 2 && seed.snapshotsExisting !== seed.observations)
-        throw new Error(
-          "fixture seed did not converge on its second invocation",
-        );
+        throw new Error("live ingestion Lambda invocation failed");
+      const summary = JSON.parse(await readFile(responseFile, "utf8"));
+      if (
+        summary.leagues !== 2 ||
+        !Number.isSafeInteger(summary.events) ||
+        summary.events < 0 ||
+        !Number.isSafeInteger(summary.observations) ||
+        summary.observations < 0 ||
+        !Number.isSafeInteger(summary.skippedLeagues) ||
+        summary.skippedLeagues < 0 ||
+        summary.skippedLeagues > 2
+      )
+        throw new Error("live ingestion returned an invalid summary");
     }
     const apiBase = environment.FTE_PHASE1_API_BASE.replace(/\/$/, "");
-    const unauthenticated = await request(
-      `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
-      { headers: { origin: environment.FTE_WEB_ORIGIN } },
-    );
-    if (!unauthenticated.ok)
-      throw new Error(
-        `anonymous API returned ${String(unauthenticated.status)}`,
-      );
-    for (const expected of expectedGames) {
-      const response = await request(
-        `${apiBase}/games?sport=${expected.sport}&status=scheduled&day=${expected.day}`,
-        {
-          headers: { origin: environment.FTE_WEB_ORIGIN },
-        },
-      );
-      if (!response.ok)
-        throw new Error(
-          `anonymous ${expected.sport} API returned ${String(response.status)}`,
+    let liveGames = 0;
+    for (const sport of ["mlb", "soccer"]) {
+      let foundForSport = false;
+      for (const day of easternDays()) {
+        const response = await request(
+          `${apiBase}/games?sport=${sport}&status=scheduled&day=${day}`,
+          { headers: { origin: environment.FTE_WEB_ORIGIN } },
         );
-      if (
-        response.headers.get("access-control-allow-origin") !==
-        environment.FTE_WEB_ORIGIN
-      )
-        throw new Error(
-          `anonymous ${expected.sport} API did not return exact CORS origin`,
-        );
-      const body = await response.json();
-      const game = body.items?.find((item) => item.id === expected.id);
-      const actualSelections = game?.odds?.selections?.map((selection) => [
-        selection.marketKey,
-        selection.selectionKey,
-        selection.selectionLabel,
-        selection.sportsbookId,
-        selection.americanOdds,
-        selection.observedAt,
-      ]);
-      if (
-        !game ||
-        game.odds?.state !== "available" ||
-        JSON.stringify(actualSelections) !== JSON.stringify(expected.selections)
-      )
-        throw new Error(
-          `anonymous ${expected.sport} API did not contain exact fixture identity and odds: ${JSON.stringify(
-            {
-              expectedId: expected.id,
-              returnedIds: (body.items ?? [])
-                .slice(0, 20)
-                .map((item) => item.id),
-              oddsState: game?.odds?.state ?? null,
-              actualSelections: actualSelections ?? null,
-            },
-          )}`,
-        );
+        if (!response.ok)
+          throw new Error(
+            `anonymous ${sport} API returned ${String(response.status)}`,
+          );
+        if (
+          response.headers.get("access-control-allow-origin") !==
+          environment.FTE_WEB_ORIGIN
+        )
+          throw new Error(
+            `anonymous ${sport} API did not return exact CORS origin`,
+          );
+        const body = await response.json();
+        for (const game of body.items ?? []) {
+          if (game.odds?.state !== "available") continue;
+          if (
+            game.id?.includes("fixture") ||
+            game.odds.selections?.some(
+              (selection) => selection.sportsbookId === "fixture-book",
+            )
+          )
+            continue;
+          assertLiveGame(game, sport);
+          foundForSport = true;
+          liveGames += 1;
+        }
+      }
+      void foundForSport;
     }
+    if (liveGames === 0)
+      throw new Error("no provider-backed games were visible");
     const wrongOrigin = await request(
-      `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
+      `${apiBase}/games?sport=mlb&status=scheduled&day=${easternDays(1)[0]}`,
       {
         method: "OPTIONS",
         headers: {
@@ -460,7 +413,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
     );
     assertWrongOriginDenied(wrongOrigin.headers);
     const wrongOriginGet = await request(
-      `${apiBase}/games?sport=mlb&status=scheduled&day=2026-08-01`,
+      `${apiBase}/games?sport=mlb&status=scheduled&day=${easternDays(1)[0]}`,
       { headers: { origin: "https://wrong-origin.invalid" } },
     );
     assertWrongOriginDenied(wrongOriginGet.headers);

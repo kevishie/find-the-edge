@@ -1,6 +1,6 @@
 # Phase1 deployment and environment smoke
 
-Phase1 packages the existing fixture-backed games UI. Preflight, bundle, and test commands are credential-free; `phase1:launch` explicitly creates and updates cloud resources when its opt-in guard is enabled.
+Phase1 packages the public live-games UI. MLB and MLS schedules and moneylines come from The Odds API; no development fixtures are part of the production read path.
 
 The games and odds UI and its read-only API are public and require no account or
 token. CloudFront serves an encrypted, private S3 bucket through signed origin
@@ -12,8 +12,8 @@ this release.
 
 - Node 20.19 or newer and pnpm 10.28.2.
 - For local validation: no AWS login is required.
-- For deployment: an authenticated AWS profile/role in account `228246988391`, region `us-east-1`, and the existing Secrets Manager cursor-signing secret.
-- For environment smoke: the deployed API and fixture-seed outputs, cursor-secret identifier, and exact hosted browser origin. The full smoke requires the browser URL; it is not an optional partial check.
+- For deployment: an authenticated AWS profile/role in account `228246988391`, region `us-east-1`, the existing cursor-signing secret, and `find-the-edge/dev/the-odds-api` in Secrets Manager. Store either the plain API key or `{ "apiKey": "..." }`; never put it in CDK context, Lambda environment variables, browser assets, or logs.
+- For environment smoke: the deployed API, live-ingestion function output, cursor-secret identifier, and exact hosted browser origin.
 
 ## Credential-free preflight and bundle
 
@@ -23,7 +23,7 @@ pnpm phase1:preflight
 FTE_PHASE1_API_BASE=https://api.example.com FTE_WEB_ORIGIN=https://app.example.com pnpm phase1:bundle
 ```
 
-Preflight synthesizes `FindTheEdge-dev-Foundation` with safe placeholder identifiers and validates anonymous read-only games routes, exact CORS, required outputs, fixture seed enablement, table-scoped DynamoDB IAM, and absence of DynamoDB Scan. It does not call AWS. The bundle is written to ignored `dist/phase1-web`; `phase1-manifest.json` contains sorted SHA-256 checksums, not credentials or tokens. Upload the directory to any static host that serves `index.html` for `/games`; do not cache `runtime-config.js` across deployments.
+Preflight synthesizes with safe placeholder identifiers and validates anonymous games routes, exact CORS, secret-read isolation, table-scoped IAM, and absence of plaintext credentials. It does not call AWS.
 
 For an explicit local-only bundle, set `FTE_PHASE1_LOCAL_MODE=1` and use an `http://localhost` or `http://127.0.0.1` API base. HTTP is rejected for every non-local host.
 
@@ -34,8 +34,7 @@ Set `AWS_ACCOUNT_ID=228246988391`, `AWS_REGION=us-east-1`,
 `pnpm phase1:launch`. The command rechecks STS
 identity immediately before every mutation, rejects retained-table destructive
 diffs, deploys the dev stack, generates runtime configuration from stack outputs,
-uploads and invalidates the private site, seeds the fixture data, and proves the
-anonymous API and browser flow.
+uploads and invalidates the private site, runs live ingestion, and proves the anonymous API and browser flow.
 
 The underlying operator commands are shown for diagnosis only:
 
@@ -45,8 +44,8 @@ export CDK_DEFAULT_ACCOUNT=228246988391
 export CDK_DEFAULT_REGION=us-east-1
 export FTE_AWS_STAGE=dev
 export FTE_EVENT_CURSOR_SECRET_ARN=arn:aws:secretsmanager:us-east-1:228246988391:secret:fte-dev-cursor
-export FTE_FIXTURE_ODDS_SEED_ENABLED=true
-export FTE_UPCOMING_SCHEDULER_ENABLED=false
+export FTE_FIXTURE_ODDS_SEED_ENABLED=false
+export FTE_UPCOMING_SCHEDULER_ENABLED=true
 pnpm --filter @find-the-edge/infra-cdk synth
 pnpm --filter @find-the-edge/infra-cdk exec cdk deploy FindTheEdge-dev-Foundation --require-approval never --outputs-file /tmp/fte-phase1-outputs.json
 aws cloudformation describe-stacks --stack-name FindTheEdge-dev-Foundation --region "$CDK_DEFAULT_REGION" --query 'Stacks[0].Outputs' --output table
@@ -57,16 +56,15 @@ uploading the prior checksum-verified bundle and invalidating `/*`.
 Infrastructure rollback requires a reviewed CDK diff; the event table, dormant
 user pool, web bucket, and logs are retained.
 
-## Seed, API, CORS, and browser smoke
+## Live ingestion, quota, and cadence
 
-`phase1:launch` performs this proof automatically. It seeds twice and then runs
-anonymous API, exact-origin CORS, hosting-security, and browser smoke:
+The stack output `LiveOddsIngestionFunctionName` is the safe manual trigger. Invoke it once after the secret exists; the 15-minute EventBridge tick then discovers schedules and admits paid odds calls only when due.
 
 ```sh
 export AWS_ACCOUNT_ID=228246988391
 export AWS_REGION=us-east-1
 export FTE_PHASE1_API_BASE=https://abc.execute-api.us-east-1.amazonaws.com
-export FTE_FIXTURE_SEED_FUNCTION_NAME=FindTheEdge-dev-FixtureOddsSeed...
+export FTE_LIVE_ODDS_FUNCTION_NAME=FindTheEdge-dev-LiveOddsIngestion...
 export FTE_WEB_ORIGIN=https://app.example.com
 export FTE_PHASE1_BROWSER_BASE_URL=https://app.example.com
 export FTE_EVENT_CURSOR_SECRET_ARN=arn:aws:secretsmanager:us-east-1:228246988391:secret:fte-dev-cursor
@@ -74,11 +72,7 @@ export FTE_PHASE1_SMOKE=1
 pnpm phase1:smoke
 ```
 
-The smoke command validates every input, checks AWS identity again immediately
-before each seed mutation, proves convergence, verifies anonymous access to the
-exact fixtures and odds, rejects an unconfigured CORS origin, and runs the real
-hosted browser flow. Browser artifacts are disabled. Without
-`FTE_PHASE1_SMOKE=1` it reports a skip and performs no mutation.
+Normal MLB/MLS odds refresh hourly. Inside 90 minutes of first pitch, MLB refreshes every 15 minutes and MLS every 30 minutes. Other league profiles default to six hours. The durable provider `x-requests-remaining` value blocks paid calls at a 50-credit monthly reserve. Schedule discovery continues independently. CloudWatch logs emit only bounded summaries, never keys or credential-bearing URLs.
 
 ## Automatic deployment from GitHub
 
@@ -110,4 +104,4 @@ this role.
 
 ## Rollback
 
-Rollback static hosting by restoring the previous versioned `dist/phase1-web` artifact. For infrastructure, use CloudFormation/CDK change-set history to redeploy the previous known-good template. The DynamoDB table and API log group are retained; do not delete them as part of rollback. Disable further fixture invocation by deploying with `FTE_FIXTURE_ODDS_SEED_ENABLED=false`. Keep the scheduler disabled for Phase1.
+Rollback static hosting by restoring the previous versioned bundle. To stop provider spend, deploy with `FTE_UPCOMING_SCHEDULER_ENABLED=false`; retained events and last-good immutable/current odds remain readable. Do not delete the retained DynamoDB table or secret.

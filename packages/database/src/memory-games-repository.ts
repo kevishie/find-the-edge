@@ -6,6 +6,6 @@ import {
 
 export class MemoryGamesRepository extends JoinedGamesRepository {
   constructor(events: EventRepository, gateway: CurrentOddsReadGateway) {
-    super(events, gateway);
+    super(events, gateway, ["fixture-book"]);
   }
 }

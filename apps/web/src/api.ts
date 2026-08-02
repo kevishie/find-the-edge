@@ -204,13 +204,18 @@ const validGame = (
           ["draw", "Draw"],
           ["home", homeLabel],
         ] as const);
-  return odds["selections"].every(
-    (selection, index) =>
-      selection.marketKey === expectedMarket &&
-      selection.selectionKey === expectedSelections[index]![0] &&
-      selection.sportsbookId === "fixture-book" &&
-      selection.selectionLabel === expectedSelections[index]![1] &&
-      selection.observedAt <= selection.retrievedAt,
+  const sportsbookId = odds["selections"][0]?.sportsbookId;
+  return (
+    typeof sportsbookId === "string" &&
+    sportsbookId.length > 0 &&
+    odds["selections"].every(
+      (selection, index) =>
+        selection.marketKey === expectedMarket &&
+        selection.selectionKey === expectedSelections[index]![0] &&
+        selection.sportsbookId === sportsbookId &&
+        selection.selectionLabel === expectedSelections[index]![1] &&
+        selection.observedAt <= selection.retrievedAt,
+    )
   );
 };
 

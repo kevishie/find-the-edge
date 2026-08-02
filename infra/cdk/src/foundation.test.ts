@@ -19,7 +19,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 5);
+    template.resourceCountIs("AWS::Lambda::Function", 6);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -53,7 +53,7 @@ describe("foundation CDK app", () => {
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 4);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 5);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -70,8 +70,8 @@ describe("foundation CDK app", () => {
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
     template.resourceCountIs("AWS::SQS::Queue", 2);
-    template.resourceCountIs("AWS::Lambda::Function", 4);
-    template.resourceCountIs("AWS::Events::Rule", 1);
+    template.resourceCountIs("AWS::Lambda::Function", 5);
+    template.resourceCountIs("AWS::Events::Rule", 2);
     template.hasResource("AWS::DynamoDB::Table", {
       DeletionPolicy: "Retain",
       UpdateReplacePolicy: "Retain",
@@ -332,7 +332,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 10);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 11);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

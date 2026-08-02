@@ -580,7 +580,8 @@ const outputs = {
   CognitoDomain: "https://fte.auth.us-east-1.amazoncognito.com",
   CognitoScope: "events/events:read",
   CognitoCallbackUrl: "https://abc123.cloudfront.net/auth/callback",
-  FixtureOddsSeedFunctionName: "fte-seed",
+  LiveOddsIngestionFunctionName: "fte-live-odds",
+  TheOddsApiSecretName: "find-the-edge/dev/the-odds-api",
 };
 test("launch binds every discovered output to intended targets", () => {
   assert.doesNotThrow(() => validateStackOutputs(outputs));
@@ -600,7 +601,7 @@ test("deployed output bindings require exact physical resources and distribution
     ["AWS::CloudFront::Distribution", outputs.WebDistributionId],
     ["AWS::Cognito::UserPool", outputs.CognitoUserPoolId],
     ["AWS::Cognito::UserPoolClient", outputs.CognitoClientId],
-    ["AWS::Lambda::Function", outputs.FixtureOddsSeedFunctionName],
+    ["AWS::Lambda::Function", outputs.LiveOddsIngestionFunctionName],
     ["AWS::ApiGatewayV2::Api", "abc123"],
   ].map(([ResourceType, PhysicalResourceId]) => ({
     ResourceType,

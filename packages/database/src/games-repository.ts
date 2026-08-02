@@ -48,6 +48,7 @@ const currentKey = (
   event: EventPage["items"][number],
   marketKey: string,
   selectionKey: string,
+  sportsbookId: string,
 ) => ({
   pk: fixtureOddsPartition({
     canonicalEventId: event.id,
@@ -55,7 +56,7 @@ const currentKey = (
     sportKey: event.sportKey,
     marketKey,
     selectionKey,
-    sportsbookId: "fixture-book",
+    sportsbookId,
   }).key,
   sk: "CURRENT" as const,
 });
@@ -116,6 +117,12 @@ export class JoinedGamesRepository implements GamesRepository {
   constructor(
     readonly events: EventRepository,
     readonly odds: CurrentOddsReadGateway,
+    readonly sportsbookIds: readonly string[] = [
+      "draftkings",
+      "fanduel",
+      "betmgm",
+      "williamhill_us",
+    ],
   ) {}
   async list(
     filter: EventListFilter,
@@ -126,11 +133,18 @@ export class JoinedGamesRepository implements GamesRepository {
     if (!page.items.length) return { ...page, items: [] };
     const requestedByEvent = page.items.map((event) => {
       const specification = marketSpecification(event.sportKey);
-      return specification.selectionKeys.map((selectionKey) =>
-        currentKey(event, specification.marketKey, selectionKey),
+      return this.sportsbookIds.map((sportsbookId) =>
+        specification.selectionKeys.map((selectionKey) =>
+          currentKey(
+            event,
+            specification.marketKey,
+            selectionKey,
+            sportsbookId,
+          ),
+        ),
       );
     });
-    const requested = requestedByEvent.flat();
+    const requested = requestedByEvent.flat(2);
     let rows: readonly unknown[];
     try {
       rows = await this.odds.batchGet(requested);
@@ -156,21 +170,30 @@ export class JoinedGamesRepository implements GamesRepository {
     return {
       ...page,
       items: page.items.map((event, index) => {
-        const eventKeys = requestedByEvent[index]!;
-        const eventRows = eventKeys.map(({ pk }) => byKey.get(pk));
-        const presentCount = eventRows.filter(
-          (row) => row !== undefined,
-        ).length;
-        if (presentCount > 0 && presentCount !== eventKeys.length)
-          throw new EventStorageError("partial-current-odds-market");
+        const candidates = requestedByEvent[index]!.map((keys) => ({
+          keys,
+          rows: keys.map(({ pk }) => byKey.get(pk)),
+        }));
+        const selected = candidates.find(({ rows }) =>
+          rows.every((row) => row !== undefined),
+        );
+        const validated = selected?.rows.map((row, selectionIndex) =>
+          validateCurrent(row, selected.keys[selectionIndex]!, event),
+        );
+        const coherent =
+          validated &&
+          validated.every(
+            (selection) =>
+              selection.sportsbookId === validated[0]!.sportsbookId &&
+              selection.observedAt === validated[0]!.observedAt &&
+              selection.retrievedAt === validated[0]!.retrievedAt,
+          );
         return {
           ...event,
-          odds: presentCount
+          odds: coherent
             ? {
                 state: "available" as const,
-                selections: eventRows.map((row, selectionIndex) =>
-                  validateCurrent(row, eventKeys[selectionIndex]!, event),
-                ),
+                selections: validated,
               }
             : { state: "unavailable" as const },
         };

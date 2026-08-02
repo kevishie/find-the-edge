@@ -532,7 +532,7 @@ export function assertDeployedOutputBindings(outputs, resources, distribution) {
     ["AWS::CloudFront::Distribution", outputs.WebDistributionId],
     ["AWS::Cognito::UserPool", outputs.CognitoUserPoolId],
     ["AWS::Cognito::UserPoolClient", outputs.CognitoClientId],
-    ["AWS::Lambda::Function", outputs.FixtureOddsSeedFunctionName],
+    ["AWS::Lambda::Function", outputs.LiveOddsIngestionFunctionName],
   ];
   const apiId = new URL(outputs.EventsApiEndpoint).hostname.split(".")[0];
   expected.push(["AWS::ApiGatewayV2::Api", apiId]);
@@ -635,7 +635,8 @@ export function validateStackOutputs(outputs) {
     !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(outputs.WebAssetsBucketName) ||
     !/^us-east-1_[A-Za-z0-9]+$/.test(outputs.CognitoUserPoolId) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(outputs.CognitoClientId) ||
-    !/^[A-Za-z0-9-_]{1,64}$/.test(outputs.FixtureOddsSeedFunctionName)
+    !/^[A-Za-z0-9-_]{1,64}$/.test(outputs.LiveOddsIngestionFunctionName) ||
+    outputs.TheOddsApiSecretName !== "find-the-edge/dev/the-odds-api"
   )
     throw new Error("A launch output has an invalid target identifier");
 }
@@ -822,8 +823,8 @@ export async function phase1Launch(environment = process.env) {
     CDK_DEFAULT_ACCOUNT: LAUNCH_ACCOUNT,
     CDK_DEFAULT_REGION: LAUNCH_REGION,
     FTE_AWS_STAGE: "dev",
-    FTE_FIXTURE_ODDS_SEED_ENABLED: "true",
-    FTE_UPCOMING_SCHEDULER_ENABLED: "false",
+    FTE_FIXTURE_ODDS_SEED_ENABLED: "false",
+    FTE_UPCOMING_SCHEDULER_ENABLED: "true",
   };
   run("pnpm", ["--filter", "@find-the-edge/infra-cdk", "build"], {
     env: deployEnvironment,
@@ -905,7 +906,8 @@ export async function phase1Launch(environment = process.env) {
     "CognitoDomain",
     "CognitoScope",
     "CognitoCallbackUrl",
-    "FixtureOddsSeedFunctionName",
+    "LiveOddsIngestionFunctionName",
+    "TheOddsApiSecretName",
   ];
   if (required.some((key) => !outputs[key]))
     throw new Error(
@@ -982,7 +984,7 @@ export async function phase1Launch(environment = process.env) {
       AWS_REGION: LAUNCH_REGION,
       FTE_PHASE1_SMOKE: "1",
       FTE_PHASE1_API_BASE: outputs.EventsApiEndpoint,
-      FTE_FIXTURE_SEED_FUNCTION_NAME: outputs.FixtureOddsSeedFunctionName,
+      FTE_LIVE_ODDS_FUNCTION_NAME: outputs.LiveOddsIngestionFunctionName,
       FTE_PHASE1_BROWSER_BASE_URL: outputs.WebOrigin,
       FTE_PHASE1_STACK_ID: outputs.StackId,
       FTE_WEB_ASSETS_BUCKET_NAME: outputs.WebAssetsBucketName,

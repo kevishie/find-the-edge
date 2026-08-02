@@ -50,6 +50,8 @@ const current = (
   selectionKey: string,
   selectionLabel: string,
   marketKey = source.sportKey === "mlb" ? "moneyline" : "three_way_moneyline",
+  sportsbookId = "draftkings",
+  observedAt = "2026-08-01T12:00:00.000Z",
 ) =>
   normalizeFixtureOddsObservation({
     canonicalEventId: source.id,
@@ -58,10 +60,10 @@ const current = (
     marketKey,
     selectionKey,
     selectionLabel,
-    sportsbookId: "fixture-book",
-    sportsbookLabel: "Fixture Book",
+    sportsbookId,
+    sportsbookLabel: sportsbookId === "draftkings" ? "DraftKings" : "FanDuel",
     americanOdds: selectionKey === "home" ? -135 : 120,
-    observedAt: "2026-08-01T12:00:00.000Z",
+    observedAt,
     retrievedAt: "2026-08-01T12:00:00.000Z",
   });
 const row = (value: ReturnType<typeof current>) => ({
@@ -89,10 +91,13 @@ describe("joined games repository", () => {
       "cursor",
     );
     expect(seen.cursor).toBe("cursor");
-    expect(seen.keys).toEqual([
-      { pk: away.partitionKey, sk: "CURRENT" },
-      { pk: home.partitionKey, sk: "CURRENT" },
-    ]);
+    expect(seen.keys).toEqual(
+      expect.arrayContaining([
+        { pk: away.partitionKey, sk: "CURRENT" },
+        { pk: home.partitionKey, sk: "CURRENT" },
+      ]),
+    );
+    expect(seen.keys).toHaveLength(8);
     expect(page).toMatchObject({
       nextCursor: "next",
       snapshotAt: "2026-08-01T12:00:00.000Z",
@@ -142,11 +147,25 @@ describe("joined games repository", () => {
     expect(page.items[0]?.odds).toEqual({ state: "unavailable" });
   });
 
+  it("falls back to the next complete sportsbook market", async () => {
+    const away = current(event, "away", "Boston", "moneyline", "fanduel");
+    const home = current(event, "home", "New York", "moneyline", "fanduel");
+    const page = await new JoinedGamesRepository(events(), {
+      batchGet: () => Promise.resolve([row(home), row(away)]),
+    }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+    expect(page.items[0]?.odds).toMatchObject({
+      state: "available",
+      selections: [
+        { selectionKey: "away", sportsbookId: "fanduel" },
+        { selectionKey: "home", sportsbookId: "fanduel" },
+      ],
+    });
+  });
+
   it("fails closed for partial, malformed, mismatched, duplicate, and unexpected rows", async () => {
     const away = current(event, "away", "Boston");
     const home = current(event, "home", "New York");
     const cases: readonly (readonly unknown[])[] = [
-      [row(away)],
       [
         {
           pk: away.partitionKey,
@@ -168,7 +187,32 @@ describe("joined games repository", () => {
     }
   });
 
-  it("requests at most 150 exact keys for a maximum soccer page", async () => {
+  it("hides partial and mixed-timestamp markets during ingestion", async () => {
+    const away = current(event, "away", "Boston");
+    for (const rows of [
+      [row(away)],
+      [
+        row(away),
+        row(
+          current(
+            event,
+            "home",
+            "New York",
+            "moneyline",
+            "draftkings",
+            "2026-08-01T12:01:00.000Z",
+          ),
+        ),
+      ],
+    ]) {
+      const page = await new JoinedGamesRepository(events(), {
+        batchGet: () => Promise.resolve(rows),
+      }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+      expect(page.items[0]?.odds).toEqual({ state: "unavailable" });
+    }
+  });
+
+  it("requests exact keys for four preferred books on a maximum soccer page", async () => {
     const soccerEvents = Array.from({ length: 50 }, (_, index) => ({
       ...event,
       id: `event-${index}`,
@@ -182,6 +226,6 @@ describe("joined games repository", () => {
         return Promise.resolve([]);
       },
     }).list({ sportKey: "soccer", status: "scheduled", day: "2026-08-01" }, 50);
-    expect(requested).toBe(150);
+    expect(requested).toBe(600);
   });
 });

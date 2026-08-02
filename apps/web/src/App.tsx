@@ -398,10 +398,18 @@ const easternDisplay = (value: string) =>
     timeStyle: "short",
   });
 
+const currentEasternDay = (now = new Date()) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+
 function GamesExplorer() {
   const client = useContext(GamesClientContext);
   const [sport, setSport] = useState<GamesSport>("mlb");
-  const [day, setDay] = useState("2026-08-01");
+  const [day, setDay] = useState(() => currentEasternDay());
   const [state, setState] = useState<
     | { readonly kind: "loading" }
     | { readonly kind: "ready"; readonly page: UiGamesPage }
@@ -454,13 +462,13 @@ function GamesExplorer() {
     <>
       <header className="explorer-header">
         <div>
-          <p className="eyebrow">FIXTURE-BACKED GAMES · EASTERN TIME</p>
+          <p className="eyebrow">LIVE GAMES · EASTERN TIME</p>
           <h1>Games and current odds</h1>
           <p className="lede">
-            Browse the seeded MLB and MLS slate by Eastern calendar day.
+            Browse real MLB and MLS games with current sportsbook moneylines.
           </p>
         </div>
-        <span className="maturity active">fixture data</span>
+        <span className="maturity beta">live odds</span>
       </header>
 
       <section className="game-filters" aria-label="Game filters">
@@ -519,7 +527,11 @@ function GamesExplorer() {
             >
               <div className="event-meta">
                 <span>{sportLabels[sport]}</span>
-                <span>fixture</span>
+                <span>
+                  {game.odds.state === "available"
+                    ? "live market"
+                    : "scheduled"}
+                </span>
               </div>
               <h2>
                 {game.participants.map(({ label }) => label).join(" vs ")}
