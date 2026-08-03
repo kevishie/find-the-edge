@@ -47,7 +47,7 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
 
 function validTemplate() {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const webOrigin = {
     "Fn::Join": [
       "",
@@ -249,6 +249,17 @@ function validTemplate() {
         Type: "AWS::ApiGatewayV2::Route",
         Properties: {
           RouteKey: "GET /games",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      SplitsRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /splits",
           ApiId: { Ref: "Api" },
           AuthorizationType: "NONE",
           Target: {

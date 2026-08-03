@@ -187,7 +187,7 @@ function requireActions(actual, expected, label) {
 
 export function validateTemplate(template, config) {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const tables = entriesOfType(template, "AWS::DynamoDB::Table");
   const apis = entriesOfType(template, "AWS::ApiGatewayV2::Api");
   if (tables.length !== 1 || apis.length !== 1)
@@ -461,6 +461,7 @@ export function validateTemplate(template, config) {
     "GET /events",
     "GET /events/{eventId}",
     "GET /games",
+    "GET /splits",
   ];
   if (
     apiRoutes.length !== requiredRouteKeys.length ||
