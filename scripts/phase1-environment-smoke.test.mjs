@@ -6,6 +6,7 @@ import {
   assertLiveGame,
   assertLiveIngestionResourceBinding,
   assertWrongOriginDenied,
+  liveOddsInvocationArguments,
   phase1EnvironmentSmoke,
   validateEnvironment,
   validateWrongScopeToken,
@@ -162,6 +163,27 @@ test("live ingestion binding rejects unrelated same-account Lambda names", () =>
       [{ ...exact[0], PhysicalResourceId: "unrelated" }],
       validEnvironment,
     ),
+  );
+});
+
+test("release refresh payload is attached only to the Lambda invocation", () => {
+  assert.deepEqual(
+    liveOddsInvocationArguments("fte-dev-live-odds", "us-east-1", "out.json"),
+    [
+      "lambda",
+      "invoke",
+      "--function-name",
+      "fte-dev-live-odds",
+      "--region",
+      "us-east-1",
+      "--payload",
+      '{"forceRefresh":true}',
+      "--cli-binary-format",
+      "raw-in-base64-out",
+      "--output",
+      "json",
+      "out.json",
+    ],
   );
 });
 

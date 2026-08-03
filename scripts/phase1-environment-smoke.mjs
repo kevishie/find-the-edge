@@ -18,6 +18,26 @@ const REQUIRED = [
 const AUTHORIZED_ACCOUNT = "228246988391";
 const AUTHORIZED_REGION = "us-east-1";
 
+export const liveOddsInvocationArguments = (
+  functionName,
+  region,
+  responseFile,
+) => [
+  "lambda",
+  "invoke",
+  "--function-name",
+  functionName,
+  "--region",
+  region,
+  "--payload",
+  '{"forceRefresh":true}',
+  "--cli-binary-format",
+  "raw-in-base64-out",
+  "--output",
+  "json",
+  responseFile,
+];
+
 function decodeJwtPart(value) {
   try {
     if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
@@ -353,10 +373,6 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
             environment.FTE_PHASE1_STACK_ID,
             "--region",
             environment.AWS_REGION,
-            "--payload",
-            '{"forceRefresh":true}',
-            "--cli-binary-format",
-            "raw-in-base64-out",
             "--output",
             "json",
           ],
@@ -371,17 +387,11 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       const invocationResult = JSON.parse(
         run(
           "aws",
-          [
-            "lambda",
-            "invoke",
-            "--function-name",
+          liveOddsInvocationArguments(
             environment.FTE_LIVE_ODDS_FUNCTION_NAME,
-            "--region",
             environment.AWS_REGION,
-            "--output",
-            "json",
             responseFile,
-          ],
+          ),
           { capture: true, env: environment },
         ),
       );
