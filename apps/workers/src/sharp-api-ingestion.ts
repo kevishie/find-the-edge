@@ -161,14 +161,14 @@ const completeMainPrices = (
           !actual.has(selection as (typeof group)[number]["selectionKey"]),
       )
     )
-      throw new Error("sharpapi-main-market-incomplete");
+      continue;
     if (marketKey === "spread" && group.length >= 2) {
       const points = group.map((price) => price.point);
       if (
         points.some((point) => point === undefined) ||
         points.reduce<number>((sum, point) => sum + (point ?? 0), 0) !== 0
       )
-        throw new Error("sharpapi-main-market-incomplete");
+        continue;
     }
     complete.push(...group);
   }
