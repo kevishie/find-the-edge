@@ -115,4 +115,40 @@ describe("SharpAPI activation boundary", () => {
     });
     expect(page.items[0]?.markets).toHaveLength(2);
   });
+
+  it("accepts SharpAPI's null data shape for an explicitly empty split page", () => {
+    expect(
+      parseSharpApiSplitPage(
+        {
+          data: null,
+          pagination: {
+            limit: 200,
+            offset: 0,
+            count: 0,
+            total: 0,
+            has_more: false,
+            next_offset: null,
+          },
+        },
+        "2026-08-03T15:00:01.000Z" as never,
+      ),
+    ).toMatchObject({ items: [], hasMore: false });
+  });
+
+  it("rejects null split data unless pagination proves the page is empty", () => {
+    expect(() =>
+      parseSharpApiSplitPage(
+        {
+          data: null,
+          pagination: {
+            count: 1,
+            total: 1,
+            has_more: false,
+            next_offset: null,
+          },
+        },
+        "2026-08-03T15:00:01.000Z" as never,
+      ),
+    ).toThrow("invalid-response");
+  });
 });

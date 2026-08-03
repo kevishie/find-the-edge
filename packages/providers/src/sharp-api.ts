@@ -413,13 +413,22 @@ export function parseSharpApiSplitPage(
   input: unknown,
   retrievedAt: IsoTimestamp,
 ): SharpApiSplitPage {
+  if (!record(input)) throw new SharpApiError("invalid-response");
+  const pagination = input["pagination"];
+  if (!record(pagination) || typeof pagination["has_more"] !== "boolean")
+    throw new SharpApiError("invalid-response");
+  const emptyPage =
+    input["data"] === null &&
+    pagination["has_more"] === false &&
+    pagination["count"] === 0 &&
+    pagination["total"] === 0;
   if (
-    !record(input) ||
-    !Array.isArray(input["data"]) ||
-    input["data"].length > 200
+    (!emptyPage && !Array.isArray(input["data"])) ||
+    (Array.isArray(input["data"]) && input["data"].length > 200)
   )
     throw new SharpApiError("invalid-response");
-  const items = input["data"].map((value): SharpApiSplitEvent => {
+  const data = emptyPage ? [] : (input["data"] as unknown[]);
+  const items = data.map((value): SharpApiSplitEvent => {
     if (
       !record(value) ||
       !canonical(value["event_id"]) ||
@@ -483,9 +492,6 @@ export function parseSharpApiSplitPage(
       markets,
     };
   });
-  const pagination = input["pagination"];
-  if (!record(pagination) || typeof pagination["has_more"] !== "boolean")
-    throw new SharpApiError("invalid-response");
   const nextOffset = pagination["next_offset"];
   if (nextOffset !== null && nextOffset !== undefined && !integer(nextOffset))
     throw new SharpApiError("invalid-response");
