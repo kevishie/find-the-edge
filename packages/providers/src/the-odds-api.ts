@@ -12,13 +12,13 @@ export const theOddsApiDescriptor: ProviderDescriptor = {
         sportKey: "mlb" as SportKey,
         leagueKey: "mlb",
         capabilities: ["schedule", "odds", "results"],
-        marketKeys: ["moneyline"],
+        marketKeys: ["moneyline", "spread", "total"],
       },
       {
         sportKey: "soccer" as SportKey,
         leagueKey: "mls",
         capabilities: ["schedule", "odds", "results"],
-        marketKeys: ["three_way_moneyline"],
+        marketKeys: ["three_way_moneyline", "spread", "total"],
       },
     ],
   },
@@ -52,8 +52,11 @@ export interface TheOddsApiBookmaker {
   readonly label: string;
   readonly updatedAt: IsoTimestamp;
   readonly prices: readonly {
-    readonly selectionKey: "away" | "draw" | "home";
+    readonly marketKey:
+      "moneyline" | "three_way_moneyline" | "spread" | "total";
+    readonly selectionKey: "away" | "draw" | "home" | "over" | "under";
     readonly selectionLabel: string;
+    readonly point?: number;
     readonly americanOdds: number;
   }[];
 }
@@ -156,57 +159,120 @@ export function parseTheOddsApiEvents(
         !Array.isArray(book["markets"])
       )
         throw new TheOddsApiError("invalid-response");
-      const h2h = (book["markets"] as unknown[]).filter(
-        (market) =>
-          market &&
-          typeof market === "object" &&
-          !Array.isArray(market) &&
-          (market as Record<string, unknown>)["key"] === "h2h",
-      );
-      if (h2h.length !== 1) throw new TheOddsApiError("invalid-response");
-      const outcomes = (h2h[0] as Record<string, unknown>)["outcomes"];
-      if (!Array.isArray(outcomes))
-        throw new TheOddsApiError("invalid-response");
-      const expected = league.leagueKey === "mls" ? 3 : 2;
-      if (outcomes.length !== expected)
-        throw new TheOddsApiError("invalid-response");
-      const prices = outcomes.map((rawOutcome) => {
+      const supported = new Map<string, Record<string, unknown>>();
+      for (const rawMarket of book["markets"] as unknown[]) {
         if (
-          !rawOutcome ||
-          typeof rawOutcome !== "object" ||
-          Array.isArray(rawOutcome)
+          !rawMarket ||
+          typeof rawMarket !== "object" ||
+          Array.isArray(rawMarket)
         )
           throw new TheOddsApiError("invalid-response");
-        const outcome = rawOutcome as Record<string, unknown>;
-        if (
-          !text(outcome["name"]) ||
-          typeof outcome["price"] !== "number" ||
-          !Number.isInteger(outcome["price"]) ||
-          outcome["price"] === 0 ||
-          Math.abs(outcome["price"]) > 100000
-        )
-          throw new TheOddsApiError("invalid-response");
-        const name = outcome["name"] as string;
-        const selectionKey: "away" | "draw" | "home" | undefined =
-          name === event["away_team"]
-            ? "away"
-            : name === event["home_team"]
-              ? "home"
-              : league.leagueKey === "mls" && name === "Draw"
-                ? "draw"
-                : undefined;
-        if (!selectionKey) throw new TheOddsApiError("invalid-response");
-        return {
-          selectionKey,
-          selectionLabel: name,
-          americanOdds: outcome["price"],
-        };
-      });
-      if (
-        new Set(prices.map(({ selectionKey }) => selectionKey)).size !==
-        expected
-      )
-        throw new TheOddsApiError("invalid-response");
+        const market = rawMarket as Record<string, unknown>;
+        if (!["h2h", "spreads", "totals"].includes(String(market["key"])))
+          continue;
+        const key = market["key"] as string;
+        if (supported.has(key)) throw new TheOddsApiError("invalid-response");
+        supported.set(key, market);
+      }
+      if (!supported.has("h2h")) throw new TheOddsApiError("invalid-response");
+      const prices: TheOddsApiBookmaker["prices"][number][] = [];
+      for (const [providerMarket, market] of supported) {
+        try {
+          const outcomes = market["outcomes"];
+          if (!Array.isArray(outcomes))
+            throw new TheOddsApiError("invalid-response");
+          const expected =
+            providerMarket === "h2h" && league.leagueKey === "mls" ? 3 : 2;
+          if (outcomes.length !== expected)
+            throw new TheOddsApiError("invalid-response");
+          const marketPrices: TheOddsApiBookmaker["prices"][number][] = [];
+          for (const rawOutcome of outcomes) {
+            if (
+              !rawOutcome ||
+              typeof rawOutcome !== "object" ||
+              Array.isArray(rawOutcome)
+            )
+              throw new TheOddsApiError("invalid-response");
+            const outcome = rawOutcome as Record<string, unknown>;
+            if (
+              !text(outcome["name"]) ||
+              typeof outcome["price"] !== "number" ||
+              !Number.isInteger(outcome["price"]) ||
+              Math.abs(outcome["price"]) < 100 ||
+              Math.abs(outcome["price"]) > 100000
+            )
+              throw new TheOddsApiError("invalid-response");
+            const name = outcome["name"] as string;
+            const teamSelection =
+              name === event["away_team"]
+                ? "away"
+                : name === event["home_team"]
+                  ? "home"
+                  : undefined;
+            const selectionKey =
+              providerMarket === "totals"
+                ? name === "Over"
+                  ? "over"
+                  : name === "Under"
+                    ? "under"
+                    : undefined
+                : (teamSelection ??
+                  (providerMarket === "h2h" &&
+                  league.leagueKey === "mls" &&
+                  name === "Draw"
+                    ? "draw"
+                    : undefined));
+            const point = outcome["point"];
+            if (
+              !selectionKey ||
+              (providerMarket !== "h2h" &&
+                (typeof point !== "number" ||
+                  !Number.isFinite(point) ||
+                  Math.abs(point) > 10_000))
+            )
+              throw new TheOddsApiError("invalid-response");
+            marketPrices.push({
+              marketKey:
+                providerMarket === "h2h"
+                  ? league.marketKey
+                  : providerMarket === "spreads"
+                    ? "spread"
+                    : "total",
+              selectionKey,
+              selectionLabel: name,
+              ...(providerMarket === "h2h" ? {} : { point: point as number }),
+              americanOdds: outcome["price"],
+            });
+          }
+          if (
+            new Set(marketPrices.map(({ selectionKey }) => selectionKey))
+              .size !== expected
+          )
+            throw new TheOddsApiError("invalid-response");
+          const away = marketPrices.find(
+            ({ selectionKey }) => selectionKey === "away",
+          );
+          const home = marketPrices.find(
+            ({ selectionKey }) => selectionKey === "home",
+          );
+          const over = marketPrices.find(
+            ({ selectionKey }) => selectionKey === "over",
+          );
+          const under = marketPrices.find(
+            ({ selectionKey }) => selectionKey === "under",
+          );
+          if (
+            (providerMarket === "spreads" &&
+              away?.point !== -(home?.point ?? NaN)) ||
+            (providerMarket === "totals" &&
+              (over?.point !== under?.point || (over?.point ?? -1) < 0))
+          )
+            throw new TheOddsApiError("invalid-response");
+          prices.push(...marketPrices);
+        } catch (error) {
+          if (providerMarket === "h2h") throw error;
+        }
+      }
       return {
         id: book["key"] as string,
         label: book["title"] as string,
@@ -237,7 +303,7 @@ export async function fetchTheOddsApi(
   );
   url.searchParams.set("apiKey", apiKey);
   url.searchParams.set("regions", "us");
-  url.searchParams.set("markets", "h2h");
+  url.searchParams.set("markets", "h2h,spreads,totals");
   url.searchParams.set("oddsFormat", "american");
   url.searchParams.set("dateFormat", "iso");
   let response: Response;

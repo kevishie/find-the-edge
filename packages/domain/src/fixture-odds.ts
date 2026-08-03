@@ -13,6 +13,7 @@ export interface FixtureOddsObservation {
   readonly selectionLabel?: string;
   readonly sportsbookId: string;
   readonly sportsbookLabel?: string;
+  readonly point?: number;
   readonly americanOdds: number;
   readonly observedAt: string;
   readonly retrievedAt: string;
@@ -29,10 +30,11 @@ export interface FixtureOddsPartition {
 }
 
 export interface NormalizedFixtureOddsSnapshot extends Required<
-  Omit<FixtureOddsObservation, "selectionLabel" | "sportsbookLabel">
+  Omit<FixtureOddsObservation, "selectionLabel" | "sportsbookLabel" | "point">
 > {
   readonly selectionLabel?: string;
   readonly sportsbookLabel?: string;
+  readonly point?: number;
   readonly partitionKey: string;
   readonly snapshotId: string;
   readonly sortKey: string;
@@ -75,6 +77,7 @@ const OBSERVATION_REQUIRED_KEYS = [
 const OBSERVATION_OPTIONAL_KEYS = [
   "selectionLabel",
   "sportsbookLabel",
+  "point",
 ] as const;
 const PARTITION_KEYS = [
   "canonicalEventId",
@@ -396,7 +399,7 @@ export function fixtureOddsPartition(
 function snapshotContent(
   snapshot: Omit<NormalizedFixtureOddsSnapshot, "snapshotId" | "sortKey">,
 ): string {
-  return encodeComposite([
+  const values: (string | number | null)[] = [
     snapshot.canonicalEventId,
     snapshot.canonicalEventVersion,
     snapshot.sportKey,
@@ -408,7 +411,9 @@ function snapshotContent(
     snapshot.americanOdds,
     snapshot.observedAt,
     snapshot.retrievedAt,
-  ]);
+  ];
+  if (snapshot.point !== undefined) values.push(snapshot.point);
+  return encodeComposite(values);
 }
 
 export function normalizeFixtureOddsObservation(
@@ -434,6 +439,15 @@ export function normalizeFixtureOddsObservation(
     "sportsbookLabel",
     captured.sportsbookLabel,
   );
+  if (
+    captured.point !== undefined &&
+    (typeof captured.point !== "number" ||
+      !Number.isFinite(captured.point) ||
+      Math.abs(captured.point) > 10_000)
+  )
+    throw new FixtureOddsInputError(
+      "point must be a finite number from -10000..10000",
+    );
   const base: Omit<NormalizedFixtureOddsSnapshot, "snapshotId" | "sortKey"> = {
     canonicalEventId: partition.canonicalEventId,
     canonicalEventVersion: partition.canonicalEventVersion,
@@ -443,6 +457,7 @@ export function normalizeFixtureOddsObservation(
     ...(selectionLabel === undefined ? {} : { selectionLabel }),
     sportsbookId: partition.sportsbookId,
     ...(sportsbookLabel === undefined ? {} : { sportsbookLabel }),
+    ...(captured.point === undefined ? {} : { point: captured.point }),
     americanOdds: captured.americanOdds,
     observedAt: normalizeTimestamp("observedAt", captured.observedAt),
     retrievedAt: normalizeTimestamp("retrievedAt", captured.retrievedAt),

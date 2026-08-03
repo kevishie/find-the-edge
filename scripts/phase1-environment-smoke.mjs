@@ -175,15 +175,31 @@ export function assertLiveGame(game, sport) {
   if (game.id.includes("fixture") || game.odds?.state !== "available")
     throw new Error("live game contains fixture or unavailable odds");
   const selections = game.odds.selections;
+  if (!Array.isArray(selections)) throw new Error("live game odds are invalid");
   const expected =
     sport === "mlb" ? ["away", "home"] : ["away", "draw", "home"];
   const market = sport === "mlb" ? "moneyline" : "three_way_moneyline";
+  const groups = new Map();
+  for (const selection of selections) {
+    const group = groups.get(selection.marketKey) ?? [];
+    group.push(selection);
+    groups.set(selection.marketKey, group);
+  }
+  const moneyline = groups.get(market) ?? [];
+  const spread = groups.get("spread") ?? [];
+  const total = groups.get("total") ?? [];
+  const first = selections[0];
   if (
-    !Array.isArray(selections) ||
-    selections.length !== expected.length ||
+    !first ||
     selections.some(
+      (selection) =>
+        selection.sportsbookId !== first.sportsbookId ||
+        selection.observedAt !== first.observedAt ||
+        selection.retrievedAt !== first.retrievedAt,
+    ) ||
+    moneyline.length !== expected.length ||
+    moneyline.some(
       (selection, index) =>
-        selection.marketKey !== market ||
         selection.selectionKey !== expected[index] ||
         !["draftkings", "fanduel", "betmgm", "williamhill_us"].includes(
           selection.sportsbookId,
@@ -192,9 +208,27 @@ export function assertLiveGame(game, sport) {
         selection.americanOdds === 0 ||
         !Number.isFinite(Date.parse(selection.observedAt)) ||
         !Number.isFinite(Date.parse(selection.retrievedAt)),
-    )
+    ) ||
+    (spread.length !== 0 &&
+      (spread.length !== 2 ||
+        spread.some(
+          (selection, index) =>
+            selection.selectionKey !== ["away", "home"][index] ||
+            !Number.isFinite(selection.point),
+        ))) ||
+    (spread.length === 2 && spread[0].point !== -spread[1].point) ||
+    (total.length !== 0 &&
+      (total.length !== 2 ||
+        total.some(
+          (selection, index) =>
+            selection.selectionKey !== ["over", "under"][index] ||
+            !Number.isFinite(selection.point),
+        ))) ||
+    (total.length === 2 &&
+      (total[0].point !== total[1].point || total[0].point < 0))
   )
     throw new Error("live game odds are incomplete or invalid");
+  return spread.length === 2 && total.length === 2;
 }
 
 const easternDays = (count = 8) => {
@@ -364,6 +398,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
     }
     const apiBase = environment.FTE_PHASE1_API_BASE.replace(/\/$/, "");
     let liveGames = 0;
+    let fullMarketGames = 0;
     for (const sport of ["mlb", "soccer"]) {
       let foundForSport = false;
       for (const day of easternDays()) {
@@ -392,7 +427,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
             )
           )
             continue;
-          assertLiveGame(game, sport);
+          if (assertLiveGame(game, sport)) fullMarketGames += 1;
           foundForSport = true;
           liveGames += 1;
         }
@@ -401,6 +436,10 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
     }
     if (liveGames === 0)
       throw new Error("no provider-backed games were visible");
+    if (fullMarketGames === 0)
+      throw new Error(
+        "no provider-backed spread/total/moneyline board was visible",
+      );
     const wrongOrigin = await request(
       `${apiBase}/games?sport=mlb&status=scheduled&day=${easternDays(1)[0]}`,
       {

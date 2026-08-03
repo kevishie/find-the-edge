@@ -317,6 +317,7 @@ export interface GameOddsSelectionDto {
   readonly selectionLabel?: string;
   readonly sportsbookId: string;
   readonly sportsbookLabel?: string;
+  readonly point?: number;
   readonly americanOdds: number;
   readonly observedAt: string;
   readonly retrievedAt: string;

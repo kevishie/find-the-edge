@@ -109,6 +109,7 @@ type GamesSport = "mlb" | "soccer";
 interface UiGamesPage {
   readonly items: readonly {
     readonly id: string;
+    readonly sportKey: string;
     readonly startsAt: string;
     readonly participants: readonly { readonly label: string }[];
     readonly eastern: { readonly display: string };
@@ -121,6 +122,7 @@ interface UiGamesPage {
             readonly selectionLabel?: string;
             readonly sportsbookId: string;
             readonly sportsbookLabel?: string;
+            readonly point?: number;
             readonly americanOdds: number;
             readonly observedAt: string;
           }[];
@@ -391,6 +393,9 @@ const validDay = (value: string) => {
 const oddsPrice = (value: number) =>
   value > 0 ? `+${String(value)}` : String(value);
 
+const linePoint = (value: number) =>
+  value > 0 ? `+${String(value)}` : String(value);
+
 const easternDisplay = (value: string) =>
   new Date(value).toLocaleString("en-US", {
     timeZone: "America/New_York",
@@ -465,7 +470,8 @@ function GamesExplorer() {
           <p className="eyebrow">LIVE GAMES · EASTERN TIME</p>
           <h1>Games and current odds</h1>
           <p className="lede">
-            Browse real MLB and MLS games with current sportsbook moneylines.
+            Browse real MLB and MLS games with current spread, total, and
+            moneyline markets.
           </p>
         </div>
         <span className="maturity beta">live odds</span>
@@ -519,50 +525,124 @@ function GamesExplorer() {
           className="event-grid"
           aria-label={`${sportLabels[sport]} games`}
         >
-          {state.page.items.map((game) => (
-            <article
-              className="event-card"
-              data-event-id={game.id}
-              key={game.id}
-            >
-              <div className="event-meta">
-                <span>{sportLabels[sport]}</span>
-                <span>
-                  {game.odds.state === "available"
-                    ? "live market"
-                    : "scheduled"}
-                </span>
-              </div>
-              <h2>
-                {game.participants.map(({ label }) => label).join(" vs ")}
-              </h2>
-              <p>{easternDisplay(game.startsAt)} Eastern</p>
-              {game.odds.state === "available" ? (
-                <div className="game-odds">
-                  <span>Current odds</span>
-                  {game.odds.selections.map((selection) => (
-                    <div
-                      className="odds-selection"
-                      key={`${selection.marketKey}:${selection.selectionKey}:${selection.sportsbookId}`}
-                    >
-                      <strong>
-                        {selection.selectionLabel ?? selection.selectionKey}
-                      </strong>
-                      <b>{oddsPrice(selection.americanOdds)}</b>
-                      <small>
-                        {selection.sportsbookLabel ?? selection.sportsbookId}
-                      </small>
-                      <small>
-                        Observed {easternDisplay(selection.observedAt)} Eastern
-                      </small>
-                    </div>
-                  ))}
+          {state.page.items.map((game) => {
+            const selections =
+              game.odds.state === "available" ? game.odds.selections : [];
+            const find = (marketKey: string, selectionKey: string) =>
+              selections.find(
+                (selection) =>
+                  selection.marketKey === marketKey &&
+                  selection.selectionKey === selectionKey,
+              );
+            const moneylineMarket =
+              game.sportKey === "soccer" ? "three_way_moneyline" : "moneyline";
+            const book = selections[0];
+            const title = game.participants
+              .map(({ label }) => label)
+              .join(" vs ");
+            return (
+              <article
+                className="event-card"
+                data-event-id={game.id}
+                key={game.id}
+              >
+                <div className="event-meta">
+                  <span>{easternDisplay(game.startsAt)} Eastern</span>
+                  <span>
+                    {book?.sportsbookLabel ?? book?.sportsbookId ?? "scheduled"}
+                  </span>
                 </div>
-              ) : (
-                <div className="no-recommendation">Odds unavailable</div>
-              )}
-            </article>
-          ))}
+                <h2>{title}</h2>
+                <div
+                  className="market-scroll"
+                  tabIndex={0}
+                  aria-label={`${title} betting markets`}
+                >
+                  <table className="market-board">
+                    <thead>
+                      <tr>
+                        <th scope="col">Team</th>
+                        <th scope="col">Spread</th>
+                        <th scope="col">Total</th>
+                        <th scope="col">ML</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {game.participants
+                        .slice(0, 2)
+                        .map((participant, index) => {
+                          const side = index === 0 ? "away" : "home";
+                          const totalSide = index === 0 ? "over" : "under";
+                          const spread = find("spread", side);
+                          const total = find("total", totalSide);
+                          const moneyline = find(moneylineMarket, side);
+                          return (
+                            <tr key={participant.label}>
+                              <th scope="row">
+                                <span className="team-position">
+                                  {index === 0 ? "AWAY" : "HOME"}
+                                </span>
+                                {participant.label}
+                              </th>
+                              <td>
+                                {spread?.point === undefined ? (
+                                  <span className="market-missing">—</span>
+                                ) : (
+                                  <>
+                                    <span>{linePoint(spread.point)}</span>
+                                    <strong>
+                                      {oddsPrice(spread.americanOdds)}
+                                    </strong>
+                                  </>
+                                )}
+                              </td>
+                              <td>
+                                {total?.point === undefined ? (
+                                  <span className="market-missing">—</span>
+                                ) : (
+                                  <>
+                                    <span>
+                                      {index === 0 ? "O" : "U"}{" "}
+                                      {String(total.point)}
+                                    </span>
+                                    <strong>
+                                      {oddsPrice(total.americanOdds)}
+                                    </strong>
+                                  </>
+                                )}
+                              </td>
+                              <td>
+                                {moneyline ? (
+                                  <strong>
+                                    {oddsPrice(moneyline.americanOdds)}
+                                  </strong>
+                                ) : (
+                                  <span className="market-missing">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+                {moneylineMarket === "three_way_moneyline" &&
+                  find(moneylineMarket, "draw") && (
+                    <div className="draw-price">
+                      Draw{" "}
+                      <strong>
+                        {oddsPrice(find(moneylineMarket, "draw")!.americanOdds)}
+                      </strong>
+                    </div>
+                  )}
+                <div className="market-source">
+                  {book
+                    ? `Observed ${easternDisplay(book.observedAt)} Eastern`
+                    : "Odds unavailable"}
+                </div>
+              </article>
+            );
+          })}
         </section>
       )}
     </>

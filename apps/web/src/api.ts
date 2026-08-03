@@ -89,7 +89,7 @@ const validSelection = (value: unknown): value is GameOddsSelectionDto => {
     "observedAt",
     "retrievedAt",
   ];
-  const optional = ["selectionLabel", "sportsbookLabel"].filter(
+  const optional = ["selectionLabel", "sportsbookLabel", "point"].filter(
     (key) => key in value,
   );
   if (!exact(value, [...required, ...optional])) return false;
@@ -101,6 +101,10 @@ const validSelection = (value: unknown): value is GameOddsSelectionDto => {
       boundedString(value["selectionLabel"], 160)) &&
     (value["sportsbookLabel"] === undefined ||
       boundedString(value["sportsbookLabel"], 160)) &&
+    (value["point"] === undefined ||
+      (typeof value["point"] === "number" &&
+        Number.isFinite(value["point"]) &&
+        Math.abs(value["point"]) <= 10_000)) &&
     Number.isInteger(value["americanOdds"]) &&
     Math.abs(value["americanOdds"] as number) >= 100 &&
     Math.abs(value["americanOdds"] as number) <= 100_000 &&
@@ -157,12 +161,7 @@ const validGame = (
   )
     return false;
   const participants = value["participants"];
-  if (
-    !Array.isArray(participants) ||
-    participants.length < 2 ||
-    participants.length > 8
-  )
-    return false;
+  if (!Array.isArray(participants) || participants.length !== 2) return false;
   const participantIds = new Set<string>();
   let awayLabel: string | undefined;
   let homeLabel: string | undefined;
@@ -187,7 +186,8 @@ const validGame = (
     odds["state"] !== "available" ||
     !exact(odds, ["state", "selections"]) ||
     !Array.isArray(odds["selections"]) ||
-    odds["selections"].length !== (filter.sport === "mlb" ? 2 : 3) ||
+    odds["selections"].length < (filter.sport === "mlb" ? 2 : 3) ||
+    odds["selections"].length > (filter.sport === "mlb" ? 6 : 7) ||
     !odds["selections"].every(validSelection)
   )
     return false;
@@ -204,18 +204,74 @@ const validGame = (
           ["draw", "Draw"],
           ["home", homeLabel],
         ] as const);
-  const sportsbookId = odds["selections"][0]?.sportsbookId;
-  return (
-    typeof sportsbookId === "string" &&
-    sportsbookId.length > 0 &&
-    odds["selections"].every(
-      (selection, index) =>
-        selection.marketKey === expectedMarket &&
-        selection.selectionKey === expectedSelections[index]![0] &&
+  const selections = odds["selections"];
+  const sportsbookId = selections[0]?.sportsbookId;
+  const observedAt = selections[0]?.observedAt;
+  const retrievedAt = selections[0]?.retrievedAt;
+  if (
+    typeof sportsbookId !== "string" ||
+    !selections.every(
+      (selection) =>
         selection.sportsbookId === sportsbookId &&
-        selection.selectionLabel === expectedSelections[index]![1] &&
+        selection.observedAt === observedAt &&
+        selection.retrievedAt === retrievedAt &&
         selection.observedAt <= selection.retrievedAt,
     )
+  )
+    return false;
+  const grouped = new Map<string, GameOddsSelectionDto[]>();
+  for (const selection of selections) {
+    const group = grouped.get(selection.marketKey) ?? [];
+    if (
+      group.some(({ selectionKey }) => selectionKey === selection.selectionKey)
+    )
+      return false;
+    group.push(selection);
+    grouped.set(selection.marketKey, group);
+  }
+  if (
+    [...grouped.keys()].some(
+      (key) => ![expectedMarket, "spread", "total"].includes(key),
+    )
+  )
+    return false;
+  const moneyline = grouped.get(expectedMarket);
+  if (
+    !moneyline ||
+    moneyline.length !== expectedSelections.length ||
+    !moneyline.every(
+      (selection, index) =>
+        selection.selectionKey === expectedSelections[index]![0] &&
+        selection.selectionLabel === expectedSelections[index]![1] &&
+        selection.point === undefined,
+    )
+  )
+    return false;
+  const spread = grouped.get("spread");
+  if (
+    spread &&
+    (spread.length !== 2 ||
+      !spread.every(
+        (selection, index) =>
+          selection.selectionKey === ["away", "home"][index] &&
+          selection.selectionLabel === [awayLabel, homeLabel][index] &&
+          selection.point !== undefined,
+      ))
+  )
+    return false;
+  if (spread && spread[0]!.point !== -spread[1]!.point!) return false;
+  const total = grouped.get("total");
+  return !(
+    total &&
+    (total.length !== 2 ||
+      !total.every(
+        (selection, index) =>
+          selection.selectionKey === ["over", "under"][index] &&
+          selection.selectionLabel === ["Over", "Under"][index] &&
+          selection.point !== undefined,
+      ) ||
+      total[0]!.point !== total[1]!.point ||
+      total[0]!.point! < 0)
   );
 };
 

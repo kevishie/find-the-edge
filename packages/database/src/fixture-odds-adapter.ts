@@ -240,6 +240,7 @@ const snapshotObservation = (
   ...(stored.sportsbookLabel === undefined
     ? {}
     : { sportsbookLabel: stored.sportsbookLabel }),
+  ...(stored.point === undefined ? {} : { point: stored.point }),
   americanOdds: stored.americanOdds,
   observedAt: stored.observedAt,
   retrievedAt: stored.retrievedAt,
@@ -304,7 +305,7 @@ function validateStoredSnapshot(
       "sortKey",
     ],
     "stored odds value",
-    ["selectionLabel", "sportsbookLabel"],
+    ["selectionLabel", "sportsbookLabel", "point"],
   );
   let normalized: NormalizedFixtureOddsSnapshot;
   try {

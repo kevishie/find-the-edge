@@ -183,6 +183,32 @@ test("live game proof accepts complete real sportsbook markets and rejects fixtu
   };
   assert.doesNotThrow(() => assertLiveGame(game, "mlb"));
   assert.throws(() => assertLiveGame({ ...game, id: "fixture-game" }, "mlb"));
+  assert.throws(() =>
+    assertLiveGame(
+      {
+        ...game,
+        odds: {
+          ...game.odds,
+          selections: [
+            ...game.odds.selections,
+            {
+              ...game.odds.selections[0],
+              marketKey: "spread",
+              point: 1.5,
+              sportsbookId: "fanduel",
+            },
+            {
+              ...game.odds.selections[1],
+              marketKey: "spread",
+              point: -1.5,
+              sportsbookId: "fanduel",
+            },
+          ],
+        },
+      },
+      "mlb",
+    ),
+  );
 });
 
 test("wrong-origin and hosting header proofs reject every weakening", () => {

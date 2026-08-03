@@ -52,6 +52,7 @@ const current = (
   marketKey = source.sportKey === "mlb" ? "moneyline" : "three_way_moneyline",
   sportsbookId = "draftkings",
   observedAt = "2026-08-01T12:00:00.000Z",
+  point?: number,
 ) =>
   normalizeFixtureOddsObservation({
     canonicalEventId: source.id,
@@ -62,6 +63,7 @@ const current = (
     selectionLabel,
     sportsbookId,
     sportsbookLabel: sportsbookId === "draftkings" ? "DraftKings" : "FanDuel",
+    ...(point === undefined ? {} : { point }),
     americanOdds: selectionKey === "home" ? -135 : 120,
     observedAt,
     retrievedAt: "2026-08-01T12:00:00.000Z",
@@ -97,7 +99,7 @@ describe("joined games repository", () => {
         { pk: home.partitionKey, sk: "CURRENT" },
       ]),
     );
-    expect(seen.keys).toHaveLength(8);
+    expect(seen.keys).toHaveLength(24);
     expect(page).toMatchObject({
       nextCursor: "next",
       snapshotAt: "2026-08-01T12:00:00.000Z",
@@ -136,6 +138,39 @@ describe("joined games repository", () => {
         { selectionKey: "away" },
         { selectionKey: "draw" },
         { selectionKey: "home" },
+      ],
+    });
+  });
+
+  it("returns coherent spread and total markets beside moneyline", async () => {
+    const selections = [
+      current(event, "away", "Boston"),
+      current(event, "home", "New York"),
+      current(event, "away", "Boston", "spread", "draftkings", undefined, 1.5),
+      current(
+        event,
+        "home",
+        "New York",
+        "spread",
+        "draftkings",
+        undefined,
+        -1.5,
+      ),
+      current(event, "over", "Over", "total", "draftkings", undefined, 8.5),
+      current(event, "under", "Under", "total", "draftkings", undefined, 8.5),
+    ];
+    const page = await new JoinedGamesRepository(events(), {
+      batchGet: () => Promise.resolve(selections.map(row).reverse()),
+    }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+    expect(page.items[0]?.odds).toMatchObject({
+      state: "available",
+      selections: [
+        { marketKey: "moneyline", selectionKey: "away" },
+        { marketKey: "moneyline", selectionKey: "home" },
+        { marketKey: "spread", selectionKey: "away", point: 1.5 },
+        { marketKey: "spread", selectionKey: "home", point: -1.5 },
+        { marketKey: "total", selectionKey: "over", point: 8.5 },
+        { marketKey: "total", selectionKey: "under", point: 8.5 },
       ],
     });
   });
@@ -226,6 +261,6 @@ describe("joined games repository", () => {
         return Promise.resolve([]);
       },
     }).list({ sportKey: "soccer", status: "scheduled", day: "2026-08-01" }, 50);
-    expect(requested).toBe(600);
+    expect(requested).toBe(1_400);
   });
 });

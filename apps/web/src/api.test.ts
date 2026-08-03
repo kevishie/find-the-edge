@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { GameOddsSelectionDto } from "@find-the-edge/domain";
 
 import { createGamesClient, GamesClientError } from "./api";
 import type { RuntimeBootstrap } from "./runtime-config";
@@ -154,6 +155,74 @@ describe("games client", () => {
     });
   });
 
+  it("accepts coherent spread and total lines with their prices", async () => {
+    const base = payload.items[0]!.odds.selections[0]!;
+    const selections: GameOddsSelectionDto[] = [
+      ...payload.items[0]!.odds.selections,
+      {
+        ...base,
+        marketKey: "spread",
+        selectionKey: "away",
+        point: 1.5,
+        americanOdds: -110,
+      },
+      {
+        ...base,
+        marketKey: "spread",
+        selectionKey: "home",
+        selectionLabel: "New York",
+        point: -1.5,
+        americanOdds: -110,
+      },
+      {
+        ...base,
+        marketKey: "total",
+        selectionKey: "over",
+        selectionLabel: "Over",
+        point: 8.5,
+        americanOdds: -105,
+      },
+      {
+        ...base,
+        marketKey: "total",
+        selectionKey: "under",
+        selectionLabel: "Under",
+        point: 8.5,
+        americanOdds: -115,
+      },
+    ];
+    const fullMarketPayload = {
+      ...payload,
+      items: [
+        {
+          ...payload.items[0]!,
+          odds: { state: "available", selections },
+        },
+      ],
+    };
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(fullMarketPayload))),
+    );
+    if (!result.ok) throw result.error;
+    const page = await result.value.list(
+      { sport: "mlb", day: "2026-08-01" },
+      new AbortController().signal,
+    );
+    const odds = page.items[0]?.odds;
+    expect(odds?.state).toBe("available");
+    if (!odds || odds.state !== "available") return;
+    expect(odds.selections).toHaveLength(6);
+    expect(odds.selections).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ marketKey: "spread", point: 1.5 }),
+        expect.objectContaining({ marketKey: "total", point: 8.5 }),
+      ]),
+    );
+  });
+
   it.each([
     [
       "wrong sport",
@@ -167,6 +236,21 @@ describe("games client", () => {
       },
     ],
     ["extra key", { ...payload, unexpected: true }],
+    [
+      "extra participant",
+      {
+        ...payload,
+        items: [
+          {
+            ...payload.items[0],
+            participants: [
+              ...payload.items[0]!.participants,
+              { id: "participant:mlb:extra", label: "Extra" },
+            ],
+          },
+        ],
+      },
+    ],
     [
       "duplicate participant",
       {

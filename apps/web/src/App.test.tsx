@@ -36,6 +36,50 @@ const game = {
         retrievedAt: "2026-08-01T12:00:00.000Z",
       },
       {
+        marketKey: "spread",
+        selectionKey: "away",
+        selectionLabel: "Boston",
+        sportsbookId: "fixture-book",
+        sportsbookLabel: "Fixture Book",
+        point: 1.5,
+        americanOdds: -110,
+        observedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:00:00.000Z",
+      },
+      {
+        marketKey: "spread",
+        selectionKey: "home",
+        selectionLabel: "New York",
+        sportsbookId: "fixture-book",
+        sportsbookLabel: "Fixture Book",
+        point: -1.5,
+        americanOdds: -110,
+        observedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:00:00.000Z",
+      },
+      {
+        marketKey: "total",
+        selectionKey: "over",
+        selectionLabel: "Over",
+        sportsbookId: "fixture-book",
+        sportsbookLabel: "Fixture Book",
+        point: 8.5,
+        americanOdds: -105,
+        observedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:00:00.000Z",
+      },
+      {
+        marketKey: "total",
+        selectionKey: "under",
+        selectionLabel: "Under",
+        sportsbookId: "fixture-book",
+        sportsbookLabel: "Fixture Book",
+        point: 8.5,
+        americanOdds: -115,
+        observedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:00:00.000Z",
+      },
+      {
         marketKey: "moneyline",
         selectionKey: "home",
         selectionLabel: "New York",
@@ -76,7 +120,7 @@ const soccerGame: GamesPageDto["items"][number] = {
         americanOdds: 220,
       },
       {
-        ...game.odds.selections[1],
+        ...game.odds.selections[5],
         marketKey: "three_way_moneyline",
         selectionLabel: "Atlanta",
         americanOdds: 175,
@@ -132,10 +176,18 @@ describe("Games", () => {
     expect(screen.getByText("+120")).toBeInTheDocument();
     expect(screen.getByText("-135")).toBeInTheDocument();
     expect(
+      screen.getByRole("columnheader", { name: "Spread" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Total" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("+1.5")).toBeInTheDocument();
+    expect(screen.getByText("O 8.5")).toBeInTheDocument();
+    expect(
       screen.getByText("Aug 1, 2026, 7:05 PM Eastern"),
     ).toBeInTheDocument();
     const price = screen.getByText("+120");
-    expect(price.closest(".odds-selection")).toHaveTextContent(
+    expect(price.closest(".event-card")).toHaveTextContent(
       "Observed Aug 1, 2026, 8:00 AM Eastern",
     );
     fireEvent.click(screen.getByRole("button", { name: "MLB" }));

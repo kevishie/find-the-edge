@@ -473,45 +473,6 @@ footer {
   color: #f0a4a4;
 }
 
-.game-odds {
-  display: grid;
-  gap: 10px;
-  margin-top: 18px;
-  padding: 14px;
-  border: 1px solid #2f2a38;
-  border-radius: 8px;
-  background: #0b0a0f;
-}
-
-.game-odds > span,
-.game-odds > small {
-  color: #777080;
-  font:
-    9px "IBM Plex Mono",
-    monospace;
-  letter-spacing: 0.8px;
-}
-
-.odds-selection {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 14px;
-  align-items: center;
-}
-
-.odds-selection b {
-  color: #59dea2;
-  font:
-    22px Anton,
-    sans-serif;
-}
-
-.odds-selection small {
-  grid-column: 1 / -1;
-  color: #777080;
-  font-size: 10px;
-}
-
 .maturity {
   padding: 8px 11px;
   border: 1px solid #3a3445;
@@ -588,7 +549,7 @@ footer {
 
 .event-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(480px, 100%), 1fr));
   gap: 10px;
 }
 
@@ -611,14 +572,127 @@ footer {
 }
 
 .event-card h2 {
-  margin-top: 10px;
-  font-size: 19px;
+  margin-top: 7px;
+  font-size: 16px;
   line-height: 1.15;
 }
 
 .event-card > p {
   color: #756f81;
   font-size: 12px;
+}
+
+.market-scroll {
+  margin-top: 10px;
+  overflow-x: auto;
+  border: 1px solid #2a2632;
+  border-radius: 7px;
+  background: #0b0a0f;
+}
+
+.market-scroll:focus-visible {
+  outline: 2px solid #8b5cf6;
+  outline-offset: 2px;
+}
+
+.market-board {
+  width: 100%;
+  min-width: 430px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.market-board th,
+.market-board td {
+  border-bottom: 1px solid #24212d;
+  border-left: 1px solid #24212d;
+  padding: 8px 9px;
+}
+
+.market-board tr:last-child th,
+.market-board tr:last-child td {
+  border-bottom: 0;
+}
+
+.market-board th:first-child {
+  width: 40%;
+  border-left: 0;
+  text-align: left;
+}
+
+.market-board thead th {
+  padding: 7px 9px;
+  color: #6f697b;
+  font:
+    600 8px "IBM Plex Mono",
+    monospace;
+  letter-spacing: 1px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.market-board tbody th {
+  color: #e3dfe9;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.team-position {
+  display: block;
+  margin-bottom: 3px;
+  color: #635d6c;
+  font:
+    7px "IBM Plex Mono",
+    monospace;
+  letter-spacing: 0.8px;
+}
+
+.market-board td {
+  color: #aaa3b5;
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  text-align: center;
+}
+
+.market-board td span,
+.market-board td strong {
+  display: block;
+}
+
+.market-board td strong {
+  margin-top: 3px;
+  color: #c4b5fd;
+  font-size: 11px;
+}
+
+.market-board td .market-missing {
+  color: #534e5c;
+  font-size: 14px;
+}
+
+.draw-price,
+.market-source {
+  color: #777080;
+  font:
+    9px "IBM Plex Mono",
+    monospace;
+}
+
+.draw-price {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.draw-price strong {
+  color: #c4b5fd;
+}
+
+.market-source {
+  margin-top: 8px;
+  text-align: right;
 }
 
 .event-card dl {

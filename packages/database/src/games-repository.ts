@@ -30,17 +30,43 @@ export interface CurrentOddsReadGateway {
   ): Promise<readonly unknown[]>;
 }
 
-const marketSpecification = (sportKey: string) => {
+const marketSpecifications = (sportKey: string) => {
   if (sportKey === "mlb")
-    return {
-      marketKey: "moneyline",
-      selectionKeys: ["away", "home"] as const,
-    };
+    return [
+      {
+        marketKey: "moneyline",
+        selectionKeys: ["away", "home"] as const,
+        required: true,
+      },
+      {
+        marketKey: "spread",
+        selectionKeys: ["away", "home"] as const,
+        required: false,
+      },
+      {
+        marketKey: "total",
+        selectionKeys: ["over", "under"] as const,
+        required: false,
+      },
+    ] as const;
   if (sportKey === "soccer")
-    return {
-      marketKey: "three_way_moneyline",
-      selectionKeys: ["away", "draw", "home"] as const,
-    };
+    return [
+      {
+        marketKey: "three_way_moneyline",
+        selectionKeys: ["away", "draw", "home"] as const,
+        required: true,
+      },
+      {
+        marketKey: "spread",
+        selectionKeys: ["away", "home"] as const,
+        required: false,
+      },
+      {
+        marketKey: "total",
+        selectionKeys: ["over", "under"] as const,
+        required: false,
+      },
+    ] as const;
   throw new EventStorageError("unsupported-games-sport");
 };
 
@@ -107,6 +133,7 @@ const validateCurrent = (
     ...(normalized.sportsbookLabel
       ? { sportsbookLabel: normalized.sportsbookLabel }
       : {}),
+    ...(normalized.point === undefined ? {} : { point: normalized.point }),
     americanOdds: normalized.americanOdds,
     observedAt: normalized.observedAt,
     retrievedAt: normalized.retrievedAt,
@@ -132,19 +159,21 @@ export class JoinedGamesRepository implements GamesRepository {
     const page = await this.events.list(filter, limit, cursor);
     if (!page.items.length) return { ...page, items: [] };
     const requestedByEvent = page.items.map((event) => {
-      const specification = marketSpecification(event.sportKey);
       return this.sportsbookIds.map((sportsbookId) =>
-        specification.selectionKeys.map((selectionKey) =>
-          currentKey(
-            event,
-            specification.marketKey,
-            selectionKey,
-            sportsbookId,
+        marketSpecifications(event.sportKey).map((specification) => ({
+          specification,
+          keys: specification.selectionKeys.map((selectionKey) =>
+            currentKey(
+              event,
+              specification.marketKey,
+              selectionKey,
+              sportsbookId,
+            ),
           ),
-        ),
+        })),
       );
     });
-    const requested = requestedByEvent.flat(2);
+    const requested = requestedByEvent.flat(2).flatMap(({ keys }) => keys);
     let rows: readonly unknown[];
     try {
       rows = await this.odds.batchGet(requested);
@@ -170,30 +199,61 @@ export class JoinedGamesRepository implements GamesRepository {
     return {
       ...page,
       items: page.items.map((event, index) => {
-        const candidates = requestedByEvent[index]!.map((keys) => ({
-          keys,
-          rows: keys.map(({ pk }) => byKey.get(pk)),
-        }));
-        const selected = candidates.find(({ rows }) =>
-          rows.every((row) => row !== undefined),
-        );
-        const validated = selected?.rows.map((row, selectionIndex) =>
-          validateCurrent(row, selected.keys[selectionIndex]!, event),
-        );
-        const coherent =
-          validated &&
-          validated.every(
+        const candidates = requestedByEvent[index]!.map((groups) => {
+          const selections: GameOddsSelectionDto[] = [];
+          let requiredAvailable = false;
+          for (const { specification, keys } of groups) {
+            const rows = keys.map(({ pk }) => byKey.get(pk));
+            const present = rows.filter((row) => row !== undefined).length;
+            if (present === 0) {
+              if (specification.required) return null;
+              continue;
+            }
+            if (present !== rows.length) {
+              rows.forEach((row, selectionIndex) => {
+                if (row !== undefined)
+                  validateCurrent(row, keys[selectionIndex]!, event);
+              });
+              if (specification.required) return null;
+              continue;
+            }
+            const market = rows.map((row, selectionIndex) =>
+              validateCurrent(row, keys[selectionIndex]!, event),
+            );
+            const first = market[0]!;
+            if (
+              !market.every(
+                (selection) =>
+                  selection.sportsbookId === first.sportsbookId &&
+                  selection.observedAt === first.observedAt &&
+                  selection.retrievedAt === first.retrievedAt,
+              )
+            ) {
+              if (specification.required) return null;
+              continue;
+            }
+            if (specification.required) requiredAvailable = true;
+            selections.push(...market);
+          }
+          if (!requiredAvailable) return null;
+          const first = selections[0]!;
+          return selections.filter(
             (selection) =>
-              selection.sportsbookId === validated[0]!.sportsbookId &&
-              selection.observedAt === validated[0]!.observedAt &&
-              selection.retrievedAt === validated[0]!.retrievedAt,
+              selection.sportsbookId === first.sportsbookId &&
+              selection.observedAt === first.observedAt &&
+              selection.retrievedAt === first.retrievedAt,
           );
+        });
+        const selected = candidates.find(
+          (candidate): candidate is GameOddsSelectionDto[] =>
+            candidate !== null && candidate.length > 0,
+        );
         return {
           ...event,
-          odds: coherent
+          odds: selected
             ? {
                 state: "available" as const,
-                selections: validated,
+                selections: selected,
               }
             : { state: "unavailable" as const },
         };

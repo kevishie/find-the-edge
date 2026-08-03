@@ -41,6 +41,7 @@ export interface LiveOddsSummary {
 }
 
 export const LIVE_ODDS_MONTHLY_RESERVE = 50;
+export const LIVE_ODDS_REQUEST_COST = 3;
 const sameUtcMonth = (left: string | undefined, right: Date): boolean => {
   if (!left) return false;
   const parsed = new Date(left);
@@ -158,14 +159,16 @@ export async function ingestLiveOdds(
           : { ...previous, quotaRemaining: remaining },
     });
     const paidDue =
-      due && remaining !== undefined && remaining > LIVE_ODDS_MONTHLY_RESERVE;
+      due &&
+      remaining !== undefined &&
+      remaining >= LIVE_ODDS_MONTHLY_RESERVE + LIVE_ODDS_REQUEST_COST;
     if (paidDue) {
       // Reserve one request before the network call. Together with Lambda's
       // single concurrency this makes retries fail closed against the quota.
       await stateStore.write(league.leagueKey, {
         ...previous,
         lastOddsAttemptAt: observedAt,
-        quotaRemaining: remaining - 1,
+        quotaRemaining: remaining - LIVE_ODDS_REQUEST_COST,
         ...(discoveryDue ? { lastDiscoveryAt: observedAt } : {}),
         upcomingStartsAt: discoveredStarts,
       });
@@ -224,11 +227,12 @@ export async function ingestLiveOdds(
             canonicalEventId: canonical.id,
             canonicalEventVersion: canonical.version,
             sportKey: canonical.sportKey,
-            marketKey: league.marketKey,
+            marketKey: price.marketKey,
             selectionKey: price.selectionKey,
             selectionLabel: price.selectionLabel,
             sportsbookId: book.id,
             sportsbookLabel: book.label,
+            ...(price.point === undefined ? {} : { point: price.point }),
             americanOdds: price.americanOdds,
             observedAt: book.updatedAt,
             retrievedAt: response.retrievedAt,
