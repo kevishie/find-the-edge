@@ -17,9 +17,11 @@ output.
 
 REST uses `X-API-Key` and cursor pagination for `/odds`; requests use
 `market=main` so period and prop markets cannot be mislabeled as full-game
-markets. `/splits` uses offset pagination, currently identifies its account feed
-as `consensus`, updates about every five minutes, and returns fractions that the
-adapter converts to display percentages. The provider's `timestamp` is feed
+markets. `/splits` uses offset pagination. SharpAPI documents DraftKings and
+Circa Sports as its public-betting sources and identifies their aggregate feed as
+`consensus`; this is not an aggregate of all account-selected odds books. The feed
+updates about every five minutes and returns fractions that the adapter converts
+to display percentages. The provider's `timestamp` is feed
 freshness, not the exact time a line moved. Split `fetched_at` remains separate.
 
 The operator approved Pro activation. A plan upgrade or add-on remains a manual

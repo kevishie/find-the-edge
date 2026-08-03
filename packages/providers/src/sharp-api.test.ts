@@ -116,6 +116,39 @@ describe("SharpAPI activation boundary", () => {
     expect(page.items[0]?.markets).toHaveLength(2);
   });
 
+  it("preserves every sportsbook scope returned for the same event", () => {
+    const event = (sportsbook: string, away: number) => ({
+      event_id: "mlb-away-home-2026-08-03",
+      sport: "baseball",
+      league: "mlb",
+      sportsbook,
+      away_team: "Away Club",
+      home_team: "Home Club",
+      spread: null,
+      total: null,
+      moneyline: {
+        away_odds: 120,
+        home_odds: -140,
+        handle_pct: { away, home: 1 - away },
+        bets_pct: { away: 0.4, home: 0.6 },
+      },
+      fetched_at: "2026-08-03T15:00:00.000Z",
+    });
+    const page = parseSharpApiSplitPage(
+      {
+        data: [event("draftkings", 0.55), event("betmgm", 0.63)],
+        pagination: { has_more: false, next_offset: null },
+      },
+      "2026-08-03T15:00:01.000Z" as never,
+    );
+    expect(page.items.map(({ sportsbookId }) => sportsbookId)).toEqual([
+      "draftkings",
+      "betmgm",
+    ]);
+    expect(page.items[0]?.markets[0]?.selections[0]?.moneyPercent).toBe(55);
+    expect(page.items[1]?.markets[0]?.selections[0]?.moneyPercent).toBe(63);
+  });
+
   it("accepts SharpAPI's null data shape for an explicitly empty split page", () => {
     expect(
       parseSharpApiSplitPage(

@@ -162,7 +162,7 @@ const splitGame: SplitsPageDto["items"][number] = {
       moneyPercent: 64,
       providerTimestamp: "2026-08-01T12:25:00.000Z",
       retrievedAt: "2026-08-01T12:26:00.000Z",
-      scope: "Consensus · 15 books",
+      scope: "consensus",
     },
     {
       id: "split-home-spread",
@@ -179,7 +179,7 @@ const splitGame: SplitsPageDto["items"][number] = {
       moneyPercent: 36,
       providerTimestamp: "2026-08-01T12:25:00.000Z",
       retrievedAt: "2026-08-01T12:26:00.000Z",
-      scope: "Consensus · 15 books",
+      scope: "consensus",
     },
     {
       id: "split-over-total",
@@ -251,7 +251,7 @@ const splitsPage = (
       ...splitGame,
       splits: splitGame.splits.map((split) => ({
         ...split,
-        scope: "Consensus · 15 books",
+        scope: "consensus",
       })),
     },
   ],
@@ -451,7 +451,7 @@ describe("Betting splits", () => {
     expect(screen.getByText("U 8.5")).toBeInTheDocument();
     expect(screen.getByText("+26 pts more money")).toBeInTheDocument();
     expect(screen.getByText("−26 pts more bets")).toBeInTheDocument();
-    expect(screen.getAllByText(/Consensus · 15 books/)).toHaveLength(2);
+    expect(screen.getByText("DK + Circa Consensus")).toBeInTheDocument();
     expect(
       screen.getByRole("link", {
         name: /View Boston versus New York game details/,
@@ -496,7 +496,7 @@ describe("Betting splits", () => {
     );
 
     expect(
-      await screen.findByText("No splits are available for these games yet."),
+      await screen.findByText("No scheduled games are available for this day."),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "MLS" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -507,7 +507,7 @@ describe("Betting splits", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("keeps provider scopes in separate game groups", async () => {
+  it("switches scopes without duplicating or hiding the complete schedule", async () => {
     const base = splitGame.splits[0]!;
     const listSplits = vi
       .fn<NonNullable<GamesClient["listSplits"]>>()
@@ -516,8 +516,8 @@ describe("Betting splits", () => {
           {
             ...splitGame,
             splits: [
-              { ...base, id: "scope-a", scope: "Book A", moneyPercent: 71 },
               { ...base, id: "scope-b", scope: "Book B", moneyPercent: 29 },
+              { ...base, id: "scope-a", scope: "Book A", moneyPercent: 71 },
             ],
           },
         ]),
@@ -529,11 +529,19 @@ describe("Betting splits", () => {
       />,
     );
 
-    expect(await screen.findByText("Book A")).toBeInTheDocument();
-    expect(screen.getByText("Book B")).toBeInTheDocument();
+    const bookButtons = await screen.findAllByRole("button", {
+      name: /Show Book [AB] splits/,
+    });
+    expect(
+      bookButtons.map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Show Book A splits", "Show Book B splits"]);
     expect(screen.getByText("71%")).toBeInTheDocument();
+    expect(screen.queryByText("29%")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Boston")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Show Book B splits" }));
     expect(screen.getByText("29%")).toBeInTheDocument();
-    expect(screen.getAllByText("Boston")).toHaveLength(2);
+    expect(screen.queryByText("71%")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Boston")).toHaveLength(1);
   });
 
   it("shows multiple games in the same comparison terminal", async () => {
@@ -548,7 +556,7 @@ describe("Betting splits", () => {
         ...split,
         id: `${split.id}-2`,
         canonicalEventId: "event:mlb:fixture-2",
-        scope: "Consensus · 15 books",
+        scope: "consensus",
       })),
     } satisfies SplitsPageDto["items"][number];
     const listSplits = vi
@@ -563,7 +571,9 @@ describe("Betting splits", () => {
 
     expect(await screen.findByText("Chicago")).toBeInTheDocument();
     expect(screen.getByText("Detroit")).toBeInTheDocument();
-    expect(screen.getByText(/2 games · 12 observations/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/2 games · 2 with data · 8 observations/),
+    ).toBeInTheDocument();
   });
 
   it("renders the draw row for a three-way soccer moneyline", async () => {
@@ -627,9 +637,7 @@ describe("Betting splits", () => {
         }}
       />,
     );
-    expect(
-      await screen.findByText(/Stale consensus board/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Stale splits board/)).toBeInTheDocument();
     expect(screen.queryByText(/LIVE CONSENSUS/)).not.toBeInTheDocument();
     unmount();
 
@@ -657,8 +665,127 @@ describe("Betting splits", () => {
       />,
     );
     expect(
-      await screen.findByText(/Freshness unknown consensus board/),
+      await screen.findByText(/Freshness unknown splits board/),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("Scope unavailable")).toHaveLength(2);
+    expect(screen.getByText("Scope unavailable")).toBeInTheDocument();
+  });
+
+  it("shows scheduled games without observations and uses accessible logo fallbacks", async () => {
+    const uncovered = {
+      ...splitGame,
+      id: "event:mlb:uncovered",
+      participants: [
+        { id: "participant:mlb:chicago", label: "Chicago" },
+        { id: "participant:mlb:detroit", label: "Detroit" },
+      ],
+      splits: [],
+    } satisfies SplitsPageDto["items"][number];
+    const unknownScope = splitGame.splits.map((split) => ({
+      ...split,
+      scope: "Local Book",
+    }));
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(
+        splitsPage([{ ...splitGame, splits: unknownScope }, uncovered]),
+      );
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    expect(await screen.findByText("Chicago")).toBeInTheDocument();
+    expect(screen.getByText("Detroit")).toBeInTheDocument();
+    expect(screen.getByText("No split data")).toBeInTheDocument();
+    expect(screen.getAllByText("Boston")).toHaveLength(1);
+    const fallback = screen.getByRole("button", {
+      name: "Show Local Book splits",
+    });
+    expect(fallback).toHaveAttribute("title", "Local Book");
+    fireEvent.click(fallback);
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("shows all eight scheduled games when only one has split coverage", async () => {
+    const covered = {
+      ...splitGame,
+      splits: splitGame.splits.map((split) => ({
+        ...split,
+        scope: "consensus",
+      })),
+    };
+    const uncovered = Array.from({ length: 7 }, (_, index) => ({
+      ...splitGame,
+      id: `event:mlb:uncovered:${index}`,
+      participants: [
+        { id: `away:${index}`, label: `Away ${index + 1}` },
+        { id: `home:${index}`, label: `Home ${index + 1}` },
+      ],
+      splits: [],
+    }));
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage([covered, ...uncovered]));
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    expect(
+      await screen.findByText(
+        `8 games · 1 with data · ${covered.splits.length} observations`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("No split data")).toHaveLength(7);
+    expect(screen.getAllByText(/Away [1-7]/)).toHaveLength(7);
+  });
+
+  it("does not report page timestamps as split freshness without observations", async () => {
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage([{ ...splitGame, splits: [] }]));
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Freshness unknown splits board"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Timestamp unavailable")).toBeInTheDocument();
+  });
+
+  it("shows only returned sportsbook controls and falls back when a known logo fails", async () => {
+    const betmgmSplits = splitGame.splits.map((split, index) => ({
+      ...split,
+      scope: index % 2 === 0 ? " betmgm " : "BETMGM",
+    }));
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage([{ ...splitGame, splits: betmgmSplits }]));
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    const betmgm = await screen.findByRole("button", {
+      name: "Show BetMGM splits",
+    });
+    expect(
+      screen.queryByRole("button", { name: /DraftKings|Circa|FanDuel/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "Show BetMGM splits" }),
+    ).toHaveLength(1);
+    fireEvent.error(screen.getByAltText("BetMGM"));
+    expect(betmgm).toHaveTextContent("B");
   });
 });

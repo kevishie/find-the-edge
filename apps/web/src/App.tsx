@@ -24,6 +24,11 @@ import {
   type EdgeEvaluation,
 } from "@find-the-edge/odds";
 import { mlbFindTheEdgeStrategy, sportRegistry } from "@find-the-edge/sports";
+import {
+  SportsbookLogo,
+  sportsbookMetadata,
+  sportsbookScopeKey,
+} from "./sportsbooks";
 
 const reasonLabels: Record<string, string> = {
   "positive-ev": "Qualified positive EV",
@@ -688,6 +693,7 @@ function SplitsExplorer() {
   const client = useContext(GamesClientContext);
   const [sport, setSport] = useState<GamesSport>("mlb");
   const [day, setDay] = useState(() => currentEasternDay());
+  const [selectedScope, setSelectedScope] = useState<string | null>(null);
   const [state, setState] = useState<
     | { readonly kind: "loading" }
     | {
@@ -737,50 +743,63 @@ function SplitsExplorer() {
     return () => controller.abort();
   }, [client, day, sport]);
 
-  const gamesWithSplits =
-    state.kind === "ready"
-      ? state.items.filter((game) => game.splits.length > 0)
-      : [];
-  const observationCount = gamesWithSplits.reduce(
-    (total, game) => total + game.splits.length,
-    0,
-  );
+  const games = state.kind === "ready" ? state.items : [];
   const scopeLabel = (scope: string | undefined) =>
-    scope?.trim() ? scope : "Scope unavailable";
+    scope?.trim() || "Scope unavailable";
   const scopes = [
-    ...new Set(
-      gamesWithSplits.flatMap((game) =>
-        game.splits.map((split) => scopeLabel(split.scope)),
+    ...new Map(
+      games
+        .flatMap((game) => game.splits.map((split) => scopeLabel(split.scope)))
+        .map((scope) => [sportsbookScopeKey(scope), scope]),
+    ).values(),
+  ].sort((left, right) =>
+    sportsbookMetadata(left).name.localeCompare(sportsbookMetadata(right).name),
+  );
+  const boards = games.map((game) => {
+    const gameScopes = [
+      ...new Map(
+        game.splits.map((split) => {
+          const scope = scopeLabel(split.scope);
+          return [sportsbookScopeKey(scope), scope];
+        }),
+      ).values(),
+    ].sort((left, right) =>
+      sportsbookMetadata(left).name.localeCompare(
+        sportsbookMetadata(right).name,
       ),
-    ),
-  ];
-  const boards = gamesWithSplits.flatMap((game) =>
-    [...new Set(game.splits.map((split) => scopeLabel(split.scope)))].map(
-      (scope) => ({
-        game,
-        scope,
-        splits: game.splits.filter(
-          (split) => scopeLabel(split.scope) === scope,
-        ),
-      }),
-    ),
+    );
+    const scope = selectedScope ?? gameScopes[0];
+    return {
+      game,
+      scope,
+      splits: scope
+        ? game.splits.filter(
+            (split) =>
+              sportsbookScopeKey(scopeLabel(split.scope)) ===
+              sportsbookScopeKey(scope),
+          )
+        : [],
+    };
+  });
+  const coveredGames = boards.filter(({ splits }) => splits.length > 0).length;
+  const observationCount = boards.reduce(
+    (total, { splits }) => total + splits.length,
+    0,
   );
   const timestampCandidates =
     state.kind === "ready"
-      ? [
-          ...gamesWithSplits.flatMap((game) =>
-            game.splits.flatMap((split) => [
+      ? boards
+          .flatMap(({ splits }) =>
+            splits.flatMap((split) => [
               split.providerTimestamp,
               split.retrievedAt,
             ]),
-          ),
-          state.freshness,
-          state.snapshotAt,
-        ].filter(
-          (timestamp): timestamp is string =>
-            typeof timestamp === "string" &&
-            Number.isFinite(Date.parse(timestamp)),
-        )
+          )
+          .filter(
+            (timestamp): timestamp is string =>
+              typeof timestamp === "string" &&
+              Number.isFinite(Date.parse(timestamp)),
+          )
       : [];
   const newestObservation = timestampCandidates.sort(
     (left, right) => Date.parse(right) - Date.parse(left),
@@ -857,7 +876,7 @@ function SplitsExplorer() {
           <h1>Betting splits</h1>
           <p className="lede">
             Compare ticket percentage with money percentage from SharpAPI's
-            consensus public-betting feed.
+            sportsbook public-betting feeds.
           </p>
         </div>
         <span className="maturity beta">SharpAPI Pro</span>
@@ -872,6 +891,7 @@ function SplitsExplorer() {
               className={sport === key ? "selected" : ""}
               onClick={() => {
                 setState({ kind: "loading" });
+                setSelectedScope(null);
                 setSport(key);
               }}
             >
@@ -886,25 +906,62 @@ function SplitsExplorer() {
             value={day}
             onChange={(event) => {
               setState({ kind: "loading" });
+              setSelectedScope(null);
               setDay(event.currentTarget.value);
             }}
           />
         </label>
       </section>
-      {state.kind === "ready" && gamesWithSplits.length > 0 && (
+      {state.kind === "ready" && games.length > 0 && (
+        <section className="sportsbook-filters" aria-label="Sportsbook scope">
+          <button
+            type="button"
+            className={selectedScope === null ? "selected" : ""}
+            aria-pressed={selectedScope === null}
+            onClick={() => setSelectedScope(null)}
+          >
+            <span className="all-books-mark" aria-hidden="true">
+              ALL
+            </span>
+            <span>All books</span>
+          </button>
+          {scopes.map((scope) => {
+            const name = sportsbookMetadata(scope).name;
+            return (
+              <button
+                key={scope}
+                type="button"
+                className={selectedScope === scope ? "selected" : ""}
+                aria-label={`Show ${name} splits`}
+                title={name}
+                aria-pressed={selectedScope === scope}
+                onClick={() => setSelectedScope(scope)}
+              >
+                <SportsbookLogo scope={scope} />
+              </button>
+            );
+          })}
+        </section>
+      )}
+      {state.kind === "ready" && games.length > 0 && (
         <section className="splits-toolbar" aria-label="Splits summary">
           <div>
             <span className={`terminal-kicker ${freshnessState.className}`}>
-              {freshnessState.label} consensus board
+              {freshnessState.label} splits board
             </span>
             <strong>
-              {gamesWithSplits.length} games · {observationCount} observations
+              {games.length} games · {coveredGames} with data ·{" "}
+              {observationCount} observations
             </strong>
           </div>
           <dl>
             <div>
-              <dt>Scopes</dt>
-              <dd>{scopes.join(" · ")}</dd>
+              <dt>Selected book</dt>
+              <dd>
+                {selectedScope
+                  ? sportsbookMetadata(selectedScope).name
+                  : "All books"}
+              </dd>
             </div>
             <div>
               <dt>Freshest evidence</dt>
@@ -921,11 +978,11 @@ function SplitsExplorer() {
         <div className="terminal-state" aria-live="polite">
           {state.kind === "loading" && <p>Loading current split evidence…</p>}
           {state.kind === "error" && <p role="alert">{state.message}</p>}
-          {state.kind === "ready" && gamesWithSplits.length === 0 && (
-            <p>No splits are available for these games yet.</p>
+          {state.kind === "ready" && games.length === 0 && (
+            <p>No scheduled games are available for this day.</p>
           )}
         </div>
-        {state.kind === "ready" && gamesWithSplits.length > 0 && (
+        {state.kind === "ready" && games.length > 0 && (
           <div
             className="market-scroll splits-scroll"
             tabIndex={0}
@@ -960,11 +1017,7 @@ function SplitsExplorer() {
                 </tr>
               </thead>
               {boards.map(({ game, scope, splits }) => {
-                const hasDraw = splits.some(
-                  (split) =>
-                    split.marketKey === "three_way_moneyline" &&
-                    split.selectionKey === "draw",
-                );
+                const hasDraw = game.sportKey === "soccer";
                 const rows = [
                   {
                     key: "away" as const,
@@ -977,10 +1030,7 @@ function SplitsExplorer() {
                   ...(hasDraw ? [{ key: "draw" as const, label: "Draw" }] : []),
                 ];
                 return (
-                  <tbody
-                    key={`${game.id}:${scope}`}
-                    className="split-game-group"
-                  >
+                  <tbody key={game.id} className="split-game-group">
                     {rows.map((row, rowIndex) => {
                       const spread =
                         row.key === "draw"
@@ -1010,8 +1060,15 @@ function SplitsExplorer() {
                               </span>
                             )}
                             <span className="split-team-name">{row.label}</span>
-                            {rowIndex === 0 && (
-                              <span className="split-scope">{scope}</span>
+                            {rowIndex === 0 && splits.length === 0 && (
+                              <span className="split-scope split-no-data">
+                                No split data
+                              </span>
+                            )}
+                            {rowIndex === 0 && splits.length > 0 && scope && (
+                              <span className="split-scope">
+                                {sportsbookMetadata(scope).name}
+                              </span>
                             )}
                             {rowIndex === rows.length - 1 && (
                               <Link
