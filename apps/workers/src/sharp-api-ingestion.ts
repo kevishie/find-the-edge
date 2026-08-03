@@ -261,8 +261,7 @@ export async function ingestSharpApi(
           eventObservations += 1;
         }
       }
-      if (eventObservations === 0)
-        throw new Error("sharpapi-main-market-unavailable");
+      if (eventObservations === 0) continue;
       events += 1;
     }
     if (!splitsEntitled) continue;
