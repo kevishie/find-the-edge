@@ -69,6 +69,7 @@ context:
 - 2026-08-03: Human clarified SharpAPI's documented split sources are DraftKings and Circa. Updated the approved intent and UI naming so `consensus` is presented as their aggregate, not a standalone sportsbook or all-books consensus.
 - 2026-08-03: Human clarified the analytical limits of public splits. Added explicit board and game-detail guidance that splits are one signal alongside line movement and +EV analysis.
 - 2026-08-03: Hardened live odds parsing for SharpAPI snapshot rows that repeat a stable price id after repricing; retain the provider's last compatible observation while rejecting identity conflicts.
+- 2026-08-03: Live SharpAPI data revealed derivative event records and split IDs that differ from odds IDs. Filtered player-prop/partial-game records and joined splits to the unique full-game matchup by participants plus Eastern game day.
 - 2026-08-03: Live deployment exposed `public_bet_pct: null` on valid SharpAPI MLB odds rows. The parser now treats null as unavailable rather than malformed, preventing odds ingestion from aborting before split ingestion.
 
 ## Design Notes

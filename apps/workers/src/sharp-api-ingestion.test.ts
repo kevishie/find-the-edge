@@ -26,7 +26,7 @@ describe("SharpAPI primary ingestion", () => {
     );
     const bootstrapCanonicalEvent = vi.fn(
       (bootstrap: CanonicalEventBootstrap) => {
-        bindings.set(`${bootstrap.leagueKey}-event`, {
+        bindings.set(`${bootstrap.leagueKey}-event_2026-08-03_b3`, {
           id: bootstrap.id,
           version: 1,
           sportKey: bootstrap.sportKey,
@@ -70,7 +70,7 @@ describe("SharpAPI primary ingestion", () => {
       persistGap: vi.fn(),
     } as unknown as BettingSplitRepository;
     const fetchOddsPage = vi.fn((league: SharpApiLeague) => {
-      const eventId = `${league.leagueKey}-event`;
+      const eventId = `${league.leagueKey}-event_2026-08-03_b3`;
       return Promise.resolve({
         events: [
           {
@@ -147,6 +147,14 @@ describe("SharpAPI primary ingestion", () => {
               },
             ],
           },
+          {
+            providerEventId: `${league.leagueKey}-props_2026-08-03_b3`,
+            providerEventUuid: `${league.leagueKey}-props-uuid`,
+            awayTeam: "Away Club",
+            homeTeam: "Home Club - Player Props",
+            startsAt: "2026-08-04T00:00:00.000Z" as IsoTimestamp,
+            bookmakers: [],
+          },
         ],
         hasMore: false,
         retrievedAt: "2026-08-03T23:00:01.000Z" as IsoTimestamp,
@@ -156,7 +164,7 @@ describe("SharpAPI primary ingestion", () => {
       Promise.resolve({
         items: [
           {
-            providerEventId: `${league.leagueKey}-event`,
+            providerEventId: `${league.leagueKey}-event_2026-08-03`,
             sport: league.leagueKey === "mlb" ? "baseball" : "soccer",
             league: league.leagueKey,
             sportsbookId: "consensus",
@@ -205,6 +213,9 @@ describe("SharpAPI primary ingestion", () => {
     });
     expect(oddsPersist).toHaveBeenCalledTimes(5);
     expect(splitPersist).toHaveBeenCalledTimes(2);
+    expect(
+      splitPersist.mock.calls.map(([input]) => input.providerEventId),
+    ).toEqual(["mlb-event_2026-08-03", "mls-event_2026-08-03"]);
     expect(splitPersist).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: "consensus",

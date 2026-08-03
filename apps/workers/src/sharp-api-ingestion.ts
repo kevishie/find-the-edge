@@ -56,6 +56,24 @@ const providerEvent = (
   },
 });
 
+const isDerivativeEvent = (event: SharpApiOddsPage["events"][number]) =>
+  [event.awayTeam, event.homeTeam].some((team) =>
+    /(?:\s-\splayer props|:\s*(?:extra innings|first\s+\d+\s+innings?))$/i.test(
+      team,
+    ),
+  );
+
+const providerEventDay = (providerEventId: string) =>
+  providerEventId.match(/(?:^|_)(\d{4}-\d{2}-\d{2})(?:_|$)/)?.[1];
+
+const easternDay = (instant: IsoTimestamp) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(instant));
+
 const loadOdds = async (
   league: SharpApiLeague,
   apiKey: string,
@@ -197,7 +215,14 @@ export async function ingestSharpApi(
       apiKey,
       options.fetchOddsPage ?? fetchSharpApiOddsPage,
     );
+    const canonicalOddsEvents: {
+      readonly raw: SharpApiOddsPage["events"][number];
+      readonly canonical: NonNullable<
+        Awaited<ReturnType<EventIngestionStore["resolveExactCanonicalBinding"]>>
+      >;
+    }[] = [];
     for (const raw of oddsResult.events) {
+      if (isDerivativeEvent(raw)) continue;
       const event = providerEvent(league, raw, oddsResult.retrievedAt);
       const command = {
         ...event,
@@ -225,6 +250,7 @@ export async function ingestSharpApi(
         leagueKey: league.leagueKey,
       });
       if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
+      canonicalOddsEvents.push({ raw, canonical });
       let eventObservations = 0;
       for (const book of raw.bookmakers) {
         const main = completeMainPrices(
@@ -292,12 +318,23 @@ export async function ingestSharpApi(
         });
         continue;
       }
-      const canonical = await store.resolveExactCanonicalBinding({
+      let canonical = await store.resolveExactCanonicalBinding({
         providerId: SHARP_API_PROVIDER_ID,
         providerEventId: raw.providerEventId,
         sportKey: league.sportKey,
         leagueKey: league.leagueKey,
       });
+      if (!canonical) {
+        const splitDay = providerEventDay(raw.providerEventId);
+        const candidates = canonicalOddsEvents.filter(
+          ({ raw: oddsEvent }) =>
+            oddsEvent.awayTeam === raw.awayTeam &&
+            oddsEvent.homeTeam === raw.homeTeam &&
+            splitDay !== undefined &&
+            easternDay(oddsEvent.startsAt) === splitDay,
+        );
+        if (candidates.length === 1) canonical = candidates[0]!.canonical;
+      }
       if (!canonical) {
         await splitRepository.persistGap({
           providerId: SHARP_API_PROVIDER_ID,
