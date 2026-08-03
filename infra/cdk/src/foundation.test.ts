@@ -19,7 +19,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 6);
+    template.resourceCountIs("AWS::Lambda::Function", 7);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -59,13 +59,43 @@ describe("foundation CDK app", () => {
       },
     });
     const rendered = JSON.stringify(template.toJSON());
+    const resources = template.toJSON().Resources as Record<
+      string,
+      { Type: string; Properties?: Record<string, unknown> }
+    >;
+    const resultLambda = Object.entries(resources).find(
+      ([key, value]) =>
+        key.startsWith("CompletedResultsWorker") &&
+        value.Type === "AWS::Lambda::Function",
+    );
+    const resultRule = Object.entries(resources).find(
+      ([key, value]) =>
+        key.startsWith("CompletedResultsScheduler") &&
+        value.Type === "AWS::Events::Rule",
+    );
+    const resultPolicy = Object.entries(resources).find(
+      ([key, value]) =>
+        key.startsWith("CompletedResultsWorkerServiceRoleDefaultPolicy") &&
+        value.Type === "AWS::IAM::Policy",
+    );
+    expect(resultLambda?.[1].Properties?.["ReservedConcurrentExecutions"]).toBe(
+      1,
+    );
+    expect(resultRule?.[1].Properties?.["State"]).toBe("DISABLED");
+    expect(JSON.stringify(resultRule?.[1])).toContain(
+      resultLambda?.[0] ?? "missing-lambda",
+    );
+    const resultPolicyText = JSON.stringify(resultPolicy?.[1]);
+    expect(resultPolicyText).toContain("dynamodb:DeleteItem");
+    expect(resultPolicyText).not.toContain("dynamodb:Scan");
+    expect(resultPolicyText).not.toContain("secretsmanager");
     expect(rendered).toContain("dynamodb:TransactWriteItems");
     expect(rendered).not.toContain("dynamodb:Scan");
   });
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 5);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 6);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -82,8 +112,16 @@ describe("foundation CDK app", () => {
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
     template.resourceCountIs("AWS::SQS::Queue", 2);
-    template.resourceCountIs("AWS::Lambda::Function", 5);
-    template.resourceCountIs("AWS::Events::Rule", 2);
+    template.resourceCountIs("AWS::Lambda::Function", 6);
+    template.resourceCountIs("AWS::Events::Rule", 3);
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      ReservedConcurrentExecutions: 1,
+      Environment: { Variables: { FTE_EVENT_TABLE: Match.anyValue() } },
+    });
+    template.hasResourceProperties("AWS::Events::Rule", {
+      ScheduleExpression: "rate(1 hour)",
+      Targets: Match.arrayWith([Match.objectLike({ Arn: Match.anyValue() })]),
+    });
     template.hasResource("AWS::DynamoDB::Table", {
       DeletionPolicy: "Retain",
       UpdateReplacePolicy: "Retain",
@@ -344,7 +382,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 11);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 12);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

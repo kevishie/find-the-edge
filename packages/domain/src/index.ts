@@ -163,6 +163,52 @@ export interface EventResult {
   evidence: EvidenceRef[];
 }
 
+export type CompletedEventState =
+  "final" | "postponed" | "cancelled" | "no-contest";
+export type ResultScoreScope =
+  "regulation" | "overtime" | "extra-innings" | "unknown";
+export interface ParticipantResultScore {
+  readonly participantId: EntityId;
+  readonly score: number;
+}
+/** Immutable authoritative result evidence. This is intentionally separate from grading. */
+export interface CompletedEventResultObservation {
+  readonly id: string;
+  readonly providerId: string;
+  readonly providerEventId: string;
+  readonly canonicalEventId: EntityId;
+  readonly canonicalEventVersion: number;
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly state: CompletedEventState;
+  readonly scoreScope: ResultScoreScope;
+  readonly scores?: readonly ParticipantResultScore[];
+  readonly detail?: SportDetailPayload;
+  readonly providerRevision: ProviderRevision;
+  readonly providerTimestamp: IsoTimestamp;
+  readonly retrievedAt: IsoTimestamp;
+  readonly sourceProvenance: string;
+}
+export interface UnresolvedResultObservation {
+  readonly id: string;
+  readonly providerId: string;
+  readonly providerEventId: string;
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly state: CompletedEventState;
+  readonly scoreScope: ResultScoreScope;
+  readonly scores?: readonly {
+    readonly providerParticipantId: string;
+    readonly score: number;
+  }[];
+  readonly detail?: SportDetailPayload;
+  readonly providerRevision: ProviderRevision;
+  readonly providerTimestamp: IsoTimestamp;
+  readonly retrievedAt: IsoTimestamp;
+  readonly sourceProvenance: string;
+  readonly reason: "event-unmapped" | "scope-mismatch";
+}
+
 export interface PickGrade {
   result: "won" | "lost" | "push" | "void" | "ungraded";
   reason: string;

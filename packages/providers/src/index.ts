@@ -60,6 +60,7 @@ export type LineupProvider<T = unknown> = ProviderPort<T>;
 export type WeatherProvider<T = unknown> = ProviderPort<T>;
 export type PublicBettingProvider<T = unknown> = ProviderPort<T>;
 export type ResultsProvider<T = unknown> = ProviderPort<T>;
+export * from "./completed-results";
 
 export function supportsRequest(
   descriptor: ProviderDescriptor,

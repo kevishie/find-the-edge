@@ -5,7 +5,7 @@ import type {
   SportKey,
 } from "@find-the-edge/domain";
 
-export const feedCoverageCatalogVersion = "2026-07-30.v5";
+export const feedCoverageCatalogVersion = "2026-08-03.v6";
 const capabilities = ["schedule", "odds", "results"] as const;
 
 function enabledLeague(

@@ -130,6 +130,9 @@ importers:
       '@aws-sdk/lib-dynamodb':
         specifier: ^3.883.0
         version: 3.1098.0(@aws-sdk/client-dynamodb@3.1098.0)
+      '@find-the-edge/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@find-the-edge/database':
         specifier: workspace:*
         version: link:../../packages/database
@@ -139,6 +142,9 @@ importers:
       '@find-the-edge/providers':
         specifier: workspace:*
         version: link:../../packages/providers
+      '@find-the-edge/sports':
+        specifier: workspace:*
+        version: link:../../packages/sports
     devDependencies:
       '@find-the-edge/api':
         specifier: workspace:*

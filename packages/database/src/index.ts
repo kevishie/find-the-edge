@@ -16,3 +16,5 @@ export * from "./games-repository";
 export * from "./dynamodb-games-repository";
 export * from "./memory-games-repository";
 export * from "./betting-split-repository";
+export * from "./result-repository";
+export * from "./dynamodb-result-repository";

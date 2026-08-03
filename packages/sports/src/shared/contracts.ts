@@ -1,9 +1,10 @@
 import type {
   Event,
   EventResult,
+  CompletedEventResultObservation,
   MarketDefinition,
   ModuleMaturity,
-  Pick,
+  Pick as WagerPick,
   PickGrade,
   SportKey,
 } from "@find-the-edge/domain";
@@ -12,6 +13,15 @@ export interface ValidationResult<T = unknown> {
   valid: boolean;
   value?: T;
   errors: string[];
+}
+export type ResultValidationInput = Pick<
+  CompletedEventResultObservation,
+  "state" | "scoreScope" | "scores" | "detail"
+>;
+export interface SportResultValidator {
+  validateResult(
+    input: ResultValidationInput,
+  ): ValidationResult<ResultValidationInput>;
 }
 
 export interface SportMetadata {
@@ -110,7 +120,7 @@ export interface SportModule {
   evaluateMarkets(context: EventContext): MarketEvaluation[];
   buildScoutInput(context: EventContext): StructuredScoutInput;
   validateScoutOutput(output: unknown): ValidationResult<ScoutReport>;
-  gradePick(pick: Pick, result: EventResult): PickGrade;
+  gradePick(pick: WagerPick, result: EventResult): PickGrade;
 }
 
 export interface StrategyDefinition {

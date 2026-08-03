@@ -348,6 +348,52 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "SharpApiSecretName", {
       value: sharpApiSecret.secretName,
     });
+    const completedResults = new NodejsFunction(
+      this,
+      "CompletedResultsWorker",
+      {
+        entry: path.resolve(
+          directory,
+          "../../../apps/workers/src/completed-result-lambda.ts",
+        ),
+        handler: "handler",
+        runtime: Runtime.NODEJS_24_X,
+        timeout: Duration.minutes(2),
+        memorySize: 256,
+        reservedConcurrentExecutions: 1,
+        environment: { FTE_EVENT_TABLE: table.tableName },
+        bundling: { minify: true, sourceMap: true },
+      },
+    );
+    completedResults.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:DeleteItem",
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:PutItem",
+        ],
+        resources: [table.tableArn],
+      }),
+    );
+    const completedResultsScheduler = new Rule(
+      this,
+      "CompletedResultsScheduler",
+      {
+        // Fixture adapters validate contracts only; never schedule them as production truth.
+        enabled: false,
+        schedule: Schedule.rate(Duration.hours(1)),
+      },
+    );
+    completedResultsScheduler.addTarget(
+      new LambdaFunction(completedResults, {
+        retryAttempts: 2,
+        maxEventAge: Duration.minutes(30),
+      }),
+    );
+    new CfnOutput(this, "CompletedResultsFunctionName", {
+      value: completedResults.functionName,
+    });
     const worker = new NodejsFunction(this, "UpcomingEventsWorker", {
       entry: path.resolve(directory, "../../../apps/workers/src/lambda.ts"),
       handler: "handler",
@@ -587,6 +633,13 @@ export class FoundationStack extends Stack {
     const alarms = [
       new Alarm(this, "LiveOddsIngestionErrorsAlarm", {
         metric: liveOdds.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "CompletedResultsErrorsAlarm", {
+        metric: completedResults.metricErrors(),
         threshold: 1,
         evaluationPeriods: 1,
         comparisonOperator:
