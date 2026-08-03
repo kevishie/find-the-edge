@@ -371,6 +371,7 @@ export function parseSharpApiOddsPage(
     const publicPct = value["public_bet_pct"];
     if (
       publicPct !== undefined &&
+      publicPct !== null &&
       (!finite(publicPct) || publicPct < 0 || publicPct > 1)
     )
       throw new SharpApiError("invalid-response");
@@ -386,7 +387,9 @@ export function parseSharpApiOddsPage(
       americanOdds: value["odds_american"],
       decimalOdds: value["odds_decimal"],
       impliedProbability: value["odds_probability"],
-      ...(publicPct === undefined ? {} : { publicBetPercent: publicPct * 100 }),
+      ...(publicPct === undefined || publicPct === null
+        ? {}
+        : { publicBetPercent: publicPct * 100 }),
       ...(canonical(value["deep_link"], 2048)
         ? { deepLink: value["deep_link"] }
         : {}),

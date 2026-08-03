@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { SportKey } from "@find-the-edge/domain";
 import {
+  parseSharpApiOddsPage,
   parseSharpApiSplitPage,
+  sharpApiLeagues,
   sharpApiDescriptor,
   validateSharpApiActivation,
   type SharpApiActivationConfig,
@@ -74,6 +76,45 @@ describe("SharpAPI activation boundary", () => {
       ],
     });
     expect(descriptor?.capabilities).toEqual(["odds"]);
+  });
+
+  it("accepts SharpAPI's nullable public betting percentage on odds rows", () => {
+    const page = parseSharpApiOddsPage(
+      {
+        data: [
+          {
+            id: "price-1",
+            event_id: "mlb-away-home-2026-08-03",
+            event_uuid: "event-uuid-1",
+            away_team: "Away Club",
+            home_team: "Home Club",
+            event_start_time: "2026-08-03T22:40:00.000Z",
+            sportsbook: "draftkings",
+            market_type: "total_runs",
+            market_id: "market-1",
+            selection: "Under",
+            selection_id: "selection-1",
+            line: 8.5,
+            odds_american: -110,
+            odds_decimal: 1.91,
+            odds_probability: 0.524,
+            public_bet_pct: null,
+            timestamp: "2026-08-03T21:42:00.000Z",
+            is_live: false,
+            is_main_line: true,
+            is_alternate_line: false,
+            is_player_prop: false,
+            is_stale_pregame_price: false,
+          },
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagues[0]!,
+      "2026-08-03T21:42:01.000Z" as never,
+    );
+    expect(page.events[0]?.bookmakers[0]?.prices[0]).not.toHaveProperty(
+      "publicBetPercent",
+    );
   });
 
   it("normalizes the documented split contract without inferring values", () => {

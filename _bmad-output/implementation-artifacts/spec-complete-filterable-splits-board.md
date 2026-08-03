@@ -54,6 +54,7 @@ context:
 - [x] `apps/web/src/styles.css` -- style compact logo controls, selected/focus states, and sparse-data rows consistently with the Find the Edge brand.
 - [x] `apps/web/src/App.test.tsx` -- cover mixed/no coverage, book switching, one-row-group-per-game, deterministic scope order, and unknown-logo fallback.
 - [x] `packages/providers/src/sharp-api.test.ts` -- prove multiple sportsbook split rows survive parsing unchanged.
+- [x] `packages/providers/src/sharp-api.ts`, `packages/providers/src/sharp-api.test.ts` -- accept SharpAPI's documented missing-value `null` on odds public percentages so MLB ingestion reaches the splits feed.
 
 **Acceptance Criteria:**
 - Given a day containing scheduled games with sparse splits, when the page loads, then every API game appears once and every missing line/handle/bets value displays `—`.
@@ -64,6 +65,7 @@ context:
 ## Spec Change Log
 
 - 2026-08-03: Human clarified SharpAPI's documented split sources are DraftKings and Circa. Updated the approved intent and UI naming so `consensus` is presented as their aggregate, not a standalone sportsbook or all-books consensus.
+- 2026-08-03: Live deployment exposed `public_bet_pct: null` on valid SharpAPI MLB odds rows. The parser now treats null as unavailable rather than malformed, preventing odds ingestion from aborting before split ingestion.
 
 ## Design Notes
 
@@ -108,5 +110,5 @@ context:
 - UI tests cover eight-game sparsity, filtering, freshness, and failed logos.
   [`App.test.tsx:711`](../../apps/web/src/App.test.tsx#L711)
 
-- Provider parsing proves distinct returned sportsbook scopes survive unchanged.
-  [`sharp-api.test.ts:119`](../../packages/providers/src/sharp-api.test.ts#L119)
+- Provider tests cover nullable odds percentages and preserve distinct split scopes unchanged.
+  [`sharp-api.test.ts:75`](../../packages/providers/src/sharp-api.test.ts#L75)
