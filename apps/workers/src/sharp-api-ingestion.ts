@@ -73,13 +73,22 @@ const loadOdds = async (
         events.set(event.providerEventId, event);
         continue;
       }
+      const sameOrientation =
+        existing.awayTeam === event.awayTeam &&
+        existing.homeTeam === event.homeTeam;
+      const reversedOrientation =
+        existing.awayTeam === event.homeTeam &&
+        existing.homeTeam === event.awayTeam;
+      const startDelta = Math.abs(
+        Date.parse(existing.startsAt) - Date.parse(event.startsAt),
+      );
       if (
         existing.providerEventUuid !== event.providerEventUuid ||
-        existing.awayTeam !== event.awayTeam ||
-        existing.homeTeam !== event.homeTeam ||
-        existing.startsAt !== event.startsAt
+        (!sameOrientation && !reversedOrientation) ||
+        reversedOrientation ||
+        startDelta > 120_000
       )
-        throw new Error("sharpapi-event-page-conflict");
+        continue;
       const books = new Map(
         existing.bookmakers.map((book) => [book.id, [...book.prices]]),
       );
