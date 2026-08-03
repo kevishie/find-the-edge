@@ -312,6 +312,7 @@ export class FoundationStack extends Stack {
         actions: [
           "dynamodb:ConditionCheckItem",
           "dynamodb:GetItem",
+          "dynamodb:BatchGetItem",
           "dynamodb:Query",
           "dynamodb:PutItem",
           "dynamodb:TransactWriteItems",
