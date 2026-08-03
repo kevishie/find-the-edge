@@ -302,7 +302,7 @@ stories:
     league: enabled
     module: result-ingestion
     priority: P0
-    status: review
+    status: done
     dependencies: [FTE-DATA-002]
     risk: High
     approvalRequiredBeforeMerge: false

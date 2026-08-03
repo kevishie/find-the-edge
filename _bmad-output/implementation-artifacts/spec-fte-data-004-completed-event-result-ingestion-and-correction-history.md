@@ -2,8 +2,9 @@
 title: 'FTE-DATA-004 Completed-Event Result Ingestion and Correction History'
 type: 'feature'
 created: '2026-08-03T19:00:00-04:00'
-status: 'in-review'
+status: 'done'
 baseline_revision: '2f1def3'
+final_revision: '050561d'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
