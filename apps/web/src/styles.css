@@ -35,7 +35,7 @@ input {
   min-height: 100vh;
 }
 
-aside {
+.shell > aside {
   position: sticky;
   top: 0;
   height: 100vh;
@@ -1181,7 +1181,7 @@ footer {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  aside {
+  .shell > aside {
     position: static;
     width: 100%;
     height: auto;
