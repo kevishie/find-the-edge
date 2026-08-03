@@ -213,7 +213,7 @@ export class FoundationStack extends Stack {
     const webAssetOrigin = S3BucketOrigin.withOriginAccessControl(assets);
     const spaNavigation = new CloudFrontFunction(this, "WebSpaNavigation", {
       code: FunctionCode.fromInline(
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
       ),
     });
     const distribution = new Distribution(this, "WebDistribution", {
@@ -290,6 +290,12 @@ export class FoundationStack extends Stack {
       "TheOddsApiSecret",
       `find-the-edge/${props.stageName}/the-odds-api`,
     );
+    // SharpAPI is primary; The Odds API remains configured as operator-selected standby.
+    const sharpApiSecret = Secret.fromSecretNameV2(
+      this,
+      "SharpApiSecret",
+      `find-the-edge/${props.stageName}/sharpapi`,
+    );
     const liveOdds = new NodejsFunction(this, "LiveOddsIngestion", {
       entry: path.resolve(
         directory,
@@ -303,10 +309,13 @@ export class FoundationStack extends Stack {
       environment: {
         FTE_EVENT_TABLE: table.tableName,
         FTE_THE_ODDS_API_SECRET_ID: oddsSecret.secretName,
+        FTE_SHARP_API_ENABLED: "true",
+        FTE_SHARP_API_SECRET_ID: sharpApiSecret.secretName,
       },
       bundling: { minify: true, sourceMap: true },
     });
     oddsSecret.grantRead(liveOdds);
+    sharpApiSecret.grantRead(liveOdds);
     liveOdds.addToRolePolicy(
       new PolicyStatement({
         actions: [
@@ -335,6 +344,9 @@ export class FoundationStack extends Stack {
     });
     new CfnOutput(this, "TheOddsApiSecretName", {
       value: oddsSecret.secretName,
+    });
+    new CfnOutput(this, "SharpApiSecretName", {
+      value: sharpApiSecret.secretName,
     });
     const worker = new NodejsFunction(this, "UpcomingEventsWorker", {
       entry: path.resolve(directory, "../../../apps/workers/src/lambda.ts"),
@@ -486,6 +498,11 @@ export class FoundationStack extends Stack {
     });
     api.addRoutes({
       path: "/games",
+      methods: [HttpMethod.GET],
+      integration,
+    });
+    api.addRoutes({
+      path: "/splits",
       methods: [HttpMethod.GET],
       integration,
     });

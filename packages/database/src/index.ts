@@ -15,3 +15,4 @@ export * from "./fixture-odds-adapter";
 export * from "./games-repository";
 export * from "./dynamodb-games-repository";
 export * from "./memory-games-repository";
+export * from "./betting-split-repository";

@@ -11,10 +11,12 @@ import {
 import {
   AwsDynamoGateway,
   AwsFixtureOddsGateway,
+  DynamoBettingSplitRepository,
   DynamoEventIngestionStore,
   DynamoFixtureOddsAdapter,
 } from "@find-the-edge/database";
 import { ingestLiveOdds, type LiveOddsStateStore } from "./live-odds-ingestion";
+import { ingestSharpApi } from "./sharp-api-ingestion";
 
 export function parseTheOddsApiSecret(value: string | undefined): string {
   if (!value) throw new Error("the-odds-api-secret-missing");
@@ -57,12 +59,11 @@ export const handler = async (event?: unknown) => {
   const invocation = parseLiveOddsInvocation(event);
   const tableName = process.env["FTE_EVENT_TABLE"];
   const secretId = process.env["FTE_THE_ODDS_API_SECRET_ID"];
-  if (!tableName || !secretId)
+  const sharpSecretId = process.env["FTE_SHARP_API_SECRET_ID"];
+  const sharpEnabled = process.env["FTE_SHARP_API_ENABLED"] === "true";
+  if (!tableName || (sharpEnabled ? !sharpSecretId : !secretId))
     throw new Error("live-odds-configuration-invalid");
-  const secret = await new SecretsManagerClient({}).send(
-    new GetSecretValueCommand({ SecretId: secretId }),
-  );
-  const apiKey = parseTheOddsApiSecret(secret.SecretString);
+  const secrets = new SecretsManagerClient({});
   const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const stateStore: LiveOddsStateStore = {
     async read(leagueKey) {
@@ -88,15 +89,38 @@ export const handler = async (event?: unknown) => {
       );
     },
   };
-  const summary = await ingestLiveOdds(
-    new DynamoEventIngestionStore(new AwsDynamoGateway(client, tableName)),
-    new DynamoFixtureOddsAdapter(new AwsFixtureOddsGateway(client, tableName)),
-    stateStore,
-    apiKey,
-    { forceRefresh: invocation.forceRefresh },
+  const eventStore = new DynamoEventIngestionStore(
+    new AwsDynamoGateway(client, tableName),
   );
+  const oddsStore = new DynamoFixtureOddsAdapter(
+    new AwsFixtureOddsGateway(client, tableName),
+  );
+  let provider = "the-odds-api";
+  let summary: unknown;
+  if (sharpEnabled && sharpSecretId) {
+    const sharpSecret = await secrets.send(
+      new GetSecretValueCommand({ SecretId: sharpSecretId }),
+    );
+    const sharpApiKey = parseTheOddsApiSecret(sharpSecret.SecretString);
+    summary = await ingestSharpApi(
+      eventStore,
+      oddsStore,
+      new DynamoBettingSplitRepository(client, tableName),
+      sharpApiKey,
+    );
+    provider = "sharpapi";
+  }
+  if (!sharpEnabled && secretId) {
+    const secret = await secrets.send(
+      new GetSecretValueCommand({ SecretId: secretId }),
+    );
+    const apiKey = parseTheOddsApiSecret(secret.SecretString);
+    summary = await ingestLiveOdds(eventStore, oddsStore, stateStore, apiKey, {
+      forceRefresh: invocation.forceRefresh,
+    });
+  }
   process.stdout.write(
-    `${JSON.stringify({ event: "live-odds-ingestion-complete", ...summary })}\n`,
+    `${JSON.stringify({ event: "live-odds-ingestion-complete", provider, summary })}\n`,
   );
-  return summary;
+  return { provider, summary };
 };

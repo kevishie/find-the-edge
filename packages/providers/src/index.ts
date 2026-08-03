@@ -119,6 +119,7 @@ export function supportsRequest(
 }
 
 export * from "./the-odds-api";
+export * from "./sharp-api";
 
 export * from "./coverage-registry";
 export * from "./upcoming-events";

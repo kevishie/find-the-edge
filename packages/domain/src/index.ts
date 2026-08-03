@@ -177,6 +177,39 @@ export interface ProviderHealth {
   message?: string;
 }
 
+/** Immutable, provider-neutral public betting evidence. Missing values stay missing. */
+export interface BettingSplitObservation {
+  readonly id: string;
+  readonly providerId: string;
+  readonly providerEventId: string;
+  readonly canonicalEventId: string;
+  readonly canonicalEventVersion: number;
+  readonly sportKey: SportKey;
+  readonly leagueKey: string;
+  readonly marketKey: string;
+  readonly selectionKey: string;
+  readonly point?: number;
+  readonly betPercent?: number;
+  readonly moneyPercent?: number;
+  readonly betCount?: number;
+  readonly moneyAmount?: number;
+  readonly providerTimestamp: IsoTimestamp;
+  readonly retrievedAt: IsoTimestamp;
+  readonly scope?: string;
+}
+
+export interface BettingSplitGap {
+  readonly providerId: string;
+  readonly providerEventId: string;
+  readonly reason:
+    | "event-unmapped"
+    | "event-ambiguous"
+    | "market-ambiguous"
+    | "selection-ambiguous"
+    | "line-ambiguous";
+  readonly retrievedAt: IsoTimestamp;
+}
+
 export type FeedCapability = "schedule" | "odds" | "results";
 export type LeagueAllowlistState = "enabled" | "planned" | "disabled";
 export type FeedMaturity = "development" | "production";

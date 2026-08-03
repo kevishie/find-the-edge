@@ -29,6 +29,18 @@ describe("foundation CDK app", () => {
         },
       },
     });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({
+          FTE_SHARP_API_ENABLED: "true",
+          FTE_SHARP_API_SECRET_ID: Match.anyValue(),
+        }),
+      },
+    });
+    template.hasOutput("SharpApiSecretName", {});
+    const sharpRendered = JSON.stringify(template.toJSON());
+    expect(sharpRendered).toContain("sharpapi");
+    expect(sharpRendered).not.toContain("sk_live_");
     template.hasOutput("FixtureOddsSeedFunctionName", {});
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
@@ -130,7 +142,7 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::CloudFront::Function", {
       AutoPublish: true,
       FunctionCode:
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
     });
     expect(rendered).not.toContain("CustomErrorResponses");
     template.hasResourceProperties("Custom::AWS", {

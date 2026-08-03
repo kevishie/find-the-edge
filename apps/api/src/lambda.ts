@@ -4,6 +4,7 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
   AwsDynamoGateway,
   DynamoGamesRepository,
+  DynamoBettingSplitRepository,
   DynamoEventRepository,
   EventCursorCodec,
 } from "@find-the-edge/database";
@@ -49,9 +50,11 @@ export const handler = async (event: LambdaEvent) => {
   const claims = event.requestContext?.authorizer?.jwt?.claims;
   const route = event.routeKey?.startsWith("GET /games")
     ? "games"
-    : event.routeKey?.includes("/{eventId}")
-      ? "detail"
-      : "list";
+    : event.routeKey?.startsWith("GET /splits")
+      ? "splits"
+      : event.routeKey?.includes("/{eventId}")
+        ? "detail"
+        : "list";
   const eventId = event.pathParameters?.eventId;
   const subject =
     typeof claims?.["sub"] === "string" ? claims["sub"] : undefined;
@@ -60,6 +63,11 @@ export const handler = async (event: LambdaEvent) => {
   return createEventHandler(
     repository,
     games,
+    undefined,
+    new DynamoBettingSplitRepository(
+      DynamoDBDocumentClient.from(new DynamoDBClient({})),
+      tableName,
+    ),
   )({
     route,
     ...(subject ? { subject } : {}),

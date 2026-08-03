@@ -26,8 +26,33 @@ export interface GamesPageDto {
   readonly freshness: string | null;
 }
 
+export interface BettingSplitDto {
+  readonly id: string;
+  readonly providerId: string;
+  readonly providerEventId: string;
+  readonly canonicalEventId: string;
+  readonly canonicalEventVersion: number;
+  readonly sportKey: string;
+  readonly leagueKey: string;
+  readonly marketKey: string;
+  readonly selectionKey: string;
+  readonly point?: number;
+  readonly betPercent?: number;
+  readonly moneyPercent?: number;
+  readonly providerTimestamp: string;
+  readonly retrievedAt: string;
+  readonly scope?: string;
+}
+
+export interface SplitsPageDto extends Omit<GamesPageDto, "items"> {
+  readonly items: readonly (GameDisplayDto & {
+    readonly splits: readonly BettingSplitDto[];
+  })[];
+}
+
 export interface GamesClient {
   list(filter: GamesFilter, signal: AbortSignal): Promise<GamesPageDto>;
+  listSplits?(filter: GamesFilter, signal: AbortSignal): Promise<SplitsPageDto>;
 }
 
 export type GamesClientErrorCode =
@@ -316,6 +341,80 @@ function parsePage(value: unknown, filter: GamesFilter): GamesPageDto {
   return value as unknown as GamesPageDto;
 }
 
+function parseSplitsPage(value: unknown, filter: GamesFilter): SplitsPageDto {
+  if (!plain(value) || !Array.isArray(value["items"]))
+    throw new GamesClientError(
+      "invalid-response",
+      "The splits response was invalid.",
+    );
+  const stripped = {
+    ...value,
+    items: value["items"].map((item) => {
+      if (!plain(item) || !Array.isArray(item["splits"]))
+        throw new GamesClientError(
+          "invalid-response",
+          "The splits response was invalid.",
+        );
+      return Object.fromEntries(
+        Object.entries(item).filter(([key]) => key !== "splits"),
+      );
+    }),
+  };
+  const games = parsePage(stripped, filter);
+  const items = value["items"].map((item, index) => {
+    const raw = item as Record<string, unknown>;
+    const splits = (raw["splits"] as unknown[]).map((split) => {
+      if (!plain(split))
+        throw new GamesClientError(
+          "invalid-response",
+          "The splits response was invalid.",
+        );
+      for (const key of [
+        "id",
+        "providerId",
+        "providerEventId",
+        "canonicalEventId",
+        "sportKey",
+        "leagueKey",
+        "marketKey",
+        "selectionKey",
+        "providerTimestamp",
+        "retrievedAt",
+      ])
+        if (!boundedString(split[key]))
+          throw new GamesClientError(
+            "invalid-response",
+            "The splits response was invalid.",
+          );
+      if (
+        !Number.isSafeInteger(split["canonicalEventVersion"]) ||
+        split["canonicalEventId"] !== games.items[index]?.id ||
+        !iso(split["providerTimestamp"]) ||
+        !iso(split["retrievedAt"])
+      )
+        throw new GamesClientError(
+          "invalid-response",
+          "The splits response was invalid.",
+        );
+      for (const key of ["betPercent", "moneyPercent"])
+        if (
+          split[key] !== undefined &&
+          (typeof split[key] !== "number" ||
+            !Number.isFinite(split[key]) ||
+            split[key] < 0 ||
+            split[key] > 100)
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The splits response was invalid.",
+          );
+      return split as unknown as BettingSplitDto;
+    });
+    return { ...games.items[index]!, splits };
+  });
+  return { ...games, items };
+}
+
 function bootstrapFailure(failure: RuntimeConfigError): GamesClientError {
   return new GamesClientError("configuration", failure.message);
 }
@@ -375,6 +474,43 @@ export function createGamesClient(
           );
         }
         return parsePage(payload, filter);
+      },
+      async listSplits(filter, signal) {
+        const query = new URLSearchParams({
+          sport: filter.sport,
+          league: filter.sport === "mlb" ? "mlb" : "mls",
+          status: "scheduled",
+          day: filter.day,
+          limit: "50",
+        });
+        let response: Response;
+        try {
+          response = await fetcher(
+            `${bootstrap.value.config.apiBase}/splits?${query}`,
+            { signal },
+          );
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw new GamesClientError(
+            "request-failed",
+            "Splits are temporarily unavailable.",
+          );
+        }
+        if (!response.ok)
+          throw new GamesClientError(
+            "request-failed",
+            "Splits are temporarily unavailable.",
+          );
+        let payload: unknown;
+        try {
+          payload = await response.json();
+        } catch {
+          throw new GamesClientError(
+            "invalid-response",
+            "The splits response was invalid.",
+          );
+        }
+        return parseSplitsPage(payload, filter);
       },
     },
   };

@@ -14,6 +14,8 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  useParams,
+  useSearch,
 } from "@tanstack/react-router";
 
 import {
@@ -135,6 +137,25 @@ interface UiGamesClient {
     filter: { readonly sport: GamesSport; readonly day: string },
     signal: AbortSignal,
   ): Promise<UiGamesPage>;
+  listSplits?(
+    filter: { readonly sport: GamesSport; readonly day: string },
+    signal: AbortSignal,
+  ): Promise<
+    Omit<UiGamesPage, "items"> & {
+      readonly items: readonly (UiGamesPage["items"][number] & {
+        readonly splits: readonly {
+          readonly id: string;
+          readonly marketKey: string;
+          readonly selectionKey: string;
+          readonly betPercent?: number;
+          readonly moneyPercent?: number;
+          readonly point?: number;
+          readonly providerTimestamp: string;
+          readonly scope?: string;
+        }[];
+      })[];
+    }
+  >;
 }
 
 type GamesClientResult =
@@ -166,6 +187,9 @@ function AppShell() {
           </Link>
           <Link to="/games" activeProps={{ className: "active" }}>
             Games
+          </Link>
+          <Link to="/splits" activeProps={{ className: "active" }}>
+            Betting Splits
           </Link>
           <span>Scout Reports</span>
           <span>Performance</span>
@@ -640,11 +664,305 @@ function GamesExplorer() {
                     ? `Observed ${easternDisplay(book.observedAt)} Eastern`
                     : "Odds unavailable"}
                 </div>
+                <Link
+                  className="detail-link"
+                  to="/games/$gameId"
+                  params={{ gameId: game.id }}
+                  search={{ sport, day }}
+                >
+                  View game details
+                </Link>
               </article>
             );
           })}
         </section>
       )}
+    </>
+  );
+}
+
+function SplitsExplorer() {
+  const client = useContext(GamesClientContext);
+  const [sport, setSport] = useState<GamesSport>("mlb");
+  const [day, setDay] = useState(() => currentEasternDay());
+  const [state, setState] = useState<
+    | { readonly kind: "loading" }
+    | {
+        readonly kind: "ready";
+        readonly items: Awaited<
+          ReturnType<NonNullable<UiGamesClient["listSplits"]>>
+        >["items"];
+      }
+    | { readonly kind: "error"; readonly message: string }
+  >({ kind: "loading" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = async () => {
+      if (!client.ok || !client.value.listSplits) {
+        setState({
+          kind: "error",
+          message: "Betting splits are not configured yet.",
+        });
+        return;
+      }
+      try {
+        const page = await client.value.listSplits(
+          { sport, day },
+          controller.signal,
+        );
+        if (!controller.signal.aborted)
+          setState({ kind: "ready", items: page.items });
+      } catch {
+        if (!controller.signal.aborted)
+          setState({
+            kind: "error",
+            message: "Betting splits are temporarily unavailable.",
+          });
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [client, day, sport]);
+
+  return (
+    <>
+      <header className="explorer-header">
+        <div>
+          <p className="eyebrow">PUBLIC MONEY · FIVE-MINUTE UPDATES</p>
+          <h1>Betting splits</h1>
+          <p className="lede">
+            Compare ticket percentage with money percentage from SharpAPI's
+            consensus public-betting feed.
+          </p>
+        </div>
+        <span className="maturity beta">SharpAPI Pro</span>
+      </header>
+      <section className="game-filters" aria-label="Split filters">
+        <fieldset>
+          <legend>Sport</legend>
+          {(Object.keys(sportLabels) as GamesSport[]).map((key) => (
+            <button
+              key={key}
+              type="button"
+              className={sport === key ? "selected" : ""}
+              onClick={() => {
+                setState({ kind: "loading" });
+                setSport(key);
+              }}
+            >
+              {sportLabels[key]}
+            </button>
+          ))}
+        </fieldset>
+        <label>
+          <span>Eastern calendar day</span>
+          <input
+            type="date"
+            value={day}
+            onChange={(event) => {
+              setState({ kind: "loading" });
+              setDay(event.currentTarget.value);
+            }}
+          />
+        </label>
+      </section>
+      <div className="games-status" aria-live="polite">
+        {state.kind === "loading" && <p>Loading splits…</p>}
+        {state.kind === "error" && <p role="alert">{state.message}</p>}
+        {state.kind === "ready" &&
+          !state.items.some((item) => item.splits.length) && (
+            <p>No splits are available for these games yet.</p>
+          )}
+      </div>
+      {state.kind === "ready" && (
+        <section className="splits-list" aria-label="Betting splits">
+          {state.items
+            .filter((game) => game.splits.length > 0)
+            .map((game) => (
+              <article className="split-card" key={game.id}>
+                <div className="event-meta">
+                  <span>{easternDisplay(game.startsAt)} Eastern</span>
+                  <span>{game.splits[0]?.scope ?? "SharpAPI"}</span>
+                </div>
+                <h2>
+                  {game.participants.map(({ label }) => label).join(" vs ")}
+                </h2>
+                <Link
+                  className="detail-link"
+                  to="/games/$gameId"
+                  params={{ gameId: game.id }}
+                  search={{ sport, day }}
+                >
+                  View game details
+                </Link>
+                <div className="market-scroll" tabIndex={0}>
+                  <table className="split-board">
+                    <thead>
+                      <tr>
+                        <th>Market</th>
+                        <th>Side</th>
+                        <th>Bets</th>
+                        <th>Money</th>
+                        <th>Difference</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {game.splits.map((split) => {
+                        const gap =
+                          split.moneyPercent === undefined ||
+                          split.betPercent === undefined
+                            ? undefined
+                            : split.moneyPercent - split.betPercent;
+                        return (
+                          <tr key={split.id}>
+                            <td>{split.marketKey}</td>
+                            <td>
+                              {split.selectionKey}
+                              {split.point === undefined
+                                ? ""
+                                : ` ${linePoint(split.point)}`}
+                            </td>
+                            <td>{split.betPercent?.toFixed(0) ?? "—"}%</td>
+                            <td>{split.moneyPercent?.toFixed(0) ?? "—"}%</td>
+                            <td className={(gap ?? 0) >= 10 ? "sharp-gap" : ""}>
+                              {gap === undefined
+                                ? "—"
+                                : `${gap > 0 ? "+" : ""}${gap.toFixed(0)} pts`}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            ))}
+        </section>
+      )}
+    </>
+  );
+}
+
+function GameDetail() {
+  const client = useContext(GamesClientContext);
+  const { gameId } = useParams({ from: "/games/$gameId" });
+  const { sport, day } = useSearch({ from: "/games/$gameId" });
+  const [state, setState] = useState<
+    | { readonly kind: "loading" }
+    | {
+        readonly kind: "ready";
+        readonly game: Awaited<
+          ReturnType<NonNullable<UiGamesClient["listSplits"]>>
+        >["items"][number];
+      }
+    | { readonly kind: "error"; readonly message: string }
+  >({ kind: "loading" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = async () => {
+      if (!client.ok || !client.value.listSplits) {
+        setState({ kind: "error", message: "Game details are unavailable." });
+        return;
+      }
+      try {
+        const page = await client.value.listSplits(
+          { sport, day },
+          controller.signal,
+        );
+        const game = page.items.find((item) => item.id === gameId);
+        if (!controller.signal.aborted)
+          setState(
+            game
+              ? { kind: "ready", game }
+              : { kind: "error", message: "This game was not found." },
+          );
+      } catch {
+        if (!controller.signal.aborted)
+          setState({
+            kind: "error",
+            message: "Game details are temporarily unavailable.",
+          });
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [client, day, gameId, sport]);
+
+  if (state.kind === "loading") return <p>Loading game details…</p>;
+  if (state.kind === "error") return <p role="alert">{state.message}</p>;
+  const game = state.game;
+  return (
+    <>
+      <header className="explorer-header">
+        <div>
+          <p className="eyebrow">GAME DETAIL · SHARPAPI</p>
+          <h1>{game.participants.map(({ label }) => label).join(" vs ")}</h1>
+          <p className="lede">{easternDisplay(game.startsAt)} Eastern</p>
+        </div>
+        <Link className="detail-link" to="/games">
+          Back to games
+        </Link>
+      </header>
+      <section className="detail-grid">
+        <article className="split-card">
+          <h2>Current odds</h2>
+          {game.odds.state === "available" ? (
+            <table className="split-board">
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Line</th>
+                  <th>Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {game.odds.selections.map((price) => (
+                  <tr key={`${price.marketKey}-${price.selectionKey}`}>
+                    <td>{price.marketKey}</td>
+                    <td>{price.selectionLabel ?? price.selectionKey}</td>
+                    <td>
+                      {price.point === undefined ? "—" : linePoint(price.point)}
+                    </td>
+                    <td>{oddsPrice(price.americanOdds)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>Odds unavailable.</p>
+          )}
+        </article>
+        <article className="split-card">
+          <h2>Current betting splits</h2>
+          {game.splits.length ? (
+            <table className="split-board">
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Bets</th>
+                  <th>Money</th>
+                </tr>
+              </thead>
+              <tbody>
+                {game.splits.map((split) => (
+                  <tr key={split.id}>
+                    <td>{split.marketKey}</td>
+                    <td>{split.selectionKey}</td>
+                    <td>{split.betPercent?.toFixed(0) ?? "—"}%</td>
+                    <td>{split.moneyPercent?.toFixed(0) ?? "—"}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>Splits are not available for this game yet.</p>
+          )}
+        </article>
+      </section>
     </>
   );
 }
@@ -663,7 +981,30 @@ const gamesRoute = createRoute({
   path: "/games",
   component: GamesExplorer,
 });
-const routeTree = rootRoute.addChildren([indexRoute, gamesRoute]);
+const splitsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/splits",
+  component: SplitsExplorer,
+});
+const gameDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/games/$gameId",
+  validateSearch: (search: Record<string, unknown>) => ({
+    sport:
+      search["sport"] === "soccer" ? ("soccer" as const) : ("mlb" as const),
+    day:
+      typeof search["day"] === "string" && validDay(search["day"])
+        ? search["day"]
+        : currentEasternDay(),
+  }),
+  component: GameDetail,
+});
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  gamesRoute,
+  gameDetailRoute,
+  splitsRoute,
+]);
 const registeredRouter = createRouter({ routeTree });
 void registeredRouter;
 

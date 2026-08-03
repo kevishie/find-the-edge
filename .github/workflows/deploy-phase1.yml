@@ -51,6 +51,18 @@ jobs:
           role-to-assume: arn:aws:iam::228246988391:role/github-actions-find-the-edge-deploy
           aws-region: us-east-1
 
+      - name: Install SharpAPI credential in AWS Secrets Manager
+        env:
+          SHARP_API_KEY: ${{ secrets.SHARP_API_KEY }}
+        run: |
+          test -n "$SHARP_API_KEY"
+          secret_json=$(jq -cn --arg apiKey "$SHARP_API_KEY" '{apiKey:$apiKey}')
+          if aws secretsmanager describe-secret --secret-id find-the-edge/dev/sharpapi >/dev/null 2>&1; then
+            aws secretsmanager put-secret-value --secret-id find-the-edge/dev/sharpapi --secret-string "$secret_json" >/dev/null
+          else
+            aws secretsmanager create-secret --name find-the-edge/dev/sharpapi --secret-string "$secret_json" >/dev/null
+          fi
+
       - name: Deploy Phase 1 and run live smoke
         env:
           AWS_ACCOUNT_ID: "228246988391"

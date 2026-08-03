@@ -2,10 +2,11 @@ import {
   EventCursorError,
   EventInputError,
   type GamesRepository,
+  type BettingSplitRepository,
   type EventRepository,
 } from "@find-the-edge/database";
 export interface ApiRequest {
-  readonly route: "list" | "detail" | "games";
+  readonly route: "list" | "detail" | "games" | "splits";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
@@ -27,6 +28,7 @@ export const createEventHandler =
     gamesOrLog?:
       GamesRepository | ((entry: Readonly<Record<string, unknown>>) => void),
     suppliedLog?: (entry: Readonly<Record<string, unknown>>) => void,
+    splitsRepository?: BettingSplitRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -55,7 +57,7 @@ export const createEventHandler =
       }
       const query = request.query ?? {};
       if (
-        request.route === "games" &&
+        (request.route === "games" || request.route === "splits") &&
         (Object.keys(query).some(
           (key) =>
             !["sport", "league", "status", "day", "limit", "cursor"].includes(
@@ -72,7 +74,10 @@ export const createEventHandler =
       const rawLimit = query["limit"] ?? "20";
       if (!/^(?:[1-9]|[1-4][0-9]|50)$/.test(rawLimit))
         throw new EventInputError("invalid-event-limit");
-      const target = request.route === "games" ? gamesRepository : repository;
+      const target =
+        request.route === "games" || request.route === "splits"
+          ? gamesRepository
+          : repository;
       if (!target) throw new Error("games-repository-not-configured");
       const page = await target.list(
         {
@@ -86,7 +91,16 @@ export const createEventHandler =
         Number(rawLimit),
         query["cursor"],
       );
-      return response(200, page);
+      if (request.route !== "splits") return response(200, page);
+      if (!splitsRepository)
+        throw new Error("splits-repository-not-configured");
+      const items = await Promise.all(
+        page.items.map(async (game) => ({
+          ...game,
+          splits: await splitsRepository.listCurrent(game.id, game.version),
+        })),
+      );
+      return response(200, { ...page, items });
     } catch (error) {
       if (error instanceof EventInputError || error instanceof EventCursorError)
         return response((status = 400), { error: "invalid-request" });
