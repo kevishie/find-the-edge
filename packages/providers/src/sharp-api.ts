@@ -296,9 +296,11 @@ export function parseSharpApiOddsPage(
     input["data"].length > 200
   )
     throw new SharpApiError("invalid-response");
-  const grouped = new Map<string, Map<string, SharpApiPrice[]>>();
-  const identities = new Map<string, Omit<SharpApiEvent, "bookmakers">>();
-  const priceIds = new Set<string>();
+  const deduplicatedRows: Record<string, unknown>[] = [];
+  const priceIdentities = new Map<
+    string,
+    { readonly signature: string; readonly index: number }
+  >();
   for (const value of input["data"]) {
     if (!record(value)) throw new SharpApiError("invalid-response");
     const marketKey = market(value, league);
@@ -308,7 +310,55 @@ export function parseSharpApiOddsPage(
     const homeTeam = teamName(value, "home");
     if (
       !canonical(value["id"]) ||
-      priceIds.has(value["id"]) ||
+      !canonical(value["event_id"]) ||
+      !canonical(value["event_uuid"]) ||
+      !awayTeam ||
+      !homeTeam ||
+      !instant(value["event_start_time"]) ||
+      !canonical(value["sportsbook"], 128) ||
+      !canonical(value["market_type"], 128) ||
+      !canonical(value["market_id"]) ||
+      !canonical(value["selection"]) ||
+      !canonical(value["selection_id"])
+    )
+      throw new SharpApiError("invalid-response");
+    const signature = JSON.stringify([
+      value["event_id"],
+      value["event_uuid"],
+      awayTeam,
+      homeTeam,
+      Date.parse(value["event_start_time"]),
+      value["sportsbook"],
+      value["market_type"],
+      value["market_id"],
+      value["selection"],
+      value["selection_id"],
+    ]);
+    const previous = priceIdentities.get(value["id"]);
+    if (previous) {
+      if (previous.signature !== signature)
+        throw new SharpApiError("invalid-response");
+      // SharpAPI snapshots can repeat a stable price id after repricing it.
+      // Provider order is authoritative when timestamps have only coarse precision.
+      deduplicatedRows[previous.index] = value;
+      continue;
+    }
+    priceIdentities.set(value["id"], {
+      signature,
+      index: deduplicatedRows.length,
+    });
+    deduplicatedRows.push(value);
+  }
+  const grouped = new Map<string, Map<string, SharpApiPrice[]>>();
+  const identities = new Map<string, Omit<SharpApiEvent, "bookmakers">>();
+  for (const value of deduplicatedRows) {
+    const marketKey = market(value, league);
+    const selectionKey = selection(value, league);
+    if (!marketKey || !selectionKey) continue;
+    const awayTeam = teamName(value, "away");
+    const homeTeam = teamName(value, "home");
+    if (
+      !canonical(value["id"]) ||
       !canonical(value["event_id"]) ||
       !canonical(value["event_uuid"]) ||
       !awayTeam ||
@@ -330,7 +380,6 @@ export function parseSharpApiOddsPage(
       !instant(value["timestamp"])
     )
       throw new SharpApiError("invalid-response");
-    priceIds.add(value["id"]);
     const eventId = value["event_id"];
     const existing = identities.get(eventId);
     let identity = {

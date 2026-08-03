@@ -881,6 +881,14 @@ function SplitsExplorer() {
         </div>
         <span className="maturity beta">SharpAPI Pro</span>
       </header>
+      <aside className="split-signal-context" aria-label="How to use splits">
+        <strong>One signal, not the answer.</strong>
+        <span>
+          DraftKings reflects recreational betting; Circa is sharp-adjacent. No
+          sharp sportsbook publishes splits, so compare this evidence with line
+          movement and +EV analysis before acting.
+        </span>
+      </aside>
       <section className="game-filters" aria-label="Split filters">
         <fieldset>
           <legend>Sport</legend>
@@ -1224,6 +1232,10 @@ function GameDetail() {
         </article>
         <article className="split-card">
           <h2>Current betting splits</h2>
+          <p className="split-card-context">
+            DraftKings is recreational and Circa is sharp-adjacent. Treat splits
+            as one signal alongside line movement and +EV analysis.
+          </p>
           {game.splits.length ? (
             <table className="split-board">
               <thead>

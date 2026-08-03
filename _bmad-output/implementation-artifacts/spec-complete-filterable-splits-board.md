@@ -17,6 +17,8 @@ context:
 
 **Approach:** Show every scheduled game from the splits API exactly once, render missing values as `—`, and add an accessible logo-based sportsbook selector. Treat SharpAPI's returned scopes as the source of truth: expose every scope received, identify its documented `consensus` scope as DraftKings plus Circa, and do not claim that all account-selected odds books provide betting splits.
 
+**Signal semantics:** DraftKings represents recreational action and Circa is sharp-adjacent; no sharp sportsbook publishes public splits. Product copy must present splits as one input to evaluate beside line movement and +EV analysis, never as a standalone sharp-betting verdict.
+
 ## Boundaries & Constraints
 
 **Always:** Default to an “All books” board; present available sportsbook scopes in deterministic order; label `consensus` as the documented DraftKings-plus-Circa aggregate rather than a standalone sportsbook; use local, provenance-documented logo assets with readable accessible names and a resilient text/initial fallback; preserve provider timestamps and freshness warnings; show a per-game “No split data” state without hiding the matchup; keep one game-detail link per matchup.
@@ -65,6 +67,8 @@ context:
 ## Spec Change Log
 
 - 2026-08-03: Human clarified SharpAPI's documented split sources are DraftKings and Circa. Updated the approved intent and UI naming so `consensus` is presented as their aggregate, not a standalone sportsbook or all-books consensus.
+- 2026-08-03: Human clarified the analytical limits of public splits. Added explicit board and game-detail guidance that splits are one signal alongside line movement and +EV analysis.
+- 2026-08-03: Hardened live odds parsing for SharpAPI snapshot rows that repeat a stable price id after repricing; retain the provider's last compatible observation while rejecting identity conflicts.
 - 2026-08-03: Live deployment exposed `public_bet_pct: null` on valid SharpAPI MLB odds rows. The parser now treats null as unavailable rather than malformed, preventing odds ingestion from aborting before split ingestion.
 
 ## Design Notes

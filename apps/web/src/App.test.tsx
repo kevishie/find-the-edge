@@ -452,6 +452,10 @@ describe("Betting splits", () => {
     expect(screen.getByText("+26 pts more money")).toBeInTheDocument();
     expect(screen.getByText("−26 pts more bets")).toBeInTheDocument();
     expect(screen.getByText("DK + Circa Consensus")).toBeInTheDocument();
+    expect(screen.getByText("One signal, not the answer.")).toBeInTheDocument();
+    expect(
+      screen.getByText(/No sharp sportsbook publishes splits/),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("link", {
         name: /View Boston versus New York game details/,

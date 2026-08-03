@@ -796,6 +796,38 @@ footer {
   align-items: center;
 }
 
+.split-signal-context {
+  display: flex;
+  gap: 12px;
+  margin-top: 22px;
+  padding: 14px 16px;
+  border: 1px solid #3d3351;
+  border-radius: 9px;
+  color: #aaa3b5;
+  background: rgba(139, 92, 246, 0.08);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.split-signal-context strong {
+  flex: 0 0 auto;
+  color: #c8aefc;
+}
+
+.split-card-context {
+  margin: -4px 0 16px;
+  color: #918b9e;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .split-signal-context {
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
 .game-filters {
   display: flex;
   flex-wrap: wrap;
