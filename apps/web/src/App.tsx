@@ -697,6 +697,7 @@ function SplitsExplorer() {
         >["items"];
         readonly freshness: string | null | undefined;
         readonly snapshotAt: string | null | undefined;
+        readonly observedAt: number;
       }
     | { readonly kind: "error"; readonly message: string }
   >({ kind: "loading" });
@@ -722,6 +723,7 @@ function SplitsExplorer() {
             items: page.items,
             freshness: page.freshness,
             snapshotAt: page.snapshotAt,
+            observedAt: Date.now(),
           });
       } catch {
         if (!controller.signal.aborted)
@@ -784,7 +786,12 @@ function SplitsExplorer() {
     (left, right) => Date.parse(right) - Date.parse(left),
   )[0];
   const ageMinutes = newestObservation
-    ? Math.max(0, (Date.now() - Date.parse(newestObservation)) / 60_000)
+    ? Math.max(
+        0,
+        ((state.kind === "ready" ? state.observedAt : 0) -
+          Date.parse(newestObservation)) /
+          60_000,
+      )
     : undefined;
   const freshnessState =
     ageMinutes === undefined

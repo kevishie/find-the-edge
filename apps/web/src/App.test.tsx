@@ -568,7 +568,8 @@ describe("Betting splits", () => {
 
   it("renders the draw row for a three-way soccer moneyline", async () => {
     const base = splitGame.splits[0]!;
-    const { point: _point, ...baseWithoutPoint } = base;
+    const { point: omittedPoint, ...baseWithoutPoint } = base;
+    void omittedPoint;
     const drawGame: SplitsPageDto["items"][number] = {
       ...soccerGame,
       splits: [
@@ -632,7 +633,8 @@ describe("Betting splits", () => {
     expect(screen.queryByText(/LIVE CONSENSUS/)).not.toBeInTheDocument();
     unmount();
 
-    const { scope: _scope, ...splitWithoutScope } = splitGame.splits[0]!;
+    const { scope: omittedScope, ...splitWithoutScope } = splitGame.splits[0]!;
+    void omittedScope;
     const unknownSplit = {
       ...splitWithoutScope,
       providerTimestamp: "",
