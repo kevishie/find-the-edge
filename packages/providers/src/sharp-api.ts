@@ -406,7 +406,7 @@ export function parseSharpApiOddsPage(
 const splitPercent = (value: unknown) => {
   if (!finite(value) || value < 0 || value > 1)
     throw new SharpApiError("invalid-response");
-  return value * 100;
+  return Math.round(value * 10_000) / 100;
 };
 
 export function parseSharpApiSplitPage(
@@ -452,35 +452,36 @@ export function parseSharpApiSplitPage(
       const handle = record(raw["handle_pct"]) ? raw["handle_pct"] : undefined;
       const bets = record(raw["bets_pct"]) ? raw["bets_pct"] : undefined;
       if (!handle && !bets) throw new SharpApiError("invalid-response");
-      const selections = sides.map((side) => {
+      const selections = sides.flatMap((side) => {
         const pointValue =
           marketKey === "total" ? raw["line"] : raw[`${side}_${pointField}`];
-        if (!finite(pointValue)) throw new SharpApiError("invalid-response");
-        const rawBetPercent = bets?.[side];
-        const rawMoneyPercent = handle?.[side];
+        const rawBetPercent = bets?.[side] ?? undefined;
+        const rawMoneyPercent = handle?.[side] ?? undefined;
         const betPercent =
           rawBetPercent === undefined ? undefined : splitPercent(rawBetPercent);
         const moneyPercent =
           rawMoneyPercent === undefined
             ? undefined
             : splitPercent(rawMoneyPercent);
-        if (betPercent === undefined && moneyPercent === undefined)
-          throw new SharpApiError("invalid-response");
-        return {
-          selectionKey: side,
-          ...(marketKey === "moneyline"
-            ? { americanOdds: pointValue }
-            : { point: pointValue }),
-          ...(betPercent === undefined ? {} : { betPercent }),
-          ...(moneyPercent === undefined ? {} : { moneyPercent }),
-        };
+        if (betPercent === undefined && moneyPercent === undefined) return [];
+        return [
+          {
+            selectionKey: side,
+            ...(finite(pointValue)
+              ? marketKey === "moneyline"
+                ? { americanOdds: pointValue }
+                : { point: pointValue }
+              : {}),
+            ...(betPercent === undefined ? {} : { betPercent }),
+            ...(moneyPercent === undefined ? {} : { moneyPercent }),
+          },
+        ];
       });
-      markets.push({ marketKey, selections });
+      if (selections.length > 0) markets.push({ marketKey, selections });
     };
     add("spread", ["away", "home"], "odds");
     add("total", ["over", "under"], "odds");
     add("moneyline", ["away", "home"], "odds");
-    if (!markets.length) throw new SharpApiError("invalid-response");
     return {
       providerEventId: value["event_id"],
       sport: value["sport"],

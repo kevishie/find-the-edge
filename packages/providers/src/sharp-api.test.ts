@@ -135,6 +135,38 @@ describe("SharpAPI activation boundary", () => {
     ).toMatchObject({ items: [], hasMore: false });
   });
 
+  it("preserves available split percentages when the provider returns nulls", () => {
+    const page = parseSharpApiSplitPage(
+      {
+        data: [
+          {
+            event_id: "mlb-away-home-2026-08-03",
+            sport: "baseball",
+            league: "mlb",
+            sportsbook: "draftkings",
+            away_team: "Away Club",
+            home_team: "Home Club",
+            spread: {
+              away_odds: -1.5,
+              home_odds: null,
+              handle_pct: { away: 0.62, home: null },
+              bets_pct: { away: null, home: 0.56 },
+            },
+            total: null,
+            moneyline: null,
+            fetched_at: "2026-08-03T15:00:00.000Z",
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      "2026-08-03T15:00:01.000Z" as never,
+    );
+    expect(page.items[0]?.markets[0]?.selections).toEqual([
+      { selectionKey: "away", point: -1.5, moneyPercent: 62 },
+      { selectionKey: "home", betPercent: 56 },
+    ]);
+  });
+
   it("rejects null split data unless pagination proves the page is empty", () => {
     expect(() =>
       parseSharpApiSplitPage(
