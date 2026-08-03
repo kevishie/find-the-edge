@@ -371,6 +371,7 @@ function validTemplate() {
               {
                 Effect: "Allow",
                 Action: [
+                  "dynamodb:BatchGetItem",
                   "dynamodb:ConditionCheckItem",
                   "dynamodb:GetItem",
                   "dynamodb:Query",
