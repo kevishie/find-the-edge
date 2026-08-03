@@ -109,6 +109,8 @@ function NumberField({
 
 type GamesSport = "mlb" | "soccer";
 interface UiGamesPage {
+  readonly snapshotAt?: string | null;
+  readonly freshness?: string | null;
   readonly items: readonly {
     readonly id: string;
     readonly sportKey: string;
@@ -151,6 +153,7 @@ interface UiGamesClient {
           readonly moneyPercent?: number;
           readonly point?: number;
           readonly providerTimestamp: string;
+          readonly retrievedAt?: string;
           readonly scope?: string;
         }[];
       })[];
@@ -692,6 +695,8 @@ function SplitsExplorer() {
         readonly items: Awaited<
           ReturnType<NonNullable<UiGamesClient["listSplits"]>>
         >["items"];
+        readonly freshness: string | null | undefined;
+        readonly snapshotAt: string | null | undefined;
       }
     | { readonly kind: "error"; readonly message: string }
   >({ kind: "loading" });
@@ -712,7 +717,12 @@ function SplitsExplorer() {
           controller.signal,
         );
         if (!controller.signal.aborted)
-          setState({ kind: "ready", items: page.items });
+          setState({
+            kind: "ready",
+            items: page.items,
+            freshness: page.freshness,
+            snapshotAt: page.snapshotAt,
+          });
       } catch {
         if (!controller.signal.aborted)
           setState({
@@ -725,11 +735,118 @@ function SplitsExplorer() {
     return () => controller.abort();
   }, [client, day, sport]);
 
+  const gamesWithSplits =
+    state.kind === "ready"
+      ? state.items.filter((game) => game.splits.length > 0)
+      : [];
+  const observationCount = gamesWithSplits.reduce(
+    (total, game) => total + game.splits.length,
+    0,
+  );
+  const scopeLabel = (scope: string | undefined) =>
+    scope?.trim() ? scope : "Scope unavailable";
+  const scopes = [
+    ...new Set(
+      gamesWithSplits.flatMap((game) =>
+        game.splits.map((split) => scopeLabel(split.scope)),
+      ),
+    ),
+  ];
+  const boards = gamesWithSplits.flatMap((game) =>
+    [...new Set(game.splits.map((split) => scopeLabel(split.scope)))].map(
+      (scope) => ({
+        game,
+        scope,
+        splits: game.splits.filter(
+          (split) => scopeLabel(split.scope) === scope,
+        ),
+      }),
+    ),
+  );
+  const timestampCandidates =
+    state.kind === "ready"
+      ? [
+          ...gamesWithSplits.flatMap((game) =>
+            game.splits.flatMap((split) => [
+              split.providerTimestamp,
+              split.retrievedAt,
+            ]),
+          ),
+          state.freshness,
+          state.snapshotAt,
+        ].filter(
+          (timestamp): timestamp is string =>
+            typeof timestamp === "string" &&
+            Number.isFinite(Date.parse(timestamp)),
+        )
+      : [];
+  const newestObservation = timestampCandidates.sort(
+    (left, right) => Date.parse(right) - Date.parse(left),
+  )[0];
+  const ageMinutes = newestObservation
+    ? Math.max(0, (Date.now() - Date.parse(newestObservation)) / 60_000)
+    : undefined;
+  const freshnessState =
+    ageMinutes === undefined
+      ? { label: "Freshness unknown", className: "freshness-unknown" }
+      : ageMinutes <= 15
+        ? { label: "Current", className: "freshness-current" }
+        : ageMinutes <= 60
+          ? { label: "Aging", className: "freshness-aging" }
+          : { label: "Stale", className: "freshness-stale" };
+
+  const selectSplit = (
+    splits: (typeof boards)[number]["splits"],
+    market: "spread" | "total" | "moneyline",
+    selectionKey: "away" | "home" | "over" | "under" | "draw",
+  ) => {
+    const marketKeys =
+      market === "moneyline" ? ["moneyline", "three_way_moneyline"] : [market];
+    return [...splits]
+      .filter(
+        (split) =>
+          marketKeys.includes(split.marketKey) &&
+          split.selectionKey === selectionKey,
+      )
+      .sort(
+        (left, right) =>
+          Date.parse(right.providerTimestamp) -
+            Date.parse(left.providerTimestamp) ||
+          left.id.localeCompare(right.id),
+      )[0];
+  };
+
+  const percentage = (value: number | undefined) =>
+    value === undefined ? "—" : `${value.toFixed(0)}%`;
+
+  const gapDetails = (
+    moneyPercent: number | undefined,
+    betPercent: number | undefined,
+  ) => {
+    if (moneyPercent === undefined || betPercent === undefined)
+      return undefined;
+    const gap = moneyPercent - betPercent;
+    const magnitude = Math.abs(gap);
+    const direction = gap > 0 ? "more money" : gap < 0 ? "more bets" : "even";
+    return {
+      className:
+        magnitude >= 20
+          ? "split-gap split-gap-strong"
+          : magnitude >= 10
+            ? "split-gap split-gap-notable"
+            : "split-gap",
+      label:
+        direction === "even"
+          ? "Even money and bets"
+          : `${gap > 0 ? "+" : "−"}${magnitude.toFixed(0)} pts ${direction}`,
+    };
+  };
+
   return (
     <>
       <header className="explorer-header">
         <div>
-          <p className="eyebrow">PUBLIC MONEY · FIVE-MINUTE UPDATES</p>
+          <p className="eyebrow">PUBLIC MONEY · PROVIDER-TIMESTAMPED</p>
           <h1>Betting splits</h1>
           <p className="lede">
             Compare ticket percentage with money percentage from SharpAPI's
@@ -767,79 +884,185 @@ function SplitsExplorer() {
           />
         </label>
       </section>
-      <div className="games-status" aria-live="polite">
-        {state.kind === "loading" && <p>Loading splits…</p>}
-        {state.kind === "error" && <p role="alert">{state.message}</p>}
-        {state.kind === "ready" &&
-          !state.items.some((item) => item.splits.length) && (
-            <p>No splits are available for these games yet.</p>
-          )}
-      </div>
-      {state.kind === "ready" && (
-        <section className="splits-list" aria-label="Betting splits">
-          {state.items
-            .filter((game) => game.splits.length > 0)
-            .map((game) => (
-              <article className="split-card" key={game.id}>
-                <div className="event-meta">
-                  <span>{easternDisplay(game.startsAt)} Eastern</span>
-                  <span>{game.splits[0]?.scope ?? "SharpAPI"}</span>
-                </div>
-                <h2>
-                  {game.participants.map(({ label }) => label).join(" vs ")}
-                </h2>
-                <Link
-                  className="detail-link"
-                  to="/games/$gameId"
-                  params={{ gameId: game.id }}
-                  search={{ sport, day }}
-                >
-                  View game details
-                </Link>
-                <div className="market-scroll" tabIndex={0}>
-                  <table className="split-board">
-                    <thead>
-                      <tr>
-                        <th>Market</th>
-                        <th>Side</th>
-                        <th>Bets</th>
-                        <th>Money</th>
-                        <th>Difference</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {game.splits.map((split) => {
-                        const gap =
-                          split.moneyPercent === undefined ||
-                          split.betPercent === undefined
-                            ? undefined
-                            : split.moneyPercent - split.betPercent;
-                        return (
-                          <tr key={split.id}>
-                            <td>{split.marketKey}</td>
-                            <td>
-                              {split.selectionKey}
-                              {split.point === undefined
-                                ? ""
-                                : ` ${linePoint(split.point)}`}
-                            </td>
-                            <td>{split.betPercent?.toFixed(0) ?? "—"}%</td>
-                            <td>{split.moneyPercent?.toFixed(0) ?? "—"}%</td>
-                            <td className={(gap ?? 0) >= 10 ? "sharp-gap" : ""}>
-                              {gap === undefined
-                                ? "—"
-                                : `${gap > 0 ? "+" : ""}${gap.toFixed(0)} pts`}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </article>
-            ))}
+      {state.kind === "ready" && gamesWithSplits.length > 0 && (
+        <section className="splits-toolbar" aria-label="Splits summary">
+          <div>
+            <span className={`terminal-kicker ${freshnessState.className}`}>
+              {freshnessState.label} consensus board
+            </span>
+            <strong>
+              {gamesWithSplits.length} games · {observationCount} observations
+            </strong>
+          </div>
+          <dl>
+            <div>
+              <dt>Scopes</dt>
+              <dd>{scopes.join(" · ")}</dd>
+            </div>
+            <div>
+              <dt>Freshest evidence</dt>
+              <dd>
+                {newestObservation
+                  ? `${easternDisplay(newestObservation)} Eastern`
+                  : "Timestamp unavailable"}
+              </dd>
+            </div>
+          </dl>
         </section>
       )}
+      <section className="splits-terminal" aria-label="Betting splits">
+        <div className="terminal-state" aria-live="polite">
+          {state.kind === "loading" && <p>Loading current split evidence…</p>}
+          {state.kind === "error" && <p role="alert">{state.message}</p>}
+          {state.kind === "ready" && gamesWithSplits.length === 0 && (
+            <p>No splits are available for these games yet.</p>
+          )}
+        </div>
+        {state.kind === "ready" && gamesWithSplits.length > 0 && (
+          <div
+            className="market-scroll splits-scroll"
+            tabIndex={0}
+            role="region"
+            aria-label="Betting splits comparison table; scroll horizontally for all markets"
+          >
+            <table className="split-board">
+              <caption className="sr-only">
+                Betting splits by game and team. Handle means money percentage;
+                bets means ticket percentage.
+              </caption>
+              <thead>
+                <tr>
+                  <th className="split-team-heading" rowSpan={2} scope="col">
+                    Game / team
+                  </th>
+                  {(["Spread", "Total", "Moneyline"] as const).map((market) => (
+                    <th key={market} colSpan={3} scope="colgroup">
+                      {market}
+                    </th>
+                  ))}
+                </tr>
+                <tr>
+                  {(["Spread", "Total", "Moneyline"] as const).flatMap(
+                    (market) =>
+                      (["Line", "Handle", "Bets"] as const).map((metric) => (
+                        <th key={`${market}-${metric}`} scope="col">
+                          {metric}
+                        </th>
+                      )),
+                  )}
+                </tr>
+              </thead>
+              {boards.map(({ game, scope, splits }) => {
+                const hasDraw = splits.some(
+                  (split) =>
+                    split.marketKey === "three_way_moneyline" &&
+                    split.selectionKey === "draw",
+                );
+                const rows = [
+                  {
+                    key: "away" as const,
+                    label: game.participants[0]?.label ?? "Unknown team",
+                  },
+                  {
+                    key: "home" as const,
+                    label: game.participants[1]?.label ?? "Unknown team",
+                  },
+                  ...(hasDraw ? [{ key: "draw" as const, label: "Draw" }] : []),
+                ];
+                return (
+                  <tbody
+                    key={`${game.id}:${scope}`}
+                    className="split-game-group"
+                  >
+                    {rows.map((row, rowIndex) => {
+                      const spread =
+                        row.key === "draw"
+                          ? undefined
+                          : selectSplit(splits, "spread", row.key);
+                      const totalKey =
+                        row.key === "away"
+                          ? "over"
+                          : row.key === "home"
+                            ? "under"
+                            : undefined;
+                      const total = totalKey
+                        ? selectSplit(splits, "total", totalKey)
+                        : undefined;
+                      const moneyline = selectSplit(
+                        splits,
+                        "moneyline",
+                        row.key,
+                      );
+                      const cells = [spread, total, moneyline];
+                      return (
+                        <tr key={row.key}>
+                          <th className="split-team" scope="row">
+                            {rowIndex === 0 && (
+                              <span className="split-start">
+                                {easternDisplay(game.startsAt)} Eastern
+                              </span>
+                            )}
+                            <span className="split-team-name">{row.label}</span>
+                            {rowIndex === 0 && (
+                              <span className="split-scope">{scope}</span>
+                            )}
+                            {rowIndex === rows.length - 1 && (
+                              <Link
+                                className="split-game-link"
+                                to="/games/$gameId"
+                                params={{ gameId: game.id }}
+                                search={{ sport, day }}
+                                aria-label={`View ${game.participants
+                                  .map(({ label }) => label)
+                                  .join(" versus ")} game details`}
+                              >
+                                Game details →
+                              </Link>
+                            )}
+                          </th>
+                          {cells.flatMap((split, marketIndex) => {
+                            const gap = gapDetails(
+                              split?.moneyPercent,
+                              split?.betPercent,
+                            );
+                            return [
+                              <td
+                                key={`${marketIndex}-line`}
+                                className="split-line"
+                              >
+                                {split?.point === undefined
+                                  ? "—"
+                                  : marketIndex === 1
+                                    ? `${row.key === "away" ? "O" : "U"} ${String(split.point)}`
+                                    : linePoint(split.point)}
+                              </td>,
+                              <td key={`${marketIndex}-handle`}>
+                                <span className="split-percent">
+                                  {percentage(split?.moneyPercent)}
+                                </span>
+                                {gap && (
+                                  <span className={gap.className}>
+                                    {gap.label}
+                                  </span>
+                                )}
+                              </td>,
+                              <td key={`${marketIndex}-bets`}>
+                                <span className="split-percent">
+                                  {percentage(split?.betPercent)}
+                                </span>
+                              </td>,
+                            ];
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                );
+              })}
+            </table>
+          </div>
+        )}
+      </section>
     </>
   );
 }

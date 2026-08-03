@@ -2,7 +2,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
-import { GamesClientError, type GamesClient, type GamesPageDto } from "./api";
+import {
+  GamesClientError,
+  type GamesClient,
+  type GamesPageDto,
+  type SplitsPageDto,
+} from "./api";
 
 const game = {
   id: "event:mlb%3Amlb:fixture-1",
@@ -137,6 +142,122 @@ const page = (items: GamesPageDto["items"] = [game]): GamesPageDto => ({
   hasMoreUnknown: false,
   snapshotAt: "2026-08-01T12:30:00.000Z",
   freshness: "2026-08-01T12:30:00.000Z",
+});
+
+const splitGame: SplitsPageDto["items"][number] = {
+  ...game,
+  splits: [
+    {
+      id: "split-away-spread",
+      providerId: "sharpapi",
+      providerEventId: "sharp-1",
+      canonicalEventId: game.id,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      marketKey: "spread",
+      selectionKey: "away",
+      point: 1.5,
+      betPercent: 38,
+      moneyPercent: 64,
+      providerTimestamp: "2026-08-01T12:25:00.000Z",
+      retrievedAt: "2026-08-01T12:26:00.000Z",
+      scope: "Consensus · 15 books",
+    },
+    {
+      id: "split-home-spread",
+      providerId: "sharpapi",
+      providerEventId: "sharp-1",
+      canonicalEventId: game.id,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      marketKey: "spread",
+      selectionKey: "home",
+      point: -1.5,
+      betPercent: 62,
+      moneyPercent: 36,
+      providerTimestamp: "2026-08-01T12:25:00.000Z",
+      retrievedAt: "2026-08-01T12:26:00.000Z",
+      scope: "Consensus · 15 books",
+    },
+    {
+      id: "split-over-total",
+      providerId: "sharpapi",
+      providerEventId: "sharp-1",
+      canonicalEventId: game.id,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      marketKey: "total",
+      selectionKey: "over",
+      point: 8.5,
+      betPercent: 51,
+      moneyPercent: 55,
+      providerTimestamp: "2026-08-01T12:25:00.000Z",
+      retrievedAt: "2026-08-01T12:26:00.000Z",
+    },
+    {
+      id: "split-under-total",
+      providerId: "sharpapi",
+      providerEventId: "sharp-1",
+      canonicalEventId: game.id,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      marketKey: "total",
+      selectionKey: "under",
+      point: 8.5,
+      betPercent: 49,
+      providerTimestamp: "2026-08-01T12:25:00.000Z",
+      retrievedAt: "2026-08-01T12:26:00.000Z",
+    },
+    {
+      id: "split-away-moneyline",
+      providerId: "sharpapi",
+      providerEventId: "sharp-1",
+      canonicalEventId: game.id,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "away",
+      betPercent: 45,
+      moneyPercent: 58,
+      providerTimestamp: "2026-08-01T12:25:00.000Z",
+      retrievedAt: "2026-08-01T12:26:00.000Z",
+    },
+    {
+      id: "split-home-moneyline",
+      providerId: "sharpapi",
+      providerEventId: "sharp-1",
+      canonicalEventId: game.id,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "home",
+      betPercent: 55,
+      moneyPercent: 42,
+      providerTimestamp: "2026-08-01T12:25:00.000Z",
+      retrievedAt: "2026-08-01T12:26:00.000Z",
+    },
+  ],
+};
+
+const splitsPage = (
+  items: SplitsPageDto["items"] = [
+    {
+      ...splitGame,
+      splits: splitGame.splits.map((split) => ({
+        ...split,
+        scope: "Consensus · 15 books",
+      })),
+    },
+  ],
+): SplitsPageDto => ({
+  ...page([]),
+  items,
 });
 
 describe("Edge Lab", () => {
@@ -290,5 +411,252 @@ describe("Games", () => {
     expect(
       screen.queryByRole("heading", { name: "Boston vs New York" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("Betting splits", () => {
+  it("renders paired team rows across spread, total, and moneyline", async () => {
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage());
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), listSplits },
+        }}
+      />,
+    );
+
+    expect((await screen.findByText("Boston")).closest("th")).toHaveAttribute(
+      "scope",
+      "row",
+    );
+    expect(screen.getByText("New York").closest("th")).toHaveAttribute(
+      "scope",
+      "row",
+    );
+    expect(
+      screen.getByRole("columnheader", { name: "Spread" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Total" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Moneyline" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("+1.5")).toBeInTheDocument();
+    expect(screen.getByText("O 8.5")).toBeInTheDocument();
+    expect(screen.getByText("U 8.5")).toBeInTheDocument();
+    expect(screen.getByText("+26 pts more money")).toBeInTheDocument();
+    expect(screen.getByText("−26 pts more bets")).toBeInTheDocument();
+    expect(screen.getAllByText(/Consensus · 15 books/)).toHaveLength(2);
+    expect(
+      screen.getByRole("link", {
+        name: /View Boston versus New York game details/,
+      }),
+    ).toHaveAttribute("href", expect.stringContaining("sport=mlb"));
+  });
+
+  it("preserves missing provider values without manufacturing a percentage", async () => {
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(
+        splitsPage([
+          {
+            ...splitGame,
+            splits: [splitGame.splits[3]!],
+          },
+        ]),
+      );
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    await screen.findByText("Boston");
+    expect(screen.queryByText("—%")).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.getByText("49%")).toBeInTheDocument();
+  });
+
+  it("keeps filters usable for empty results and reports failures", async () => {
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValueOnce(splitsPage([]))
+      .mockRejectedValueOnce(new Error("redacted provider failure"));
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("No splits are available for these games yet."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "MLS" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Betting splits are temporarily unavailable.",
+    );
+    expect(
+      screen.queryByText("redacted provider failure"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps provider scopes in separate game groups", async () => {
+    const base = splitGame.splits[0]!;
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(
+        splitsPage([
+          {
+            ...splitGame,
+            splits: [
+              { ...base, id: "scope-a", scope: "Book A", moneyPercent: 71 },
+              { ...base, id: "scope-b", scope: "Book B", moneyPercent: 29 },
+            ],
+          },
+        ]),
+      );
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    expect(await screen.findByText("Book A")).toBeInTheDocument();
+    expect(screen.getByText("Book B")).toBeInTheDocument();
+    expect(screen.getByText("71%")).toBeInTheDocument();
+    expect(screen.getByText("29%")).toBeInTheDocument();
+    expect(screen.getAllByText("Boston")).toHaveLength(2);
+  });
+
+  it("shows multiple games in the same comparison terminal", async () => {
+    const secondGame = {
+      ...splitGame,
+      id: "event:mlb:fixture-2",
+      participants: [
+        { id: "participant:mlb:chicago", label: "Chicago" },
+        { id: "participant:mlb:detroit", label: "Detroit" },
+      ],
+      splits: splitGame.splits.map((split) => ({
+        ...split,
+        id: `${split.id}-2`,
+        canonicalEventId: "event:mlb:fixture-2",
+        scope: "Consensus · 15 books",
+      })),
+    } satisfies SplitsPageDto["items"][number];
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage([splitGame, secondGame]));
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    expect(await screen.findByText("Chicago")).toBeInTheDocument();
+    expect(screen.getByText("Detroit")).toBeInTheDocument();
+    expect(screen.getByText(/2 games · 12 observations/)).toBeInTheDocument();
+  });
+
+  it("renders the draw row for a three-way soccer moneyline", async () => {
+    const base = splitGame.splits[0]!;
+    const { point: _point, ...baseWithoutPoint } = base;
+    const drawGame: SplitsPageDto["items"][number] = {
+      ...soccerGame,
+      splits: [
+        {
+          ...baseWithoutPoint,
+          id: "soccer-away",
+          canonicalEventId: soccerGame.id,
+          sportKey: "soccer",
+          leagueKey: "mls",
+          marketKey: "three_way_moneyline",
+          selectionKey: "away",
+          moneyPercent: 30,
+          betPercent: 28,
+          scope: "Soccer consensus",
+        },
+        {
+          ...baseWithoutPoint,
+          id: "soccer-draw",
+          canonicalEventId: soccerGame.id,
+          sportKey: "soccer",
+          leagueKey: "mls",
+          marketKey: "three_way_moneyline",
+          selectionKey: "draw",
+          moneyPercent: 41,
+          betPercent: 36,
+          scope: "Soccer consensus",
+        },
+      ],
+    };
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage([drawGame]));
+    render(
+      <App
+        initialPath="/splits?sport=soccer"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    expect(await screen.findByText("Draw")).toBeInTheDocument();
+    expect(screen.getByText("41%")).toBeInTheDocument();
+    expect(screen.getByText("36%")).toBeInTheDocument();
+  });
+
+  it("labels stale and unknown freshness without claiming live data", async () => {
+    const staleClient = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage());
+    const { unmount } = render(
+      <App
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), listSplits: staleClient },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByText(/Stale consensus board/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/LIVE CONSENSUS/)).not.toBeInTheDocument();
+    unmount();
+
+    const { scope: _scope, ...splitWithoutScope } = splitGame.splits[0]!;
+    const unknownSplit = {
+      ...splitWithoutScope,
+      providerTimestamp: "",
+      retrievedAt: "",
+    };
+    const unknownClient = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue({
+        ...splitsPage([{ ...splitGame, splits: [unknownSplit] }]),
+        freshness: null,
+        snapshotAt: null,
+      });
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), listSplits: unknownClient },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByText(/Freshness unknown consensus board/),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Scope unavailable")).toHaveLength(2);
   });
 });
