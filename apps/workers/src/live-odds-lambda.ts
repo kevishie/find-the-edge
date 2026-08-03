@@ -122,5 +122,5 @@ export const handler = async (event?: unknown) => {
   process.stdout.write(
     `${JSON.stringify({ event: "live-odds-ingestion-complete", provider, summary })}\n`,
   );
-  return { provider, summary };
+  return summary;
 };

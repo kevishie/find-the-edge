@@ -33,6 +33,7 @@ export interface SharpApiIngestionSummary {
   readonly observations: number;
   readonly splits: number;
   readonly splitsEntitled: boolean;
+  readonly skippedLeagues: number;
 }
 
 const providerEvent = (
@@ -343,5 +344,6 @@ export async function ingestSharpApi(
     observations,
     splits,
     splitsEntitled,
+    skippedLeagues: 0,
   };
 }
