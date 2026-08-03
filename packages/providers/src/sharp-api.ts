@@ -303,8 +303,7 @@ export function parseSharpApiOddsPage(
     if (!record(value)) throw new SharpApiError("invalid-response");
     const marketKey = market(value, league);
     const selectionKey = selection(value, league);
-    if (!marketKey || !selectionKey)
-      throw new SharpApiError("invalid-response");
+    if (!marketKey || !selectionKey) continue;
     const awayTeam = teamName(value, "away");
     const homeTeam = teamName(value, "home");
     if (
@@ -334,15 +333,34 @@ export function parseSharpApiOddsPage(
     priceIds.add(value["id"]);
     const eventId = value["event_id"];
     const existing = identities.get(eventId);
-    const identity = {
+    let identity = {
       providerEventId: eventId,
       providerEventUuid: value["event_uuid"],
       awayTeam,
       homeTeam,
       startsAt: iso(value["event_start_time"]),
     };
-    if (existing && JSON.stringify(existing) !== JSON.stringify(identity))
-      throw new SharpApiError("invalid-response");
+    if (existing) {
+      const sameOrientation =
+        existing.awayTeam === identity.awayTeam &&
+        existing.homeTeam === identity.homeTeam;
+      const reversedOrientation =
+        existing.awayTeam === identity.homeTeam &&
+        existing.homeTeam === identity.awayTeam;
+      const startDelta = Math.abs(
+        Date.parse(existing.startsAt) - Date.parse(identity.startsAt),
+      );
+      if (
+        existing.providerEventUuid !== identity.providerEventUuid ||
+        (!sameOrientation && !reversedOrientation) ||
+        startDelta > 120_000
+      )
+        continue;
+      // A minority of SharpAPI sportsbook rows reverse soccer participants.
+      // Dropping the outlier is safer than assigning its prices to the wrong side.
+      if (reversedOrientation) continue;
+      identity = existing;
+    }
     identities.set(eventId, identity);
     const books = grouped.get(eventId) ?? new Map<string, SharpApiPrice[]>();
     const book = value["sportsbook"];
