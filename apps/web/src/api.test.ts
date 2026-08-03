@@ -223,6 +223,292 @@ describe("games client", () => {
     );
   });
 
+  it.each(["games", "splits"] as const)(
+    "exhausts ordered %s pages and forwards the opaque cursor",
+    async (endpoint) => {
+      const secondGame = {
+        ...payload.items[0]!,
+        id: "event:mlb%3Amlb:fixture-2",
+        startsAt: "2026-08-02T00:05:00.000Z",
+        eastern: {
+          ...payload.items[0]!.eastern,
+          display: "Aug 1, 2026, 8:05 PM",
+        },
+      };
+      const withSplits = (item: (typeof payload.items)[0]) => ({
+        ...item,
+        splits: [
+          {
+            id: `split:${item.id}`,
+            providerId: "sharpapi",
+            providerEventId: "provider-event",
+            canonicalEventId: item.id,
+            canonicalEventVersion: item.version,
+            sportKey: "mlb",
+            leagueKey: "mlb",
+            marketKey: "moneyline",
+            selectionKey: "away",
+            betPercent: 45,
+            moneyPercent: 55,
+            betCount: 12_345,
+            moneyAmount: 987_654.32,
+            providerTimestamp: "2026-08-01T12:30:00.000Z",
+            retrievedAt: "2026-08-01T12:30:00.000Z",
+            scope: "consensus",
+          },
+        ],
+      });
+      const first = {
+        ...payload,
+        items:
+          endpoint === "splits"
+            ? [withSplits(payload.items[0]!)]
+            : payload.items,
+        nextCursor: "opaque+/= cursor",
+        evaluationState: "partial",
+        hasMoreUnknown: true,
+      };
+      const second = {
+        ...payload,
+        items: endpoint === "splits" ? [withSplits(secondGame)] : [secondGame],
+      };
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(first)))
+        .mockResolvedValueOnce(new Response(JSON.stringify(second)));
+      const result = createGamesClient(
+        { ok: true, value: bootstrap() },
+        fetcher,
+      );
+      if (!result.ok) throw result.error;
+      const page = await (endpoint === "games"
+        ? result.value.list(
+            { sport: "mlb", day: "2026-08-01" },
+            new AbortController().signal,
+          )
+        : result.value.listSplits!(
+            { sport: "mlb", day: "2026-08-01" },
+            new AbortController().signal,
+          ));
+      expect(page).toMatchObject({
+        items: [{ id: payload.items[0]!.id }, { id: secondGame.id }],
+        nextCursor: null,
+        evaluationState: "complete",
+        hasMoreUnknown: false,
+      });
+      if (endpoint === "splits") {
+        const splitItem = page.items[0] as (typeof payload.items)[0] & {
+          readonly splits: readonly {
+            readonly betCount?: number;
+            readonly moneyAmount?: number;
+          }[];
+        };
+        expect(splitItem.splits[0]).toMatchObject({
+          betCount: 12_345,
+          moneyAmount: 987_654.32,
+        });
+      }
+      const secondRequest = fetcher.mock.calls[1]?.[0];
+      if (typeof secondRequest !== "string")
+        throw new Error("Expected a string request URL.");
+      const secondUrl = new URL(secondRequest);
+      expect(secondUrl.searchParams.get("cursor")).toBe("opaque+/= cursor");
+      expect(secondUrl.searchParams.get("sport")).toBe("mlb");
+      expect(secondUrl.searchParams.get("day")).toBe("2026-08-01");
+      expect(secondUrl.searchParams.get("limit")).toBe("50");
+    },
+  );
+
+  it("continues after a complete page when its authoritative cursor is non-null", async () => {
+    const secondGame = {
+      ...payload.items[0]!,
+      id: "event:mlb%3Amlb:fixture-after-limit",
+      startsAt: "2026-08-02T00:05:00.000Z",
+      eastern: {
+        ...payload.items[0]!.eastern,
+        display: "Aug 1, 2026, 8:05 PM",
+      },
+    };
+    const first = { ...payload, nextCursor: "more-physical-rows" };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(first)))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...payload, items: [secondGame] })),
+      );
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.list(
+        { sport: "mlb", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({
+      items: [{ id: payload.items[0]!.id }, { id: secondGame.id }],
+      nextCursor: null,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["negative bet count", { betCount: -1 }],
+    ["fractional bet count", { betCount: 1.5 }],
+    ["infinite money amount", { moneyAmount: Number.POSITIVE_INFINITY }],
+    ["negative money amount", { moneyAmount: -0.01 }],
+  ])("rejects splits with %s", async (_name, sample) => {
+    const split = {
+      id: "split:invalid-sample",
+      providerId: "sharpapi",
+      providerEventId: "provider-event",
+      canonicalEventId: payload.items[0]!.id,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "away",
+      betPercent: 45,
+      moneyPercent: 55,
+      providerTimestamp: "2026-08-01T12:30:00.000Z",
+      retrievedAt: "2026-08-01T12:30:00.000Z",
+      ...sample,
+    };
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            ...payload,
+            items: [{ ...payload.items[0]!, splits: [split] }],
+          }),
+        ),
+      ),
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.listSplits!(
+        { sport: "mlb", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it.each([
+    [
+      "cursor cycle",
+      (page: typeof payload) => ({
+        ...page,
+        nextCursor: "again",
+        evaluationState: "partial",
+        hasMoreUnknown: true,
+      }),
+    ],
+    [
+      "snapshot mismatch",
+      (page: typeof payload) => ({
+        ...page,
+        snapshotAt: "2026-08-01T12:31:00.000Z",
+      }),
+    ],
+    ["duplicate game", (page: typeof payload) => page],
+  ])("rejects a paginated %s", async (_name, secondPage) => {
+    const first = {
+      ...payload,
+      nextCursor: "again",
+      evaluationState: "partial",
+      hasMoreUnknown: true,
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(first)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(secondPage(payload))));
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.list(
+        { sport: "mlb", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it("rejects incoherent pagination metadata", async () => {
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            ...payload,
+            evaluationState: "partial",
+            hasMoreUnknown: false,
+            nextCursor: "cursor",
+          }),
+        ),
+      ),
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.list(
+        { sport: "mlb", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it("bounds pagination and preserves abort errors", async () => {
+    const partial = {
+      ...payload,
+      items: [],
+      evaluationState: "partial",
+      hasMoreUnknown: true,
+    };
+    let call = 0;
+    const boundedFetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ ...partial, nextCursor: `cursor-${call++}` }),
+          ),
+        ),
+      );
+    const bounded = createGamesClient(
+      { ok: true, value: bootstrap() },
+      boundedFetcher,
+    );
+    if (!bounded.ok) throw bounded.error;
+    await expect(
+      bounded.value.list(
+        { sport: "mlb", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+    expect(boundedFetcher).toHaveBeenCalledTimes(100);
+
+    const controller = new AbortController();
+    const abortError = new DOMException("Aborted", "AbortError");
+    const abortFetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...partial, nextCursor: "abort-next" })),
+      )
+      .mockImplementationOnce(() => {
+        controller.abort();
+        return Promise.reject(abortError);
+      });
+    const aborted = createGamesClient(
+      { ok: true, value: bootstrap() },
+      abortFetcher,
+    );
+    if (!aborted.ok) throw aborted.error;
+    await expect(
+      aborted.value.list(
+        { sport: "mlb", day: "2026-08-01" },
+        controller.signal,
+      ),
+    ).rejects.toBe(abortError);
+    expect(abortFetcher).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     [
       "wrong sport",

@@ -26,6 +26,17 @@ export interface GamesPageDto {
   readonly freshness: string | null;
 }
 
+interface GamesPartialPageDto extends Omit<
+  GamesPageDto,
+  "nextCursor" | "evaluationState" | "hasMoreUnknown"
+> {
+  readonly nextCursor: string;
+  readonly evaluationState: "partial";
+  readonly hasMoreUnknown: true;
+}
+
+type GamesResponsePageDto = GamesPageDto | GamesPartialPageDto;
+
 export interface BettingSplitDto {
   readonly id: string;
   readonly providerId: string;
@@ -39,6 +50,8 @@ export interface BettingSplitDto {
   readonly point?: number;
   readonly betPercent?: number;
   readonly moneyPercent?: number;
+  readonly betCount?: number;
+  readonly moneyAmount?: number;
   readonly providerTimestamp: string;
   readonly retrievedAt: string;
   readonly scope?: string;
@@ -300,7 +313,16 @@ const validGame = (
   );
 };
 
-function parsePage(value: unknown, filter: GamesFilter): GamesPageDto {
+function parsePage(
+  value: unknown,
+  filter: GamesFilter,
+  responseName: "games" | "splits" = "games",
+): GamesResponsePageDto {
+  const invalid = () =>
+    new GamesClientError(
+      "invalid-response",
+      `The ${responseName} response was invalid.`,
+    );
   if (
     !plain(value) ||
     !exact(value, [
@@ -314,18 +336,21 @@ function parsePage(value: unknown, filter: GamesFilter): GamesPageDto {
     ]) ||
     !Array.isArray(value["items"]) ||
     value["items"].length > 50 ||
-    value["nextCursor"] !== null ||
     !["ready", "uninitialized"].includes(String(value["projectionState"])) ||
-    value["evaluationState"] !== "complete" ||
-    value["hasMoreUnknown"] !== false ||
+    !(
+      (value["evaluationState"] === "complete" &&
+        value["hasMoreUnknown"] === false &&
+        (value["nextCursor"] === null ||
+          boundedString(value["nextCursor"], 4096))) ||
+      (value["evaluationState"] === "partial" &&
+        value["hasMoreUnknown"] === true &&
+        boundedString(value["nextCursor"], 4096))
+    ) ||
     (value["snapshotAt"] !== null && !iso(value["snapshotAt"])) ||
     (value["freshness"] !== null && !iso(value["freshness"])) ||
     !value["items"].every((game) => validGame(game, filter))
   )
-    throw new GamesClientError(
-      "invalid-response",
-      "The games response was invalid.",
-    );
+    throw invalid();
   const items = value["items"];
   const ids = new Set(items.map(({ id }) => id));
   if (
@@ -334,14 +359,18 @@ function parsePage(value: unknown, filter: GamesFilter): GamesPageDto {
       (game, index) => index > 0 && game.startsAt < items[index - 1]!.startsAt,
     )
   )
-    throw new GamesClientError(
-      "invalid-response",
-      "The games response was invalid.",
-    );
-  return value as unknown as GamesPageDto;
+    throw invalid();
+  return value as unknown as GamesResponsePageDto;
 }
 
-function parseSplitsPage(value: unknown, filter: GamesFilter): SplitsPageDto {
+type SplitsResponsePageDto = Omit<GamesResponsePageDto, "items"> & {
+  readonly items: SplitsPageDto["items"];
+};
+
+function parseSplitsPage(
+  value: unknown,
+  filter: GamesFilter,
+): SplitsResponsePageDto {
   if (!plain(value) || !Array.isArray(value["items"]))
     throw new GamesClientError(
       "invalid-response",
@@ -360,11 +389,37 @@ function parseSplitsPage(value: unknown, filter: GamesFilter): SplitsPageDto {
       );
     }),
   };
-  const games = parsePage(stripped, filter);
+  const games = parsePage(stripped, filter, "splits");
   const items = value["items"].map((item, index) => {
     const raw = item as Record<string, unknown>;
     const splits = (raw["splits"] as unknown[]).map((split) => {
       if (!plain(split))
+        throw new GamesClientError(
+          "invalid-response",
+          "The splits response was invalid.",
+        );
+      const required = [
+        "id",
+        "providerId",
+        "providerEventId",
+        "canonicalEventId",
+        "canonicalEventVersion",
+        "sportKey",
+        "leagueKey",
+        "marketKey",
+        "selectionKey",
+        "providerTimestamp",
+        "retrievedAt",
+      ];
+      const optional = [
+        "point",
+        "betPercent",
+        "moneyPercent",
+        "betCount",
+        "moneyAmount",
+        "scope",
+      ].filter((key) => key in split);
+      if (!exact(split, [...required, ...optional]))
         throw new GamesClientError(
           "invalid-response",
           "The splits response was invalid.",
@@ -388,9 +443,26 @@ function parseSplitsPage(value: unknown, filter: GamesFilter): SplitsPageDto {
           );
       if (
         !Number.isSafeInteger(split["canonicalEventVersion"]) ||
+        (split["canonicalEventVersion"] as number) < 1 ||
         split["canonicalEventId"] !== games.items[index]?.id ||
+        split["canonicalEventVersion"] !== games.items[index]?.version ||
+        split["sportKey"] !== games.items[index]?.sportKey ||
+        split["leagueKey"] !== games.items[index]?.leagueKey ||
         !iso(split["providerTimestamp"]) ||
-        !iso(split["retrievedAt"])
+        !iso(split["retrievedAt"]) ||
+        (split["point"] !== undefined &&
+          (typeof split["point"] !== "number" ||
+            !Number.isFinite(split["point"]) ||
+            Math.abs(split["point"]) > 10_000)) ||
+        (split["betCount"] !== undefined &&
+          (!Number.isSafeInteger(split["betCount"]) ||
+            (split["betCount"] as number) < 0)) ||
+        (split["moneyAmount"] !== undefined &&
+          (typeof split["moneyAmount"] !== "number" ||
+            !Number.isFinite(split["moneyAmount"]) ||
+            split["moneyAmount"] < 0 ||
+            split["moneyAmount"] > Number.MAX_SAFE_INTEGER)) ||
+        (split["scope"] !== undefined && !boundedString(split["scope"], 256))
       )
         throw new GamesClientError(
           "invalid-response",
@@ -410,9 +482,139 @@ function parseSplitsPage(value: unknown, filter: GamesFilter): SplitsPageDto {
           );
       return split as unknown as BettingSplitDto;
     });
+    if (new Set(splits.map(({ id }) => id)).size !== splits.length)
+      throw new GamesClientError(
+        "invalid-response",
+        "The splits response was invalid.",
+      );
     return { ...games.items[index]!, splits };
   });
   return { ...games, items };
+}
+
+const MAX_PAGES = 100;
+
+async function exhaustPages<T extends GameDisplayDto>(options: {
+  readonly endpoint: "games" | "splits";
+  readonly filter: GamesFilter;
+  readonly signal: AbortSignal;
+  readonly apiBase: string;
+  readonly fetcher: typeof fetch;
+  readonly parse: (
+    value: unknown,
+    filter: GamesFilter,
+  ) => Omit<GamesResponsePageDto, "items"> & { readonly items: readonly T[] };
+}): Promise<Omit<GamesPageDto, "items"> & { readonly items: readonly T[] }> {
+  const { endpoint, filter, signal, apiBase, fetcher, parse } = options;
+  const baseQuery = {
+    sport: filter.sport,
+    league: filter.sport === "mlb" ? "mlb" : "mls",
+    status: "scheduled",
+    day: filter.day,
+    limit: "50",
+  };
+  const pages: T[] = [];
+  const ids = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  let snapshotAt: string | null | undefined;
+  let projectionState: GamesPageDto["projectionState"] | undefined;
+  let freshness: string | null = null;
+
+  for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber += 1) {
+    const query = new URLSearchParams(baseQuery);
+    if (cursor !== undefined) query.set("cursor", cursor);
+    let response: Response;
+    try {
+      response = await fetcher(`${apiBase}/${endpoint}?${query}`, { signal });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new GamesClientError(
+        "request-failed",
+        endpoint === "games"
+          ? "Games are temporarily unavailable."
+          : "Splits are temporarily unavailable.",
+      );
+    }
+    if (endpoint === "games" && response.status === 401)
+      throw new GamesClientError(
+        "unauthorized",
+        "Games are temporarily unavailable.",
+      );
+    if (endpoint === "games" && response.status === 403)
+      throw new GamesClientError(
+        "forbidden",
+        "Games are temporarily unavailable.",
+      );
+    if (!response.ok)
+      throw new GamesClientError(
+        "request-failed",
+        endpoint === "games"
+          ? "Games are temporarily unavailable."
+          : "Splits are temporarily unavailable.",
+      );
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new GamesClientError(
+        "invalid-response",
+        `The ${endpoint} response was invalid.`,
+      );
+    }
+    const page = parse(body, filter);
+    if (snapshotAt === undefined) snapshotAt = page.snapshotAt;
+    else if (page.snapshotAt !== snapshotAt)
+      throw new GamesClientError(
+        "invalid-response",
+        `The ${endpoint} response was invalid.`,
+      );
+    if (projectionState === undefined) projectionState = page.projectionState;
+    else if (page.projectionState !== projectionState)
+      throw new GamesClientError(
+        "invalid-response",
+        `The ${endpoint} response was invalid.`,
+      );
+    for (const item of page.items) {
+      if (
+        ids.has(item.id) ||
+        (pages.length > 0 && item.startsAt < pages[pages.length - 1]!.startsAt)
+      )
+        throw new GamesClientError(
+          "invalid-response",
+          `The ${endpoint} response was invalid.`,
+        );
+      ids.add(item.id);
+      pages.push(item);
+    }
+    if (
+      page.freshness !== null &&
+      (freshness === null || page.freshness < freshness)
+    )
+      freshness = page.freshness;
+    if (page.nextCursor === null)
+      return {
+        items: pages,
+        nextCursor: null,
+        projectionState: projectionState ?? page.projectionState,
+        evaluationState: "complete",
+        hasMoreUnknown: false,
+        snapshotAt: snapshotAt ?? null,
+        freshness,
+      };
+    const nextCursor = page.nextCursor;
+    if (cursors.has(nextCursor))
+      throw new GamesClientError(
+        "invalid-response",
+        `The ${endpoint} response was invalid.`,
+      );
+    cursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+  throw new GamesClientError(
+    "invalid-response",
+    `The ${endpoint} response was invalid.`,
+  );
 }
 
 function bootstrapFailure(failure: RuntimeConfigError): GamesClientError {
@@ -429,88 +631,24 @@ export function createGamesClient(
     ok: true,
     value: {
       async list(filter, signal) {
-        const query = new URLSearchParams({
-          sport: filter.sport,
-          league: filter.sport === "mlb" ? "mlb" : "mls",
-          status: "scheduled",
-          day: filter.day,
-          limit: "50",
+        return exhaustPages({
+          endpoint: "games",
+          filter,
+          signal,
+          apiBase: bootstrap.value.config.apiBase,
+          fetcher,
+          parse: parsePage,
         });
-        let response: Response;
-        try {
-          response = await fetcher(
-            `${bootstrap.value.config.apiBase}/games?${query}`,
-            { signal },
-          );
-        } catch (error) {
-          if (signal.aborted) throw error;
-          throw new GamesClientError(
-            "request-failed",
-            "Games are temporarily unavailable.",
-          );
-        }
-        if (response.status === 401)
-          throw new GamesClientError(
-            "unauthorized",
-            "Games are temporarily unavailable.",
-          );
-        if (response.status === 403)
-          throw new GamesClientError(
-            "forbidden",
-            "Games are temporarily unavailable.",
-          );
-        if (!response.ok)
-          throw new GamesClientError(
-            "request-failed",
-            "Games are temporarily unavailable.",
-          );
-        let payload: unknown;
-        try {
-          payload = await response.json();
-        } catch {
-          throw new GamesClientError(
-            "invalid-response",
-            "The games response was invalid.",
-          );
-        }
-        return parsePage(payload, filter);
       },
       async listSplits(filter, signal) {
-        const query = new URLSearchParams({
-          sport: filter.sport,
-          league: filter.sport === "mlb" ? "mlb" : "mls",
-          status: "scheduled",
-          day: filter.day,
-          limit: "50",
+        return exhaustPages({
+          endpoint: "splits",
+          filter,
+          signal,
+          apiBase: bootstrap.value.config.apiBase,
+          fetcher,
+          parse: parseSplitsPage,
         });
-        let response: Response;
-        try {
-          response = await fetcher(
-            `${bootstrap.value.config.apiBase}/splits?${query}`,
-            { signal },
-          );
-        } catch (error) {
-          if (signal.aborted) throw error;
-          throw new GamesClientError(
-            "request-failed",
-            "Splits are temporarily unavailable.",
-          );
-        }
-        if (!response.ok)
-          throw new GamesClientError(
-            "request-failed",
-            "Splits are temporarily unavailable.",
-          );
-        let payload: unknown;
-        try {
-          payload = await response.json();
-        } catch {
-          throw new GamesClientError(
-            "invalid-response",
-            "The splits response was invalid.",
-          );
-        }
-        return parseSplitsPage(payload, filter);
       },
     },
   };
