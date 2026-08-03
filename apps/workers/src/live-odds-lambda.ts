@@ -46,12 +46,11 @@ export function parseLiveOddsInvocation(event: unknown): {
   if (!event || typeof event !== "object" || Array.isArray(event))
     throw new Error("live-odds-invocation-invalid");
   const record = event as Record<string, unknown>;
-  if (
-    Reflect.ownKeys(record).some((key) => key !== "forceRefresh") ||
-    (record["forceRefresh"] !== undefined && record["forceRefresh"] !== true)
-  )
+  if (!Object.prototype.hasOwnProperty.call(record, "forceRefresh"))
+    return { forceRefresh: false };
+  if (Reflect.ownKeys(record).length !== 1 || record["forceRefresh"] !== true)
     throw new Error("live-odds-invocation-invalid");
-  return { forceRefresh: record["forceRefresh"] === true };
+  return { forceRefresh: true };
 }
 
 export const handler = async (event?: unknown) => {

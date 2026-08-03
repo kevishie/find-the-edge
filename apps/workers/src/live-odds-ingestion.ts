@@ -192,10 +192,17 @@ export async function ingestLiveOdds(
         raw,
         discovery?.retrievedAt ?? response?.retrievedAt ?? observedAt,
       );
-      await store.bootstrapCanonicalEvent(
-        fixtureBootstrap(event, raw.providerEventId),
-        observedAt,
-      );
+      const existingBinding = await store.resolveExactCanonicalBinding({
+        providerId: THE_ODDS_API_PROVIDER_ID,
+        providerEventId: raw.providerEventId,
+        sportKey: league.sportKey,
+        leagueKey: league.leagueKey,
+      });
+      if (!existingBinding)
+        await store.bootstrapCanonicalEvent(
+          fixtureBootstrap(event, raw.providerEventId),
+          observedAt,
+        );
       const ingested = await store.ingestEvent({
         ...event,
         providerId: THE_ODDS_API_PROVIDER_ID,

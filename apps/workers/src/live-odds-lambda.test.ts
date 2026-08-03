@@ -6,6 +6,13 @@ describe("live odds Lambda invocation", () => {
   it("defaults scheduled invocations and allows the guarded release refresh", () => {
     expect(parseLiveOddsInvocation(undefined)).toEqual({ forceRefresh: false });
     expect(parseLiveOddsInvocation({})).toEqual({ forceRefresh: false });
+    expect(
+      parseLiveOddsInvocation({
+        source: "aws.events",
+        detail: {},
+        "detail-type": "Scheduled Event",
+      }),
+    ).toEqual({ forceRefresh: false });
     expect(parseLiveOddsInvocation({ forceRefresh: true })).toEqual({
       forceRefresh: true,
     });
