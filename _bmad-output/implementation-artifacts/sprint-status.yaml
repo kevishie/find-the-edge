@@ -1,6 +1,6 @@
 project: FIND THE EDGE
 created: "2026-07-15"
-updated: "2026-07-29"
+updated: "2026-08-02"
 source: "_bmad-output/planning-artifacts/epics-and-stories.md"
 statusValues:
   - backlog
@@ -139,6 +139,19 @@ stories:
     dependencies: [FTE-DATA-001, FTE-DATA-002]
     risk: High
     approvalRequiredBeforeMerge: false
+  - id: FTE-DATA-003B
+    title: SharpAPI Redundant Odds and Betting Splits
+    epic: Multi-sport feed and result spine
+    sport: core
+    league: enabled
+    module: odds-ingestion
+    priority: P0
+    status: ready
+    dependencies: [FTE-DATA-001, FTE-DATA-002, FTE-DATA-003, FTE-SPORT-003, FTE-SPORT-007]
+    validationCommands: [pnpm check, pnpm synth]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
   - id: FTE-MVP-001
     title: Fixture-Backed Games and Odds Vertical Slice
     epic: MVP games explorer

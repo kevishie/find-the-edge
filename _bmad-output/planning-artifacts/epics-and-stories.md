@@ -146,6 +146,24 @@ This is an early platform epic. It establishes reusable acquisition and truth da
 - Risk: High.
 - Approval required before merge: No.
 
+#### FTE-DATA-003B: SharpAPI Redundant Odds and Betting Splits
+
+- Epic: Multi-sport feed and result spine.
+- Outcome: Odds collection has a configurable second provider, and timestamped betting-ticket/money split evidence becomes available for analysis.
+- Context: The Odds API is a single point of failure and does not provide the public betting splits needed to compare bet count with money/handle concentration.
+- In scope: SharpAPI odds adapter, `odds` and `public-betting` capabilities, exact cross-provider canonical mapping, immutable split history/current projection, explicit primary/secondary failover policy, independent quota/health/entitlement handling, secret/IAM/telemetry/runbook coverage.
+- Out of scope: Purchasing or upgrading a plan, production activation without approval, silent odds blending, double-weighting a sportsbook exposed by both aggregators, trusting provider-derived EV as local truth, live betting, bet placement, and synthetic pre-activation history.
+- Dependencies: FTE-DATA-001, FTE-DATA-002, FTE-DATA-003, FTE-SPORT-003, FTE-SPORT-007.
+- Acceptance criteria: SharpAPI normalizes through provider-neutral odds contracts; exact canonical mappings prevent cross-provider event mistakes; configured health/quota failures trigger auditable bounded failover; split observations retain separate source/retrieval timestamps and optional ticket/money percentages; missing entitlement degrades only the split capability; replay never duplicates evidence or regresses current state.
+- Required automated tests: Strict adapter fixtures, two/three-way and spread/total normalization where enabled, cross-provider mapping, shared-book weighting policy, primary/secondary outage and recovery, quota/rate limit, entitlement denial, invalid/missing/stale/out-of-order split data, replay, persistence parity, secret/IAM synth.
+- Likely files/packages affected: `packages/providers`, `packages/domain`, `apps/workers`, `packages/database`, `infra/cdk`, operations docs.
+- Observability: Provider attempts, chosen source, failover/failback reason, health, quota/rate limit, odds/split counts, split freshness, mapping gaps, and entitlement state are measurable by league.
+- Security: Separate server-side secret; raw licensed responses, credentials, and commercial terms are excluded from clients and logs.
+- Data migration/backfill impact: New split evidence begins at approved activation; no historical data is inferred or purchased by this story.
+- Definition of done: Fixture-backed provider failover and split ingestion pass end to end, infrastructure is deployable but SharpAPI activation remains disabled until account contract and plan approval are recorded.
+- Risk: High.
+- Approval required before merge: Yes.
+
 #### FTE-DATA-004: Completed-Event Result Ingestion and Correction History
 
 - Epic: Multi-sport feed and result spine.
