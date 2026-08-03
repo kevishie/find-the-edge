@@ -237,13 +237,19 @@ export async function ingestSharpApi(
           ),
         );
         for (const price of main) {
+          const canonicalSelectionLabel =
+            price.selectionKey === "away"
+              ? canonical.participantLabels?.[0]
+              : price.selectionKey === "home"
+                ? canonical.participantLabels?.[1]
+                : undefined;
           const observation: FixtureOddsObservation = {
             canonicalEventId: canonical.id,
             canonicalEventVersion: canonical.version,
             sportKey: canonical.sportKey,
             marketKey: price.marketKey,
             selectionKey: price.selectionKey,
-            selectionLabel: price.selectionLabel,
+            selectionLabel: canonicalSelectionLabel ?? price.selectionLabel,
             sportsbookId: book.id,
             sportsbookLabel: book.label,
             ...(price.point === undefined ? {} : { point: price.point }),
