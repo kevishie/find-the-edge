@@ -114,7 +114,11 @@ describe("The Odds API V4 normalization", () => {
   it("drops malformed optional markets while preserving valid moneylines", () => {
     const malformed = structuredClone(payload);
     malformed[0]!.bookmakers[0]!.markets[1]!.outcomes.pop();
-    malformed[0]!.bookmakers[0]!.markets[2]!.outcomes[0]!.point = -8.5;
+    const totalOutcome = malformed[0]!.bookmakers[0]!.markets[2]!
+      .outcomes[0] as {
+      point?: number;
+    };
+    totalOutcome.point = -8.5;
     expect(
       parseTheOddsApiEvents(malformed, mlb)[0]?.bookmakers[0]?.prices,
     ).toEqual(
