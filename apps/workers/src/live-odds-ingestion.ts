@@ -125,6 +125,7 @@ export async function ingestLiveOdds(
     readonly leagues?: readonly TheOddsApiLeague[];
     readonly discoverLeague?: typeof fetchTheOddsApiEvents;
     readonly fetchLeague?: typeof fetchTheOddsApi;
+    readonly forceRefresh?: boolean;
   } = {},
 ): Promise<LiveOddsSummary> {
   const now = options.now ?? new Date();
@@ -136,6 +137,7 @@ export async function ingestLiveOdds(
   for (const league of options.leagues ?? theOddsApiLeagues) {
     const previous = await stateStore.read(league.leagueKey);
     const discoveryDue =
+      options.forceRefresh === true ||
       !previous?.lastDiscoveryAt ||
       now.getTime() - Date.parse(previous.lastDiscoveryAt) >= 60 * 60_000;
     const discovery = discoveryDue
@@ -149,15 +151,17 @@ export async function ingestLiveOdds(
       quotaRemaining ??
       discovery?.quota.remaining ??
       effectiveQuota(previous, now);
-    const due = liveOddsRefreshDue({
-      now,
-      leagueKey: league.leagueKey,
-      startsAt: discoveredStarts,
-      state:
-        remaining === undefined
-          ? previous
-          : { ...previous, quotaRemaining: remaining },
-    });
+    const due =
+      options.forceRefresh === true ||
+      liveOddsRefreshDue({
+        now,
+        leagueKey: league.leagueKey,
+        startsAt: discoveredStarts,
+        state:
+          remaining === undefined
+            ? previous
+            : { ...previous, quotaRemaining: remaining },
+      });
     const paidDue =
       due &&
       remaining !== undefined &&

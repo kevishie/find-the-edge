@@ -39,7 +39,23 @@ export function parseTheOddsApiSecret(value: string | undefined): string {
   throw new Error("the-odds-api-secret-invalid");
 }
 
-export const handler = async () => {
+export function parseLiveOddsInvocation(event: unknown): {
+  readonly forceRefresh: boolean;
+} {
+  if (event === undefined || event === null) return { forceRefresh: false };
+  if (!event || typeof event !== "object" || Array.isArray(event))
+    throw new Error("live-odds-invocation-invalid");
+  const record = event as Record<string, unknown>;
+  if (
+    Reflect.ownKeys(record).some((key) => key !== "forceRefresh") ||
+    (record["forceRefresh"] !== undefined && record["forceRefresh"] !== true)
+  )
+    throw new Error("live-odds-invocation-invalid");
+  return { forceRefresh: record["forceRefresh"] === true };
+}
+
+export const handler = async (event?: unknown) => {
+  const invocation = parseLiveOddsInvocation(event);
   const tableName = process.env["FTE_EVENT_TABLE"];
   const secretId = process.env["FTE_THE_ODDS_API_SECRET_ID"];
   if (!tableName || !secretId)
@@ -78,6 +94,7 @@ export const handler = async () => {
     new DynamoFixtureOddsAdapter(new AwsFixtureOddsGateway(client, tableName)),
     stateStore,
     apiKey,
+    { forceRefresh: invocation.forceRefresh },
   );
   process.stdout.write(
     `${JSON.stringify({ event: "live-odds-ingestion-complete", ...summary })}\n`,
