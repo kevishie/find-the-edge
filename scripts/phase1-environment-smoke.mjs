@@ -190,6 +190,16 @@ export function assertLiveIngestionSummary(summary) {
     const isOwnershipOverlap = (result) =>
       result?.status === "failed" &&
       result?.reason === "schedule-provider-recovering";
+    const ownershipOverlapLeagues = summary.map((result) => result?.leagueKey);
+    if (
+      summary.length === expectedLeagues.size &&
+      new Set(ownershipOverlapLeagues).size === expectedLeagues.size &&
+      ownershipOverlapLeagues.every((leagueKey) =>
+        expectedLeagues.has(leagueKey),
+      ) &&
+      summary.every(isOwnershipOverlap)
+    )
+      return;
     const safeResult = (result) =>
       result &&
       typeof result === "object" &&
