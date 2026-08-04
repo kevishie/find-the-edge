@@ -134,7 +134,7 @@ describe("fixture odds seed", () => {
           selections: [
             {
               marketKey: "moneyline",
-              selectionKey: "away",
+              selectionKey: "participant:participant%3Amlb%253Amlb%3Aboston",
               selectionLabel: "Boston",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",
@@ -144,7 +144,8 @@ describe("fixture odds seed", () => {
             },
             {
               marketKey: "moneyline",
-              selectionKey: "home",
+              selectionKey:
+                "participant:participant%3Amlb%253Amlb%3Anew%2520york",
               selectionLabel: "New York",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",
@@ -167,7 +168,7 @@ describe("fixture odds seed", () => {
           selections: [
             {
               marketKey: "moneyline",
-              selectionKey: "away",
+              selectionKey: "participant:participant%3Amlb%253Amlb%3Achicago",
               selectionLabel: "Chicago",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",
@@ -177,7 +178,7 @@ describe("fixture odds seed", () => {
             },
             {
               marketKey: "moneyline",
-              selectionKey: "home",
+              selectionKey: "participant:participant%3Amlb%253Amlb%3Adetroit",
               selectionLabel: "Detroit",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",
@@ -200,7 +201,7 @@ describe("fixture odds seed", () => {
           selections: [
             {
               marketKey: "moneyline",
-              selectionKey: "away",
+              selectionKey: "participant:participant%3Asoccer%253Amls%3Amiami",
               selectionLabel: "Miami",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",
@@ -220,7 +221,8 @@ describe("fixture odds seed", () => {
             },
             {
               marketKey: "moneyline",
-              selectionKey: "home",
+              selectionKey:
+                "participant:participant%3Asoccer%253Amls%3Aatlanta",
               selectionLabel: "Atlanta",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",

@@ -1,8 +1,10 @@
 import {
   collapseNearDuplicateGames,
   fixtureOddsPartition,
+  participantSelectionKey,
   type GameDisplayDto,
   type GameOddsSelectionDto,
+  type EntityId,
 } from "@find-the-edge/domain";
 import { EventStorageError } from "./event-errors";
 import {
@@ -31,17 +33,21 @@ export interface CurrentOddsReadGateway {
   ): Promise<readonly unknown[]>;
 }
 
-const marketSpecifications = (sportKey: string) => {
+const marketSpecifications = (event: EventPage["items"][number]) => {
+  const sides = event.participants
+    .slice(0, 2)
+    .map(({ id }) => participantSelectionKey(id as EntityId));
+  const sportKey = event.sportKey;
   if (sportKey === "mlb")
     return [
       {
         marketKey: "moneyline",
-        selectionKeys: ["away", "home"] as const,
+        selectionKeys: sides,
         required: true,
       },
       {
         marketKey: "spread",
-        selectionKeys: ["away", "home"] as const,
+        selectionKeys: sides,
         required: false,
       },
       {
@@ -54,12 +60,12 @@ const marketSpecifications = (sportKey: string) => {
     return [
       {
         marketKey: "moneyline",
-        selectionKeys: ["away", "draw", "home"] as const,
+        selectionKeys: [sides[0]!, "draw", sides[1]!],
         required: true,
       },
       {
         marketKey: "spread",
-        selectionKeys: ["away", "home"] as const,
+        selectionKeys: sides,
         required: false,
       },
       {
@@ -146,10 +152,11 @@ export class JoinedGamesRepository implements GamesRepository {
     readonly events: EventRepository,
     readonly odds: CurrentOddsReadGateway,
     readonly sportsbookIds: readonly string[] = [
+      "hardrock",
       "draftkings",
       "fanduel",
       "betmgm",
-      "williamhill_us",
+      "caesars",
     ],
   ) {}
   async list(
@@ -161,7 +168,7 @@ export class JoinedGamesRepository implements GamesRepository {
     if (!page.items.length) return { ...page, items: [] };
     const requestedByEvent = page.items.map((event) => {
       return this.sportsbookIds.map((sportsbookId) =>
-        marketSpecifications(event.sportKey).map((specification) => ({
+        marketSpecifications(event).map((specification) => ({
           specification,
           keys: specification.selectionKeys.map((selectionKey) =>
             currentKey(

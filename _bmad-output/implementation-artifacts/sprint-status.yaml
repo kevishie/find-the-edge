@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-020
+nextReadyStory: FTE-021
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -556,7 +556,7 @@ stories:
   - id: FTE-020
     title: Bookmaker, Market, and Selection Normalization
     epic: Odds ingestion and market normalization
-    status: backlog
+    status: review
     dependencies: [FTE-013, FTE-014, FTE-032]
     risk: High
     approvalRequiredBeforeMerge: false

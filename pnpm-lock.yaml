@@ -75,6 +75,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@find-the-edge/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@find-the-edge/domain':
         specifier: workspace:*
         version: link:../../packages/domain

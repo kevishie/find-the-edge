@@ -1,6 +1,6 @@
 # Phase1 deployment and environment smoke
 
-Phase1 packages the public live-games UI. SharpAPI is the primary MLB/MLS odds source and The Odds API is a bounded fallback; no development fixtures are part of the production read path.
+Phase1 packages the public live-games UI. SharpAPI is the sole production MLB/MLS schedule and odds source; no development fixtures are part of the production read path.
 
 The games and odds UI and its read-only API are public and require no account or
 token. CloudFront serves an encrypted, private S3 bucket through signed origin
@@ -12,7 +12,7 @@ this release.
 
 - Node 20.19 or newer and pnpm 10.28.2.
 - For local validation: no AWS login is required.
-- For deployment: an authenticated AWS profile/role in account `228246988391`, region `us-east-1`, the existing cursor-signing secret, and `find-the-edge/dev/the-odds-api` in Secrets Manager. Store either the plain API key or `{ "apiKey": "..." }`; never put it in CDK context, Lambda environment variables, browser assets, or logs.
+- For deployment: an authenticated AWS profile/role in account `228246988391`, region `us-east-1`, the existing cursor-signing secret, and `find-the-edge/dev/sharpapi` in Secrets Manager. Store either the plain API key or `{ "apiKey": "..." }`; never put it in CDK context, Lambda environment variables, browser assets, or logs. SharpAPI is the sole production schedule and odds provider.
 - For environment smoke: the deployed API, live-ingestion function output, cursor-secret identifier, and exact hosted browser origin.
 
 ## Credential-free preflight and bundle
@@ -58,7 +58,7 @@ user pool, web bucket, and logs are retained.
 
 ## Live ingestion, quota, and cadence
 
-The stack output `LiveOddsIngestionFunctionName` is the safe manual trigger. Invoke it once after both provider secrets exist. A 15-minute EventBridge tick enqueues one FIFO control-plane command; policy—not the tick—decides whether each league is due. Exhausted commands enter the dedicated odds DLQ and alarm without blocking another league.
+The stack output `LiveOddsIngestionFunctionName` is the safe manual trigger. Invoke it once after the SharpAPI secret exists. A 15-minute EventBridge tick enqueues one FIFO control-plane command; policy—not the tick—decides whether each league is due. Exhausted commands enter the dedicated odds DLQ and alarm without blocking another league.
 
 ```sh
 export AWS_ACCOUNT_ID=228246988391
@@ -72,9 +72,9 @@ export FTE_PHASE1_SMOKE=1
 pnpm phase1:smoke
 ```
 
-Normal MLB/MLS odds refresh hourly. Inside 90 minutes of first pitch, MLB refreshes every 15 minutes and MLS every 30 minutes. Other league profiles default to six hours. The durable provider `x-requests-remaining` value blocks paid calls at a 50-credit monthly reserve. Schedule discovery continues independently. CloudWatch logs emit only bounded summaries, never keys or credential-bearing URLs.
+Normal MLB/MLS odds refresh hourly. Inside 90 minutes of first pitch, MLB refreshes every 15 minutes and MLS every 30 minutes. Other league profiles default to six hours. The durable provider quota value blocks paid calls at the configured 100-request reserve. Schedule discovery continues independently. CloudWatch logs emit only bounded summaries, never keys or credential-bearing URLs.
 
-The versioned control-plane policy keeps a 100-request SharpAPI reserve and a separate 50-request The Odds API reserve. Schedule discovery has its own explicit request-cost/reserve policy and only uses its fallback after Sharp schedule discovery fails. Every physical request is reserved before execution, and its redacted outcome, quota cost, sealed normalized page, cursor, gap evidence, provider-and-league health and league checkpoint are durable. An unsealed paid response remains ambiguous behind a five-minute reconciliation lease; it is not automatically recalled during that lease. A retry consumes a sealed normalized page before making another paid call. Automatic fallback is permitted only when the primary has not committed evidence in that run; a partial SharpAPI run never continues through The Odds API.
+The versioned control-plane policy keeps a 100-request SharpAPI reserve. Schedule discovery has its own explicit request-cost/reserve policy and fails closed with a bounded reason when SharpAPI is unavailable. Every physical request is reserved before execution, and its redacted outcome, quota cost, sealed normalized page, cursor, gap evidence, provider-and-league health and league checkpoint are durable. An unsealed paid response remains ambiguous behind a five-minute reconciliation lease; it is not automatically recalled during that lease. A retry consumes a sealed normalized page before making another paid call.
 
 Manual refresh is only a scheduler hint. It does not bypass provider activation, cadence/quota decisions, cooldown, exact canonical mappings, scheduled/pregame fences or immutable history. Missing, partial, stale, suspended, closed and unsupported evidence is stored as an explicit gap rather than inferred.
 

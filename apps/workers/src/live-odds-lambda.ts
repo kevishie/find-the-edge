@@ -91,9 +91,6 @@ export const handler = async (event?: unknown) => {
     splits: new DynamoBettingSplitRepository(client, tableName),
     control: new DynamoOddsControlPlaneStore(client, tableName),
     sharpApiKey,
-    // Kept in the internal control-plane signature until its dormant adapter
-    // is removed; SharpAPI-only policy makes this value unreachable.
-    theOddsApiKey: "",
     ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
     metrics: embeddedOddsControlPlaneMetrics,
   });

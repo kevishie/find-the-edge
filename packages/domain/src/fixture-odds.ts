@@ -13,7 +13,14 @@ export type OddsEvidenceSourceState =
   | "missing"
   | "unsupported";
 export type OddsEvidenceGapReason =
-  Exclude<OddsEvidenceSourceState, "active"> | "unmapped" | "binding-changed";
+  | Exclude<OddsEvidenceSourceState, "active">
+  | "unmapped"
+  | "binding-changed"
+  | "unknown-bookmaker"
+  | "unsupported-market"
+  | "unsupported-selection"
+  | "incomplete-market"
+  | "participant-unavailable";
 export interface OddsEvidenceProvenance {
   readonly providerId: string;
   readonly policyVersion: string;

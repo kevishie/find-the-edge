@@ -3,9 +3,10 @@ import type {
   FixtureOddsIngestInput,
   FixtureOddsPersistResult,
 } from "@find-the-edge/database";
-import type {
-  FixtureOddsObservation,
-  IsoTimestamp,
+import {
+  participantSelectionKey,
+  type FixtureOddsObservation,
+  type IsoTimestamp,
 } from "@find-the-edge/domain";
 import {
   FixtureMlbScheduleAdapter,
@@ -195,11 +196,18 @@ export async function seedFixtureOdds(
         fixture.providerEventId,
       );
     for (const price of fixture.prices) {
+      const selectionKey =
+        price.selectionKey === "away"
+          ? participantSelectionKey(canonical.participantIds[0]!)
+          : price.selectionKey === "home"
+            ? participantSelectionKey(canonical.participantIds[1]!)
+            : price.selectionKey;
       const observation: FixtureOddsObservation = {
         canonicalEventId: canonical.id,
         canonicalEventVersion: canonical.version,
         sportKey: canonical.sportKey,
         ...price,
+        selectionKey,
       };
       try {
         const result = await odds.persist({

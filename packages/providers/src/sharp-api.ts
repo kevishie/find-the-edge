@@ -1,4 +1,6 @@
 import type { IsoTimestamp, SportKey } from "@find-the-edge/domain";
+import type { OddsNormalizationReason } from "@find-the-edge/domain";
+import { normalizeSportsbook } from "@find-the-edge/config";
 
 import type { ProviderCapability, ProviderDescriptor } from "./index";
 
@@ -64,10 +66,13 @@ export interface SharpApiAccount {
 
 export interface SharpApiPrice {
   readonly providerPriceId: string;
-  readonly marketKey: "moneyline" | "spread" | "total";
+  readonly marketKey: "moneyline" | "spread" | "total" | "btts" | "team_total";
   readonly providerMarketType: string;
   readonly providerMarketId: string;
-  readonly selectionKey: "away" | "draw" | "home" | "over" | "under";
+  readonly selectionKey:
+    "away" | "draw" | "home" | "over" | "under" | "yes" | "no";
+  readonly participantSide?: "away" | "home";
+  readonly outcomeStructure?: "two-way" | "three-way";
   readonly selectionLabel: string;
   readonly providerSelectionId: string;
   readonly point?: number;
@@ -101,9 +106,18 @@ export interface SharpApiEvent {
 
 export interface SharpApiOddsPage {
   readonly events: readonly SharpApiEvent[];
+  readonly rejections?: readonly SharpApiNormalizationRejection[];
   readonly hasMore: boolean;
   readonly nextCursor?: string;
   readonly retrievedAt: IsoTimestamp;
+}
+
+export interface SharpApiNormalizationRejection {
+  readonly providerId: typeof SHARP_API_PROVIDER_ID;
+  readonly reason: OddsNormalizationReason;
+  readonly auditId: string;
+  readonly providerEventId?: string;
+  readonly sportsbookId?: string;
 }
 
 export interface SharpApiScheduleEvent {
@@ -299,13 +313,15 @@ const selection = (
       ? raw["selection_type"].toLowerCase()
       : "";
   const label = typeof raw["selection"] === "string" ? raw["selection"] : "";
-  if (["away", "home", "draw", "over", "under"].includes(type))
+  if (["away", "home", "draw", "over", "under", "yes", "no"].includes(type))
     return type as SharpApiPrice["selectionKey"];
   if (label === raw["away_team"]) return "away";
   if (label === raw["home_team"]) return "home";
   if (/^draw$/i.test(label) && league.leagueKey === "mls") return "draw";
   if (/^over\b/i.test(label)) return "over";
   if (/^under\b/i.test(label)) return "under";
+  if (/^yes$/i.test(label)) return "yes";
+  if (/^no$/i.test(label)) return "no";
   return undefined;
 };
 
@@ -323,8 +339,20 @@ const market = (
     return "spread";
   if (["total_points", "total_goals", "total_runs"].includes(value))
     return "total";
+  if (["both_teams_to_score", "btts"].includes(value)) return "btts";
+  if (
+    ["team_total_points", "team_total_goals", "team_total_runs"].includes(value)
+  )
+    return "team_total";
   return undefined;
 };
+
+const auditId = (value: unknown) =>
+  (typeof value === "string" ? value : "unknown")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "")
+    .slice(0, 64) || "unknown";
 
 const teamName = (raw: Record<string, unknown>, side: "away" | "home") => {
   const reference = raw[side];
@@ -346,15 +374,117 @@ export function parseSharpApiOddsPage(
   )
     throw new SharpApiError("invalid-response");
   const deduplicatedRows: Record<string, unknown>[] = [];
+  const rejections: SharpApiNormalizationRejection[] = [];
   const priceIdentities = new Map<
     string,
     { readonly signature: string; readonly index: number }
   >();
-  for (const value of input["data"]) {
-    if (!record(value)) throw new SharpApiError("invalid-response");
+  for (const candidate of input["data"]) {
+    if (!record(candidate)) throw new SharpApiError("invalid-response");
+    let value: Record<string, unknown> = candidate;
+    const bookResult = normalizeSportsbook(
+      typeof value["sportsbook"] === "string" ? value["sportsbook"] : "",
+    );
+    if (bookResult.kind === "rejected") {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: bookResult.reason,
+        auditId: bookResult.auditId,
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      continue;
+    }
+    value = { ...value, sportsbook: bookResult.sportsbook.id };
     const marketKey = market(value, league);
+    if (!marketKey) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "unsupported-market",
+        auditId: auditId(value["market_type"]),
+        sportsbookId: bookResult.sportsbook.id,
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      continue;
+    }
     const selectionKey = selection(value, league);
-    if (!marketKey || !selectionKey) continue;
+    if (!selectionKey) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "unsupported-selection",
+        auditId: auditId(value["selection_type"] ?? value["selection"]),
+        sportsbookId: bookResult.sportsbook.id,
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      continue;
+    }
+    const compatible =
+      (marketKey === "moneyline" &&
+        ["away", "home", "draw"].includes(selectionKey)) ||
+      (marketKey === "spread" && ["away", "home"].includes(selectionKey)) ||
+      (marketKey === "total" && ["over", "under"].includes(selectionKey)) ||
+      (marketKey === "btts" && ["yes", "no"].includes(selectionKey)) ||
+      (marketKey === "team_total" && ["over", "under"].includes(selectionKey));
+    if (!compatible) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "unsupported-selection",
+        auditId: auditId(value["selection_type"] ?? value["selection"]),
+        sportsbookId: bookResult.sportsbook.id,
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      continue;
+    }
+    if (marketKey === "btts" && !["yes", "no"].includes(selectionKey)) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "unsupported-selection",
+        auditId: auditId(value["selection_type"] ?? value["selection"]),
+        sportsbookId: bookResult.sportsbook.id,
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      continue;
+    }
+    if (
+      marketKey === "team_total" &&
+      !["over", "under"].includes(selectionKey)
+    ) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "unsupported-selection",
+        auditId: auditId(value["selection_type"] ?? value["selection"]),
+        sportsbookId: bookResult.sportsbook.id,
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      continue;
+    }
+    if (
+      marketKey === "team_total" &&
+      value["participant_side"] !== "away" &&
+      value["participant_side"] !== "home"
+    ) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "participant-unavailable",
+        auditId: auditId(value["selection_id"]),
+        sportsbookId: bookResult.sportsbook.id,
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      continue;
+    }
     const awayTeam = teamName(value, "away");
     const homeTeam = teamName(value, "home");
     if (
@@ -479,6 +609,19 @@ export function parseSharpApiOddsPage(
       providerMarketType: value["market_type"],
       providerMarketId: value["market_id"],
       selectionKey,
+      ...(marketKey === "moneyline"
+        ? {
+            outcomeStructure:
+              value["market_type"] === "moneyline_3-way"
+                ? ("three-way" as const)
+                : ("two-way" as const),
+          }
+        : {}),
+      ...(marketKey === "team_total" &&
+      (value["participant_side"] === "away" ||
+        value["participant_side"] === "home")
+        ? { participantSide: value["participant_side"] }
+        : {}),
       selectionLabel: value["selection"],
       providerSelectionId: value["selection_id"],
       ...(finite(line) ? { point: line } : {}),
@@ -516,6 +659,7 @@ export function parseSharpApiOddsPage(
         prices,
       })),
     })),
+    rejections,
     hasMore: pagination["has_more"],
     ...(canonical(nextCursor, 4096) ? { nextCursor } : {}),
     retrievedAt,

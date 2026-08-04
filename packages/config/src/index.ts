@@ -2,6 +2,7 @@ export * from "./feed-coverage";
 export * from "./evaluation-policy";
 export * from "./paper-pick-schedule";
 export * from "./performance-policy";
+export * from "./sportsbooks";
 
 export type RuntimeEnvironment = "development" | "test" | "production";
 export type ConfigProfile = "local" | "provider" | "aws";
@@ -11,9 +12,7 @@ export interface RuntimeConfig {
   applicationName: string;
   port: number;
   fixtureMode: boolean;
-  provider?: {
-    oddsApiKey: string;
-  };
+  provider?: { sharpApiKey: string };
   aws?: {
     region: string;
     stage: string;
@@ -80,10 +79,10 @@ export function validateEnvironment(
     });
   }
 
-  const oddsApiKey =
+  const sharpApiKey =
     profile === "provider"
-      ? required(input, "ODDS_API_KEY", issues)
-      : input["ODDS_API_KEY"];
+      ? required(input, "SHARP_API_KEY", issues)
+      : input["SHARP_API_KEY"];
   const awsRegion =
     profile === "aws" ? required(input, "AWS_REGION", issues) : undefined;
   const awsStage =
@@ -96,7 +95,7 @@ export function validateEnvironment(
     applicationName: input["FTE_APPLICATION_NAME"] ?? "find-the-edge",
     port,
     fixtureMode: profile === "local",
-    ...(oddsApiKey ? { provider: { oddsApiKey } } : {}),
+    ...(sharpApiKey ? { provider: { sharpApiKey } } : {}),
     ...(awsRegion && awsStage
       ? { aws: { region: awsRegion, stage: awsStage } }
       : {}),

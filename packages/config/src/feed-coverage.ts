@@ -4,7 +4,7 @@ import type {
   InactiveFeedPolicy,
   SportKey,
 } from "@find-the-edge/domain";
-import { defaultEvaluationPolicy } from "./evaluation-policy";
+import { productionSportsbookRoles } from "./sportsbooks";
 
 export const feedCoverageCatalogVersion = "2026-08-04.v7";
 export const oddsCollectionPolicyVersion =
@@ -12,7 +12,7 @@ export const oddsCollectionPolicyVersion =
 
 export type OddsBookRole = "offered" | "comparison" | "splits";
 export interface OddsProviderPolicy {
-  readonly providerId: "sharpapi" | "the-odds-api";
+  readonly providerId: string;
   readonly role: "primary" | "fallback";
   readonly active: boolean;
   readonly quotaReserve: number;
@@ -31,7 +31,7 @@ export interface LeagueOddsCollectionPolicy {
   readonly providers: readonly OddsProviderPolicy[];
 }
 export interface ScheduleDiscoveryPolicy {
-  readonly providerId: "sharpapi" | "the-odds-api";
+  readonly providerId: string;
   readonly role: "primary" | "fallback";
   readonly cadenceSeconds: number;
   readonly quotaReserve: number;
@@ -39,15 +39,7 @@ export interface ScheduleDiscoveryPolicy {
 }
 
 const productionOddsBooks: Readonly<Record<string, OddsBookRole>> =
-  Object.freeze({
-    [defaultEvaluationPolicy.targetSportsbookId]: "offered",
-    ...Object.fromEntries(
-      Object.keys(defaultEvaluationPolicy.comparisonWeights).map((book) => [
-        book,
-        "comparison" as const,
-      ]),
-    ),
-  });
+  productionSportsbookRoles;
 /** Schedule requests have an explicit budget independent from odds reserves. */
 export const productionScheduleDiscoveryPolicies: readonly ScheduleDiscoveryPolicy[] =
   deepFreeze([

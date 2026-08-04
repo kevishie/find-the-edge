@@ -12,6 +12,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@find-the-edge/config": "workspace:*",
     "@find-the-edge/domain": "workspace:*",
     "@find-the-edge/odds": "workspace:*",
     "@find-the-edge/sports": "workspace:*",

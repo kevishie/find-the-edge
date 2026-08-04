@@ -98,6 +98,7 @@ describe("SharpAPI primary ingestion", () => {
           id: bootstrap.id,
           version: 1,
           sportKey: bootstrap.sportKey,
+          participantIds: ["away-club", "home-club"],
           participantLabels: ["Away Club", "Home Club"],
         } as unknown as CanonicalEvent);
         return Promise.resolve("created" as const);
@@ -163,6 +164,10 @@ describe("SharpAPI primary ingestion", () => {
                   {
                     providerPriceId: `${eventId}-price`,
                     marketKey: league.moneylineMarket,
+                    outcomeStructure:
+                      league.leagueKey === "mls"
+                        ? ("three-way" as const)
+                        : ("two-way" as const),
                     providerMarketType: "moneyline",
                     providerMarketId: "market-1",
                     selectionKey: "away" as const,
@@ -181,6 +186,10 @@ describe("SharpAPI primary ingestion", () => {
                   {
                     providerPriceId: `${eventId}-price-home`,
                     marketKey: league.moneylineMarket,
+                    outcomeStructure:
+                      league.leagueKey === "mls"
+                        ? ("three-way" as const)
+                        : ("two-way" as const),
                     providerMarketType: "moneyline",
                     providerMarketId: "market-1",
                     selectionKey: "home" as const,
@@ -201,6 +210,7 @@ describe("SharpAPI primary ingestion", () => {
                         {
                           providerPriceId: `${eventId}-price-draw`,
                           marketKey: league.moneylineMarket,
+                          outcomeStructure: "three-way" as const,
                           providerMarketType: "moneyline_3-way",
                           providerMarketId: "market-1",
                           selectionKey: "draw" as const,
@@ -304,6 +314,15 @@ describe("SharpAPI primary ingestion", () => {
       splitsEntitled: true,
     });
     expect(oddsPersist).toHaveBeenCalledTimes(5);
+    expect(
+      oddsPersist.mock.calls.map(([input]) => input.observation.selectionKey),
+    ).toEqual([
+      "participant:away-club",
+      "participant:home-club",
+      "participant:away-club",
+      "participant:home-club",
+      "draw",
+    ]);
     expect(splitPersist).toHaveBeenCalledTimes(2);
     expect(
       splitPersist.mock.calls.map(([input]) => input.providerEventId),

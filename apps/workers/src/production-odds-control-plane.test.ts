@@ -53,6 +53,44 @@ describe("production odds control-plane composition", () => {
     );
     expect(gaps.some((gap) => gap.sportsbookId === "circa")).toBe(true);
   });
+  it("persists an incomplete-market gap when an active market is one-sided", () => {
+    const gaps = evidenceGaps(
+      "run",
+      "sharpapi",
+      "mlb",
+      [
+        {
+          providerEventId: "mlb-event",
+          bookmakers: [
+            {
+              id: "draftkings",
+              prices: [
+                {
+                  marketKey: "moneyline",
+                  selectionKey: "away",
+                  outcomeStructure: "two-way" as const,
+                  isMainLine: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      ["moneyline"],
+      { draftkings: "offered" },
+      at,
+    );
+
+    expect(gaps).toEqual([
+      expect.objectContaining({
+        providerEventId: "mlb-event",
+        sportsbookId: "draftkings",
+        marketKey: "moneyline",
+        sourceState: "partial",
+        reason: "incomplete-market",
+      }),
+    ]);
+  });
   it("uses durable scheduled starts for near-start cadence while discovery is skipped", async () => {
     const events = new MemoryEventIngestionStore();
     const control = new MemoryOddsControlPlaneStore();
@@ -87,13 +125,6 @@ describe("production odds control-plane composition", () => {
         retrievedAt: at,
       }),
     );
-    const fetchFallbackSchedule = vi.fn(() =>
-      Promise.resolve({
-        events: [],
-        retrievedAt: at,
-        quota: { used: 0 },
-      }),
-    );
     const options = {
       events,
       odds: { persist: vi.fn() },
@@ -104,8 +135,8 @@ describe("production odds control-plane composition", () => {
         persistGap: vi.fn(),
       },
       control,
+      metrics: { emit: vi.fn() },
       sharpApiKey: "sharp-key",
-      theOddsApiKey: "fallback-key",
       now,
       fetchSharpSchedule,
       fetchSharpOdds,
@@ -116,8 +147,6 @@ describe("production odds control-plane composition", () => {
         maxBooks: 15,
         streamingEnabled: false,
       }),
-      fetchFallbackSchedule,
-      fetchFallbackOdds: vi.fn(),
     };
     const first = await runProductionOddsControlPlane(options);
     expect(first.map((result) => result.providerId)).toEqual([
@@ -126,6 +155,11 @@ describe("production odds control-plane composition", () => {
     ]);
     expect(fetchSharpSchedule).toHaveBeenCalledTimes(2);
     expect(fetchSharpOdds).toHaveBeenCalledTimes(2);
+    expect(options.metrics.emit).toHaveBeenCalledWith(
+      "OddsNormalizedObservation",
+      0,
+      expect.objectContaining({ provider: "sharpapi" }),
+    );
     expect(
       [...control.gaps.values()].filter((gap) => gap.reason === "missing"),
     ).toHaveLength(30);
@@ -143,7 +177,6 @@ describe("production odds control-plane composition", () => {
     ]);
     expect(fetchSharpSchedule).toHaveBeenCalledTimes(2);
     expect(fetchSharpOdds).toHaveBeenCalledTimes(3);
-    expect(fetchFallbackSchedule).not.toHaveBeenCalled();
   });
   it("fails closed without a secondary schedule and isolates account setup failure", async () => {
     const events = new MemoryEventIngestionStore();
@@ -177,13 +210,6 @@ describe("production odds control-plane composition", () => {
         retrievedAt: at,
       }),
     );
-    const fetchFallbackOdds = vi.fn(() =>
-      Promise.resolve({
-        events: [{ ...scheduleEvent("fallback-mlb"), bookmakers: [] }],
-        quota: { used: 3, remaining: 500 },
-        retrievedAt: at,
-      }),
-    );
     const result = await runProductionOddsControlPlane({
       events,
       odds: { persist: vi.fn() },
@@ -195,27 +221,21 @@ describe("production odds control-plane composition", () => {
       },
       control,
       sharpApiKey: "sharp-key",
-      theOddsApiKey: "fallback-key",
       now,
       fetchSharpSchedule,
       fetchSharpOdds,
-      fetchFallbackSchedule: vi.fn(() =>
-        Promise.resolve({
-          events: [{ ...scheduleEvent("fallback-mlb"), bookmakers: [] }],
-          quota: { used: 1, remaining: 500 },
-          retrievedAt: at,
-        }),
-      ),
-      fetchFallbackOdds,
       fetchSharpAccount: vi.fn().mockRejectedValue(new Error("account-down")),
     });
     expect(result.map(({ providerId }) => providerId)).toEqual([
       undefined,
       "sharpapi",
     ]);
+    expect(result[0]).toMatchObject({
+      status: "failed",
+      reason: "schedule-provider-unavailable",
+    });
     expect(fetchSharpOdds).toHaveBeenCalledTimes(1);
     expect(fetchSharpOdds.mock.calls[0]?.[0].leagueKey).toBe("mls");
-    expect(fetchFallbackOdds).not.toHaveBeenCalled();
     expect(
       [...control.runs.values()].some(
         (run) => run.leagueKey === "account" && run.status === "failed",
@@ -264,12 +284,9 @@ describe("production odds control-plane composition", () => {
       },
       control,
       sharpApiKey: "sharp-key",
-      theOddsApiKey: "fallback-key",
       now,
       fetchSharpSchedule,
       fetchSharpOdds,
-      fetchFallbackSchedule: vi.fn(),
-      fetchFallbackOdds: vi.fn(),
       fetchSharpAccount: vi.fn().mockResolvedValue({
         tier: "pro",
         features: [],
@@ -292,6 +309,5 @@ describe("production odds control-plane composition", () => {
       ["sharpapi", "completed"],
     ]);
     expect(fetchSharpOdds).toHaveBeenCalledTimes(4);
-    expect(options.fetchFallbackSchedule).not.toHaveBeenCalled();
   });
 });

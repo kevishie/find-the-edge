@@ -96,7 +96,7 @@ export async function withPaidLeaseHeartbeat<T>(
   }
 }
 export interface ControlPlaneProvider {
-  readonly providerId: "sharpapi" | "the-odds-api";
+  readonly providerId: string;
   readonly requestCost?: number;
   fetchPage(input: {
     readonly runId: string;
@@ -280,7 +280,7 @@ export async function runOddsLeague(input: {
   readonly clock?: () => Date;
   readonly heartbeatIntervalMs?: number;
   readonly nextStart?: string;
-  readonly dependencyFailure?: "schedule-dependency-failed";
+  readonly dependencyFailure?: string;
   readonly metrics?: OddsControlPlaneMetrics;
 }): Promise<OddsLeagueRunResult> {
   const { policy, store, now } = input;

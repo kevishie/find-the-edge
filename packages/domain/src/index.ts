@@ -116,6 +116,39 @@ export interface Sportsbook {
   jurisdiction?: string;
 }
 
+export const canonicalMvpMarketKeys = [
+  "moneyline",
+  "spread",
+  "total",
+  "btts",
+  "team_total",
+] as const;
+export type CanonicalMvpMarketKey = (typeof canonicalMvpMarketKeys)[number];
+export type OddsNormalizationReason =
+  | "unknown-bookmaker"
+  | "unsupported-market"
+  | "unsupported-selection"
+  | "incomplete-market"
+  | "participant-unavailable";
+export type CanonicalSelectionKey =
+  | `participant:${string}`
+  | "draw"
+  | "over"
+  | "under"
+  | "yes"
+  | "no"
+  | `participant:${string}:over`
+  | `participant:${string}:under`;
+
+export function participantSelectionKey(
+  participantId: EntityId,
+  outcome?: "over" | "under",
+): CanonicalSelectionKey {
+  const id = String(participantId).trim();
+  if (!id) throw new Error("participant-id-invalid");
+  return `participant:${encodeURIComponent(id)}${outcome ? `:${outcome}` : ""}` as CanonicalSelectionKey;
+}
+
 export interface OddsSnapshot {
   id: EntityId;
   sportKey: SportKey;

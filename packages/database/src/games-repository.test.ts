@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeFixtureOddsObservation,
   assessEventMetadata,
+  participantSelectionKey,
   type EventDisplayDto,
+  type EntityId,
 } from "@find-the-edge/domain";
 import { EventStorageError } from "./event-errors";
 import type { EventRepository } from "./event-repository";
@@ -32,6 +34,7 @@ const event: EventDisplayDto = {
     "2026-08-01T12:30:00.000Z",
   ),
 };
+const participantKey = (id: string) => participantSelectionKey(id as EntityId);
 const events = (
   items: readonly EventDisplayDto[] = [event],
   seen: { cursor: string | undefined } = { cursor: undefined },
@@ -65,13 +68,19 @@ const current = (
   sportsbookId = "draftkings",
   observedAt = "2026-08-01T12:00:00.000Z",
   point?: number,
-) =>
-  normalizeFixtureOddsObservation({
+) => {
+  const canonicalSelectionKey =
+    selectionKey === "away"
+      ? participantKey(source.participants[0]!.id)
+      : selectionKey === "home"
+        ? participantKey(source.participants[1]!.id)
+        : selectionKey;
+  return normalizeFixtureOddsObservation({
     canonicalEventId: source.id,
     canonicalEventVersion: source.version,
     sportKey: source.sportKey,
     marketKey,
-    selectionKey,
+    selectionKey: canonicalSelectionKey,
     selectionLabel,
     sportsbookId,
     sportsbookLabel: sportsbookId === "draftkings" ? "DraftKings" : "FanDuel",
@@ -80,6 +89,7 @@ const current = (
     observedAt,
     retrievedAt: "2026-08-01T12:00:00.000Z",
   });
+};
 const row = (value: ReturnType<typeof current>) => ({
   pk: value.partitionKey,
   sk: "CURRENT",
@@ -111,7 +121,7 @@ describe("joined games repository", () => {
         { pk: home.partitionKey, sk: "CURRENT" },
       ]),
     );
-    expect(seen.keys).toHaveLength(24);
+    expect(seen.keys).toHaveLength(30);
     expect(page).toMatchObject({
       nextCursor: "next",
       snapshotAt: "2026-08-01T12:00:00.000Z",
@@ -119,8 +129,8 @@ describe("joined games repository", () => {
     expect(page.items[0]?.odds).toMatchObject({
       state: "available",
       selections: [
-        { selectionKey: "away", americanOdds: 120 },
-        { selectionKey: "home", americanOdds: -135 },
+        { selectionKey: participantKey("bos"), americanOdds: 120 },
+        { selectionKey: participantKey("nyy"), americanOdds: -135 },
       ],
     });
   });
@@ -147,9 +157,9 @@ describe("joined games repository", () => {
     expect(page.items[0]?.odds).toMatchObject({
       state: "available",
       selections: [
-        { selectionKey: "away" },
+        { selectionKey: participantKey("mia") },
         { selectionKey: "draw" },
-        { selectionKey: "home" },
+        { selectionKey: participantKey("atl") },
       ],
     });
   });
@@ -177,10 +187,18 @@ describe("joined games repository", () => {
     expect(page.items[0]?.odds).toMatchObject({
       state: "available",
       selections: [
-        { marketKey: "moneyline", selectionKey: "away" },
-        { marketKey: "moneyline", selectionKey: "home" },
-        { marketKey: "spread", selectionKey: "away", point: 1.5 },
-        { marketKey: "spread", selectionKey: "home", point: -1.5 },
+        { marketKey: "moneyline", selectionKey: participantKey("bos") },
+        { marketKey: "moneyline", selectionKey: participantKey("nyy") },
+        {
+          marketKey: "spread",
+          selectionKey: participantKey("bos"),
+          point: 1.5,
+        },
+        {
+          marketKey: "spread",
+          selectionKey: participantKey("nyy"),
+          point: -1.5,
+        },
         { marketKey: "total", selectionKey: "over", point: 8.5 },
         { marketKey: "total", selectionKey: "under", point: 8.5 },
       ],
@@ -203,8 +221,8 @@ describe("joined games repository", () => {
     expect(page.items[0]?.odds).toMatchObject({
       state: "available",
       selections: [
-        { selectionKey: "away", sportsbookId: "fanduel" },
-        { selectionKey: "home", sportsbookId: "fanduel" },
+        { selectionKey: participantKey("bos"), sportsbookId: "fanduel" },
+        { selectionKey: participantKey("nyy"), sportsbookId: "fanduel" },
       ],
     });
   });
@@ -273,7 +291,7 @@ describe("joined games repository", () => {
         return Promise.resolve([]);
       },
     }).list({ sportKey: "soccer", status: "scheduled", day: "2026-08-01" }, 50);
-    expect(requested).toBe(1_400);
+    expect(requested).toBe(1_750);
   });
 
   it("never returns legacy provider duplicates within the schedule tolerance", async () => {

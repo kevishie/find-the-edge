@@ -1,14 +1,19 @@
 import type {
   BettingSplitRepository,
   EventIngestionStore,
+  FixtureOddsIngestInput,
+  FixtureOddsPersistResult,
   OddsControlPlaneStore,
   OddsAttemptRecord,
   OddsRunContinuation,
   SealedOddsPage,
 } from "@find-the-edge/database";
 import { randomUUID } from "node:crypto";
-import type { LiveOddsPersister } from "./live-odds-ingestion";
 import { reconcileScheduledProviderEvent } from "./schedule-reconciliation";
+
+export interface LiveOddsPersister {
+  persist(input: FixtureOddsIngestInput): Promise<FixtureOddsPersistResult>;
+}
 
 const putContinuationCas = async (
   store: OddsControlPlaneStore,
@@ -111,24 +116,18 @@ import {
 } from "@find-the-edge/domain";
 import {
   SHARP_API_PROVIDER_ID,
-  THE_ODDS_API_PROVIDER_ID,
   fetchSharpApiOddsPage,
   fetchSharpApiAccount,
   fetchSharpApiSchedulePage,
   fetchSharpApiSplitsPage,
-  fetchTheOddsApi,
-  fetchTheOddsApiEvents,
   sharpApiLeagues,
-  theOddsApiLeagues,
   type SharpApiOddsPage,
   type SharpApiSchedulePage,
-  type TheOddsApiResult,
 } from "@find-the-edge/providers";
 import {
   persistSharpApiOddsPage,
   persistSharpApiSplitPage,
 } from "./sharp-api-ingestion";
-import { persistTheOddsApiPage } from "./live-odds-ingestion";
 import {
   runDueOddsLeagues,
   withPaidLeaseHeartbeat,
@@ -140,11 +139,6 @@ interface SharpPageMaterial {
   readonly kind: "sharpapi";
   readonly page: SharpApiOddsPage;
 }
-interface FallbackPageMaterial {
-  readonly kind: "the-odds-api";
-  readonly page: TheOddsApiResult;
-}
-type PageMaterial = SharpPageMaterial | FallbackPageMaterial;
 
 const digest = (value: unknown) => sha256Hex(JSON.stringify(value));
 const capabilityFailure = (error: unknown) => {
@@ -154,6 +148,16 @@ const capabilityFailure = (error: unknown) => {
   if (reason.includes("transition-conflict")) return "transition-conflict";
   if (reason === "quota-reserve") return reason;
   if (reason === "provider-request-ambiguous") return reason;
+  if (
+    [
+      "provider-unavailable",
+      "rate-limited",
+      "unauthorized",
+      "not-entitled",
+      "invalid-response",
+    ].includes(reason)
+  )
+    return reason;
   return "provider-error";
 };
 export const evidenceGaps = (
@@ -166,6 +170,10 @@ export const evidenceGaps = (
       readonly id: string;
       readonly prices: readonly {
         readonly marketKey: string;
+        readonly selectionKey?: string;
+        readonly participantSide?: "away" | "home";
+        readonly point?: number;
+        readonly outcomeStructure?: "two-way" | "three-way";
         readonly isLive?: boolean;
         readonly isMainLine?: boolean;
         readonly isAlternateLine?: boolean;
@@ -207,7 +215,70 @@ export const evidenceGaps = (
             price.isUnsupported !== true &&
             price.isMainLine !== false,
         );
-        if (active.length > 0) continue;
+        if (active.length > 0) {
+          const groups = new Map<string, typeof active>();
+          for (const price of active) {
+            const line =
+              marketKey === "spread"
+                ? Math.abs(price.point ?? Number.NaN)
+                : (price.point ?? "none");
+            const groupKey = `${price.participantSide ?? "event"}:${line}:${price.outcomeStructure ?? "default"}`;
+            groups.set(groupKey, [...(groups.get(groupKey) ?? []), price]);
+          }
+          const hasCompleteGroup = [...groups.values()].some((group) => {
+            const expected =
+              marketKey === "total" || marketKey === "team_total"
+                ? ["over", "under"]
+                : marketKey === "btts"
+                  ? ["yes", "no"]
+                  : marketKey === "moneyline" &&
+                      group[0]?.outcomeStructure === "three-way"
+                    ? ["away", "draw", "home"]
+                    : ["away", "home"];
+            const selections = new Set(
+              group.map(({ selectionKey }) => selectionKey),
+            );
+            return (
+              group.length === expected.length &&
+              expected.every((selection) => selections.has(selection)) &&
+              !(
+                (marketKey === "spread" ||
+                  marketKey === "total" ||
+                  marketKey === "team_total") &&
+                group.some(({ point }) => point === undefined)
+              ) &&
+              !(
+                marketKey === "team_total" &&
+                group.some(({ participantSide }) => !participantSide)
+              )
+            );
+          });
+          if (hasCompleteGroup) continue;
+          gaps.push({
+            gapId: sha256Hex(
+              JSON.stringify([
+                runId,
+                providerId,
+                providerEventId,
+                sportsbookId,
+                marketKey,
+                "incomplete-market",
+              ]),
+            ),
+            runId,
+            leagueKey,
+            providerId,
+            providerEventId,
+            marketKey,
+            sportsbookId,
+            policyVersion: oddsCollectionPolicyVersion,
+            bookRole,
+            sourceState: "partial",
+            reason: "incomplete-market",
+            observedAt,
+          });
+          continue;
+        }
         const state = prices.some((price) => price.isUnsupported === true)
           ? "unsupported"
           : prices.some((price) => price.isClosed === true)
@@ -245,6 +316,40 @@ export const evidenceGaps = (
       }
   return gaps;
 };
+const normalizationGaps = (
+  runId: string,
+  leagueKey: string,
+  page: SharpApiOddsPage,
+  books: Readonly<Record<string, "offered" | "comparison" | "splits">>,
+): OddsEvidenceGap[] =>
+  (page.rejections ?? []).flatMap((rejection) => {
+    const bookRole = rejection.sportsbookId
+      ? books[rejection.sportsbookId]
+      : undefined;
+    if (!rejection.providerEventId || !rejection.sportsbookId || !bookRole)
+      return [];
+    return [
+      {
+        gapId: digest([
+          runId,
+          rejection.providerEventId,
+          rejection.sportsbookId,
+          rejection.reason,
+          rejection.auditId,
+        ]),
+        runId,
+        leagueKey,
+        providerId: SHARP_API_PROVIDER_ID,
+        providerEventId: rejection.providerEventId,
+        sportsbookId: rejection.sportsbookId,
+        policyVersion: oddsCollectionPolicyVersion,
+        bookRole,
+        sourceState: "unsupported",
+        reason: rejection.reason,
+        observedAt: page.retrievedAt,
+      },
+    ];
+  });
 const scheduleEvent = (
   providerId: string,
   league: { readonly sportKey: string; readonly leagueKey: string },
@@ -295,7 +400,6 @@ export async function runProductionOddsControlPlane(input: {
   readonly control: OddsControlPlaneStore;
   readonly splits: BettingSplitRepository;
   readonly sharpApiKey: string;
-  readonly theOddsApiKey: string;
   readonly now?: Date;
   readonly forceRefresh?: boolean;
   readonly clock?: () => Date;
@@ -304,8 +408,6 @@ export async function runProductionOddsControlPlane(input: {
   readonly fetchSharpOdds?: typeof fetchSharpApiOddsPage;
   readonly fetchSharpAccount?: typeof fetchSharpApiAccount;
   readonly fetchSharpSplits?: typeof fetchSharpApiSplitsPage;
-  readonly fetchFallbackSchedule?: typeof fetchTheOddsApiEvents;
-  readonly fetchFallbackOdds?: typeof fetchTheOddsApi;
   readonly heartbeatIntervalMs?: number;
 }) {
   const ownerId = randomUUID();
@@ -345,6 +447,7 @@ export async function runProductionOddsControlPlane(input: {
   const sharpScheduleHealthy = new Set<string>();
   const scheduleReady = new Set<string>();
   const storedScheduleReady = new Set<string>();
+  const scheduleFailures = new Map<string, string>();
   for (const sharpLeague of sharpApiLeagues) {
     let activeScheduleRunId: string | undefined;
     let scheduleQuotaCost = 0;
@@ -668,6 +771,7 @@ export async function runProductionOddsControlPlane(input: {
       await clearOwned(checkpointKey, runId);
     } catch (error) {
       const reason = capabilityFailure(error);
+      scheduleFailures.set(sharpLeague.leagueKey, `schedule-${reason}`);
       if (activeScheduleRunId) {
         const run = await input.control.getRun(activeScheduleRunId);
         if (run)
@@ -694,332 +798,9 @@ export async function runProductionOddsControlPlane(input: {
       }
     }
   }
-  for (const fallbackLeague of theOddsApiLeagues) {
-    const schedulePolicy = productionScheduleDiscoveryPolicies.find(
-      ({ providerId }) => providerId === THE_ODDS_API_PROVIDER_ID,
-    );
-    if (!schedulePolicy) continue;
-    if (sharpScheduleHealthy.has(fallbackLeague.leagueKey)) continue;
-    let activeScheduleRunId: string | undefined;
-    let scheduleQuotaCost = 0;
-    try {
-      const scheduleHealth = await input.control.getHealth(
-        `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}:schedule`,
-      );
-      if (
-        scheduleHealth?.quotaRemaining !== undefined &&
-        scheduleHealth.quotaRemaining <= schedulePolicy.quotaReserve
-      )
-        throw new Error("quota-reserve");
-      const checkpointKey = `schedule:${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`;
-      const checkpoint = await input.control.getCheckpoint(checkpointKey);
-      if (
-        checkpoint?.expectedProviderEvents?.some(
-          ({ startsAt }) => Date.parse(startsAt) > now.getTime(),
-        )
-      )
-        storedScheduleReady.add(
-          `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
-        );
-      if (checkpoint?.upcomingStarts)
-        starts.set(
-          fallbackLeague.leagueKey,
-          checkpoint.upcomingStarts.filter(
-            (start) => Date.parse(start) > now.getTime(),
-          ),
-        );
-      if (checkpoint?.expectedProviderEvents)
-        expectedProviderEvents.set(
-          `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
-          checkpoint.expectedProviderEvents
-            .filter(({ startsAt }) => Date.parse(startsAt) > now.getTime())
-            .map(({ providerEventId }) => providerEventId),
-        );
-      const existingContinuation =
-        await input.control.getContinuation(checkpointKey);
-      if (existingContinuation?.ambiguousUntil)
-        throw new Error("provider-request-ambiguous");
-      scheduleQuotaCost = existingContinuation?.quotaCost ?? 0;
-      if (
-        !input.forceRefresh &&
-        !existingContinuation &&
-        checkpoint &&
-        Date.parse(checkpoint.nextDueAt) > now.getTime()
-      ) {
-        scheduleReady.add(
-          `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
-        );
-        continue;
-      }
-      const claimNow = liveNow();
-      const continuation = await input.control.claimContinuation({
-        ...existingContinuation,
-        leagueKey: checkpointKey,
-        runId:
-          existingContinuation?.runId ??
-          `schedule:${fallbackLeague.leagueKey}:${now.toISOString()}`,
-        providerId: THE_ODDS_API_PROVIDER_ID,
-        updatedAt: claimNow.toISOString(),
-        startedAt: claimNow.toISOString(),
-        capability: "schedule",
-        evidenceCommitted: false,
-        quotaCost: existingContinuation?.quotaCost ?? 0,
-        ownerId,
-        leaseUntil: new Date(claimNow.getTime() + 300_000).toISOString(),
-      });
-      if (continuation.ownerId !== ownerId) throw new Error("run-owned");
-      const runId = continuation.runId;
-      activeScheduleRunId = runId;
-      await input.control.putRun({
-        ...((await input.control.getRun(runId)) ?? {}),
-        runId,
-        leagueKey: fallbackLeague.leagueKey,
-        providerId: THE_ODDS_API_PROVIDER_ID,
-        policyVersion: oddsCollectionPolicyVersion,
-        status: "running",
-        startedAt: continuation?.startedAt ?? now.toISOString(),
-        updatedAt: now.toISOString(),
-        evidenceCommitted: continuation?.evidenceCommitted ?? false,
-        quotaCost: continuation?.quotaCost ?? 0,
-      });
-      await putContinuationCas(input.control, {
-        leagueKey: checkpointKey,
-        runId,
-        providerId: THE_ODDS_API_PROVIDER_ID,
-        updatedAt: now.toISOString(),
-        startedAt: continuation?.startedAt ?? now.toISOString(),
-        capability: "schedule",
-        evidenceCommitted: continuation?.evidenceCommitted ?? false,
-        quotaCost: continuation?.quotaCost ?? 0,
-      });
-      const pageToken = "start";
-      let sealed = await input.control.getPage(runId, pageToken);
-      if (!sealed) {
-        await assertAndRenewOwner(
-          input.control,
-          checkpointKey,
-          runId,
-          ownerId,
-          liveNow,
-        );
-        const attemptId = `${runId}:${pageToken}:${now.toISOString()}:0`;
-        if (
-          !(await input.control.reserveQuotaAttempt(
-            `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}:schedule`,
-            schedulePolicy.quotaReserve,
-            schedulePolicy.requestCost,
-            {
-              attemptId,
-              runId,
-              pageToken,
-              requestedAt: liveNow().toISOString(),
-              leaseUntil: new Date(liveNow().getTime() + 300_000).toISOString(),
-              state: "reserved",
-              providerId: THE_ODDS_API_PROVIDER_ID,
-              leagueKey: fallbackLeague.leagueKey,
-              capability: "schedule",
-            },
-          ))
-        )
-          throw new Error("schedule-attempt-reservation-conflict");
-        scheduleQuotaCost += schedulePolicy.requestCost;
-        let fetched: TheOddsApiResult;
-        try {
-          fetched = await paidCall(checkpointKey, runId, () =>
-            (input.fetchFallbackSchedule ?? fetchTheOddsApiEvents)(
-              fallbackLeague,
-              input.theOddsApiKey,
-            ),
-          );
-          const actualCost = fetched.quota.used ?? schedulePolicy.requestCost;
-          await input.control.reconcileQuota(
-            `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}:schedule`,
-            schedulePolicy.requestCost,
-            actualCost,
-            fetched.quota.remaining,
-            now.toISOString(),
-          );
-          scheduleQuotaCost += actualCost - schedulePolicy.requestCost;
-        } catch (error) {
-          const ambiguous = isAmbiguousTransport(error);
-          await input.control.completeAttempt({
-            attemptId,
-            runId,
-            pageToken,
-            requestedAt: liveNow().toISOString(),
-            completedAt: now.toISOString(),
-            state: ambiguous ? "ambiguous" : "failed",
-            failureReason: ambiguous
-              ? "provider-request-ambiguous"
-              : "provider-unavailable",
-          });
-          if (ambiguous)
-            await putContinuationCas(input.control, {
-              ...continuation,
-              leagueKey: checkpointKey,
-              runId,
-              providerId: THE_ODDS_API_PROVIDER_ID,
-              updatedAt: now.toISOString(),
-              ambiguousUntil: new Date(
-                liveNow().getTime() + 300_000,
-              ).toISOString(),
-            });
-          if (ambiguous) throw new Error("provider-request-ambiguous");
-          throw new Error("provider-unavailable");
-        }
-        sealed = {
-          runId,
-          pageToken,
-          responseDigest: digest(fetched),
-          normalizedItems: [fetched],
-          gaps: [],
-          quotaCost: fetched.quota.used ?? 0,
-          sealedAt: now.toISOString(),
-        };
-        await assertAndRenewOwner(
-          input.control,
-          checkpointKey,
-          runId,
-          ownerId,
-          liveNow,
-        );
-        await sealPaidPage(
-          input.control,
-          sealed,
-          {
-            attemptId,
-            runId,
-            pageToken,
-            requestedAt: liveNow().toISOString(),
-            leaseUntil: new Date(liveNow().getTime() + 300_000).toISOString(),
-          },
-          continuation,
-        );
-        await input.control.completeAttempt({
-          attemptId,
-          runId,
-          pageToken,
-          requestedAt: liveNow().toISOString(),
-          completedAt: now.toISOString(),
-          quotaCost: fetched.quota.used ?? 0,
-        });
-      }
-      const page = sealed.normalizedItems[0] as TheOddsApiResult;
-      for (const event of page.events)
-        await bindScheduleEvent(
-          input.events,
-          THE_ODDS_API_PROVIDER_ID,
-          fallbackLeague,
-          event,
-          page.retrievedAt,
-        );
-      const fallbackBindings = page.events
-        .map((event) => ({
-          providerEventId: event.providerEventId,
-          startsAt: event.startsAt,
-        }))
-        .filter(({ startsAt }) => Date.parse(startsAt) > now.getTime());
-      starts.set(
-        fallbackLeague.leagueKey,
-        fallbackBindings.map(({ startsAt }) => startsAt),
-      );
-      expectedProviderEvents.set(
-        `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
-        fallbackBindings.map(({ providerEventId }) => providerEventId),
-      );
-      await assertAndRenewOwner(
-        input.control,
-        checkpointKey,
-        runId,
-        ownerId,
-        liveNow,
-      );
-      if (!sealed.committedAt)
-        await input.control.commitPage(runId, pageToken, now.toISOString());
-      await putContinuationCas(input.control, {
-        leagueKey: checkpointKey,
-        runId,
-        providerId: THE_ODDS_API_PROVIDER_ID,
-        updatedAt: now.toISOString(),
-        startedAt: continuation?.startedAt ?? now.toISOString(),
-        capability: "schedule",
-        evidenceCommitted: true,
-        quotaCost: scheduleQuotaCost,
-      });
-      const authoritativeFallbackHealth = await input.control.getHealth(
-        `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}:schedule`,
-      );
-      await input.control.putHealth({
-        ...authoritativeFallbackHealth,
-        providerId: THE_ODDS_API_PROVIDER_ID,
-        healthKey: `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}:schedule`,
-        healthy: true,
-        consecutiveSuccesses: (scheduleHealth?.consecutiveSuccesses ?? 0) + 1,
-        ...(authoritativeFallbackHealth?.quotaRemaining === undefined
-          ? {}
-          : { quotaRemaining: authoritativeFallbackHealth.quotaRemaining }),
-        updatedAt: now.toISOString(),
-      });
-      await input.control.putCheckpoint({
-        ...checkpoint,
-        leagueKey: checkpointKey,
-        providerId: THE_ODDS_API_PROVIDER_ID,
-        completedAt: now.toISOString(),
-        nextDueAt: new Date(now.getTime() + 3_600_000).toISOString(),
-        runId,
-        upcomingStarts: starts.get(fallbackLeague.leagueKey) ?? [],
-        expectedProviderEventIds:
-          expectedProviderEvents.get(
-            `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
-          ) ?? [],
-        expectedProviderEvents: fallbackBindings,
-      });
-      await input.control.putRun({
-        ...(await input.control.getRun(runId))!,
-        status: "completed",
-        updatedAt: now.toISOString(),
-        evidenceCommitted: true,
-        quotaCost: scheduleQuotaCost,
-      });
-      scheduleReady.add(
-        `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
-      );
-      await clearOwned(checkpointKey, runId);
-    } catch (error) {
-      const reason = capabilityFailure(error);
-      if (activeScheduleRunId) {
-        const run = await input.control.getRun(activeScheduleRunId);
-        if (run)
-          await input.control.putRun({
-            ...run,
-            status: "failed",
-            updatedAt: now.toISOString(),
-            failureReason: reason,
-            quotaCost: scheduleQuotaCost,
-          });
-      }
-      input.metrics?.emit("OddsScheduleFailure", 1, {
-        league: fallbackLeague.leagueKey,
-        provider: THE_ODDS_API_PROVIDER_ID,
-        reason,
-      });
-      if (
-        storedScheduleReady.has(
-          `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
-        )
-      )
-        scheduleReady.add(
-          `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
-        );
-    }
-  }
-
   const results = await runDueOddsLeagues(
     productionOddsCollectionPolicies.map((policy) => {
       const sharpLeague = sharpApiLeagues.find(
-        ({ leagueKey }) => leagueKey === policy.leagueKey,
-      )!;
-      const fallbackLeague = theOddsApiLeagues.find(
         ({ leagueKey }) => leagueKey === policy.leagueKey,
       )!;
       const providers = new Map<string, ControlPlaneProvider>([
@@ -1036,9 +817,7 @@ export async function runProductionOddsControlPlane(input: {
                   policy.leagueKey,
                   [],
                   policy.markets,
-                  policy.providers.find(
-                    ({ providerId }) => providerId === SHARP_API_PROVIDER_ID,
-                  )?.books ?? {},
+                  policy.providers[0]?.books ?? {},
                   now.toISOString(),
                   (
                     expectedProviderEvents.get(
@@ -1067,18 +846,24 @@ export async function runProductionOddsControlPlane(input: {
               const material: SharpPageMaterial = { kind: "sharpapi", page };
               return {
                 items: [material],
-                gaps: evidenceGaps(
-                  runId,
-                  SHARP_API_PROVIDER_ID,
-                  policy.leagueKey,
-                  page.events,
-                  policy.markets,
-                  policy.providers.find(
-                    ({ providerId }) => providerId === SHARP_API_PROVIDER_ID,
-                  )?.books ?? {},
-                  page.retrievedAt,
-                  [],
-                ),
+                gaps: [
+                  ...evidenceGaps(
+                    runId,
+                    SHARP_API_PROVIDER_ID,
+                    policy.leagueKey,
+                    page.events,
+                    policy.markets,
+                    policy.providers[0]?.books ?? {},
+                    page.retrievedAt,
+                    [],
+                  ),
+                  ...normalizationGaps(
+                    runId,
+                    policy.leagueKey,
+                    page,
+                    policy.providers[0]?.books ?? {},
+                  ),
+                ],
                 quotaCost: 1,
                 seenProviderEventIds: page.events.map(
                   ({ providerEventId }) => providerEventId,
@@ -1091,74 +876,9 @@ export async function runProductionOddsControlPlane(input: {
             },
           },
         ],
-        [
-          THE_ODDS_API_PROVIDER_ID,
-          {
-            providerId: THE_ODDS_API_PROVIDER_ID,
-            requestCost: 3,
-            reconcileMissing: ({ runId, seenProviderEventIds }) =>
-              Promise.resolve(
-                evidenceGaps(
-                  runId,
-                  THE_ODDS_API_PROVIDER_ID,
-                  policy.leagueKey,
-                  [],
-                  policy.markets,
-                  policy.providers.find(
-                    ({ providerId }) => providerId === THE_ODDS_API_PROVIDER_ID,
-                  )?.books ?? {},
-                  now.toISOString(),
-                  (
-                    expectedProviderEvents.get(
-                      `${THE_ODDS_API_PROVIDER_ID}:${policy.leagueKey}`,
-                    ) ?? []
-                  ).filter((id) => !seenProviderEventIds.has(id)),
-                ),
-              ),
-            fetchPage: async ({ runId, pageToken }) => {
-              if (pageToken !== "start")
-                throw new Error("fallback-page-invalid");
-              const page = await (input.fetchFallbackOdds ?? fetchTheOddsApi)(
-                fallbackLeague,
-                input.theOddsApiKey,
-              );
-              const material: FallbackPageMaterial = {
-                kind: "the-odds-api",
-                page,
-              };
-              return {
-                items: [material],
-                gaps: evidenceGaps(
-                  runId,
-                  THE_ODDS_API_PROVIDER_ID,
-                  policy.leagueKey,
-                  page.events,
-                  policy.markets,
-                  policy.providers.find(
-                    ({ providerId }) => providerId === THE_ODDS_API_PROVIDER_ID,
-                  )?.books ?? {},
-                  page.retrievedAt,
-                  [],
-                ),
-                quotaCost: page.quota.used ?? 3,
-                seenProviderEventIds: page.events.map(
-                  ({ providerEventId }) => providerEventId,
-                ),
-                ...(page.quota.remaining === undefined
-                  ? {}
-                  : { quotaRemaining: page.quota.remaining }),
-                digest: digest(material),
-              };
-            },
-          },
-        ],
       ]);
-      for (const providerId of [
-        SHARP_API_PROVIDER_ID,
-        THE_ODDS_API_PROVIDER_ID,
-      ])
-        if (!scheduleReady.has(`${providerId}:${policy.leagueKey}`))
-          providers.delete(providerId);
+      if (!scheduleReady.has(`${SHARP_API_PROVIDER_ID}:${policy.leagueKey}`))
+        providers.delete(SHARP_API_PROVIDER_ID);
       const nextStart = (starts.get(policy.leagueKey) ?? []).sort()[0];
       return {
         policy,
@@ -1174,36 +894,33 @@ export async function runProductionOddsControlPlane(input: {
           }) => {
             let evidenceCommitted = false;
             for (const item of items) {
-              const material = item as PageMaterial;
+              const material = item as SharpPageMaterial;
               if (
-                providerId === SHARP_API_PROVIDER_ID &&
-                material.kind === "sharpapi"
-              ) {
-                const persisted = await persistSharpApiOddsPage(
-                  input.events,
-                  input.odds,
-                  sharpLeague,
-                  material.page,
-                  policy.providers.find(
-                    ({ providerId }) => providerId === SHARP_API_PROVIDER_ID,
-                  )?.books,
-                );
-                evidenceCommitted ||= persisted.observations > 0;
-              } else if (
-                providerId === THE_ODDS_API_PROVIDER_ID &&
-                material.kind === "the-odds-api"
-              ) {
-                const persisted = await persistTheOddsApiPage(
-                  input.events,
-                  input.odds,
-                  fallbackLeague,
-                  material.page,
-                  policy.providers.find(
-                    ({ providerId }) => providerId === THE_ODDS_API_PROVIDER_ID,
-                  )?.books,
-                );
-                evidenceCommitted ||= persisted.observations > 0;
-              } else throw new Error("provider-page-material-mismatch");
+                providerId !== SHARP_API_PROVIDER_ID ||
+                material.kind !== "sharpapi"
+              )
+                throw new Error("provider-page-material-mismatch");
+              const persisted = await persistSharpApiOddsPage(
+                input.events,
+                input.odds,
+                sharpLeague,
+                material.page,
+                policy.providers[0]?.books,
+              );
+              input.metrics?.emit(
+                "OddsNormalizedObservation",
+                persisted.observations,
+                { provider: SHARP_API_PROVIDER_ID, league: policy.leagueKey },
+              );
+              for (const [reason, count] of Object.entries(
+                persisted.rejectionCounts,
+              ))
+                input.metrics?.emit("OddsNormalizationRejected", count, {
+                  provider: SHARP_API_PROVIDER_ID,
+                  league: policy.leagueKey,
+                  reason,
+                });
+              evidenceCommitted ||= persisted.observations > 0;
             }
             return evidenceCommitted;
           },
@@ -1213,7 +930,11 @@ export async function runProductionOddsControlPlane(input: {
         clock: liveNow,
         ...(providers.size > 0
           ? {}
-          : { dependencyFailure: "schedule-dependency-failed" as const }),
+          : {
+              dependencyFailure:
+                scheduleFailures.get(policy.leagueKey) ??
+                "schedule-dependency-failed",
+            }),
         ...(nextStart === undefined ? {} : { nextStart }),
         ...(input.metrics ? { metrics: input.metrics } : {}),
       };

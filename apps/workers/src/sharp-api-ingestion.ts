@@ -4,8 +4,15 @@ import type {
   FixtureOddsIngestInput,
   FixtureOddsPersistResult,
 } from "@find-the-edge/database";
-import type { IsoTimestamp } from "@find-the-edge/domain";
-import { oddsCollectionPolicyVersion } from "@find-the-edge/config";
+import type {
+  IsoTimestamp,
+  OddsNormalizationReason,
+} from "@find-the-edge/domain";
+import { participantSelectionKey } from "@find-the-edge/domain";
+import {
+  normalizeSportsbook,
+  oddsCollectionPolicyVersion,
+} from "@find-the-edge/config";
 import {
   SHARP_API_PROVIDER_ID,
   fetchSharpApiAccount,
@@ -96,10 +103,12 @@ const loadOdds = async (
   fetchPage: typeof fetchSharpApiOddsPage,
 ) => {
   const events = new Map<string, SharpApiOddsPage["events"][number]>();
+  const rejections: NonNullable<SharpApiOddsPage["rejections"]>[number][] = [];
   let cursor: string | undefined;
   let retrievedAt = new Date().toISOString() as IsoTimestamp;
   for (let pageNumber = 0; pageNumber < 50; pageNumber += 1) {
     const page = await fetchPage(league, apiKey, cursor);
+    rejections.push(...(page.rejections ?? []));
     retrievedAt = page.retrievedAt;
     for (const event of page.events) {
       const existing = events.get(event.providerEventId);
@@ -119,15 +128,41 @@ const loadOdds = async (
       if (
         existing.providerEventUuid !== event.providerEventUuid ||
         (!sameOrientation && !reversedOrientation) ||
-        reversedOrientation ||
         startDelta > 120_000
-      )
+      ) {
+        rejections.push({
+          providerId: SHARP_API_PROVIDER_ID,
+          reason: "participant-unavailable",
+          auditId: "event-orientation",
+          providerEventId: event.providerEventId,
+        });
         continue;
+      }
       const books = new Map(
         existing.bookmakers.map((book) => [book.id, [...book.prices]]),
       );
-      for (const book of event.bookmakers)
-        books.set(book.id, [...(books.get(book.id) ?? []), ...book.prices]);
+      for (const book of event.bookmakers) {
+        const prices = reversedOrientation
+          ? book.prices.map((price) => ({
+              ...price,
+              selectionKey:
+                price.selectionKey === "away"
+                  ? ("home" as const)
+                  : price.selectionKey === "home"
+                    ? ("away" as const)
+                    : price.selectionKey,
+              ...(price.participantSide
+                ? {
+                    participantSide:
+                      price.participantSide === "away"
+                        ? ("home" as const)
+                        : ("away" as const),
+                  }
+                : {}),
+            }))
+          : book.prices;
+        books.set(book.id, [...(books.get(book.id) ?? []), ...prices]);
+      }
       events.set(event.providerEventId, {
         ...existing,
         bookmakers: [...books].map(([id, prices]) => ({
@@ -137,7 +172,8 @@ const loadOdds = async (
         })),
       });
     }
-    if (!page.hasMore) return { events: [...events.values()], retrievedAt };
+    if (!page.hasMore)
+      return { events: [...events.values()], rejections, retrievedAt };
     if (!page.nextCursor || page.nextCursor === cursor)
       throw new Error("sharpapi-pagination-invalid");
     cursor = page.nextCursor;
@@ -188,14 +224,26 @@ const loadSplits = async (
 const completeMainPrices = (
   prices: readonly SharpApiOddsPage["events"][number]["bookmakers"][number]["prices"][number][],
   leagueKey: SharpApiLeague["leagueKey"],
-) => {
+): { readonly prices: typeof prices; readonly rejected: number } => {
+  void leagueKey;
   const groups = new Map<string, typeof prices>();
+  let rejected = 0;
   for (const price of prices) {
+    if (
+      ((price.marketKey === "spread" ||
+        price.marketKey === "total" ||
+        price.marketKey === "team_total") &&
+        price.point === undefined) ||
+      (price.marketKey === "team_total" && !price.participantSide)
+    ) {
+      rejected += 1;
+      continue;
+    }
     const line =
       price.marketKey === "spread"
         ? Math.abs(price.point ?? NaN)
         : (price.point ?? "none");
-    const key = `${price.marketKey}:${line}`;
+    const key = `${price.marketKey}:${price.participantSide ?? "event"}:${line}:${price.outcomeStructure ?? "default"}`;
     groups.set(key, [...(groups.get(key) ?? []), price]);
   }
   const complete: (typeof prices)[number][] = [];
@@ -204,9 +252,14 @@ const completeMainPrices = (
     const expected =
       marketKey === "total"
         ? ["over", "under"]
-        : marketKey === "moneyline" && leagueKey === "mls"
-          ? ["away", "draw", "home"]
-          : ["away", "home"];
+        : marketKey === "btts"
+          ? ["yes", "no"]
+          : marketKey === "team_total"
+            ? ["over", "under"]
+            : marketKey === "moneyline" &&
+                group[0]?.outcomeStructure === "three-way"
+              ? ["away", "draw", "home"]
+              : ["away", "home"];
     const actual = new Set(group.map((price) => price.selectionKey));
     if (
       group.length !== expected.length ||
@@ -215,28 +268,38 @@ const completeMainPrices = (
         (selection) =>
           !actual.has(selection as (typeof group)[number]["selectionKey"]),
       )
-    )
+    ) {
+      rejected += 1;
       continue;
+    }
     if (marketKey === "spread" && group.length >= 2) {
       const points = group.map((price) => price.point);
       if (
         points.some((point) => point === undefined) ||
         points.reduce<number>((sum, point) => sum + (point ?? 0), 0) !== 0
-      )
+      ) {
+        rejected += 1;
         continue;
+      }
     }
     complete.push(...group);
   }
-  return complete;
+  return { prices: complete, rejected };
 };
 
 export async function persistSharpApiOddsPage(
   store: EventIngestionStore,
   odds: SharpApiOddsPersister,
   league: SharpApiLeague,
-  page: Pick<SharpApiOddsPage, "events" | "retrievedAt">,
+  page: Pick<SharpApiOddsPage, "events" | "retrievedAt"> &
+    Partial<Pick<SharpApiOddsPage, "rejections">>,
   bookRoles?: Readonly<Record<string, "offered" | "comparison" | "splits">>,
 ) {
+  const comparableParticipant = (value: string) =>
+    value
+      .normalize("NFKD")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
   const canonicalOddsEvents: {
     readonly raw: SharpApiOddsPage["events"][number];
     readonly canonical: NonNullable<
@@ -245,6 +308,10 @@ export async function persistSharpApiOddsPage(
   }[] = [];
   let events = 0;
   let observations = 0;
+  const rejectionCounts: Partial<Record<OddsNormalizationReason, number>> = {};
+  for (const rejection of page.rejections ?? [])
+    rejectionCounts[rejection.reason] =
+      (rejectionCounts[rejection.reason] ?? 0) + 1;
   for (const raw of page.events) {
     if (isSharpDerivativeMatchup(raw.awayTeam, raw.homeTeam)) continue;
     const event = providerEvent(league, raw, page.retrievedAt);
@@ -266,9 +333,18 @@ export async function persistSharpApiOddsPage(
     canonicalOddsEvents.push({ raw, canonical });
     let eventObservations = 0;
     for (const book of raw.bookmakers) {
-      const bookRole = bookRoles?.[book.id];
-      if (bookRoles && !bookRole) continue;
-      const main = completeMainPrices(
+      const normalizedBook = normalizeSportsbook(book.id);
+      if (normalizedBook.kind === "rejected") {
+        rejectionCounts[normalizedBook.reason] =
+          (rejectionCounts[normalizedBook.reason] ?? 0) + 1;
+        continue;
+      }
+      const sportsbook = normalizedBook.sportsbook;
+      const bookRole = bookRoles
+        ? bookRoles[sportsbook.id]
+        : sportsbook.productionRole;
+      if (!bookRole) continue;
+      const complete = completeMainPrices(
         book.prices.filter(
           (price) =>
             price.isMainLine &&
@@ -278,13 +354,58 @@ export async function persistSharpApiOddsPage(
         ),
         league.leagueKey,
       );
-      for (const price of main) {
+      if (complete.rejected)
+        rejectionCounts["incomplete-market"] =
+          (rejectionCounts["incomplete-market"] ?? 0) + complete.rejected;
+      for (const price of complete.prices) {
+        const providerParticipantIndex =
+          price.marketKey === "team_total"
+            ? price.participantSide === "away"
+              ? 0
+              : price.participantSide === "home"
+                ? 1
+                : -1
+            : price.selectionKey === "away"
+              ? 0
+              : price.selectionKey === "home"
+                ? 1
+                : -1;
+        let participantIndex = providerParticipantIndex;
+        if (providerParticipantIndex >= 0 && canonical.participantLabels) {
+          const providerLabel =
+            providerParticipantIndex === 0 ? raw.awayTeam : raw.homeTeam;
+          participantIndex = canonical.participantLabels.findIndex(
+            (label) =>
+              comparableParticipant(label) ===
+              comparableParticipant(providerLabel),
+          );
+          if (participantIndex < 0) {
+            rejectionCounts["participant-unavailable"] =
+              (rejectionCounts["participant-unavailable"] ?? 0) + 1;
+            continue;
+          }
+        }
+        const participantId =
+          participantIndex >= 0
+            ? canonical.participantIds[participantIndex]
+            : undefined;
+        if (participantIndex >= 0 && !participantId) {
+          rejectionCounts["participant-unavailable"] =
+            (rejectionCounts["participant-unavailable"] ?? 0) + 1;
+          continue;
+        }
+        const selectionKey = participantId
+          ? participantSelectionKey(
+              participantId,
+              price.marketKey === "team_total"
+                ? (price.selectionKey as "over" | "under")
+                : undefined,
+            )
+          : price.selectionKey;
         const canonicalSelectionLabel =
-          price.selectionKey === "away"
-            ? canonical.participantLabels?.[0]
-            : price.selectionKey === "home"
-              ? canonical.participantLabels?.[1]
-              : undefined;
+          participantIndex >= 0
+            ? canonical.participantLabels?.[participantIndex]
+            : undefined;
         await odds.persist({
           providerId: SHARP_API_PROVIDER_ID,
           providerEventId: raw.providerEventId,
@@ -296,10 +417,10 @@ export async function persistSharpApiOddsPage(
             canonicalEventVersion: canonical.version,
             sportKey: canonical.sportKey,
             marketKey: price.marketKey,
-            selectionKey: price.selectionKey,
+            selectionKey,
             selectionLabel: canonicalSelectionLabel ?? price.selectionLabel,
-            sportsbookId: book.id,
-            sportsbookLabel: book.label,
+            sportsbookId: sportsbook.id,
+            sportsbookLabel: sportsbook.name,
             ...(price.point === undefined ? {} : { point: price.point }),
             americanOdds: price.americanOdds,
             observedAt: price.observedAt,
@@ -318,7 +439,7 @@ export async function persistSharpApiOddsPage(
     }
     if (eventObservations > 0) events += 1;
   }
-  return { events, observations, canonicalOddsEvents };
+  return { events, observations, canonicalOddsEvents, rejectionCounts };
 }
 
 export async function persistSharpApiSplitPage(

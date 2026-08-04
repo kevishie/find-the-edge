@@ -1,32 +1,23 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useState } from "react";
+import { normalizeSportsbook } from "@find-the-edge/config";
 
 const normalize = (value: string) =>
   value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 
-export const sportsbookScopeKey = normalize;
-
-const sportsbookRegistry: Record<
-  string,
-  { readonly name: string; readonly logo: string }
-> = {
-  betmgm: { name: "BetMGM", logo: "/sportsbooks/betmgm.svg" },
-  circa: { name: "Circa Sports", logo: "/sportsbooks/circa.svg" },
-  consensus: {
-    name: "DK + Circa Consensus",
-    logo: "/sportsbooks/consensus.svg",
-  },
-  draftkings: { name: "DraftKings", logo: "/sportsbooks/draftkings.svg" },
-  fanduel: { name: "FanDuel", logo: "/sportsbooks/fanduel.svg" },
+export const sportsbookScopeKey = (value: string) => {
+  const result = normalizeSportsbook(value);
+  return result.kind === "normalized" ? result.sportsbook.id : normalize(value);
 };
 
 export function sportsbookMetadata(scope: string) {
-  const key = normalize(scope);
-  const registered =
-    key === "consensus"
-      ? sportsbookRegistry["consensus"]
-      : sportsbookRegistry[key];
-  return registered ?? { name: scope };
+  const result = normalizeSportsbook(scope);
+  return result.kind === "normalized"
+    ? {
+        name: result.sportsbook.name,
+        ...(result.sportsbook.logo ? { logo: result.sportsbook.logo } : {}),
+      }
+    : { name: scope };
 }
 
 export function SportsbookLogo({ scope }: { readonly scope: string }) {

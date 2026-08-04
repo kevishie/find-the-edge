@@ -40,6 +40,104 @@ const disabled: SharpApiActivationConfig = {
 };
 
 describe("SharpAPI activation boundary", () => {
+  const oddsRow = (overrides: Record<string, unknown> = {}) => ({
+    id: "price-normalization-1",
+    event_id: "mls-away-home-2026-08-04",
+    event_uuid: "event-normalization-1",
+    away_team: "Away Club",
+    home_team: "Home Club",
+    event_start_time: "2026-08-04T22:00:00.000Z",
+    sportsbook: "Hard Rock Bet",
+    market_type: "moneyline_3-way",
+    market_id: "market-normalization-1",
+    selection_type: "draw",
+    selection: "Draw",
+    selection_id: "selection-normalization-1",
+    odds_american: 240,
+    odds_decimal: 3.4,
+    odds_probability: 0.294,
+    public_bet_pct: null,
+    timestamp: "2026-08-04T20:00:00.000Z",
+    is_live: false,
+    is_main_line: true,
+    is_alternate_line: false,
+    is_player_prop: false,
+    is_stale_pregame_price: false,
+    ...overrides,
+  });
+
+  it("canonicalizes approved bookmaker aliases and reason-codes unsupported rows", () => {
+    const page = parseSharpApiOddsPage(
+      {
+        data: [
+          oddsRow(),
+          oddsRow({ id: "unknown-book", sportsbook: "Mystery Book" }),
+          oddsRow({ id: "unknown-market", market_type: "first_corner" }),
+          oddsRow({
+            id: "unknown-selection",
+            selection_type: "maybe",
+            selection: "Maybe",
+          }),
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagues[1]!,
+      "2026-08-04T20:00:01.000Z" as never,
+    );
+    expect(page.events[0]?.bookmakers[0]?.id).toBe("hardrock");
+    expect((page.rejections ?? []).map(({ reason }) => reason)).toEqual([
+      "unknown-bookmaker",
+      "unsupported-market",
+      "unsupported-selection",
+    ]);
+  });
+
+  it("normalizes only explicit BTTS and participant-bound team totals", () => {
+    const page = parseSharpApiOddsPage(
+      {
+        data: [
+          oddsRow({
+            id: "btts",
+            market_type: "both_teams_to_score",
+            selection_type: "yes",
+            selection: "Yes",
+          }),
+          oddsRow({
+            id: "team-total",
+            market_type: "team_total_goals",
+            selection_type: "over",
+            selection: "Over",
+            line: 1.5,
+            participant_side: "away",
+          }),
+          oddsRow({
+            id: "ambiguous-team-total",
+            market_type: "team_total_goals",
+            selection_type: "under",
+            selection: "Under",
+            line: 1.5,
+          }),
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagues[1]!,
+      "2026-08-04T20:00:01.000Z" as never,
+    );
+    const prices = page.events[0]?.bookmakers[0]?.prices ?? [];
+    expect(
+      prices.map(({ marketKey, selectionKey, participantSide }) => [
+        marketKey,
+        selectionKey,
+        participantSide,
+      ]),
+    ).toEqual([
+      ["btts", "yes", undefined],
+      ["team_total", "over", "away"],
+    ]);
+    expect(page.rejections).toContainEqual(
+      expect.objectContaining({ reason: "participant-unavailable" }),
+    );
+  });
   it("strictly normalizes the verified event-reference schedule", () => {
     const retrievedAt = "2026-08-03T12:00:00.000Z" as never;
     expect(

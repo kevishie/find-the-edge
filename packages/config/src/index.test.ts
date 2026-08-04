@@ -19,10 +19,10 @@ describe("validateEnvironment", () => {
 
   it("validates explicit provider and AWS profiles", () => {
     expect(
-      validateEnvironment({ ODDS_API_KEY: "test-placeholder" }, "provider"),
+      validateEnvironment({ SHARP_API_KEY: "test-placeholder" }, "provider"),
     ).toMatchObject({
       fixtureMode: false,
-      provider: { oddsApiKey: "test-placeholder" },
+      provider: { sharpApiKey: "test-placeholder" },
     });
     expect(
       validateEnvironment(

@@ -21,7 +21,7 @@ Open the local Vite URL. The Edge Lab and `/sports/:sportKey/events` explorer us
 Copy `.env.example` to `.env` only when you need to override a safe local default. `.env` and all `.env.*` files remain ignored; `.env.example` is the only committed exception.
 
 - `local` is the default. It requires no variables and sets fixture mode.
-- `provider` requires `ODDS_API_KEY`. The blank example is a placeholder, not a working or safe default.
+- `provider` requires `SHARP_API_KEY`. The blank example is a placeholder, not a working or safe default.
 - `aws` requires `AWS_REGION` and `FTE_AWS_STAGE`. AWS access keys must never be stored in repository env files.
 
 Packages must call `validateEnvironment(input, profile)` at their own startup boundary. Missing profile-specific variables and malformed common values produce `ConfigValidationError` with structured `variable`, `code`, and `message` fields. A package must not require variables for adapters it is not using.

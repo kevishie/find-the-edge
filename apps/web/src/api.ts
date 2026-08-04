@@ -912,6 +912,7 @@ const validGame = (
   const participantIds = new Set<string>();
   let awayLabel: string | undefined;
   let homeLabel: string | undefined;
+  const orderedParticipantIds: string[] = [];
   for (const participant of participants) {
     if (
       !plain(participant) ||
@@ -924,6 +925,7 @@ const validGame = (
     if (participantIds.size === 0) awayLabel = participant["label"];
     if (participantIds.size === 1) homeLabel = participant["label"];
     participantIds.add(participant["id"]);
+    orderedParticipantIds.push(participant["id"]);
   }
   if (!awayLabel || !homeLabel) return false;
   const odds = value["odds"];
@@ -942,14 +944,30 @@ const validGame = (
   const expectedSelections =
     filter.sport === "mlb"
       ? ([
-          ["away", awayLabel],
-          ["home", homeLabel],
+          [
+            `participant:${encodeURIComponent(orderedParticipantIds[0]!)}`,
+            awayLabel,
+          ],
+          [
+            `participant:${encodeURIComponent(orderedParticipantIds[1]!)}`,
+            homeLabel,
+          ],
         ] as const)
       : ([
-          ["away", awayLabel],
+          [
+            `participant:${encodeURIComponent(orderedParticipantIds[0]!)}`,
+            awayLabel,
+          ],
           ["draw", "Draw"],
-          ["home", homeLabel],
+          [
+            `participant:${encodeURIComponent(orderedParticipantIds[1]!)}`,
+            homeLabel,
+          ],
         ] as const);
+  const legacyExpectedSelectionKeys =
+    filter.sport === "mlb"
+      ? (["away", "home"] as const)
+      : (["away", "draw", "home"] as const);
   const selections = odds["selections"];
   const sportsbookId = selections[0]?.sportsbookId;
   const observedAt = selections[0]?.observedAt;
@@ -987,7 +1005,8 @@ const validGame = (
     moneyline.length !== expectedSelections.length ||
     !moneyline.every(
       (selection, index) =>
-        selection.selectionKey === expectedSelections[index]![0] &&
+        (selection.selectionKey === expectedSelections[index]![0] ||
+          selection.selectionKey === legacyExpectedSelectionKeys[index]) &&
         selection.selectionLabel === expectedSelections[index]![1] &&
         selection.point === undefined,
     )
@@ -999,7 +1018,11 @@ const validGame = (
     (spread.length !== 2 ||
       !spread.every(
         (selection, index) =>
-          selection.selectionKey === ["away", "home"][index] &&
+          ([
+            `participant:${encodeURIComponent(orderedParticipantIds[0]!)}`,
+            `participant:${encodeURIComponent(orderedParticipantIds[1]!)}`,
+          ][index] === selection.selectionKey ||
+            ["away", "home"][index] === selection.selectionKey) &&
           selection.selectionLabel === [awayLabel, homeLabel][index] &&
           selection.point !== undefined,
       ))
