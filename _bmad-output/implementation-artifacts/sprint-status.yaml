@@ -405,7 +405,7 @@ stories:
     league: enabled
     module: strategy-promotion
     priority: P1
-    status: backlog
+    status: done
     dependencies: [FTE-LEARN-003]
     risk: High
     approvalRequiredBeforeMerge: true

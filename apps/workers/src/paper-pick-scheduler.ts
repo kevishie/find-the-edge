@@ -26,6 +26,7 @@ export type PaperPickStopReason =
   | "token-limit"
   | "cost-limit"
   | "model-disabled"
+  | "strategy-unavailable"
   | "event-ineligible";
 export interface PaperPickSchedulerTelemetry {
   emit(event: {
@@ -79,6 +80,11 @@ export class PaperPickScheduler {
       readonly telemetry?: PaperPickSchedulerTelemetry;
       readonly owner?: string;
       readonly now?: () => Date;
+      /** Resolves the approved future-effective version frozen into a new run. */
+      readonly resolveStrategyVersion: (
+        strategyId: string,
+        scheduledFor: string,
+      ) => Promise<string | null>;
     },
   ) {}
   private emit(event: Parameters<PaperPickSchedulerTelemetry["emit"]>[0]) {
@@ -154,7 +160,23 @@ export class PaperPickScheduler {
     let discovered = 0,
       terminal = 0,
       limitCount = 0;
-    for (const tuple of policy.allowlist) {
+    for (const configuredTuple of policy.allowlist) {
+      const activeVersion = await this.dependencies.resolveStrategyVersion(
+        configuredTuple.strategyId,
+        scheduledFor,
+      );
+      if (!activeVersion) {
+        this.emit({
+          metric: "failure",
+          reasonCode: "strategy-unavailable",
+          count: 1,
+        });
+        continue;
+      }
+      const tuple = Object.freeze({
+        ...configuredTuple,
+        strategyVersion: activeVersion,
+      });
       const identity = {
         policyId: policy.id,
         policyVersion: policy.version,
@@ -260,7 +282,7 @@ export class PaperPickScheduler {
               } else if (
                 !current.allowlist.some(
                   (allowed) =>
-                    JSON.stringify(allowed) === JSON.stringify(tuple),
+                    JSON.stringify(allowed) === JSON.stringify(configuredTuple),
                 )
               ) {
                 terminalKind = "skipped";
@@ -316,7 +338,8 @@ export class PaperPickScheduler {
                     boundaryPolicy.killSwitch !== "open" ||
                     !boundaryPolicy.allowlist.some(
                       (allowed) =>
-                        JSON.stringify(allowed) === JSON.stringify(tuple),
+                        JSON.stringify(allowed) ===
+                        JSON.stringify(configuredTuple),
                     ) ||
                     !(await this.dependencies.candidates.rereadEligible(
                       entry.candidate,

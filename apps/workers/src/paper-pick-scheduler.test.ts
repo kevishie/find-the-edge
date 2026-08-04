@@ -63,6 +63,10 @@ const scheduler = (
     candidates?: EvaluationCandidateRepository;
     calls?: unknown[];
     mode?: "disabled" | "approved";
+    resolveStrategyVersion?: (
+      strategyId: string,
+      scheduledFor: string,
+    ) => Promise<string | null>;
   } = {},
 ) => {
   const calls = overrides.calls ?? [];
@@ -88,12 +92,34 @@ const scheduler = (
           modelCapability: overrides.mode ?? "approved",
           reservation: { inputTokens: 100, outputTokens: 50, costMicros: 100 },
           now: () => new Date(at),
+          resolveStrategyVersion:
+            overrides.resolveStrategyVersion ??
+            (() => Promise.resolve(tuple.strategyVersion)),
         }),
       };
     },
   };
 };
 describe("paper-pick scheduler", () => {
+  it("freezes the future-effective approved strategy version into the run", async () => {
+    const fixture = scheduler({
+      resolveStrategyVersion: () => Promise.resolve("approved-v2"),
+    });
+    const built = fixture.create();
+    const result = await built.value.generate(at);
+    const run = await built.runs.getRun(result.runIds[0]!);
+    expect(run?.strategyVersion).toBe("approved-v2");
+  });
+  it("fails closed when no approved deployed strategy is active", async () => {
+    const fixture = scheduler({
+      resolveStrategyVersion: () => Promise.resolve(null),
+    });
+    expect(await fixture.create().value.generate(at)).toMatchObject({
+      runIds: [],
+      discovered: 0,
+    });
+    expect(fixture.calls).toHaveLength(0);
+  });
   it("fails closed while disabled and never calls the evaluator", async () => {
     const fixture = scheduler({
       policy: () =>

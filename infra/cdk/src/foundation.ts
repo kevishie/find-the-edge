@@ -153,6 +153,32 @@ export class FoundationStack extends Stack {
       schedule: Schedule.cron({ minute: "20", hour: "5" }),
     });
     performanceSchedule.addTarget(new LambdaFunction(performanceWorker));
+    const walkForwardWorker = new NodejsFunction(
+      this,
+      "WalkForwardExperimentWorker",
+      {
+        runtime: Runtime.NODEJS_22_X,
+        entry: path.join(
+          path.dirname(fileURLToPath(import.meta.url)),
+          "../../../apps/workers/src/walk-forward-runtime.ts",
+        ),
+        handler: "handler",
+        timeout: Duration.minutes(5),
+        memorySize: 1024,
+        reservedConcurrentExecutions: 1,
+        environment: { FTE_EVENT_TABLE_NAME: table.tableName },
+      },
+    );
+    walkForwardWorker.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:TransactWriteItems",
+        ],
+        resources: [table.tableArn, `${table.tableArn}/index/*`],
+      }),
+    );
     const paperPickDlq = new Queue(this, "PaperPickWorkerDlq", {
       encryption: QueueEncryption.SQS_MANAGED,
       retentionPeriod: Duration.days(14),
@@ -273,13 +299,18 @@ export class FoundationStack extends Stack {
       scopeName: "retrospectives:approve",
       scopeDescription: "Review non-executable retrospective candidates",
     });
+    const strategyPromotionScope = new ResourceServerScope({
+      scopeName: "strategies:promote",
+      scopeDescription:
+        "Approve, promote, and roll back deployed strategy artifacts",
+    });
     const resourceServer = new UserPoolResourceServer(
       this,
       "EventsResourceServer",
       {
         identifier: "events",
         userPool,
-        scopes: [readScope, retrospectiveApprovalScope],
+        scopes: [readScope, retrospectiveApprovalScope, strategyPromotionScope],
       },
     );
     const assets = new Bucket(this, "WebAssets", {
@@ -369,7 +400,7 @@ export class FoundationStack extends Stack {
     const webAssetOrigin = S3BucketOrigin.withOriginAccessControl(assets);
     const spaNavigation = new CloudFrontFunction(this, "WebSpaNavigation", {
       code: FunctionCode.fromInline(
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
       ),
     });
     const distribution = new Distribution(this, "WebDistribution", {
@@ -427,6 +458,11 @@ export class FoundationStack extends Stack {
       groupName: "fte-retrospective-reviewers",
       description: "Human reviewers allowed to approve retrospective drafts",
     });
+    new UserPoolGroup(this, "StrategyPromoters", {
+      userPool,
+      groupName: "fte-strategy-promoters",
+      description: "Human promoters allowed to activate approved strategies",
+    });
     const reviewerClient = new UserPoolClient(this, "ReviewerWebClient", {
       userPool,
       generateSecret: false,
@@ -438,6 +474,7 @@ export class FoundationStack extends Stack {
           OAuthScope.EMAIL,
           OAuthScope.resourceServer(resourceServer, readScope),
           OAuthScope.resourceServer(resourceServer, retrospectiveApprovalScope),
+          OAuthScope.resourceServer(resourceServer, strategyPromotionScope),
         ],
         callbackUrls: [callbackUrl],
         logoutUrls: [webOrigin],
@@ -767,6 +804,8 @@ export class FoundationStack extends Stack {
       "/retrospectives",
       "/retrospectives/{eventId}",
       "/retrospectives/{eventId}/versions",
+      "/strategy-experiments",
+      "/strategy-experiments/{eventId}",
     ])
       api.addRoutes({
         path,
@@ -780,6 +819,14 @@ export class FoundationStack extends Stack {
       authorizer,
       authorizationScopes: ["events/retrospectives:approve"],
     });
+    for (const action of ["approve", "promote", "rollback"])
+      api.addRoutes({
+        path: `/strategy-experiments/{eventId}/${action}`,
+        methods: [HttpMethod.POST],
+        integration,
+        authorizer,
+        authorizationScopes: ["events/strategies:promote"],
+      });
     const configureCorsCall = {
       service: "ApiGatewayV2",
       action: "updateApi",
@@ -1033,6 +1080,11 @@ export class FoundationStack extends Stack {
           "retrospective-detail",
           "retrospective-versions",
           "retrospective-review",
+          "experiment-list",
+          "experiment-detail",
+          "experiment-approve",
+          "experiment-promote",
+          "experiment-rollback",
         ] as const
       ).map(
         (route) =>
@@ -1069,14 +1121,23 @@ export class FoundationStack extends Stack {
           }),
       ),
       ...(
-        ["RetrospectiveReviewConflict", "RetrospectiveReviewForbidden"] as const
+        [
+          "RetrospectiveReviewConflict",
+          "RetrospectiveReviewForbidden",
+          "StrategyPromotionConflict",
+          "StrategyPromotionForbidden",
+        ] as const
       ).map(
         (metricName) =>
           new Alarm(this, `${metricName}Alarm`, {
             metric: new Metric({
               namespace: "FindTheEdge/EventApi",
               metricName,
-              dimensionsMap: { Route: "retrospective-review" },
+              dimensionsMap: {
+                Route: metricName.startsWith("Strategy")
+                  ? "experiment-promote"
+                  : "retrospective-review",
+              },
               statistic: "Sum",
               period: Duration.minutes(5),
             }),

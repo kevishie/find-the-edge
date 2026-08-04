@@ -19,7 +19,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 9);
+    template.resourceCountIs("AWS::Lambda::Function", 10);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -98,7 +98,7 @@ describe("foundation CDK app", () => {
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 8);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 9);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -115,7 +115,7 @@ describe("foundation CDK app", () => {
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
     template.resourceCountIs("AWS::SQS::Queue", 5);
-    template.resourceCountIs("AWS::Lambda::Function", 8);
+    template.resourceCountIs("AWS::Lambda::Function", 9);
     template.resourceCountIs("AWS::Events::Rule", 5);
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
     template.hasResourceProperties("AWS::Events::Rule", {
@@ -220,7 +220,7 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::CloudFront::Function", {
       AutoPublish: true,
       FunctionCode:
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
     });
     expect(rendered).not.toContain("CustomErrorResponses");
     template.hasResourceProperties("Custom::AWS", {
@@ -322,6 +322,9 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::Cognito::UserPoolGroup", {
       GroupName: "fte-retrospective-reviewers",
     });
+    template.hasResourceProperties("AWS::Cognito::UserPoolGroup", {
+      GroupName: "fte-strategy-promoters",
+    });
     template.hasResourceProperties("AWS::Cognito::UserPoolResourceServer", {
       Identifier: "events",
       Scopes: [
@@ -332,6 +335,11 @@ describe("foundation CDK app", () => {
         {
           ScopeName: "retrospectives:approve",
           ScopeDescription: "Review non-executable retrospective candidates",
+        },
+        {
+          ScopeName: "strategies:promote",
+          ScopeDescription:
+            "Approve, promote, and roll back deployed strategy artifacts",
         },
       ],
     });
@@ -478,7 +486,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 37);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 44);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

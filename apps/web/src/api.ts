@@ -64,6 +64,39 @@ export interface SplitsPageDto extends Omit<GamesPageDto, "items"> {
 }
 
 export interface GamesClient {
+  listExperiments?(signal: AbortSignal): Promise<
+    readonly {
+      readonly experimentId: string;
+      readonly state: string;
+      readonly createdAt: string;
+      readonly baseline: {
+        readonly strategyId: string;
+        readonly version: string;
+        readonly digest: string;
+      };
+      readonly challenger: {
+        readonly strategyId: string;
+        readonly version: string;
+        readonly digest: string;
+      };
+      readonly stateVersion: number;
+      readonly gates: readonly {
+        readonly metric: string;
+        readonly actual: number | null;
+        readonly passed: boolean;
+        readonly reason: string;
+      }[];
+      readonly failureReasons: readonly string[];
+    }[]
+  >;
+  getExperiment?(id: string, signal: AbortSignal): Promise<unknown>;
+  canManageExperiments?(): Promise<boolean>;
+  manageExperiment?(
+    id: string,
+    action: "approve" | "promote" | "rollback",
+    body: Readonly<Record<string, unknown>>,
+    signal: AbortSignal,
+  ): Promise<unknown>;
   list(filter: GamesFilter, signal: AbortSignal): Promise<GamesPageDto>;
   listSplits?(filter: GamesFilter, signal: AbortSignal): Promise<SplitsPageDto>;
   listPerformance?(signal: AbortSignal): Promise<PerformanceReportDto | null>;
@@ -1271,6 +1304,36 @@ const reviewerSession = async (providerKey: string | undefined) => {
     return null;
   }
 };
+const promoterSession = async (
+  providerKey: string | undefined,
+): Promise<{ token: string } | null> => {
+  if (!providerKey) return null;
+  const provider = (globalThis as Record<string, unknown>)[providerKey];
+  if (!plain(provider) || typeof provider["getAccessToken"] !== "function")
+    return null;
+  const token = await (provider["getAccessToken"] as () => Promise<unknown>)();
+  if (typeof token !== "string" || token.length < 10 || token.length > 16_384)
+    return null;
+  try {
+    const payload = JSON.parse(
+      atob(token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/")),
+    ) as unknown;
+    if (!plain(payload)) return null;
+    const scopes =
+      typeof payload["scope"] === "string" ? payload["scope"].split(" ") : [];
+    const groups = Array.isArray(payload["cognito:groups"])
+      ? payload["cognito:groups"].filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [];
+    return scopes.includes("events/strategies:promote") &&
+      groups.includes("fte-strategy-promoters")
+      ? { token }
+      : null;
+  } catch {
+    return null;
+  }
+};
 
 export function createGamesClient(
   bootstrap: Result<RuntimeBootstrap, RuntimeConfigError>,
@@ -1281,6 +1344,91 @@ export function createGamesClient(
   return {
     ok: true,
     value: {
+      async listExperiments(signal: AbortSignal) {
+        const response = await fetcher(
+          `${bootstrap.value.config.apiBase}/strategy-experiments?limit=50`,
+          { signal },
+        );
+        if (!response.ok)
+          throw new GamesClientError(
+            "request-failed",
+            "Strategy experiments are unavailable.",
+          );
+        const body: unknown = await response.json();
+        if (!plain(body) || !Array.isArray(body["items"]))
+          throw new GamesClientError(
+            "invalid-response",
+            "The strategy experiment response was invalid.",
+          );
+        return body["items"] as never;
+      },
+      async getExperiment(id: string, signal: AbortSignal) {
+        if (!/^strategy-experiment:[a-f0-9]{64}$/.test(id))
+          throw new GamesClientError(
+            "invalid-response",
+            "The experiment ID is invalid.",
+          );
+        const response = await fetcher(
+          `${bootstrap.value.config.apiBase}/strategy-experiments/${encodeURIComponent(id)}`,
+          { signal },
+        );
+        if (!response.ok)
+          throw new GamesClientError(
+            "request-failed",
+            "Strategy experiment detail is unavailable.",
+          );
+        const body: unknown = await response.json();
+        if (
+          !plain(body) ||
+          body["experimentId"] !== id ||
+          !Array.isArray(body["gates"]) ||
+          !Array.isArray(body["audit"])
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The strategy experiment response was invalid.",
+          );
+        return body;
+      },
+      async canManageExperiments() {
+        return (
+          (await promoterSession(bootstrap.value.config.tokenProviderKey)) !==
+          null
+        );
+      },
+      async manageExperiment(id, action, body, signal) {
+        const session = await promoterSession(
+          bootstrap.value.config.tokenProviderKey,
+        );
+        if (!session)
+          throw new GamesClientError(
+            "forbidden",
+            "A strategy promoter session is required.",
+          );
+        const response = await fetcher(
+          `${bootstrap.value.config.apiBase}/strategy-experiments/${encodeURIComponent(id)}/${action}`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${session.token}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(body),
+            signal,
+          },
+        );
+        if (response.status === 409)
+          throw new GamesClientError(
+            "conflict",
+            "The experiment changed. Reloading current evidence.",
+          );
+        if (!response.ok)
+          throw new GamesClientError(
+            response.status === 403 ? "forbidden" : "request-failed",
+            "The strategy action could not be saved.",
+          );
+        return response.json() as Promise<unknown>;
+      },
       async list(filter, signal) {
         return exhaustPages({
           endpoint: "games",

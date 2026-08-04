@@ -16,6 +16,7 @@ import {
   DynamoPaperPickRunRepository,
   EventCursorCodec,
   EventEvaluationCandidateRepository,
+  DynamoDbStrategyExperimentRepository,
 } from "@find-the-edge/database";
 import { DisabledStructuredAnalysisModelAdapter } from "@find-the-edge/scouting";
 import { createPaperPickSchedulerHandler } from "./paper-pick-scheduler-lambda";
@@ -36,13 +37,14 @@ if (
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const gateway = new AwsDynamoGateway(client, tableName);
+const internalCursor = new EventCursorCodec({
+  current: { id: "paper-pick-internal-v1", secret: randomBytes(32) },
+});
 const events = new DynamoEventRepository(
   gateway,
   // Candidate pagination is internal to this cold-start instance. The random
   // key prevents these cursors from becoming a public or reusable capability.
-  new EventCursorCodec({
-    current: { id: "paper-pick-internal-v1", secret: randomBytes(32) },
-  }),
+  internalCursor,
   async () => {
     const readiness = await gateway.get("EVENT_PROJECTIONS", "READINESS");
     return (
@@ -65,6 +67,11 @@ const runtimePolicy = validatePaperPickSchedulePolicy({
   ...disabledPaperPickSchedulePolicy,
   generationMinutes,
 });
+const strategyExperiments = new DynamoDbStrategyExperimentRepository(
+  client,
+  tableName,
+  internalCursor,
+);
 
 /** The deployed scheduler is fully composed against durable production
  * repositories, while policy and model capability remain intentionally off.
@@ -77,6 +84,20 @@ const scheduler = new PaperPickScheduler({
   assemble: () => Promise.reject(new Error("paper-pick-assembler-disabled")),
   modelCapability: "disabled",
   reservation: { inputTokens: 1, outputTokens: 1, costMicros: 1 },
+  resolveStrategyVersion: async (strategyId, scheduledFor) => {
+    const activation = await strategyExperiments.resolveActive(
+      strategyId,
+      scheduledFor,
+    );
+    if (!activation) return null;
+    const artifact = await strategyExperiments.getArtifact(
+      strategyId,
+      activation.artifactVersion,
+    );
+    return artifact?.deployed && artifact.digest === activation.artifactDigest
+      ? artifact.version
+      : null;
+  },
 });
 
 export const handler = createPaperPickSchedulerHandler(

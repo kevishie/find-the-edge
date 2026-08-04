@@ -9,6 +9,7 @@ import {
   DynamoCohortRepository,
   DynamoRetrospectiveRepository,
   EventCursorCodec,
+  DynamoDbStrategyExperimentRepository,
 } from "@find-the-edge/database";
 import { createEventHandler } from "./handler";
 import { loadSecretRing } from "./secrets";
@@ -55,29 +56,45 @@ export const handler = async (event: LambdaEvent) => {
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const claims = event.requestContext?.authorizer?.jwt?.claims;
   const route =
-    event.routeKey === "GET /retrospectives"
-      ? "retrospective-list"
-      : event.routeKey === "GET /retrospectives/{eventId}"
-        ? "retrospective-detail"
-        : event.routeKey === "GET /retrospectives/{eventId}/versions"
-          ? "retrospective-versions"
-          : event.routeKey === "POST /retrospectives/{eventId}/review"
-            ? "retrospective-review"
-            : event.routeKey?.startsWith("GET /games")
-              ? "games"
-              : event.routeKey?.startsWith("GET /splits")
-                ? "splits"
-                : event.routeKey === "GET /performance/reports"
-                  ? "performance-reports"
-                  : event.routeKey?.startsWith("GET /performance/reports/")
-                    ? "performance-detail"
-                    : event.routeKey?.startsWith("GET /performance/cohorts/")
-                      ? "performance-members"
-                      : event.routeKey?.startsWith("GET /performance/cohorts")
-                        ? "performance-list"
-                        : event.routeKey?.includes("/{eventId}")
-                          ? "detail"
-                          : "list";
+    event.routeKey === "GET /strategy-experiments"
+      ? "experiment-list"
+      : event.routeKey === "GET /strategy-experiments/{eventId}"
+        ? "experiment-detail"
+        : event.routeKey === "POST /strategy-experiments/{eventId}/approve"
+          ? "experiment-approve"
+          : event.routeKey === "POST /strategy-experiments/{eventId}/promote"
+            ? "experiment-promote"
+            : event.routeKey === "POST /strategy-experiments/{eventId}/rollback"
+              ? "experiment-rollback"
+              : event.routeKey === "GET /retrospectives"
+                ? "retrospective-list"
+                : event.routeKey === "GET /retrospectives/{eventId}"
+                  ? "retrospective-detail"
+                  : event.routeKey === "GET /retrospectives/{eventId}/versions"
+                    ? "retrospective-versions"
+                    : event.routeKey === "POST /retrospectives/{eventId}/review"
+                      ? "retrospective-review"
+                      : event.routeKey?.startsWith("GET /games")
+                        ? "games"
+                        : event.routeKey?.startsWith("GET /splits")
+                          ? "splits"
+                          : event.routeKey === "GET /performance/reports"
+                            ? "performance-reports"
+                            : event.routeKey?.startsWith(
+                                  "GET /performance/reports/",
+                                )
+                              ? "performance-detail"
+                              : event.routeKey?.startsWith(
+                                    "GET /performance/cohorts/",
+                                  )
+                                ? "performance-members"
+                                : event.routeKey?.startsWith(
+                                      "GET /performance/cohorts",
+                                    )
+                                  ? "performance-list"
+                                  : event.routeKey?.includes("/{eventId}")
+                                    ? "detail"
+                                    : "list";
   const eventId = event.pathParameters?.eventId;
   const subject =
     typeof claims?.["sub"] === "string" ? claims["sub"] : undefined;
@@ -93,6 +110,10 @@ export const handler = async (event: LambdaEvent) => {
     (Array.isArray(groups) && groups.includes("fte-retrospective-reviewers")) ||
     (typeof groups === "string" &&
       groups.split(",").includes("fte-retrospective-reviewers"));
+  const strategyPromoterAuthorized =
+    (Array.isArray(groups) && groups.includes("fte-strategy-promoters")) ||
+    (typeof groups === "string" &&
+      groups.split(",").includes("fte-strategy-promoters"));
   const query = event.queryStringParameters;
   const contentType = Object.entries(event.headers ?? {}).find(
     ([key]) => key.toLowerCase() === "content-type",
@@ -107,11 +128,17 @@ export const handler = async (event: LambdaEvent) => {
     ),
     new DynamoCohortRepository(documentClient, tableName),
     new DynamoRetrospectiveRepository(documentClient, tableName, cursorCodec),
+    new DynamoDbStrategyExperimentRepository(
+      documentClient,
+      tableName,
+      cursorCodec,
+    ),
   )({
     route,
     ...(subject ? { subject } : {}),
     ...(scopes ? { scopes } : {}),
     reviewerAuthorized,
+    strategyPromoterAuthorized,
     ...(eventId ? { eventId } : {}),
     ...(query ? { query } : {}),
     method: event.routeKey?.startsWith("POST ") ? "POST" : "GET",

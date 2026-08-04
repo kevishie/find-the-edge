@@ -8,6 +8,9 @@ import {
   type RetrospectiveRepository,
   RetrospectiveConflictError,
   RetrospectiveNotFoundError,
+  StrategyExperimentConflictError,
+  StrategyExperimentNotFoundError,
+  type StrategyExperimentRepository,
 } from "@find-the-edge/database";
 export interface ApiRequest {
   readonly route:
@@ -22,7 +25,12 @@ export interface ApiRequest {
     | "retrospective-list"
     | "retrospective-detail"
     | "retrospective-versions"
-    | "retrospective-review";
+    | "retrospective-review"
+    | "experiment-list"
+    | "experiment-detail"
+    | "experiment-approve"
+    | "experiment-promote"
+    | "experiment-rollback";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
@@ -31,6 +39,7 @@ export interface ApiRequest {
   readonly contentType?: string;
   readonly body?: string;
   readonly reviewerAuthorized?: boolean;
+  readonly strategyPromoterAuthorized?: boolean;
 }
 export interface ApiResponse {
   readonly statusCode: number;
@@ -51,6 +60,7 @@ export const createEventHandler =
     splitsRepository?: BettingSplitRepository,
     cohortRepository?: CohortRepository,
     retrospectiveRepository?: RetrospectiveRepository,
+    strategyExperimentRepository?: StrategyExperimentRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -62,6 +72,112 @@ export const createEventHandler =
     const started = Date.now();
     let status = 200;
     try {
+      if (request.route.startsWith("experiment-")) {
+        if (!strategyExperimentRepository)
+          throw new Error("strategy-experiment-repository-not-configured");
+        if (request.route === "experiment-list") {
+          const limit = Number(request.query?.["limit"] ?? "20");
+          if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50)
+            throw new EventInputError("strategy-experiment-filter-invalid");
+          return response(
+            200,
+            await strategyExperimentRepository.listExperiments({
+              limit,
+              ...(request.query?.["cursor"]
+                ? { cursor: request.query["cursor"] }
+                : {}),
+              ...(request.query?.["strategyId"]
+                ? { strategyId: request.query["strategyId"] }
+                : {}),
+              ...(request.query?.["state"]
+                ? { state: request.query["state"] as never }
+                : {}),
+            }),
+          );
+        }
+        const id = request.eventId ?? "";
+        if (!/^strategy-experiment:[a-f0-9]{64}$/.test(id))
+          throw new EventInputError("strategy-experiment-id-invalid");
+        if (request.route === "experiment-detail") {
+          const item = await strategyExperimentRepository.getExperiment(id);
+          return item
+            ? response(200, {
+                ...item,
+                audit: await strategyExperimentRepository.listAudit(id),
+                active: await strategyExperimentRepository.resolveActive(
+                  item.challenger.strategyId,
+                  new Date().toISOString(),
+                ),
+              })
+            : response(404, { error: "not-found" });
+        }
+        if (!request.subject)
+          return response((status = 401), { error: "unauthorized" });
+        if (
+          !request.scopes?.includes("strategies:promote") ||
+          !request.strategyPromoterAuthorized
+        )
+          return response((status = 403), { error: "forbidden" });
+        if (
+          request.method !== "POST" ||
+          request.contentType?.split(";")[0]?.trim().toLowerCase() !==
+            "application/json" ||
+          !request.body ||
+          Buffer.byteLength(request.body) > 4096
+        )
+          throw new EventInputError("strategy-experiment-body-invalid");
+        let value: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(request.body);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            throw new Error();
+          value = parsed as Record<string, unknown>;
+        } catch {
+          throw new EventInputError("strategy-experiment-json-invalid");
+        }
+        const text = (key: string) =>
+          typeof value[key] === "string" ? value[key] : "";
+        const now = new Date().toISOString();
+        if (request.route === "experiment-approve")
+          return response(
+            200,
+            await strategyExperimentRepository.approve({
+              experimentId: id,
+              promoterId: request.subject,
+              reason: text("reason"),
+              decidedAt: now,
+              idempotencyKey: text("idempotencyKey"),
+              expectedStateVersion: Number(value["expectedStateVersion"]),
+              expectedDigest: text("expectedDigest"),
+              artifactDigest: text("artifactDigest"),
+            }),
+          );
+        if (
+          typeof value["effectiveAt"] !== "string" ||
+          !Number.isFinite(Date.parse(value["effectiveAt"])) ||
+          value["effectiveAt"] <= now
+        )
+          throw new EventInputError("strategy-activation-effective-at-invalid");
+        return response(
+          200,
+          await strategyExperimentRepository.activate({
+            experimentId: id,
+            strategyId: text("strategyId"),
+            artifactVersion: text("artifactVersion"),
+            artifactDigest: text("artifactDigest"),
+            kind:
+              request.route === "experiment-promote" ? "promotion" : "rollback",
+            effectiveAt: text("effectiveAt"),
+            actorId: request.subject,
+            reason: text("reason"),
+            idempotencyKey: text("idempotencyKey"),
+            expectedActivationId:
+              typeof value["expectedActivationId"] === "string"
+                ? value["expectedActivationId"]
+                : null,
+          }),
+        );
+      }
       if (request.route.startsWith("retrospective-")) {
         if (!retrospectiveRepository)
           throw new Error("retrospective-repository-not-configured");
@@ -308,14 +424,21 @@ export const createEventHandler =
     } catch (error) {
       if (error instanceof EventInputError || error instanceof EventCursorError)
         return response((status = 400), { error: "invalid-request" });
-      if (error instanceof RetrospectiveNotFoundError)
+      if (
+        error instanceof RetrospectiveNotFoundError ||
+        error instanceof StrategyExperimentNotFoundError
+      )
         return response((status = 404), { error: "not-found" });
-      if (error instanceof RetrospectiveConflictError)
+      if (
+        error instanceof RetrospectiveConflictError ||
+        error instanceof StrategyExperimentConflictError
+      )
         return response((status = 409), { error: "conflict" });
       status = 500;
       return response(500, { error: "internal-error" });
     } finally {
       const retrospectiveRoute = request.route.startsWith("retrospective-");
+      const experimentRoute = request.route.startsWith("experiment-");
       const reviewRoute = request.route === "retrospective-review";
       const metrics = [
         { Name: "Requests", Unit: "Count" },
@@ -323,6 +446,15 @@ export const createEventHandler =
         ...(status === 500 ? [{ Name: "Caught5xx", Unit: "Count" }] : []),
         ...(retrospectiveRoute
           ? [{ Name: "RetrospectiveLatency", Unit: "Milliseconds" }]
+          : []),
+        ...(experimentRoute
+          ? [{ Name: "StrategyExperimentLatency", Unit: "Milliseconds" }]
+          : []),
+        ...(experimentRoute && status === 409
+          ? [{ Name: "StrategyPromotionConflict", Unit: "Count" }]
+          : []),
+        ...(experimentRoute && status === 403
+          ? [{ Name: "StrategyPromotionForbidden", Unit: "Count" }]
           : []),
         ...(reviewRoute && status === 200
           ? [{ Name: "RetrospectiveReviewSuccess", Unit: "Count" }]
@@ -352,6 +484,15 @@ export const createEventHandler =
         ...(status === 500 ? { Caught5xx: 1 } : {}),
         ...(retrospectiveRoute
           ? { RetrospectiveLatency: Date.now() - started }
+          : {}),
+        ...(experimentRoute
+          ? { StrategyExperimentLatency: Date.now() - started }
+          : {}),
+        ...(experimentRoute && status === 409
+          ? { StrategyPromotionConflict: 1 }
+          : {}),
+        ...(experimentRoute && status === 403
+          ? { StrategyPromotionForbidden: 1 }
           : {}),
         ...(reviewRoute && status === 200
           ? { RetrospectiveReviewSuccess: 1 }
