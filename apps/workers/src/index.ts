@@ -8,3 +8,5 @@ export * from "./sharp-api-ingestion";
 export * from "./odds-control-plane";
 export * from "./production-odds-control-plane";
 export * from "./pick-evaluation";
+export * from "./paper-pick-scheduler";
+export * from "./paper-pick-scheduler-lambda";

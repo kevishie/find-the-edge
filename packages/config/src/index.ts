@@ -1,5 +1,6 @@
 export * from "./feed-coverage";
 export * from "./evaluation-policy";
+export * from "./paper-pick-schedule";
 
 export type RuntimeEnvironment = "development" | "test" | "production";
 export type ConfigProfile = "local" | "provider" | "aws";

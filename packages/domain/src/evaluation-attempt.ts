@@ -11,6 +11,14 @@ export interface EvaluationAttemptInput {
   readonly strategy: { readonly id: string; readonly version: string };
   readonly model: { readonly id: string; readonly version: string };
   readonly createdAt: string;
+  readonly execution?: {
+    readonly mode: "shadow" | "paper";
+    readonly runId: string;
+    readonly itemId: string;
+    readonly policyId: string;
+    readonly policyVersion: string;
+    readonly scheduledFor: string;
+  };
 }
 export interface EvaluationAttemptRecord extends EvaluationAttemptInput {
   readonly attemptId: string;
@@ -44,6 +52,21 @@ export function createEvaluationAttempt(
     throw new Error("attempt-reasons-invalid");
   if (new Date(input.createdAt).toISOString() !== input.createdAt)
     throw new Error("attempt-created-at-invalid");
+  if (input.execution) {
+    const execution = input.execution;
+    const runMatch = execution.runId.match(/^paper-pick-run:([a-f0-9]{64})$/);
+    if (
+      (execution.mode !== "shadow" && execution.mode !== "paper") ||
+      !runMatch ||
+      !new RegExp(`^paper-pick-item:${runMatch[1]}:[a-f0-9]{64}$`).test(
+        execution.itemId,
+      ) ||
+      !safe.test(execution.policyId) ||
+      !safe.test(execution.policyVersion) ||
+      new Date(execution.scheduledFor).toISOString() !== execution.scheduledFor
+    )
+      throw new Error("attempt-execution-invalid");
+  }
   return Object.freeze({
     ...structuredClone(input),
     reasonCodes: Object.freeze(reasonCodes),

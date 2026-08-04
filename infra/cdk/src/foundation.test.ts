@@ -19,7 +19,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 7);
+    template.resourceCountIs("AWS::Lambda::Function", 8);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -95,7 +95,7 @@ describe("foundation CDK app", () => {
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 6);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 7);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -111,9 +111,35 @@ describe("foundation CDK app", () => {
 
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
-    template.resourceCountIs("AWS::SQS::Queue", 4);
-    template.resourceCountIs("AWS::Lambda::Function", 6);
-    template.resourceCountIs("AWS::Events::Rule", 3);
+    template.resourceCountIs("AWS::SQS::Queue", 5);
+    template.resourceCountIs("AWS::Lambda::Function", 7);
+    template.resourceCountIs("AWS::Events::Rule", 4);
+    template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
+    template.hasResourceProperties("AWS::Events::Rule", {
+      State: "DISABLED",
+      ScheduleExpression: "rate(15 minutes)",
+    });
+    template.hasResourceProperties("AWS::Events::Rule", {
+      State: "DISABLED",
+      ScheduleExpression: "cron(0/15 * * * ? *)",
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      ReservedConcurrentExecutions: 2,
+      Environment: {
+        Variables: Match.objectLike({
+          FTE_PAPER_PICK_ENABLED: "false",
+          FTE_PAPER_PICK_MODEL_CAPABILITY: "disabled",
+          FTE_PAPER_PICK_GENERATION_MINUTES: "15",
+        }),
+      },
+    });
+    const paperResources = JSON.stringify(template.toJSON());
+    expect(paperResources).toContain("FindTheEdge/PaperPicks");
+    expect(paperResources).toContain("QueuePaperPickWorkflowFailure");
+    expect(paperResources).toContain("aws.states");
+    expect(paperResources).not.toContain("replayCommand");
+    expect(paperResources).not.toContain('"DeadLetterConfig"');
+    expect(paperResources).not.toContain("dynamodb:Scan");
     template.hasResourceProperties("AWS::Lambda::Function", {
       ReservedConcurrentExecutions: 1,
       Environment: { Variables: { FTE_EVENT_TABLE: Match.anyValue() } },
@@ -367,6 +393,44 @@ describe("foundation CDK app", () => {
     ).toThrow("FTE_AWS_STAGE");
   });
 
+  it("binds one validated generation cadence into the rule and command", () => {
+    const { stack } = createFoundationApp({
+      stage: "cadence",
+      ...eventConfig,
+      paperPickGenerationMinutes: 20,
+    });
+    const template = Template.fromStack(stack).toJSON();
+    const rendered = JSON.stringify(template);
+    expect(rendered).toContain("cron(0/20 * * * ? *)");
+    const paperRule = Object.values(
+      template.Resources as Record<
+        string,
+        {
+          Type: string;
+          Properties?: {
+            ScheduleExpression?: string;
+            Targets?: { InputTransformer?: { InputTemplate?: string } }[];
+          };
+        }
+      >,
+    ).find(
+      (resource) =>
+        resource.Type === "AWS::Events::Rule" &&
+        resource.Properties?.ScheduleExpression === "cron(0/20 * * * ? *)",
+    );
+    expect(
+      paperRule?.Properties?.Targets?.[0]?.InputTransformer?.InputTemplate,
+    ).toContain('"generationMinutes":20');
+    expect(rendered).toContain('"FTE_PAPER_PICK_GENERATION_MINUTES":"20"');
+    expect(() =>
+      createFoundationApp({
+        stage: "bad-cadence",
+        ...eventConfig,
+        paperPickGenerationMinutes: 17,
+      }),
+    ).toThrow("positive divisor of 60");
+  });
+
   it("rejects wildcard and non-local HTTP web origins", () => {
     expect(() =>
       createFoundationApp({
@@ -393,7 +457,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 16);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 20);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

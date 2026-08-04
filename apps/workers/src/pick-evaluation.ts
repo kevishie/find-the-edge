@@ -40,6 +40,14 @@ export interface PickEvaluationInput {
   readonly comparisonSportsbookIds: readonly string[];
   readonly promptHash: string;
   readonly timeoutMs?: number;
+  readonly execution?: {
+    readonly mode: "shadow" | "paper";
+    readonly runId: string;
+    readonly itemId: string;
+    readonly policyId: string;
+    readonly policyVersion: string;
+    readonly scheduledFor: string;
+  };
 }
 export type PickEvaluationResult =
   | {
@@ -121,6 +129,7 @@ export class PickEvaluationService {
       selections: canonicalSelections,
       comparisonBooks: [...input.comparisonSportsbookIds].sort(),
       promptHash: input.promptHash,
+      ...(input.execution ? { execution: input.execution } : {}),
     };
     let semanticInputHash = sha256Hex(
       JSON.stringify({
@@ -146,6 +155,7 @@ export class PickEvaluationService {
           version: input.analysisPolicy.versions.modelVersion,
         },
         createdAt: input.request.asOf,
+        ...(input.execution ? { execution: input.execution } : {}),
       } as const;
       const intended = createEvaluationAttempt(attemptInput);
       await (
@@ -374,6 +384,7 @@ export class PickEvaluationService {
     const evaluationInput: PaperEvaluationInput = {
       manifest: {
         mode: "decision-time",
+        ...(input.execution ? { execution: input.execution } : {}),
         sportKey: input.request.sportKey,
         leagueKey: input.request.leagueKey,
         eventId: input.request.eventId,

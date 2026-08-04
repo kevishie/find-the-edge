@@ -54,6 +54,26 @@ export const manifest = (
 });
 
 describe("paper evaluation domain", () => {
+  it("makes shadow Play auditable without representing a paper bet", () => {
+    const pair = createPaperEvaluation({
+      manifest: {
+        ...manifest(),
+        execution: {
+          mode: "shadow",
+          runId: `paper-pick-run:${"a".repeat(64)}`,
+          itemId: `paper-pick-item:${"a".repeat(64)}:${"b".repeat(64)}`,
+          policyId: "schedule",
+          policyVersion: "1",
+          scheduledFor: "2026-08-04T12:00:00.000Z",
+        },
+      },
+      decision: "play",
+      reasonCodes: ["positive-ev"],
+      createdAt: "2026-08-04T12:00:00.000Z",
+    });
+    expect(pair.evaluation.decision).toBe("play");
+    expect(pair.paperBet).toBeNull();
+  });
   it("preserves complete comparison vectors and consensus provenance", () => {
     const awayId = "d".repeat(64);
     const away = {

@@ -270,6 +270,48 @@ describe("pick evaluation service", () => {
     ).toBe("no-bet");
     expect(result.terminal === "evaluation" && result.pair.paperBet).toBeNull();
   });
+  it("persists a scheduled shadow Play without a paper-bet record", async () => {
+    const runHash = "a".repeat(64);
+    const result = await service().service.evaluate({
+      ...input,
+      execution: {
+        mode: "shadow",
+        runId: `paper-pick-run:${runHash}`,
+        itemId: `paper-pick-item:${runHash}:${"b".repeat(64)}`,
+        policyId: "schedule",
+        policyVersion: "1",
+        scheduledFor: "2026-08-04T00:00:00.000Z",
+      },
+    });
+    expect(result.terminal).toBe("evaluation");
+    expect(
+      result.terminal === "evaluation" && result.pair.evaluation.decision,
+    ).toBe("play");
+    expect(result.terminal === "evaluation" && result.pair.paperBet).toBeNull();
+  });
+  it("binds scheduled run provenance to a model-disabled attempt", async () => {
+    const fixture = service(new DisabledStructuredAnalysisModelAdapter());
+    const runHash = "d".repeat(64);
+    const result = await fixture.service.evaluate({
+      ...input,
+      execution: {
+        mode: "shadow",
+        runId: `paper-pick-run:${runHash}`,
+        itemId: `paper-pick-item:${runHash}:${"e".repeat(64)}`,
+        policyId: "schedule",
+        policyVersion: "1",
+        scheduledFor: "2026-08-04T00:00:00.000Z",
+      },
+    });
+    expect(result.terminal).toBe("attempt");
+    if (result.terminal !== "attempt") throw new Error("expected attempt");
+    expect(
+      (await fixture.attempts.get(result.attemptId))?.execution,
+    ).toMatchObject({
+      mode: "shadow",
+      runId: `paper-pick-run:${runHash}`,
+    });
+  });
   it("records evidence abstention without invoking the model", async () => {
     const model = new FakeStructuredAnalysisModelAdapter(modelResult);
     const fixture = service(model, {

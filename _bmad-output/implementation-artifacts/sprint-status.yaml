@@ -361,7 +361,7 @@ stories:
     league: enabled
     module: paper-pick-scheduler
     priority: P1
-    status: backlog
+    status: in-review
     dependencies: [FTE-PICK-003, FTE-007]
     risk: High
     approvalRequiredBeforeMerge: true

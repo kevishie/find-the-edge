@@ -16,6 +16,10 @@ if (
 const stage = process.env["FTE_AWS_STAGE"] ?? "local";
 const rawSchedulerEnabled = process.env["FTE_UPCOMING_SCHEDULER_ENABLED"];
 const rawFixtureOddsSeedEnabled = process.env["FTE_FIXTURE_ODDS_SEED_ENABLED"];
+const rawPaperPickSchedulerEnabled =
+  process.env["FTE_PAPER_PICK_SCHEDULER_ENABLED"];
+const rawPaperPickGenerationMinutes =
+  process.env["FTE_PAPER_PICK_GENERATION_MINUTES"];
 if (
   rawSchedulerEnabled !== undefined &&
   rawSchedulerEnabled !== "true" &&
@@ -28,10 +32,30 @@ if (
   rawFixtureOddsSeedEnabled !== "false"
 )
   throw new Error("FTE_FIXTURE_ODDS_SEED_ENABLED must be true or false");
+if (
+  rawPaperPickSchedulerEnabled !== undefined &&
+  rawPaperPickSchedulerEnabled !== "true" &&
+  rawPaperPickSchedulerEnabled !== "false"
+)
+  throw new Error("FTE_PAPER_PICK_SCHEDULER_ENABLED must be true or false");
+const paperPickGenerationMinutes = rawPaperPickGenerationMinutes
+  ? Number(rawPaperPickGenerationMinutes)
+  : 15;
+if (
+  !Number.isSafeInteger(paperPickGenerationMinutes) ||
+  paperPickGenerationMinutes < 1 ||
+  paperPickGenerationMinutes > 60 ||
+  60 % paperPickGenerationMinutes !== 0
+)
+  throw new Error(
+    "FTE_PAPER_PICK_GENERATION_MINUTES must be a positive divisor of 60",
+  );
 const { app } = createFoundationApp({
   stage,
   schedulerEnabled: rawSchedulerEnabled === "true",
   fixtureOddsSeedEnabled: rawFixtureOddsSeedEnabled === "true",
+  paperPickSchedulerEnabled: rawPaperPickSchedulerEnabled === "true",
+  paperPickGenerationMinutes,
   ...(process.env["FTE_EVENT_CURSOR_SECRET_ARN"]
     ? { cursorSecretArn: process.env["FTE_EVENT_CURSOR_SECRET_ARN"] }
     : {}),

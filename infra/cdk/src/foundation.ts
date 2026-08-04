@@ -10,8 +10,17 @@ import {
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
 import { Alarm, ComparisonOperator, Metric } from "aws-cdk-lib/aws-cloudwatch";
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
-import { Rule, Schedule } from "aws-cdk-lib/aws-events";
-import { LambdaFunction, SqsQueue } from "aws-cdk-lib/aws-events-targets";
+import {
+  EventField,
+  Rule,
+  RuleTargetInput,
+  Schedule,
+} from "aws-cdk-lib/aws-events";
+import {
+  LambdaFunction,
+  SfnStateMachine,
+  SqsQueue,
+} from "aws-cdk-lib/aws-events-targets";
 import { Runtime } from "aws-cdk-lib/aws-lambda";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
 import {
@@ -48,6 +57,19 @@ import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { Topic } from "aws-cdk-lib/aws-sns";
+import {
+  DefinitionBody,
+  Fail,
+  JsonPath,
+  StateMachine,
+  StateMachineType,
+  Succeed,
+  TaskInput,
+} from "aws-cdk-lib/aws-stepfunctions";
+import {
+  LambdaInvoke,
+  SqsSendMessage,
+} from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
@@ -74,6 +96,8 @@ export interface FoundationConfig {
   account?: string;
   region?: string;
   schedulerEnabled?: boolean;
+  paperPickSchedulerEnabled?: boolean;
+  paperPickGenerationMinutes?: number;
   alarmTopicArn?: string;
   cursorSecretArn?: string;
   fixtureOddsSeedEnabled?: boolean;
@@ -82,6 +106,8 @@ export interface FoundationConfig {
 
 interface FoundationStackProps extends StackProps {
   schedulerEnabled: boolean;
+  paperPickSchedulerEnabled: boolean;
+  paperPickGenerationMinutes: number;
   alarmTopicArn?: string;
   stageName: string;
   cursorSecretArn: string;
@@ -98,6 +124,104 @@ export class FoundationStack extends Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: RemovalPolicy.RETAIN,
       timeToLiveAttribute: "expiresAt",
+    });
+    const paperPickDlq = new Queue(this, "PaperPickWorkerDlq", {
+      encryption: QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+    });
+    const paperPickWorker = new NodejsFunction(this, "PaperPickWorker", {
+      runtime: Runtime.NODEJS_22_X,
+      entry: path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../../../apps/workers/src/paper-pick-scheduler-runtime.ts",
+      ),
+      handler: "handler",
+      timeout: Duration.minutes(2),
+      memorySize: 512,
+      reservedConcurrentExecutions: 2,
+      environment: {
+        FTE_EVENT_TABLE: table.tableName,
+        FTE_PAPER_PICK_POLICY_ID: "paper-pick-schedule",
+        FTE_PAPER_PICK_POLICY_VERSION: "1",
+        FTE_PAPER_PICK_ENABLED: "false",
+        FTE_PAPER_PICK_MODEL_CAPABILITY: "disabled",
+        FTE_PAPER_PICK_GENERATION_MINUTES: String(
+          props.paperPickGenerationMinutes,
+        ),
+      },
+    });
+    paperPickWorker.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:TransactWriteItems",
+          "dynamodb:TransactGetItems",
+        ],
+        resources: [table.tableArn],
+      }),
+    );
+    const paperPickFailure = new Fail(this, "PaperPickWorkflowFailure");
+    const paperPickReplayFailure = new SqsSendMessage(
+      this,
+      "QueuePaperPickWorkflowFailure",
+      {
+        queue: paperPickDlq,
+        messageBody: TaskInput.fromObject({
+          source: "aws.states",
+          detailType: JsonPath.stringAt("$.detailType"),
+          generatedAt: JsonPath.stringAt("$$.State.EnteredTime"),
+          scheduledFor: JsonPath.stringAt("$.scheduledFor"),
+          generationMinutes: JsonPath.numberAt("$.generationMinutes"),
+        }),
+      },
+    );
+    const paperPickSuccess = new Succeed(this, "PaperPickWorkflowSuccess");
+    const paperPickInvoke = new LambdaInvoke(this, "InvokePaperPickWorker", {
+      lambdaFunction: paperPickWorker,
+      payloadResponseOnly: true,
+    });
+    paperPickInvoke.addRetry({
+      maxAttempts: 2,
+      interval: Duration.seconds(10),
+      backoffRate: 2,
+    });
+    paperPickInvoke.addCatch(paperPickReplayFailure.next(paperPickFailure), {
+      errors: ["States.ALL"],
+      resultPath: "$.failure",
+    });
+    const paperPickWorkflow = new StateMachine(this, "PaperPickWorkflow", {
+      stateMachineType: StateMachineType.STANDARD,
+      definitionBody: DefinitionBody.fromChainable(
+        paperPickInvoke.next(paperPickSuccess),
+      ),
+      timeout: Duration.minutes(10),
+    });
+    const paperPickSchedule = new Rule(this, "PaperPickSchedule", {
+      enabled: props.paperPickSchedulerEnabled,
+      schedule: Schedule.cron({
+        minute: `0/${props.paperPickGenerationMinutes}`,
+      }),
+    });
+    paperPickSchedule.addTarget(
+      new SfnStateMachine(paperPickWorkflow, {
+        input: RuleTargetInput.fromObject({
+          source: "aws.events",
+          detailType: "FTE Paper Pick Generation",
+          generatedAt: EventField.time,
+          scheduledFor: EventField.time,
+          generationMinutes: props.paperPickGenerationMinutes,
+        }),
+      }),
+    );
+    new CfnOutput(this, "PaperPickFailureQueueUrl", {
+      value: paperPickDlq.queueUrl,
+    });
+    new CfnOutput(this, "PaperPickWorkflowArn", {
+      value: paperPickWorkflow.stateMachineArn,
     });
     const userPool = new UserPool(this, "MvpUserPool", {
       selfSignUpEnabled: false,
@@ -652,6 +776,31 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "CognitoScope", { value: "events/events:read" });
     new CfnOutput(this, "CognitoCallbackUrl", { value: callbackUrl });
     const alarms = [
+      new Alarm(this, "PaperPickWorkerErrorsAlarm", {
+        metric: paperPickWorker.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+      }),
+      new Alarm(this, "PaperPickDlqAlarm", {
+        metric: paperPickDlq.metricApproximateNumberOfMessagesVisible(),
+        threshold: 1,
+        evaluationPeriods: 1,
+      }),
+      new Alarm(this, "PaperPickWorkflowFailuresAlarm", {
+        metric: paperPickWorkflow.metricFailed(),
+        threshold: 1,
+        evaluationPeriods: 1,
+      }),
+      new Alarm(this, "PaperPickLimitAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/PaperPicks",
+          metricName: "Limits",
+          statistic: "Sum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+      }),
       new Alarm(this, "LiveOddsIngestionErrorsAlarm", {
         metric: liveOdds.metricErrors(),
         threshold: 1,
@@ -804,6 +953,16 @@ export function createFoundationApp(config: FoundationConfig): {
   }
   if (config.fixtureOddsSeedEnabled && config.stage !== "dev")
     throw new Error("fixture odds seed can only be enabled for the dev stage");
+  const paperPickGenerationMinutes = config.paperPickGenerationMinutes ?? 15;
+  if (
+    !Number.isSafeInteger(paperPickGenerationMinutes) ||
+    paperPickGenerationMinutes < 1 ||
+    paperPickGenerationMinutes > 60 ||
+    60 % paperPickGenerationMinutes !== 0
+  )
+    throw new Error(
+      "paper-pick generation minutes must be a positive divisor of 60",
+    );
   if (!config.cursorSecretArn) throw new Error("cursor secret ARN is required");
   if (config.webOrigin) {
     let legacyOrigin: URL;
@@ -846,6 +1005,8 @@ export function createFoundationApp(config: FoundationConfig): {
       description:
         "FIND THE EDGE checkpointed upcoming-event ingestion with a config-controlled scheduler producer.",
       schedulerEnabled: config.schedulerEnabled ?? false,
+      paperPickSchedulerEnabled: config.paperPickSchedulerEnabled ?? false,
+      paperPickGenerationMinutes,
       stageName: config.stage,
       cursorSecretArn: config.cursorSecretArn,
       fixtureOddsSeedEnabled: config.fixtureOddsSeedEnabled ?? false,

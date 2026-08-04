@@ -36,6 +36,15 @@ export interface EvaluationThresholds {
 }
 export interface EvaluationManifestInput {
   readonly mode: "decision-time" | "backtest";
+  /** Server-owned scheduled execution context. Legacy/manual evaluations omit it. */
+  readonly execution?: {
+    readonly mode: "shadow" | "paper";
+    readonly runId: string;
+    readonly itemId: string;
+    readonly policyId: string;
+    readonly policyVersion: string;
+    readonly scheduledFor: string;
+  };
   readonly sportKey: string;
   readonly leagueKey: string;
   readonly eventId: string;
@@ -323,15 +332,48 @@ export function normalizeEvaluationManifest(
   const hasConsensus =
     Object.hasOwn(record, "comparisonOutcomeEvidence") ||
     Object.hasOwn(record, "consensusProvenance");
+  const expectedManifestKeys = hasConsensus
+    ? [...manifestKeys, "comparisonOutcomeEvidence", "consensusProvenance"]
+    : manifestKeys;
   exact(
     record,
-    hasConsensus
-      ? [...manifestKeys, "comparisonOutcomeEvidence", "consensusProvenance"]
-      : manifestKeys,
+    Object.hasOwn(record, "execution")
+      ? [...expectedManifestKeys, "execution"]
+      : expectedManifestKeys,
     "manifest",
   );
   if (record.mode !== "decision-time" && record.mode !== "backtest")
     throw new PaperEvaluationInputError("manifest-mode-invalid");
+  let execution: EvaluationManifestInput["execution"];
+  if (Object.hasOwn(record, "execution")) {
+    const value = own(record.execution, "execution");
+    exact(
+      value,
+      ["mode", "runId", "itemId", "policyId", "policyVersion", "scheduledFor"],
+      "execution",
+    );
+    if (value.mode !== "shadow" && value.mode !== "paper")
+      throw new PaperEvaluationInputError("execution-mode-invalid");
+    const scheduledFor = iso(value.scheduledFor, "execution-scheduled-for");
+    const runId = id(value.runId, "execution-run-id");
+    const itemId = id(value.itemId, "execution-item-id");
+    if (
+      !/^paper-pick-run:[a-f0-9]{64}$/.test(runId) ||
+      !/^paper-pick-item:[a-f0-9]{64}:[a-f0-9]{64}$/.test(itemId) ||
+      !itemId.startsWith(
+        `paper-pick-item:${runId.slice("paper-pick-run:".length)}:`,
+      )
+    )
+      throw new PaperEvaluationInputError("execution-identity-invalid");
+    execution = {
+      mode: value.mode,
+      runId,
+      itemId,
+      policyId: id(value.policyId, "execution-policy-id"),
+      policyVersion: id(value.policyVersion, "execution-policy-version"),
+      scheduledFor,
+    };
+  }
   const probability = own(record.probability, "probability");
   if (Object.hasOwn(probability, "point")) {
     exact(probability, ["point"], "probability");
@@ -473,6 +515,7 @@ export function normalizeEvaluationManifest(
     throw new PaperEvaluationInputError("evidence-completeness-invalid");
   const normalizedBase: EvaluationManifestInput = {
     mode: record.mode,
+    ...(execution ? { execution } : {}),
     sportKey: id(record.sportKey, "sport-key"),
     leagueKey: id(record.leagueKey, "league-key"),
     eventId: id(record.eventId, "event-id"),
@@ -641,7 +684,7 @@ export function createPaperEvaluation(
     reasonCodes,
     createdAt,
   });
-  if (input.decision === "no-bet") {
+  if (input.decision === "no-bet" || manifest.execution?.mode === "shadow") {
     if (input.paperBetId !== undefined)
       throw new PaperEvaluationInputError("no-bet-cannot-have-paper-bet");
     return freeze({ evaluation, paperBet: null });
