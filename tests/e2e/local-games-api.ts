@@ -66,7 +66,7 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
     ...scheduled,
     id: `${scheduled.id}-postponed` as typeof scheduled.id,
     candidateIdentity: `${scheduled.candidateIdentity}-postponed`,
-    participantLabels: ["Baltimore", "Toronto"],
+    participantLabels: ["Baltimore Orioles", "Toronto Blue Jays"],
     startsAt: "2026-08-02T00:15:00.000Z" as typeof scheduled.startsAt,
     status: "postponed" as const,
     version: 1,

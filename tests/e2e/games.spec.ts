@@ -26,7 +26,7 @@ test("shows unchanged seeded MLB and MLS identifiers without authentication", as
   await page.goto("/games");
   await page.getByLabel("Eastern calendar day").fill("2026-08-01");
   await expect(
-    page.getByRole("heading", { name: "Boston vs New York" }),
+    page.getByRole("heading", { name: "Boston Red Sox vs New York Yankees" }),
   ).toBeVisible();
   const boston = page.locator(
     '[data-event-id="event:mlb%3Amlb:2026-regular-boston-new-york-001"]',
@@ -39,7 +39,7 @@ test("shows unchanged seeded MLB and MLS identifiers without authentication", as
   await expect(page.getByText("-135")).toBeVisible();
   if ((await page.locator(".mobile-market-prices:visible").count()) > 0) {
     await expect(page.locator(".mobile-market-prices")).toContainText(
-      "moneyline Boston +120",
+      "moneyline Boston Red Sox +120",
     );
   }
   await expect(page.getByText("Aug 1, 2026, 7:05 PM Eastern")).toBeVisible();
@@ -80,13 +80,18 @@ test("combines lifecycle and participant filters and opens canonical detail", as
         .locator(".event-explorer-table h2, .event-explorer-cards h2")
         .allTextContents(),
     )
-    .toEqual(["Baltimore vs Toronto", "Boston vs New York"]);
+    .toEqual([
+      "Baltimore Orioles vs Toronto Blue Jays",
+      "Boston Red Sox vs New York Yankees",
+    ]);
   await page
     .getByRole("combobox", { name: "Competition" })
     .selectOption("mlb-cup");
   await page.getByLabel("Participant search").fill("Toronto");
   await expect(
-    page.getByRole("heading", { name: "Baltimore vs Toronto" }),
+    page.getByRole("heading", {
+      name: "Baltimore Orioles vs Toronto Blue Jays",
+    }),
   ).toBeVisible();
   await page.getByLabel("Participant search").fill("Nobody");
   await expect(
@@ -108,7 +113,9 @@ test("combines lifecycle and participant filters and opens canonical detail", as
   await expect(page).toHaveURL(/query=Toronto/);
   await expect(page).toHaveURL(/sort=matchup/);
   await expect(
-    page.getByRole("heading", { name: "Baltimore vs Toronto" }),
+    page.getByRole("heading", {
+      name: "Baltimore Orioles vs Toronto Blue Jays",
+    }),
   ).toBeVisible();
   await expect(page.getByLabel("Lifecycle: postponed")).toBeVisible();
   await page.getByRole("link", { name: "Back to games" }).click();
@@ -123,7 +130,7 @@ test("uses an explicit second MLB Eastern day", async ({ page }) => {
   await page.goto("/games");
   await page.getByLabel("Eastern calendar day").fill("2026-08-02");
   await expect(
-    page.getByRole("heading", { name: "Chicago vs Detroit" }),
+    page.getByRole("heading", { name: "Chicago Cubs vs Detroit Tigers" }),
   ).toBeVisible();
   await expect(page.getByText("-105").first()).toBeVisible();
 });
