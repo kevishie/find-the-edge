@@ -231,7 +231,7 @@ export function assertLiveIngestionSummary(summary) {
           "internal-failure",
           "cadence-not-due",
         ].includes(result.reason) ||
-        /^schedule-(provider-error|provider-unavailable|rate-limited|unauthorized|not-entitled|invalid-response|coverage-missing|provider-request-ambiguous|provider-response-unsealed|quota-reserve|provider-cooldown|provider-recovering|schedule-dependency-failed|mapping-quarantine|pagination-invalid|transition-conflict|internal-failure)$/.test(
+        /^schedule-(provider-error(?:-(?:initialize|health-read|checkpoint-read|ownership-claim|run-start|schedule-fetch|event-reconcile|schedule-page-commit|conflict-page-seal|conflict-page-commit|schedule-metrics|conflict-metrics|conflict-checkpoint|checkpoint-write|health-write|ownership-clear))?|provider-unavailable|rate-limited|unauthorized|not-entitled|invalid-response|coverage-missing|provider-request-ambiguous|provider-response-unsealed|quota-reserve|provider-cooldown|provider-recovering|schedule-dependency-failed|mapping-quarantine|pagination-invalid|transition-conflict|internal-failure)$/.test(
           result.reason,
         )) &&
       (isOwnershipOverlap(result) ||

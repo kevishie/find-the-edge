@@ -873,6 +873,7 @@ export async function runProductionOddsControlPlane(input: {
   const storedScheduleReady = new Set<string>();
   const scheduleFailures = new Map<string, string>();
   for (const sharpLeague of sharpApiLeagues) {
+    let scheduleStage = "initialize";
     let activeScheduleRunId: string | undefined;
     let scheduleQuotaCost = 0;
     let acceptedFutureScheduleEvents = 0;
@@ -885,6 +886,7 @@ export async function runProductionOddsControlPlane(input: {
       ({ providerId }) => providerId === SHARP_API_PROVIDER_ID,
     )!;
     try {
+      scheduleStage = "health-read";
       const scheduleHealth = await input.control.getHealth(
         `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`,
       );
@@ -894,6 +896,7 @@ export async function runProductionOddsControlPlane(input: {
       )
         throw new Error("quota-reserve");
       const checkpointKey = `schedule:${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`;
+      scheduleStage = "checkpoint-read";
       const checkpoint = await input.control.getCheckpoint(checkpointKey);
       const priorScheduleBindings = checkpointScheduleBindings(
         checkpoint,
@@ -945,6 +948,7 @@ export async function runProductionOddsControlPlane(input: {
         continue;
       }
       const claimNow = liveNow();
+      scheduleStage = "ownership-claim";
       const continuation = await input.control.claimContinuation({
         ...existingContinuation,
         leagueKey: checkpointKey,
@@ -963,6 +967,7 @@ export async function runProductionOddsControlPlane(input: {
       if (continuation.ownerId !== ownerId) throw new Error("run-owned");
       const runId = continuation.runId;
       activeScheduleRunId = runId;
+      scheduleStage = "run-start";
       await input.control.putRun({
         ...((await input.control.getRun(runId)) ?? {}),
         runId,
@@ -991,6 +996,7 @@ export async function runProductionOddsControlPlane(input: {
         const pageToken = String(offset);
         let sealed = await input.control.getPage(runId, pageToken);
         if (!sealed) {
+          scheduleStage = "schedule-fetch";
           await assertAndRenewOwner(
             input.control,
             checkpointKey,
@@ -1099,6 +1105,7 @@ export async function runProductionOddsControlPlane(input: {
           });
         }
         const page = sealed.normalizedItems[0] as SharpApiSchedulePage;
+        scheduleStage = "event-reconcile";
         const conflictPageToken = `${pageToken}:schedule-conflicts`;
         const existingConflictPage = await input.control.getPage(
           runId,
@@ -1188,6 +1195,7 @@ export async function runProductionOddsControlPlane(input: {
           ownerId,
           liveNow,
         );
+        if (!sealed.committedAt) scheduleStage = "schedule-page-commit";
         if (!sealed.committedAt)
           await input.control.commitEvidencePage(
             runId,
@@ -1200,6 +1208,7 @@ export async function runProductionOddsControlPlane(input: {
         for (const gap of committedPage.gaps) await input.control.putGap(gap);
 
         if (!existingConflictPage) {
+          scheduleStage = "conflict-page-seal";
           const conflictEvidencePage: SealedOddsPage = {
             runId,
             pageToken: conflictPageToken,
@@ -1222,6 +1231,7 @@ export async function runProductionOddsControlPlane(input: {
           existingConflictPage ??
           (await input.control.getPage(runId, conflictPageToken));
         if (!committedConflictPage?.committedAt) {
+          scheduleStage = "conflict-page-commit";
           await input.control.commitEvidencePage(
             runId,
             conflictPageToken,
@@ -1245,6 +1255,7 @@ export async function runProductionOddsControlPlane(input: {
           await input.control.putGap(gap);
 
         if (!committedPage?.metricDeliveredAt) {
+          scheduleStage = "schedule-metrics";
           for (const reason of [
             "participant-out-of-scope",
             "same-club-matchup",
@@ -1266,6 +1277,7 @@ export async function runProductionOddsControlPlane(input: {
           );
         }
         if (!committedConflictPage.metricDeliveredAt) {
+          scheduleStage = "conflict-metrics";
           const persistedConflictCounts = new Map<
             ScheduleEventConflictReason,
             number
@@ -1318,6 +1330,7 @@ export async function runProductionOddsControlPlane(input: {
       if (!scheduleComplete)
         throw new Error("sharpapi-schedule-pagination-limit");
       if (quarantinedScheduleEvents > 0 && acceptedFutureScheduleEvents === 0) {
+        scheduleStage = "conflict-checkpoint";
         contradictoryCommittedScheduleEvidence = true;
         await input.control.putCheckpoint({
           ...(checkpoint?.version === undefined
@@ -1350,6 +1363,7 @@ export async function runProductionOddsControlPlane(input: {
         `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
         sharpBindings.map(({ providerEventId }) => providerEventId),
       );
+      scheduleStage = "checkpoint-write";
       await input.control.putCheckpoint({
         ...(checkpoint?.version === undefined
           ? {}
@@ -1376,6 +1390,7 @@ export async function runProductionOddsControlPlane(input: {
       const authoritativeScheduleHealth = await input.control.getHealth(
         `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`,
       );
+      scheduleStage = "health-write";
       await input.control.putHealth({
         ...healthyOddsProviderState(authoritativeScheduleHealth, {
           providerId: SHARP_API_PROVIDER_ID,
@@ -1399,9 +1414,14 @@ export async function runProductionOddsControlPlane(input: {
       });
       sharpScheduleHealthy.add(sharpLeague.leagueKey);
       scheduleReady.add(`${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`);
+      scheduleStage = "ownership-clear";
       await clearOwned(checkpointKey, runId);
     } catch (error) {
-      const reason = capabilityFailure(error);
+      const classifiedReason = capabilityFailure(error);
+      const reason =
+        classifiedReason === "provider-error"
+          ? `provider-error-${scheduleStage}`
+          : classifiedReason;
       const scheduleHealthKey = `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`;
       await input.control.putHealth(
         unhealthyOddsProviderState(
