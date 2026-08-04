@@ -372,7 +372,7 @@ stories:
     league: enabled
     module: grading
     priority: P0
-    status: in-review
+    status: done
     dependencies: [FTE-DATA-004, FTE-PICK-001]
     risk: High
     approvalRequiredBeforeMerge: false

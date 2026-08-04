@@ -2,8 +2,9 @@
 title: 'FTE-LEARN-001 Deterministic ML and Spread Grading'
 type: 'feature'
 created: '2026-08-04'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'b316bea'
+final_revision: '5a7cae5'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
