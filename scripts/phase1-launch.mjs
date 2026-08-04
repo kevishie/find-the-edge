@@ -143,9 +143,13 @@ export function assertRetainedResourcesSafe(existing, proposed) {
           "AttributeDefinitions",
           "KeySchema",
           "TimeToLiveSpecification",
-          "StreamSpecification",
           "ResourcePolicy",
         ]) &&
+        (before.StreamSpecification === undefined
+          ? same(after.StreamSpecification, {
+              StreamViewType: "NEW_IMAGE",
+            }) || after.StreamSpecification === undefined
+          : same(before.StreamSpecification, after.StreamSpecification)) &&
         (before.PointInTimeRecoverySpecification?.PointInTimeRecoveryEnabled !==
           true ||
           after.PointInTimeRecoverySpecification?.PointInTimeRecoveryEnabled ===

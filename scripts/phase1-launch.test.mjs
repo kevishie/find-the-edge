@@ -589,6 +589,53 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
   }
 });
 
+test("retained guard permits only the additive NEW_IMAGE table stream transition", () => {
+  const table = {
+    Type: "AWS::DynamoDB::Table",
+    Properties: {
+      AttributeDefinitions: [{ AttributeName: "pk", AttributeType: "S" }],
+      KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
+      TimeToLiveSpecification: { AttributeName: "expiresAt", Enabled: true },
+    },
+    DeletionPolicy: "Retain",
+    UpdateReplacePolicy: "Retain",
+  };
+  const withNewImage = structuredClone(table);
+  withNewImage.Properties.StreamSpecification = {
+    StreamViewType: "NEW_IMAGE",
+  };
+  assert.doesNotThrow(() =>
+    assertRetainedResourcesSafe(
+      { Resources: { Table: table } },
+      { Resources: { Table: withNewImage } },
+    ),
+  );
+  for (const streamViewType of [
+    "KEYS_ONLY",
+    "OLD_IMAGE",
+    "NEW_AND_OLD_IMAGES",
+  ]) {
+    const unsafe = structuredClone(table);
+    unsafe.Properties.StreamSpecification = { StreamViewType: streamViewType };
+    assert.throws(
+      () =>
+        assertRetainedResourcesSafe(
+          { Resources: { Table: table } },
+          { Resources: { Table: unsafe } },
+        ),
+      /protected properties/,
+    );
+  }
+  assert.throws(
+    () =>
+      assertRetainedResourcesSafe(
+        { Resources: { Table: withNewImage } },
+        { Resources: { Table: table } },
+      ),
+    /protected properties/,
+  );
+});
+
 const outputs = {
   EventsApiEndpoint: "https://abc123.execute-api.us-east-1.amazonaws.com/dev",
   WebOrigin: "https://abc123.cloudfront.net",
