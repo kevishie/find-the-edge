@@ -308,6 +308,7 @@ describe("production odds control-plane composition", () => {
       "invalid-event-reconciliation-lock",
       "event-reconciliation-lock-timeout",
       "event-reconciliation-ownership-lost",
+      "dynamo-conditional-conflict",
       "identity-snapshot-unstable",
       "dangling-identity-aggregate",
       "stale-identity-aggregate",
@@ -321,6 +322,14 @@ describe("production odds control-plane composition", () => {
       "identity-register-conflict",
       "identity-snapshot-mismatch",
       "canonical-revision-provider-limit",
+      "mapped-canonical-participants-missing",
+      "near-canonical-participants-missing",
+      "multiple-current-event-projections",
+      "near-canonical-projection-stale",
+      "mapping-scope-mismatch",
+      "bootstrap-identity-already-exists",
+      "bootstrap-identity-snapshot-mismatch",
+      "identity-conflict-count-exhausted",
     ])
       expect(
         scheduleCapabilityFailure(new Error(reason), "event-reconcile"),
