@@ -584,7 +584,7 @@ stories:
   - id: FTE-024
     title: Provider Quota, Retry, DLQ, and Suspended/Partial States
     epic: Odds ingestion and market normalization
-    status: review
+    status: done
     dependencies: [FTE-023]
     risk: High
     approvalRequiredBeforeMerge: false

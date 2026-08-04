@@ -2,10 +2,11 @@
 title: 'Provider Quota, Retry, DLQ, and Suspended/Partial States'
 type: 'feature'
 created: '2026-08-04'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'f11fdba'
+final_revision: '8821ca0'
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context:
   - '_bmad-output/implementation-artifacts/epic-4-context.md'
   - '_bmad-output/implementation-artifacts/spec-fte-023-featured-and-event-specific-odds-ingestion.md'
