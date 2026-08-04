@@ -1436,6 +1436,31 @@ describe("dynamo reconciliation ownership fencing", () => {
     expect(gateway.renewalAttempts).toBeGreaterThan(2);
   });
 
+  it("retries transient fenced-write transaction conflicts under the same lease", async () => {
+    class ConflictingWriteGateway extends ContractGateway {
+      writeAttempts = 0;
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        if (
+          writes.some(({ kind }) => kind === "check-reconciliation-lock") &&
+          !writes.some(({ kind }) => kind === "renew-reconciliation-lock")
+        ) {
+          this.writeAttempts += 1;
+          if (this.writeAttempts <= 2) throw new DynamoTransactionConflict();
+        }
+        return super.transact(writes);
+      }
+    }
+    const gateway = new ConflictingWriteGateway();
+    const result = await new DynamoEventIngestionStore(gateway, {
+      leaseMs: 1_000,
+      heartbeatMs: 100,
+    }).reconcileScheduledEvent(reconciliationInput("write-conflict"));
+    expect(typeof result.kind).toBe("string");
+    expect(gateway.writeAttempts).toBeGreaterThan(2);
+  });
+
   it("does not renew or resurrect a lease after its deadline", async () => {
     class ExpiringRenewalGateway extends ContractGateway {
       renewalAttempts = 0;

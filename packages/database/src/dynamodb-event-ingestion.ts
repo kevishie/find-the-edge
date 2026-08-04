@@ -322,14 +322,25 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         lease.leaseUntil - now <= lease.leaseMs / 2
       )
         throw new Error("event-reconciliation-ownership-lost");
-      await this.gateway.transact([
-        // The token check is the commit-time fence: either these writes commit
-        // before a replacement lock, or the whole transaction is rejected.
-        // Wall-clock expiry after a successful commit does not make the writes
-        // unsafe and must not turn that success into a reported failure.
-        this.reconciliationFenceWrite(fence)!,
-        ...writes,
-      ]);
+      for (let attempt = 0; attempt < 6; attempt += 1)
+        try {
+          await this.gateway.transact([
+            // The token check is the commit-time fence: either these writes
+            // commit before a replacement lock, or the whole transaction is
+            // rejected. Transaction contention is safe to retry because the
+            // attempted write is atomic and remains fenced by this token.
+            this.reconciliationFenceWrite(fence)!,
+            ...writes,
+          ]);
+          return;
+        } catch (error) {
+          if (!(error instanceof DynamoTransactionConflict) || attempt >= 5)
+            throw error;
+          const delayMs = 5 * 2 ** attempt;
+          if (this.reconciliationNow().getTime() + delayMs >= lease.leaseUntil)
+            throw new Error("event-reconciliation-ownership-lost");
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        }
     });
   }
   async getProviderEventFence(

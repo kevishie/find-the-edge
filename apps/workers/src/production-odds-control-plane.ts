@@ -242,6 +242,7 @@ const boundedScheduleInternalFailures = new Set([
   "invalid-event-reconciliation-lock",
   "event-reconciliation-lock-timeout",
   "event-reconciliation-ownership-lost",
+  "dynamo-transaction-conflict",
   "identity-snapshot-unstable",
   "dangling-identity-aggregate",
   "stale-identity-aggregate",
