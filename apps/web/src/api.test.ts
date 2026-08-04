@@ -78,7 +78,209 @@ const bootstrap = (): RuntimeBootstrap => ({
   },
 });
 
+const requestHref = (input: RequestInfo | URL) =>
+  typeof input === "string"
+    ? input
+    : input instanceof URL
+      ? input.href
+      : input.url;
+
 describe("games client", () => {
+  it("fails closed when one lifecycle returns an invalid response", async () => {
+    const fetcher = vi.fn<typeof fetch>((input) => {
+      const status = new URL(requestHref(input)).searchParams.get("status");
+      return Promise.resolve(
+        status === "cancelled"
+          ? new Response(JSON.stringify({ unexpected: true }))
+          : new Response(JSON.stringify(payload)),
+      );
+    });
+    const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.list(
+        { sport: "mlb", day: "2026-08-01", status: "all" },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it("bounds a never-settling lifecycle and reports retryable partial coverage", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn<typeof fetch>((input) => {
+        const status = new URL(requestHref(input)).searchParams.get("status");
+        return status === "cancelled"
+          ? new Promise<Response>(() => undefined)
+          : Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  ...payload,
+                  items: [
+                    {
+                      ...payload.items[0]!,
+                      id: `${payload.items[0]!.id}-${status}`,
+                      status,
+                      metadata: assessEventMetadata(
+                        status as Parameters<typeof assessEventMetadata>[0],
+                        payload.freshness,
+                        payload.snapshotAt,
+                      ),
+                    },
+                  ],
+                }),
+              ),
+            );
+      });
+      const client = createGamesClient(
+        { ok: true, value: bootstrap() },
+        fetcher,
+      );
+      if (!client.ok) throw client.error;
+      const expectation = expect(
+        client.value.list(
+          { sport: "mlb", day: "2026-08-01", status: "all" },
+          new AbortController().signal,
+        ),
+      ).resolves.toMatchObject({
+        lifecycleCoverage: { unavailable: ["cancelled"] },
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expectation;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves authoritative explorer odds on canonical detail", async () => {
+    const detailItem: Record<string, unknown> = { ...payload.items[0]! };
+    delete detailItem["odds"];
+    const fetcher = vi.fn<typeof fetch>((input) =>
+      Promise.resolve(
+        requestHref(input).includes("/events/")
+          ? new Response(
+              JSON.stringify({
+                projectionState: "ready",
+                item: detailItem,
+                unavailableReason: null,
+              }),
+            )
+          : new Response(JSON.stringify(payload)),
+      ),
+    );
+    const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!client.ok) throw client.error;
+    await client.value.list(
+      { sport: "mlb", day: "2026-08-01", status: "scheduled" },
+      new AbortController().signal,
+    );
+    await expect(
+      client.value.detail!(payload.items[0]!.id, new AbortController().signal),
+    ).resolves.toMatchObject({ odds: payload.items[0]!.odds });
+  });
+
+  it("rejects an unsupported canonical detail sport key", async () => {
+    const detailItem: Record<string, unknown> = { ...payload.items[0]! };
+    delete detailItem["odds"];
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          projectionState: "ready",
+          item: { ...detailItem, sportKey: "baseball" },
+          unavailableReason: null,
+        }),
+      ),
+    );
+    const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.detail!(payload.items[0]!.id, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it("aggregates every lifecycle deterministically and reports partial coverage", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      await Promise.resolve();
+      const href =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      const status = new URL(href).searchParams.get("status")!;
+      if (status === "cancelled")
+        return new Response("unavailable", { status: 503 });
+      const item = {
+        ...payload.items[0]!,
+        id: `${payload.items[0]!.id}-${status}`,
+        status,
+        metadata: assessEventMetadata(
+          status as Parameters<typeof assessEventMetadata>[0],
+          payload.freshness,
+          payload.snapshotAt,
+        ),
+      };
+      return new Response(
+        JSON.stringify({
+          ...payload,
+          items: [item],
+          freshness: payload.freshness,
+        }),
+      );
+    });
+    const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!client.ok) throw client.error;
+    const result = await client.value.list(
+      { sport: "mlb", day: "2026-08-01", status: "all" },
+      new AbortController().signal,
+    );
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(result.items).toHaveLength(5);
+    expect(result.lifecycleCoverage).toEqual({
+      requested: [
+        "scheduled",
+        "postponed",
+        "cancelled",
+        "started",
+        "completed",
+        "unknown",
+      ],
+      loaded: ["scheduled", "postponed", "started", "completed", "unknown"],
+      unavailable: ["cancelled"],
+    });
+  });
+
+  it("rejects contradictory canonical duplicates across lifecycle partitions", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      await Promise.resolve();
+      const href =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      const status = new URL(href).searchParams.get("status")!;
+      const item = {
+        ...payload.items[0]!,
+        status,
+        metadata: assessEventMetadata(
+          status as Parameters<typeof assessEventMetadata>[0],
+          payload.freshness,
+          payload.snapshotAt,
+        ),
+      };
+      return new Response(JSON.stringify({ ...payload, items: [item] }));
+    });
+    const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.list(
+        { sport: "mlb", day: "2026-08-01", status: "all" },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("contradictory duplicate");
+  });
+
   it.each([
     "scheduled",
     "postponed",

@@ -11,6 +11,7 @@ import {
   MemoryEventIngestionStore,
   MemoryEventRepository,
   MemoryGamesRepository,
+  projectionItems,
 } from "../../packages/database/src/index.js";
 import {
   seedFixtureOdds,
@@ -57,6 +58,25 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
   const store = new MemoryEventIngestionStore();
   const odds = new MemoryOdds();
   await seedFixtureOdds(store, odds);
+  const scheduled = [...store.events.values()].find(
+    (event) => event.sportKey === "mlb",
+  );
+  if (!scheduled) throw new Error("scheduled fixture missing");
+  const postponed = {
+    ...scheduled,
+    id: `${scheduled.id}-postponed` as typeof scheduled.id,
+    candidateIdentity: `${scheduled.candidateIdentity}-postponed`,
+    participantLabels: ["Baltimore", "Toronto"],
+    startsAt: "2026-08-02T00:15:00.000Z" as typeof scheduled.startsAt,
+    status: "postponed" as const,
+    version: 1,
+    updatedAt: "2026-08-01T12:31:00.000Z" as typeof scheduled.updatedAt,
+  };
+  await store.registerCandidate(postponed);
+  for (const item of Object.values(
+    projectionItems(postponed, "2026-08-01T12:31:00.000Z" as never),
+  ))
+    store.eventReadItems.set(`${item.pk}\0${item.sk}`, item);
   const events = new MemoryEventRepository(
     store,
     new EventCursorCodec({
@@ -84,18 +104,43 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
       response.writeHead(204, headers).end();
       return;
     }
-    if (request.method !== "GET" || requestUrl.pathname !== "/games") {
+    if (
+      request.method !== "GET" ||
+      (!requestUrl.pathname.startsWith("/events/") &&
+        requestUrl.pathname !== "/games")
+    ) {
       response
         .writeHead(404, headers)
         .end(JSON.stringify({ error: "not-found" }));
       return;
     }
-    const result = await handler({
-      route: "games",
-      query: Object.fromEntries(requestUrl.searchParams),
-    });
+    const result = requestUrl.pathname.startsWith("/events/")
+      ? await handler({
+          route: "detail",
+          eventId: decodeURIComponent(
+            requestUrl.pathname.slice("/events/".length),
+          ),
+        })
+      : await handler({
+          route: "games",
+          query: Object.fromEntries(requestUrl.searchParams),
+        });
+    const body =
+      requestUrl.pathname === "/games" &&
+      requestUrl.searchParams.get("status") === "postponed" &&
+      result.statusCode === 200
+        ? JSON.stringify({
+            ...(JSON.parse(result.body) as Record<string, unknown>),
+            items: (
+              JSON.parse(result.body) as { items: Record<string, unknown>[] }
+            ).items.map((item) => ({
+              ...item,
+              competition: { key: "mlb-cup", state: "provisional" },
+            })),
+          })
+        : result.body;
     response.writeHead(result.statusCode, { ...headers, ...result.headers });
-    response.end(result.body);
+    response.end(body);
   };
   const server = createServer((request, response) => {
     void respond(request, response).catch(() => {

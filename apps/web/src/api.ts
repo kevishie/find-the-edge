@@ -19,6 +19,13 @@ export type GamesSport = "mlb" | "soccer";
 export interface GamesFilter {
   readonly sport: GamesSport;
   readonly day: string;
+  readonly status?: EventStatus | "all";
+}
+
+export interface GamesLifecycleCoverage {
+  readonly requested: readonly EventStatus[];
+  readonly loaded: readonly EventStatus[];
+  readonly unavailable: readonly EventStatus[];
 }
 
 export interface GamesPageDto {
@@ -30,6 +37,10 @@ export interface GamesPageDto {
   readonly snapshotAt: string | null;
   readonly freshness: string | null;
   readonly unavailableReason: "projection-uninitialized" | null;
+}
+
+export interface GamesExplorerPageDto extends GamesPageDto {
+  readonly lifecycleCoverage?: GamesLifecycleCoverage;
 }
 
 interface GamesPartialPageDto extends Omit<
@@ -103,7 +114,8 @@ export interface GamesClient {
     body: Readonly<Record<string, unknown>>,
     signal: AbortSignal,
   ): Promise<unknown>;
-  list(filter: GamesFilter, signal: AbortSignal): Promise<GamesPageDto>;
+  list(filter: GamesFilter, signal: AbortSignal): Promise<GamesExplorerPageDto>;
+  detail?(eventId: string, signal: AbortSignal): Promise<GameDisplayDto>;
   listSplits?(filter: GamesFilter, signal: AbortSignal): Promise<SplitsPageDto>;
   listPerformance?(signal: AbortSignal): Promise<PerformanceReportDto | null>;
   listRetrospectives?(
@@ -1069,7 +1081,12 @@ function parsePage(
     )
   )
     throw invalid();
-  if (items.some((game) => game.status !== "scheduled")) throw invalid();
+  const expectedStatus = filter.status ?? "scheduled";
+  if (
+    expectedStatus !== "all" &&
+    items.some((game) => game.status !== expectedStatus)
+  )
+    throw invalid();
   const canonicalFreshness =
     items
       .flatMap((game) => (game.freshness === null ? [] : [game.freshness]))
@@ -1214,6 +1231,42 @@ function parseSplitsPage(
 }
 
 const MAX_PAGES = 100;
+const LIFECYCLE_REQUEST_TIMEOUT_MS = 10_000;
+
+async function boundedLifecycleRequest<T>(
+  signal: AbortSignal,
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(signal.reason);
+  signal.addEventListener("abort", abortFromParent, { once: true });
+  let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+  const timeoutFailure = new Promise<never>((_resolve, reject) => {
+    timeout = globalThis.setTimeout(() => {
+      controller.abort(new DOMException("Timed out", "TimeoutError"));
+      reject(
+        new GamesClientError(
+          "request-failed",
+          "Games are temporarily unavailable.",
+        ),
+      );
+    }, LIFECYCLE_REQUEST_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([request(controller.signal), timeoutFailure]);
+  } catch (error) {
+    if (signal.aborted) throw error;
+    if (controller.signal.aborted)
+      throw new GamesClientError(
+        "request-failed",
+        "Games are temporarily unavailable.",
+      );
+    throw error;
+  } finally {
+    if (timeout !== undefined) globalThis.clearTimeout(timeout);
+    signal.removeEventListener("abort", abortFromParent);
+  }
+}
 
 async function exhaustPages<T extends GameDisplayDto>(options: {
   readonly endpoint: "games" | "splits";
@@ -1230,7 +1283,8 @@ async function exhaustPages<T extends GameDisplayDto>(options: {
   const baseQuery = {
     sport: filter.sport,
     league: filter.sport === "mlb" ? "mlb" : "mls",
-    status: "scheduled",
+    status:
+      filter.status && filter.status !== "all" ? filter.status : "scheduled",
     day: filter.day,
     limit: "50",
   };
@@ -1416,6 +1470,7 @@ export function createGamesClient(
 ): Result<GamesClient, GamesClientError> {
   if (!bootstrap.ok)
     return { ok: false, error: bootstrapFailure(bootstrap.error) };
+  const knownGames = new Map<string, GameDisplayDto>();
   return {
     ok: true,
     value: {
@@ -1505,14 +1560,163 @@ export function createGamesClient(
         return response.json() as Promise<unknown>;
       },
       async list(filter, signal) {
-        return exhaustPages({
-          endpoint: "games",
-          filter,
-          signal,
-          apiBase: bootstrap.value.config.apiBase,
-          fetcher,
-          parse: parsePage,
-        });
+        const requested =
+          filter.status === "all"
+            ? [...EVENT_LIFECYCLE_STATES]
+            : [filter.status ?? "scheduled"];
+        const results = await Promise.allSettled(
+          requested.map((status) =>
+            boundedLifecycleRequest(signal, (boundedSignal) =>
+              exhaustPages({
+                endpoint: "games",
+                filter: { ...filter, status },
+                signal: boundedSignal,
+                apiBase: bootstrap.value.config.apiBase,
+                fetcher,
+                parse: parsePage,
+              }),
+            ),
+          ),
+        );
+        if (signal.aborted) {
+          const aborted = results.find(
+            (result): result is PromiseRejectedResult =>
+              result.status === "rejected",
+          );
+          throw aborted?.reason ?? new DOMException("Aborted", "AbortError");
+        }
+        const loaded: EventStatus[] = [];
+        const unavailable: EventStatus[] = [];
+        const items = new Map<string, GameDisplayDto>();
+        let freshness: string | null = null;
+        let anyReady = false;
+        for (const [index, result] of results.entries()) {
+          const status = requested[index]!;
+          if (result.status === "rejected") {
+            const failure: unknown = result.reason;
+            if (
+              !(failure instanceof GamesClientError) ||
+              failure.code !== "request-failed"
+            )
+              throw failure;
+            unavailable.push(status);
+            continue;
+          }
+          if (result.value.projectionState === "uninitialized") {
+            unavailable.push(status);
+            continue;
+          }
+          loaded.push(status);
+          anyReady = true;
+          if (
+            result.value.freshness !== null &&
+            (freshness === null || result.value.freshness < freshness)
+          )
+            freshness = result.value.freshness;
+          for (const item of result.value.items) {
+            const prior = items.get(item.id);
+            if (prior && JSON.stringify(prior) !== JSON.stringify(item))
+              throw new GamesClientError(
+                "invalid-response",
+                "The games response contained contradictory duplicate events.",
+              );
+            items.set(item.id, item);
+            knownGames.set(item.id, item);
+          }
+        }
+        if (
+          !anyReady &&
+          results.every((result) => result.status === "rejected")
+        ) {
+          const failure = results.find(
+            (result) => result.status === "rejected",
+          );
+          throw (failure as PromiseRejectedResult).reason;
+        }
+        const ordered = [...items.values()].sort(
+          (a, b) =>
+            a.startsAt.localeCompare(b.startsAt) || a.id.localeCompare(b.id),
+        );
+        const single =
+          results.length === 1 && results[0]?.status === "fulfilled"
+            ? results[0].value
+            : undefined;
+        return {
+          items: ordered,
+          nextCursor: null,
+          projectionState: anyReady ? "ready" : "uninitialized",
+          evaluationState: "complete",
+          hasMoreUnknown: false,
+          snapshotAt: single?.snapshotAt ?? null,
+          freshness,
+          unavailableReason: anyReady ? null : "projection-uninitialized",
+          lifecycleCoverage: { requested, loaded, unavailable },
+        };
+      },
+      async detail(eventId, signal) {
+        let response: Response;
+        try {
+          response = await fetcher(
+            `${bootstrap.value.config.apiBase}/events/${encodeURIComponent(eventId)}`,
+            { signal },
+          );
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw new GamesClientError(
+            "request-failed",
+            "Game details are temporarily unavailable.",
+          );
+        }
+        if (response.status === 404)
+          throw new GamesClientError(
+            "request-failed",
+            "This game was not found.",
+          );
+        if (!response.ok)
+          throw new GamesClientError(
+            "request-failed",
+            "Game details are temporarily unavailable.",
+          );
+        const body: unknown = await response.json().catch(() => null);
+        if (
+          !plain(body) ||
+          !exact(body, ["projectionState", "item", "unavailableReason"]) ||
+          body["projectionState"] !== "ready" ||
+          body["unavailableReason"] !== null ||
+          !plain(body["item"])
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The game details response was invalid.",
+          );
+        const item = body["item"];
+        const known = knownGames.get(eventId);
+        const candidate = {
+          ...item,
+          odds:
+            known &&
+            known.version === item["version"] &&
+            known.status === item["status"]
+              ? known.odds
+              : { state: "unavailable" },
+        };
+        if (
+          (item["sportKey"] !== "mlb" && item["sportKey"] !== "soccer") ||
+          typeof item["startsAt"] !== "string" ||
+          !plain(item["eastern"]) ||
+          typeof item["eastern"]["calendarDay"] !== "string" ||
+          !validGame(candidate, {
+            sport: item["sportKey"],
+            day: item["eastern"]["calendarDay"],
+            status: item["status"] as EventStatus,
+          }) ||
+          candidate.id !== eventId
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The game details response was invalid.",
+          );
+        return candidate;
       },
       async listSplits(filter, signal) {
         return exhaustPages({

@@ -15,6 +15,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  useNavigate,
   useParams,
   useSearch,
 } from "@tanstack/react-router";
@@ -27,8 +28,16 @@ import {
 import { mlbFindTheEdgeStrategy, sportRegistry } from "@find-the-edge/sports";
 import {
   eventFreshnessPresentation,
+  eventCompetitionOptions,
+  eventMatchupLabel,
+  filterAndSortEvents,
   eventLifecyclePresentation,
   eventMetadataReasonText,
+} from "@find-the-edge/ui";
+import type {
+  EventExplorerSortDirection,
+  EventExplorerSortField,
+  EventExplorerStatus,
 } from "@find-the-edge/ui";
 import {
   SportsbookLogo,
@@ -167,12 +176,32 @@ interface UiGamesPage {
   readonly unavailableReason: "projection-uninitialized" | null;
   readonly snapshotAt?: string | null;
   readonly freshness?: string | null;
+  readonly lifecycleCoverage?: {
+    readonly requested: readonly import("@find-the-edge/domain").EventStatus[];
+    readonly loaded: readonly import("@find-the-edge/domain").EventStatus[];
+    readonly unavailable: readonly import("@find-the-edge/domain").EventStatus[];
+  };
   readonly items: readonly {
     readonly id: string;
+    readonly version: number;
     readonly sportKey: string;
+    readonly leagueKey: string;
+    readonly competition: {
+      readonly key: string;
+      readonly state: "provisional";
+    };
     readonly startsAt: string;
-    readonly participants: readonly { readonly label: string }[];
-    readonly eastern: { readonly display: string };
+    readonly participants: readonly {
+      readonly id: string;
+      readonly label: string;
+    }[];
+    readonly eastern: {
+      readonly timeZone: "America/New_York";
+      readonly calendarDay: string;
+      readonly display: string;
+    };
+    readonly status: import("@find-the-edge/domain").EventStatus;
+    readonly freshness: string | null;
     readonly metadata: import("@find-the-edge/domain").EventMetadataAssessment;
     readonly odds:
       | {
@@ -186,6 +215,7 @@ interface UiGamesPage {
             readonly point?: number;
             readonly americanOdds: number;
             readonly observedAt: string;
+            readonly retrievedAt: string;
           }[];
         }
       | { readonly state: "unavailable" };
@@ -193,9 +223,17 @@ interface UiGamesPage {
 }
 interface UiGamesClient {
   list(
-    filter: { readonly sport: GamesSport; readonly day: string },
+    filter: {
+      readonly sport: GamesSport;
+      readonly day: string;
+      readonly status?: import("@find-the-edge/domain").EventStatus | "all";
+    },
     signal: AbortSignal,
   ): Promise<UiGamesPage>;
+  detail?(
+    eventId: string,
+    signal: AbortSignal,
+  ): Promise<UiGamesPage["items"][number]>;
   listSplits?(
     filter: { readonly sport: GamesSport; readonly day: string },
     signal: AbortSignal,
@@ -362,7 +400,19 @@ function AppShell() {
           <Link to="/" activeProps={{ className: "active" }}>
             Edge Lab
           </Link>
-          <Link to="/games" activeProps={{ className: "active" }}>
+          <Link
+            to="/games"
+            search={{
+              sport: "mlb",
+              day: currentEasternDay(),
+              status: "all",
+              competition: "",
+              query: "",
+              sort: "kickoff",
+              direction: "asc",
+            }}
+            activeProps={{ className: "active" }}
+          >
             Games
           </Link>
           <Link to="/splits" activeProps={{ className: "active" }}>
@@ -620,16 +670,42 @@ const currentEasternDay = (now = new Date()) =>
     day: "2-digit",
   }).format(now);
 
+interface ExplorerSearch {
+  readonly sport: GamesSport;
+  readonly day: string;
+  readonly status: EventExplorerStatus;
+  readonly competition: string;
+  readonly query: string;
+  readonly sort: EventExplorerSortField;
+  readonly direction: EventExplorerSortDirection;
+}
+
 function GamesExplorer() {
   const client = useContext(GamesClientContext);
-  const [sport, setSport] = useState<GamesSport>("mlb");
-  const [day, setDay] = useState(() => currentEasternDay());
+  const search = useSearch({ from: "/games" });
+  const navigate = useNavigate({ from: "/games" });
+  const { sport, day, status, competition, query, sort, direction } = search;
+  const [retry, setRetry] = useState(0);
+  const [compact, setCompact] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(max-width: 760px)").matches
+      : false,
+  );
   const [state, setState] = useState<
     | { readonly kind: "loading" }
     | { readonly kind: "ready"; readonly page: UiGamesPage }
     | { readonly kind: "error"; readonly message: string }
   >({ kind: "loading" });
   const requestId = useRef(0);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 760px)");
+    const update = () => setCompact(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     const id = ++requestId.current;
@@ -654,7 +730,10 @@ function GamesExplorer() {
         return;
       }
       try {
-        const page = await activeClient.list({ sport, day }, controller.signal);
+        const page = await activeClient.list(
+          { sport, day, status },
+          controller.signal,
+        );
         if (id === requestId.current && !controller.signal.aborted)
           setState({ kind: "ready", page });
       } catch (error: unknown) {
@@ -670,17 +749,34 @@ function GamesExplorer() {
     };
     void load();
     return () => controller.abort();
-  }, [client, day, sport]);
+  }, [client, day, retry, sport, status]);
+
+  const updateSearch = (patch: Partial<typeof search>) =>
+    void navigate({
+      search: (previous) => ({ ...previous, ...patch }),
+      replace: true,
+    });
+  const baseItems = state.kind === "ready" ? state.page.items : [];
+  const competitions = eventCompetitionOptions(baseItems);
+  const visibleItems = filterAndSortEvents(baseItems, {
+    competition,
+    query,
+    sort,
+    direction,
+  });
+  const partial =
+    state.kind === "ready" &&
+    (state.page.lifecycleCoverage?.unavailable.length ?? 0) > 0;
 
   return (
     <>
       <header className="explorer-header">
         <div>
-          <p className="eyebrow">LIVE GAMES · EASTERN TIME</p>
-          <h1>Games and current odds</h1>
+          <p className="eyebrow">EVENT CATALOG · EASTERN TIME</p>
+          <h1>Events Explorer</h1>
           <p className="lede">
-            Browse real MLB and MLS games with current spread, total, and
-            moneyline markets.
+            Browse the complete MLB and MLS event catalog by lifecycle,
+            competition, participant, and kickoff.
           </p>
         </div>
         <span className="maturity beta">live odds</span>
@@ -698,7 +794,7 @@ function GamesExplorer() {
               onClick={() => {
                 if (key === sport) return;
                 setState({ kind: "loading" });
-                setSport(key);
+                updateSearch({ sport: key, competition: "", query: "" });
               }}
             >
               {sportLabels[key]}
@@ -711,160 +807,384 @@ function GamesExplorer() {
             type="date"
             value={day}
             onChange={(event) => {
-              if (event.currentTarget.value === day) return;
               setState({ kind: "loading" });
-              setDay(event.currentTarget.value);
+              updateSearch({ day: event.currentTarget.value });
             }}
           />
+        </label>
+        <label>
+          <span>Lifecycle</span>
+          <select
+            value={status}
+            onChange={(event) =>
+              updateSearch({
+                status: event.currentTarget.value as EventExplorerStatus,
+              })
+            }
+          >
+            {(
+              [
+                "all",
+                "scheduled",
+                "started",
+                "postponed",
+                "completed",
+                "cancelled",
+                "unknown",
+              ] as const
+            ).map((value) => (
+              <option key={value} value={value}>
+                {value === "all" ? "All lifecycles" : value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Competition</span>
+          <select
+            value={competition}
+            onChange={(event) =>
+              updateSearch({ competition: event.currentTarget.value })
+            }
+          >
+            <option value="">All competitions</option>
+            {competitions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="event-search">
+          <span>Participant search</span>
+          <input
+            type="search"
+            value={query}
+            placeholder="Team or participant"
+            onChange={(event) =>
+              updateSearch({ query: event.currentTarget.value })
+            }
+          />
+        </label>
+        <label>
+          <span>Sort events</span>
+          <select
+            value={sort}
+            onChange={(event) =>
+              updateSearch({
+                sort: event.currentTarget.value as EventExplorerSortField,
+              })
+            }
+          >
+            <option value="kickoff">Kickoff</option>
+            <option value="matchup">Matchup</option>
+            <option value="competition">Competition</option>
+            <option value="lifecycle">Lifecycle</option>
+            <option value="freshness">Freshness</option>
+          </select>
+        </label>
+        <label>
+          <span>Sort direction</span>
+          <select
+            value={direction}
+            onChange={(event) =>
+              updateSearch({
+                direction: event.currentTarget
+                  .value as EventExplorerSortDirection,
+              })
+            }
+          >
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
+          </select>
         </label>
       </section>
 
       <div className="games-status" aria-live="polite" aria-atomic="true">
-        {state.kind === "loading" && <p role="status">Loading games…</p>}
-        {state.kind === "error" && <p role="alert">{state.message}</p>}
-        {state.kind === "ready" && state.page.items.length === 0 && (
-          <p role="status">
-            {state.page.projectionState === "uninitialized"
-              ? "Game metadata is unavailable while event data initializes."
-              : `No ${sportLabels[sport]} games are scheduled for this day.`}
+        {state.kind === "loading" && (
+          <div className="explorer-skeleton" role="status">
+            Loading events…
+          </div>
+        )}
+        {state.kind === "error" && (
+          <div className="explorer-state" role="alert">
+            <p>{state.message}</p>
+            <button
+              type="button"
+              onClick={() => setRetry((value) => value + 1)}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {partial && state.kind === "ready" && (
+          <p className="partial-state" role="status">
+            Partial lifecycle coverage. Unavailable:{" "}
+            {state.page.lifecycleCoverage!.unavailable.join(", ")}.
           </p>
         )}
+        {state.kind === "ready" && baseItems.length === 0 && (
+          <p role="status">
+            {state.page.projectionState === "uninitialized"
+              ? "Event projection is unavailable while event data initializes."
+              : partial
+                ? "No events were returned by the lifecycle groups that loaded. Retry to check the unavailable groups."
+                : status === "scheduled"
+                  ? `No ${sportLabels[sport]} games are scheduled for this day.`
+                  : `No ${sportLabels[sport]} events exist for this day and lifecycle selection.`}
+          </p>
+        )}
+        {state.kind === "ready" &&
+          baseItems.length > 0 &&
+          visibleItems.length === 0 && (
+            <div className="explorer-state" role="status">
+              <p>No events match the active filters.</p>
+              <button
+                type="button"
+                onClick={() => updateSearch({ competition: "", query: "" })}
+              >
+                Clear filters
+              </button>
+            </div>
+          )}
       </div>
 
-      {state.kind === "ready" && state.page.items.length > 0 && (
-        <section
-          className="event-grid"
-          aria-label={`${sportLabels[sport]} games`}
-        >
-          {state.page.items.map((game) => {
-            const selections =
-              game.odds.state === "available" ? game.odds.selections : [];
-            const find = (marketKey: string, selectionKey: string) =>
-              selections.find(
-                (selection) =>
-                  selection.marketKey === marketKey &&
-                  selection.selectionKey === selectionKey,
-              );
-            const moneylineMarket = "moneyline";
-            const book = selections[0];
-            const title = game.participants
-              .map(({ label }) => label)
-              .join(" vs ");
-            return (
-              <article
-                className="event-card"
-                data-event-id={game.id}
-                key={game.id}
-              >
-                <div className="event-meta">
-                  <span>{easternDisplay(game.startsAt)} Eastern</span>
-                  <span>
-                    {book?.sportsbookLabel ?? book?.sportsbookId ?? "scheduled"}
-                  </span>
-                </div>
-                <EventMetadataBadges game={game} />
-                <h2>{title}</h2>
-                <div
-                  className="market-scroll"
-                  tabIndex={0}
-                  aria-label={`${title} betting markets`}
-                >
-                  <table className="market-board">
-                    <thead>
-                      <tr>
-                        <th scope="col">Team</th>
-                        <th scope="col">Spread</th>
-                        <th scope="col">Total</th>
-                        <th scope="col">ML</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {game.participants
-                        .slice(0, 2)
-                        .map((participant, index) => {
-                          const side = index === 0 ? "away" : "home";
-                          const totalSide = index === 0 ? "over" : "under";
-                          const spread = find("spread", side);
-                          const total = find("total", totalSide);
-                          const moneyline = find(moneylineMarket, side);
-                          return (
-                            <tr key={participant.label}>
-                              <th scope="row">
-                                <span className="team-position">
-                                  {index === 0 ? "AWAY" : "HOME"}
-                                </span>
-                                {participant.label}
-                              </th>
-                              <td>
-                                {spread?.point === undefined ? (
-                                  <span className="market-missing">—</span>
-                                ) : (
-                                  <>
-                                    <span>{linePoint(spread.point)}</span>
-                                    <strong>
-                                      {oddsPrice(spread.americanOdds)}
-                                    </strong>
-                                  </>
-                                )}
-                              </td>
-                              <td>
-                                {total?.point === undefined ? (
-                                  <span className="market-missing">—</span>
-                                ) : (
-                                  <>
-                                    <span>
-                                      {index === 0 ? "O" : "U"}{" "}
-                                      {String(total.point)}
-                                    </span>
-                                    <strong>
-                                      {oddsPrice(total.americanOdds)}
-                                    </strong>
-                                  </>
-                                )}
-                              </td>
-                              <td>
-                                {moneyline ? (
-                                  <strong>
-                                    {oddsPrice(moneyline.americanOdds)}
-                                  </strong>
-                                ) : (
-                                  <span className="market-missing">—</span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                    </tbody>
-                  </table>
-                </div>
-                {game.sportKey === "soccer" &&
-                  find(moneylineMarket, "draw") && (
-                    <div className="draw-price">
-                      Draw{" "}
-                      <strong>
-                        {oddsPrice(find(moneylineMarket, "draw")!.americanOdds)}
-                      </strong>
-                    </div>
-                  )}
-                <div className="market-source">
-                  {book
-                    ? `Observed ${easternDisplay(book.observedAt)} Eastern`
-                    : "Odds unavailable"}
-                </div>
-                <Link
-                  className="detail-link"
-                  to="/games/$gameId"
-                  params={{ gameId: game.id }}
-                  search={{ sport, day }}
-                >
-                  View game details
-                </Link>
-              </article>
-            );
-          })}
-        </section>
+      {state.kind === "ready" && visibleItems.length > 0 && (
+        <>
+          <p className="result-count" role="status">
+            {visibleItems.length} events
+          </p>
+          {!compact && (
+            <div
+              className="event-table-wrap"
+              tabIndex={0}
+              aria-label="Events explorer results; scroll horizontally for all columns"
+            >
+              <table className="event-explorer-table">
+                <caption>Events matching the active explorer filters</caption>
+                <thead>
+                  <tr>
+                    {(
+                      [
+                        ["matchup", "Matchup"],
+                        ["kickoff", "Kickoff"],
+                        ["competition", "Competition"],
+                        ["lifecycle", "Lifecycle"],
+                        ["freshness", "Freshness"],
+                      ] as const
+                    ).map(([field, label]) => (
+                      <th scope="col" key={field}>
+                        <button
+                          type="button"
+                          aria-label={`Sort by ${label}`}
+                          aria-pressed={sort === field}
+                          onClick={() =>
+                            updateSearch({
+                              sort: field,
+                              direction:
+                                sort === field && direction === "asc"
+                                  ? "desc"
+                                  : "asc",
+                            })
+                          }
+                        >
+                          {label}
+                          {sort === field
+                            ? direction === "asc"
+                              ? " ↑"
+                              : " ↓"
+                            : ""}
+                        </button>
+                      </th>
+                    ))}
+                    <th scope="col">Spread</th>
+                    <th scope="col">Total</th>
+                    <th scope="col">ML</th>
+                    <th scope="col">Hard Rock</th>
+                    <th scope="col">Comparison</th>
+                    <th scope="col">Report</th>
+                    <th scope="col">Lineup</th>
+                    <th scope="col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleItems.map((game) => (
+                    <EventExplorerRow
+                      key={game.id}
+                      game={game}
+                      explorerSearch={search}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {compact && (
+            <section
+              className="event-explorer-cards"
+              aria-label="Events explorer mobile results"
+            >
+              {visibleItems.map((game) => (
+                <EventExplorerCard
+                  key={game.id}
+                  game={game}
+                  explorerSearch={search}
+                />
+              ))}
+            </section>
+          )}
+        </>
       )}
     </>
+  );
+}
+
+function EventExplorerRow({
+  game,
+  explorerSearch,
+}: {
+  readonly game: UiGamesPage["items"][number];
+  readonly explorerSearch: ExplorerSearch;
+}) {
+  const prices = game.odds.state === "available" ? game.odds.selections : [];
+  const market = (key: string) =>
+    prices.filter(({ marketKey }) => marketKey === key);
+  const marketValues = (key: string) =>
+    market(key).length === 0 ? (
+      <span>—</span>
+    ) : (
+      market(key).map((selection) => (
+        <span key={selection.selectionKey} className="explorer-market-value">
+          {selection.selectionLabel && <span>{selection.selectionLabel}</span>}
+          {selection.point !== undefined && (
+            <span>
+              {key === "total"
+                ? `${selection.selectionKey === "over" ? "O" : "U"} ${selection.point}`
+                : linePoint(selection.point)}
+            </span>
+          )}
+          <strong>{oddsPrice(selection.americanOdds)}</strong>
+        </span>
+      ))
+    );
+  return (
+    <tr className="event-card" data-event-id={game.id}>
+      <th scope="row">
+        <h2>{eventMatchupLabel(game)}</h2>
+        {prices[0] && (
+          <small>Observed {easternDisplay(prices[0].observedAt)} Eastern</small>
+        )}
+      </th>
+      <td>{easternDisplay(game.startsAt)} Eastern</td>
+      <td>{game.competition.key}</td>
+      <td>
+        <EventMetadataBadges game={game} />
+      </td>
+      <td>{eventFreshnessPresentation(game.metadata.freshness.state).label}</td>
+      <td>{marketValues("spread")}</td>
+      <td>{marketValues("total")}</td>
+      <td>{marketValues("moneyline")}</td>
+      {[
+        "Hard Rock not connected yet",
+        "Comparison coverage unavailable",
+        "Report unavailable",
+        "Lineup unavailable",
+      ].map((label) => (
+        <td key={label}>
+          <span className="readiness-unavailable">
+            Unavailable<span className="sr-only">: {label}</span>
+          </span>
+        </td>
+      ))}
+      <td className="event-actions">
+        <Link
+          className="detail-link"
+          to="/games/$gameId"
+          params={{ gameId: game.id }}
+          search={explorerSearch}
+        >
+          View Details
+        </Link>
+        <span className="disabled-action">
+          <button type="button" disabled aria-describedby={`scout-${game.id}`}>
+            Scout
+          </button>
+          <small id={`scout-${game.id}`}>
+            Unavailable: Scout API is not built yet.
+          </small>
+        </span>
+        <span className="disabled-action">
+          <button type="button" disabled aria-describedby={`watch-${game.id}`}>
+            Watchlist
+          </button>
+          <small id={`watch-${game.id}`}>
+            Unavailable: Watchlist API is not built yet.
+          </small>
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+function EventExplorerCard({
+  game,
+  explorerSearch,
+}: {
+  readonly game: UiGamesPage["items"][number];
+  readonly explorerSearch: ExplorerSearch;
+}) {
+  const prices = game.odds.state === "available" ? game.odds.selections : [];
+  return (
+    <article className="event-explorer-card" data-event-id={game.id}>
+      <p className="eyebrow">
+        {game.competition.key} · {easternDisplay(game.startsAt)} Eastern
+      </p>
+      <h2>{eventMatchupLabel(game)}</h2>
+      <EventMetadataBadges game={game} />
+      {prices.length > 0 && (
+        <ul className="mobile-market-prices" aria-label="Current odds">
+          {prices.map((price) => (
+            <li key={`${price.marketKey}-${price.selectionKey}`}>
+              <span>{price.marketKey}</span>{" "}
+              <span>{price.selectionLabel ?? price.selectionKey}</span>{" "}
+              {price.point !== undefined && (
+                <span>{linePoint(price.point)} </span>
+              )}
+              <strong>{oddsPrice(price.americanOdds)}</strong>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p>
+        Hard Rock, comparison, report, and lineup: <strong>Unavailable</strong>
+      </p>
+      <Link
+        className="detail-link"
+        to="/games/$gameId"
+        params={{ gameId: game.id }}
+        search={explorerSearch}
+      >
+        View Details
+      </Link>
+      <div className="disabled-actions">
+        <span className="disabled-action">
+          <button disabled aria-describedby={`card-scout-${game.id}`}>
+            Scout
+          </button>
+          <small id={`card-scout-${game.id}`}>
+            Unavailable: Scout API is not built yet.
+          </small>
+        </span>
+        <span className="disabled-action">
+          <button disabled aria-describedby={`card-watch-${game.id}`}>
+            Watchlist
+          </button>
+          <small id={`card-watch-${game.id}`}>
+            Unavailable: Watchlist API is not built yet.
+          </small>
+        </span>
+      </div>
+    </article>
   );
 }
 
@@ -1276,7 +1596,15 @@ function SplitsExplorer() {
                                 className="split-game-link"
                                 to="/games/$gameId"
                                 params={{ gameId: game.id }}
-                                search={{ sport, day }}
+                                search={{
+                                  sport,
+                                  day,
+                                  status: "scheduled",
+                                  competition: "",
+                                  query: "",
+                                  sort: "kickoff",
+                                  direction: "asc",
+                                }}
                                 aria-label={`View ${game.participants
                                   .map(({ label }) => label)
                                   .join(" versus ")} game details`}
@@ -1335,14 +1663,12 @@ function SplitsExplorer() {
 function GameDetail() {
   const client = useContext(GamesClientContext);
   const { gameId } = useParams({ from: "/games/$gameId" });
-  const { sport, day } = useSearch({ from: "/games/$gameId" });
+  const detailSearch = useSearch({ from: "/games/$gameId" });
   const [state, setState] = useState<
     | { readonly kind: "loading" }
     | {
         readonly kind: "ready";
-        readonly game: Awaited<
-          ReturnType<NonNullable<UiGamesClient["listSplits"]>>
-        >["items"][number];
+        readonly game: UiGamesPage["items"][number];
       }
     | { readonly kind: "error"; readonly message: string }
   >({ kind: "loading" });
@@ -1350,16 +1676,16 @@ function GameDetail() {
   useEffect(() => {
     const controller = new AbortController();
     const load = async () => {
-      if (!client.ok || !client.value.listSplits) {
+      if (!client.ok || (!client.value.detail && !client.value.listSplits)) {
         setState({ kind: "error", message: "Game details are unavailable." });
         return;
       }
       try {
-        const page = await client.value.listSplits(
-          { sport, day },
-          controller.signal,
-        );
-        const game = page.items.find((item) => item.id === gameId);
+        const game = client.value.detail
+          ? await client.value.detail(gameId, controller.signal)
+          : (
+              await client.value.listSplits!(detailSearch, controller.signal)
+            ).items.find((item) => item.id === gameId);
         if (!controller.signal.aborted)
           setState(
             game
@@ -1376,7 +1702,7 @@ function GameDetail() {
     };
     void load();
     return () => controller.abort();
-  }, [client, day, gameId, sport]);
+  }, [client, detailSearch, gameId]);
 
   if (state.kind === "loading") return <p>Loading game details…</p>;
   if (state.kind === "error") return <p role="alert">{state.message}</p>;
@@ -1390,7 +1716,7 @@ function GameDetail() {
           <p className="lede">{easternDisplay(game.startsAt)} Eastern</p>
           <EventMetadataBadges game={game} />
         </div>
-        <Link className="detail-link" to="/games">
+        <Link className="detail-link" to="/games" search={detailSearch}>
           Back to games
         </Link>
       </header>
@@ -1430,30 +1756,10 @@ function GameDetail() {
             DraftKings is recreational and Circa is sharp-adjacent. Treat splits
             as one signal alongside line movement and +EV analysis.
           </p>
-          {game.splits.length ? (
-            <table className="split-board">
-              <thead>
-                <tr>
-                  <th>Market</th>
-                  <th>Side</th>
-                  <th>Bets</th>
-                  <th>Money</th>
-                </tr>
-              </thead>
-              <tbody>
-                {game.splits.map((split) => (
-                  <tr key={split.id}>
-                    <td>{split.marketKey}</td>
-                    <td>{split.selectionKey}</td>
-                    <td>{split.betPercent?.toFixed(0) ?? "—"}%</td>
-                    <td>{split.moneyPercent?.toFixed(0) ?? "—"}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p>Splits are not available for this game yet.</p>
-          )}
+          <p>
+            Splits are unavailable in canonical event detail. Scheduled-event
+            splits remain on the Betting Splits screen.
+          </p>
         </article>
       </section>
     </>
@@ -1693,6 +1999,45 @@ const indexRoute = createRoute({
 const gamesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/games",
+  validateSearch: (search: Record<string, unknown>) => ({
+    sport:
+      search["sport"] === "soccer" ? ("soccer" as const) : ("mlb" as const),
+    day:
+      typeof search["day"] === "string" && validDay(search["day"])
+        ? search["day"]
+        : currentEasternDay(),
+    status: (
+      [
+        "all",
+        "scheduled",
+        "postponed",
+        "cancelled",
+        "started",
+        "completed",
+        "unknown",
+      ] as const
+    ).includes(search["status"] as EventExplorerStatus)
+      ? (search["status"] as EventExplorerStatus)
+      : ("all" as const),
+    competition:
+      typeof search["competition"] === "string" &&
+      search["competition"].length <= 128
+        ? search["competition"]
+        : "",
+    query:
+      typeof search["query"] === "string" && search["query"].length <= 160
+        ? search["query"]
+        : "",
+    sort: (
+      ["kickoff", "matchup", "competition", "lifecycle", "freshness"] as const
+    ).includes(search["sort"] as EventExplorerSortField)
+      ? (search["sort"] as EventExplorerSortField)
+      : ("kickoff" as const),
+    direction:
+      search["direction"] === "desc"
+        ? ("desc" as EventExplorerSortDirection)
+        : ("asc" as EventExplorerSortDirection),
+  }),
   component: GamesExplorer,
 });
 const splitsRoute = createRoute({
@@ -2457,6 +2802,37 @@ const gameDetailRoute = createRoute({
       typeof search["day"] === "string" && validDay(search["day"])
         ? search["day"]
         : currentEasternDay(),
+    status: (
+      [
+        "all",
+        "scheduled",
+        "postponed",
+        "cancelled",
+        "started",
+        "completed",
+        "unknown",
+      ] as const
+    ).includes(search["status"] as EventExplorerStatus)
+      ? (search["status"] as EventExplorerStatus)
+      : ("all" as const),
+    competition:
+      typeof search["competition"] === "string" &&
+      search["competition"].length <= 128
+        ? search["competition"]
+        : "",
+    query:
+      typeof search["query"] === "string" && search["query"].length <= 160
+        ? search["query"]
+        : "",
+    sort: (
+      ["kickoff", "matchup", "competition", "lifecycle", "freshness"] as const
+    ).includes(search["sort"] as EventExplorerSortField)
+      ? (search["sort"] as EventExplorerSortField)
+      : ("kickoff" as const),
+    direction:
+      search["direction"] === "desc"
+        ? ("desc" as EventExplorerSortDirection)
+        : ("asc" as EventExplorerSortDirection),
   }),
   component: GameDetail,
 });

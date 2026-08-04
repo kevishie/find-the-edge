@@ -542,7 +542,7 @@ stories:
   - id: FTE-018
     title: Events Explorer Screen
     epic: Sports catalog and event ingestion
-    status: backlog
+    status: done
     dependencies: [FTE-011, FTE-016, FTE-017]
     risk: Medium
     approvalRequiredBeforeMerge: false

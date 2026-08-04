@@ -435,6 +435,28 @@ it("explains an uninitialized game projection instead of claiming an empty sched
   ).not.toBeInTheDocument();
 });
 
+it("does not claim an empty schedule when the scheduled lifecycle failed", async () => {
+  const partial = {
+    ...page([]),
+    lifecycleCoverage: {
+      requested: ["scheduled", "completed"],
+      loaded: ["completed"],
+      unavailable: ["scheduled"],
+    },
+  } as const;
+  render(
+    <App
+      initialPath="/games?status=all"
+      gamesClient={{
+        ok: true,
+        value: { list: vi.fn(() => Promise.resolve(partial)) },
+      }}
+    />,
+  );
+  expect(await screen.findByText(/lifecycle groups that loaded/)).toBeVisible();
+  expect(screen.queryByText(/games are scheduled/)).not.toBeInTheDocument();
+});
+
 const splitGame: SplitsPageDto["items"][number] = {
   ...game,
   splits: [
@@ -610,11 +632,14 @@ describe("Games", () => {
       screen.queryByRole("heading", { name: "Boston vs New York" }),
     ).not.toBeInTheDocument();
     expect(
-      await screen.findByText("No MLS games are scheduled for this day."),
+      await screen.findByText(
+        "No MLS events exist for this day and lifecycle selection.",
+      ),
     ).toBeInTheDocument();
     expect(list).toHaveBeenLastCalledWith(
       {
         sport: "soccer",
+        status: "all",
         day: new Intl.DateTimeFormat("en-CA", {
           timeZone: "America/New_York",
           year: "numeric",
@@ -695,7 +720,9 @@ describe("Games", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: "MLS" }));
     expect(
-      await screen.findByText("No MLS games are scheduled for this day."),
+      await screen.findByText(
+        "No MLS events exist for this day and lifecycle selection.",
+      ),
     ).toBeInTheDocument();
     resolveOld(page());
     await Promise.resolve();

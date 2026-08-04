@@ -4,7 +4,7 @@
 
 ## Goal
 
-Establish the canonical, provider-independent event catalog and the ingestion-to-UI path that lets an authenticated user browse trustworthy upcoming sporting events. The epic begins with the soccer delivery slice and The Odds API, while preserving the binding multi-sport architecture: shared storage, APIs, and screens use registered sport and league configuration so MLB and future sport modules can participate without core rewrites.
+Establish a trustworthy, provider-independent sports event catalog and the ingestion-to-UI path for browsing upcoming events. The initial delivery slice is soccer event discovery through The Odds API, while the binding multi-sport model keeps shared identity, storage, APIs, and screens reusable for additional registered sports without core rewrites.
 
 ## Stories
 
@@ -18,31 +18,33 @@ Establish the canonical, provider-independent event catalog and the ingestion-to
 
 ## Requirements & Constraints
 
-- Represent canonical sports, leagues or competitions, participants, events, lifecycle status, kickoff changes, and provider mappings without embedding sport-specific fields in shared entities. Sport-specific details belong to versioned module-owned payloads.
-- Ingest upcoming events that have betting-market coverage. Preserve source provider, provider entity identity, provider timestamp when available, collection timestamp, verification status, freshness, confidence, and a retained raw-data reference when audit needs require it.
-- Treat canonical IDs as primary identity and provider IDs as aliases. Detect duplicates, preserve provider labels and aliases, retain kickoff-change history, and model postponement or cancellation as status changes rather than deletion. Ambiguous automatic matches remain unresolved instead of being merged speculatively.
-- Make ingestion idempotent for equivalent provider inputs. Older provider data must not overwrite newer canonical state. Provider errors, partial responses, rate limits, quota exhaustion, and normalization failures must be classified and observable without exposing credentials.
-- Restrict production ingestion to a human-approved competition allowlist. Provider coverage, target-sportsbook availability, schedule density, quota cost, and future enrichment coverage inform that decision.
-- Provide authenticated list and detail APIs for upcoming events with combined date, sport, competition, status, and watchlist filters. List responses include opaque cursor pagination, raw ISO timestamps, display-ready timezone metadata, event status, coverage, freshness, and missing-data reasons.
-- Normal reads must use keys or indexes rather than table scans. Core read surfaces may show cached data during provider outages only with explicit freshness or unavailable status.
-- The explorer must distinguish no source data, provider failure, and filters with no matches. Missing coverage or facts are unavailable, never inferred or presented as verified.
-- Event browsing must remain responsive at private-MVP scale, expose safe retryable errors, meet WCAG 2.1 AA interaction patterns, and support keyboard-accessible filters, sortable tables, pagination, rows, and actions.
+- Represent canonical sports, competitions, participants, events, provider mappings, lifecycle states, kickoff changes, postponements, and cancellations. Canonical identity must not depend on a provider ID alone, and lifecycle changes update an event rather than delete it.
+- Ingest upcoming events that have betting-market coverage. Equivalent provider payloads must be idempotent; changed kickoff or status data must safely update the canonical event, and unsupported sports must be ignored.
+- Keep provider DTOs isolated behind adapter contracts. API credentials remain server-side and must never appear in logs or browser data. Provider calls expose safe error classifications, request correlation, latency, and quota metadata.
+- Limit production ingestion to an approved competition allowlist. Provider coverage, target-book availability, schedule density, quota cost, and future enrichment coverage inform that list.
+- Provide list and detail APIs with combined date, sport, competition, status, and watchlist filters. Responses include raw ISO timestamps, Eastern Time display metadata, lifecycle status, coverage, freshness, missing-data reasons, and opaque cursor pagination.
+- Normal event reads use purpose-built keys or indexes rather than table scans. Cached data may remain visible during provider failure only with explicit stale or unavailable status.
+- Never present missing, stale, partial, postponed, cancelled, or unavailable data as verified. Missing bookmaker or market coverage is unavailable, not inferred.
+- The explorer must distinguish source data being unavailable from valid data that has no filter matches. Errors surface as safe, retryable states rather than blank screens.
+- Event browsing must remain responsive at private-MVP scale and follow WCAG 2.1 AA patterns for forms, tables, navigation, keyboard access, focus, contrast, and status messaging.
 
 ## Technical Decisions
 
-- Shared domain, storage keys, generic routes, and explorer behavior use stable `sportKey`, league or competition, event, and participant identifiers. Sport behavior and terminology come from registered, versioned `SportModule` metadata; shared code does not branch on a specific sport.
-- Provider integration is capability-based. Adapters declare supported sports, leagues, markets, rate limits, freshness, and quality, and keep provider DTOs inside provider packages. Application services consume normalized provider results.
-- DynamoDB is the operational store. Canonical events, competition links, provider mappings, unresolved or manual mapping records, and provider health live in the core table. Upcoming-event access uses purpose-built keys or GSIs ordered by kickoff; conditional writes protect event freshness and identity integrity.
-- Provider mappings record match method, confidence, timestamps, normalized identity, and override state. Manual overrides supersede automatic matches and are audit logged.
-- API inputs and outputs are schema validated and use a consistent envelope containing `data`, `error`, `requestId`, and optional page metadata. Cursors encode DynamoDB continuation state and remain opaque to clients.
-- Event ingestion runs as an asynchronous worker suitable for scheduled and manual invocation. Structured logs include correlation and provider request IDs, endpoint, latency, quota metadata, and created, updated, skipped, and failed counts. Secrets remain server-side and are never logged.
-- All API routes require authenticated user context. The platform uses the AWS serverless direction, including Lambda, API Gateway HTTP API, DynamoDB, EventBridge Scheduler, Secrets Manager, and CloudWatch.
-- Contract, unit, repository, API, fixture-backed integration, UI component, and route-level end-to-end tests cover provider isolation, lifecycle changes, idempotency, pagination, filters, error states, and accessibility-critical behavior.
+- Shared domain entities, storage keys, routes, and explorer behavior use stable sport, competition, participant, and event identifiers. Sport terminology and behavior come from registered, versioned module metadata; shared surfaces do not branch on a specific sport.
+- Provider integrations are capability-based and declare supported sports, leagues, markets, rate limits, expected freshness, and quality. Application services consume normalized provider results rather than provider-native DTOs.
+- DynamoDB stores canonical events, provider mappings, competition relationships, and provider health in the core table. Upcoming-event access uses kickoff-ordered keys or GSIs; conditional writes protect freshness and identity integrity.
+- Duplicate provider events resolve to one internal event only when confidence is sufficient. Ambiguous matches remain separate and flagged. Mappings preserve match method, confidence, timestamps, normalized identity, and override state.
+- Event list endpoints accept a limit and return encoded DynamoDB continuation state as an opaque cursor. API clients validate consistent response envelopes outside React components.
+- The frontend uses router search state for event filters, query keys based on stable filter tuples, and table state only for transient presentation. TanStack Table is the intended dense desktop implementation.
+- Event ingestion runs asynchronously and supports scheduled and manual execution. Structured telemetry includes correlation and provider request IDs plus created, updated, skipped, failed, quota, and latency signals.
+- Automated coverage spans lifecycle and identity rules, provider fixtures and redaction, worker idempotency, repository access and cursor behavior, API serialization, filter and empty states, accessibility-critical UI behavior, and a route-level browser smoke test.
 
 ## UX & Interaction Patterns
 
-Use a dense, sortable table for desktop comparison and responsive cards or drill-in views for smaller screens. Provide date navigation plus sport, competition, search, watchlist, scouted-state, and event-status filters; filters combine. Rows prioritize event participants, kickoff in the configured timezone (Eastern Time by default), lifecycle status, target-book and comparison coverage, report and lineup readiness, freshness, and gated Scout/Watchlist actions. Loading uses layout-matched skeletons. Stale, partial, unavailable, postponed, cancelled, started, and final states use explicit text or icons as well as color. Freshness appears as a badge with timestamp and explanatory tooltip. Tables may scroll horizontally rather than shrinking below readable sizes; mobile surfaces retain event status and primary actions while moving secondary fields into detail views.
+Use a dense, sortable table as the primary desktop explorer and responsive full-width cards or drill-in views on smaller screens. Provide date navigation plus sport (soccer-locked for the initial slice), competition, search, watchlist, scouted/unscouted, and event-status filters that combine correctly. Rows prioritize participants, Eastern Time kickoff, lifecycle status, Hard Rock availability, comparison-book coverage, report and lineup status, freshness, and gated Scout Event and Watchlist actions. Show Open Report when a completed report exists.
+
+Loading uses layout-matched skeletons. Empty states explain whether no data exists or no events match the active filters. Partial and stale states list missing fields or timestamps; provider failure offers safe retry guidance. Status never relies on color alone. Tables use semantic headers, labelled sortable controls and row actions, visible focus, readable text, and horizontal scrolling instead of excessive compression. Mobile retains event status and primary actions while moving secondary columns into detail views.
 
 ## Cross-Story Dependencies
 
-The shared package foundation precedes canonical event models. Provider adapter work depends on those models and configuration support. The ingestion worker depends on canonical models, the adapter, and the approved competition allowlist; its normalized records feed the repository and API. Status and freshness semantics extend API responses, and the Events Explorer depends on the application shell plus the repository/API and status work. Downstream odds ingestion, scouting, watchlists, reports, recommendations, and bets all rely on the canonical event identity established here. Binding multi-sport foundation work applies before legacy soccer-specific implementation wherever shared domain, provider, storage, API, or UI behavior is involved.
+Canonical event models precede provider integration. The ingestion worker depends on those models, the provider adapter, and the approved competition allowlist; its normalized records feed the repository and APIs. Freshness and lifecycle semantics extend those responses. The Events Explorer depends on the application shell, list/detail APIs, and status mapping, while real Scout Event and Watchlist mutations remain gated until their later epics are ready. Downstream odds, scouting, watchlists, reports, recommendations, and bets all rely on the canonical event identity established here.

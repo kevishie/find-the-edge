@@ -376,7 +376,7 @@ describe("event API", () => {
     }
     expect(reads).toBe(0);
   });
-  it("rejects unsupported games sports and non-scheduled status before reading", async () => {
+  it("accepts every games lifecycle but keeps splits scheduled-only", async () => {
     let reads = 0;
     const games = {
       list: async () => {
@@ -394,17 +394,39 @@ describe("event API", () => {
         };
       },
     };
-    const result = await createEventHandler(
-      repository,
-      games,
-    )({
-      route: "games",
-      subject: "u",
-      scopes: ["events/events:read"],
-      query: { sport: "nfl", status: "completed", day: "2026-08-01" },
-    });
-    expect(result.statusCode).toBe(400);
-    expect(reads).toBe(0);
+    for (const status of [
+      "scheduled",
+      "postponed",
+      "cancelled",
+      "started",
+      "completed",
+      "unknown",
+    ]) {
+      const result = await createEventHandler(
+        repository,
+        games,
+      )({
+        route: "games",
+        query: { sport: "mlb", status, day: "2026-08-01" },
+      });
+      expect(result.statusCode).toBe(200);
+    }
+    expect(reads).toBe(6);
+    for (const [route, sport, status] of [
+      ["games", "nfl", "completed"],
+      ["games", "mlb", "invalid"],
+      ["splits", "mlb", "completed"],
+    ] as const) {
+      const result = await createEventHandler(
+        repository,
+        games,
+      )({
+        route,
+        query: { sport, status, day: "2026-08-01" },
+      });
+      expect(result.statusCode).toBe(400);
+    }
+    expect(reads).toBe(6);
     const unknown = await createEventHandler(
       repository,
       games,
@@ -420,7 +442,7 @@ describe("event API", () => {
       },
     });
     expect(unknown.statusCode).toBe(400);
-    expect(reads).toBe(0);
+    expect(reads).toBe(6);
   });
   it("keeps internal listing scoped while serving public detail", async () => {
     expect(

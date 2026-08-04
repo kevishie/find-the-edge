@@ -12,6 +12,7 @@ import {
   StrategyExperimentNotFoundError,
   type StrategyExperimentRepository,
 } from "@find-the-edge/database";
+import { EVENT_LIFECYCLE_STATES } from "@find-the-edge/domain";
 export interface ApiRequest {
   readonly route:
     | "list"
@@ -394,7 +395,11 @@ export const createEventHandler =
               key,
             ),
         ) ||
-          query["status"] !== "scheduled" ||
+          (request.route === "splits" && query["status"] !== "scheduled") ||
+          (request.route === "games" &&
+            !EVENT_LIFECYCLE_STATES.includes(
+              query["status"] as (typeof EVENT_LIFECYCLE_STATES)[number],
+            )) ||
           !["mlb", "soccer"].includes(query["sport"] ?? "") ||
           (query["league"] !== undefined &&
             query["league"] !== (query["sport"] === "mlb" ? "mlb" : "mls")))
