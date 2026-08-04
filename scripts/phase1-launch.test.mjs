@@ -577,6 +577,7 @@ const outputs = {
     "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Example",
   CognitoUserPoolId: "us-east-1_Example",
   CognitoClientId: "client_123",
+  ReviewerCognitoClientId: "reviewer_client_123",
   CognitoDomain: "https://fte.auth.us-east-1.amazoncognito.com",
   CognitoScope: "events/events:read",
   CognitoCallbackUrl: "https://abc123.cloudfront.net/auth/callback",
@@ -601,6 +602,7 @@ test("deployed output bindings require exact physical resources and distribution
     ["AWS::CloudFront::Distribution", outputs.WebDistributionId],
     ["AWS::Cognito::UserPool", outputs.CognitoUserPoolId],
     ["AWS::Cognito::UserPoolClient", outputs.CognitoClientId],
+    ["AWS::Cognito::UserPoolClient", outputs.ReviewerCognitoClientId],
     ["AWS::Lambda::Function", outputs.LiveOddsIngestionFunctionName],
     ["AWS::ApiGatewayV2::Api", "abc123"],
   ].map(([ResourceType, PhysicalResourceId]) => ({

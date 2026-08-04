@@ -532,6 +532,7 @@ export function assertDeployedOutputBindings(outputs, resources, distribution) {
     ["AWS::CloudFront::Distribution", outputs.WebDistributionId],
     ["AWS::Cognito::UserPool", outputs.CognitoUserPoolId],
     ["AWS::Cognito::UserPoolClient", outputs.CognitoClientId],
+    ["AWS::Cognito::UserPoolClient", outputs.ReviewerCognitoClientId],
     ["AWS::Lambda::Function", outputs.LiveOddsIngestionFunctionName],
   ];
   const apiId = new URL(outputs.EventsApiEndpoint).hostname.split(".")[0];
@@ -561,7 +562,7 @@ function verifyDeployedOutputBindings(outputs, environment) {
       "aws",
       [
         "cloudformation",
-        "describe-stack-resources",
+        "list-stack-resources",
         "--stack-name",
         LAUNCH_STACK,
         "--region",
@@ -571,7 +572,7 @@ function verifyDeployedOutputBindings(outputs, environment) {
       ],
       { capture: true, env: environment },
     ),
-  ).StackResources;
+  ).StackResourceSummaries;
   const distribution = JSON.parse(
     run(
       "aws",
@@ -635,6 +636,7 @@ export function validateStackOutputs(outputs) {
     !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(outputs.WebAssetsBucketName) ||
     !/^us-east-1_[A-Za-z0-9]+$/.test(outputs.CognitoUserPoolId) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(outputs.CognitoClientId) ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(outputs.ReviewerCognitoClientId) ||
     !/^[A-Za-z0-9-_]{1,64}$/.test(outputs.LiveOddsIngestionFunctionName) ||
     outputs.TheOddsApiSecretName !== "find-the-edge/dev/the-odds-api"
   )
@@ -903,6 +905,7 @@ export async function phase1Launch(environment = process.env) {
     "CognitoIssuer",
     "CognitoUserPoolId",
     "CognitoClientId",
+    "ReviewerCognitoClientId",
     "CognitoDomain",
     "CognitoScope",
     "CognitoCallbackUrl",
