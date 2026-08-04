@@ -2,8 +2,9 @@
 title: 'FTE-018 Events Explorer Screen'
 type: 'feature'
 created: '2026-08-04'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'aff2a15865b8961cc853141a6f5cabaab85fc1ac'
+final_revision: 'c9db503'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
@@ -106,3 +107,13 @@ Completed successfully on 2026-08-04: focused API/UI/web tests, full `pnpm check
 - `pnpm test:e2e` -- desktop/mobile explorer smoke passes.
 - `pnpm phase1:preflight` -- deployment foundation remains valid.
 - `git diff --check` -- no whitespace errors.
+
+## Auto Run Result
+
+Completed FTE-018 as a public, lifecycle-aware Events Explorer. The API now serves every canonical lifecycle for games while splits remain scheduled-only; the web client safely aggregates independent partitions; pure UI policy drives combined search/filter/sort behavior; and the route renders a dense accessible desktop table plus responsive mobile cards with truthful readiness and empty states.
+
+Changed the API lifecycle boundary and tests, web data/detail clients and tests, explorer UI policy and tests, route components/styles, multi-lifecycle browser fixtures/tests, Epic 3 context, sprint status, and this story record.
+
+Review result: 8 patches applied (5 high, 3 medium), 0 deferred, 0 rejected. Follow-up review is recommended because fixes affected navigation state, response-integrity failure handling, timeout behavior, detail odds continuity, and accessibility across several layers.
+
+Verification passed: focused API/UI/web suites, full `pnpm check`, eight desktop/mobile Playwright scenarios, credential-free Phase 1 preflight, and `git diff --check`. Residual risk is limited to the intentionally non-atomic snapshot semantics of the `All` lifecycle presentation; partial partitions are disclosed rather than hidden.
