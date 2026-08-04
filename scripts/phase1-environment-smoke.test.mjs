@@ -201,7 +201,7 @@ test("live ingestion proof accepts production control-plane summaries", () => {
       {
         leagueKey: "mls",
         status: "skipped",
-        reason: "not-due",
+        reason: "cadence-not-due",
         pages: 0,
         quotaCost: 0,
       },
@@ -227,6 +227,44 @@ test("live ingestion proof accepts production control-plane summaries", () => {
     ],
   ])
     assert.throws(() => assertLiveIngestionSummary(invalid));
+  assert.throws(
+    () =>
+      assertLiveIngestionSummary([
+        {
+          leagueKey: "mlb",
+          status: "failed",
+          reason: "mapping-quarantine",
+          pages: 0,
+          quotaCost: 1,
+        },
+        {
+          leagueKey: "mls",
+          status: "completed",
+          pages: 1,
+          quotaCost: 1,
+        },
+      ]),
+    /mlb=failed:mapping-quarantine,mls=completed/,
+  );
+  assert.throws(
+    () =>
+      assertLiveIngestionSummary([
+        {
+          leagueKey: "mlb",
+          status: "failed",
+          reason: "raw-secret-provider-message",
+          pages: 0,
+          quotaCost: 1,
+        },
+        {
+          leagueKey: "mls",
+          status: "completed",
+          pages: 1,
+          quotaCost: 1,
+        },
+      ]),
+    /mls=completed/,
+  );
 });
 
 test("live game proof accepts complete real sportsbook markets and rejects fixtures", () => {

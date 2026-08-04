@@ -187,23 +187,55 @@ export function assertLiveIngestionResourceBinding(resources, environment) {
 export function assertLiveIngestionSummary(summary) {
   if (Array.isArray(summary)) {
     const expectedLeagues = new Set(["mlb", "mls"]);
+    const safeResult = (result) =>
+      result &&
+      typeof result === "object" &&
+      ["mlb", "mls"].includes(result.leagueKey) &&
+      ["completed", "skipped", "failed"].includes(result.status) &&
+      (result.reason === undefined ||
+        [
+          "provider-error",
+          "provider-unavailable",
+          "rate-limited",
+          "not-entitled",
+          "coverage-missing",
+          "provider-request-ambiguous",
+          "provider-response-unsealed",
+          "quota-reserve",
+          "provider-cooldown",
+          "provider-recovering",
+          "schedule-dependency-failed",
+          "mapping-quarantine",
+          "pagination-invalid",
+          "transition-conflict",
+          "internal-failure",
+          "cadence-not-due",
+        ].includes(result.reason)) &&
+      Number.isSafeInteger(result.pages) &&
+      result.pages >= 0 &&
+      Number.isSafeInteger(result.quotaCost) &&
+      result.quotaCost >= 0;
     if (
       summary.length !== expectedLeagues.size ||
       summary.some(
         (result) =>
-          !result ||
-          typeof result !== "object" ||
+          !safeResult(result) ||
           !expectedLeagues.delete(result.leagueKey) ||
-          !["completed", "skipped"].includes(result.status) ||
-          !Number.isSafeInteger(result.pages) ||
-          result.pages < 0 ||
-          !Number.isSafeInteger(result.quotaCost) ||
-          result.quotaCost < 0,
+          !["completed", "skipped"].includes(result.status),
       ) ||
       expectedLeagues.size !== 0
     )
       throw new Error(
-        "live ingestion returned an invalid control-plane summary",
+        `live ingestion returned an invalid control-plane summary: ${
+          summary
+            .filter(safeResult)
+            .map(
+              (result) =>
+                `${result.leagueKey}=${result.status}${result.reason ? `:${result.reason}` : ""}`,
+            )
+            .sort()
+            .join(",") || "invalid-shape"
+        }`,
       );
     return;
   }
