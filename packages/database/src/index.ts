@@ -21,3 +21,8 @@ export * from "./odds-control-plane";
 export * from "./dynamodb-result-repository";
 export * from "./paper-evaluation-repository";
 export * from "./dynamodb-paper-evaluation-repository";
+export * from "./evaluation-attempt-repository";
+export * from "./dynamodb-evaluation-attempt-repository";
+export * from "./evaluation-evidence-repository";
+export * from "./evaluation-terminal-repository";
+export * from "./dynamodb-evaluation-terminal-repository";

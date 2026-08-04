@@ -1,6 +1,6 @@
 project: FIND THE EDGE
 created: "2026-07-15"
-updated: "2026-08-03"
+updated: "2026-08-04"
 source: "_bmad-output/planning-artifacts/epics-and-stories.md"
 statusValues:
   - backlog
@@ -350,7 +350,7 @@ stories:
     league: enabled
     module: pick-evaluation
     priority: P0
-    status: backlog
+    status: review
     dependencies: [FTE-PICK-001, FTE-PICK-002, FTE-SPORT-007]
     risk: High
     approvalRequiredBeforeMerge: false

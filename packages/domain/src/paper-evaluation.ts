@@ -29,6 +29,10 @@ export interface EvaluationThresholds {
   readonly minimumExpectedValue: number;
   readonly minimumComparisonBooks: number;
   readonly maximumPriceAgeMinutes: number;
+  readonly maximumUncertainty?: number;
+  readonly minimumEdge?: number;
+  readonly outlierThreshold?: number;
+  readonly conservativeProbability?: "interval-low";
 }
 export interface EvaluationManifestInput {
   readonly mode: "decision-time" | "backtest";
@@ -39,6 +43,13 @@ export interface EvaluationManifestInput {
   readonly selectionKey: string;
   readonly offeredOdds: ImmutableOddsEvidenceRef;
   readonly comparisonEvidence: readonly ImmutableOddsEvidenceRef[];
+  readonly comparisonOutcomeEvidence?: readonly ImmutableOddsEvidenceRef[];
+  readonly consensusProvenance?: {
+    readonly includedSportsbookIds: readonly string[];
+    readonly comparisonWeights: Readonly<Record<string, number>>;
+    readonly outlierThreshold: number;
+    readonly conservativeProbability: "interval-low";
+  };
   readonly probability: EvaluationProbability;
   readonly uncertainty: number;
   readonly noVigProbability: number;
@@ -291,26 +302,32 @@ export function normalizeEvaluationManifest(
   const record = own(input, "manifest");
   const suppliedHash = record.inputHash;
   delete record.inputHash;
+  const manifestKeys = [
+    "mode",
+    "sportKey",
+    "leagueKey",
+    "eventId",
+    "marketKey",
+    "selectionKey",
+    "offeredOdds",
+    "comparisonEvidence",
+    "probability",
+    "uncertainty",
+    "noVigProbability",
+    "expectedValue",
+    "thresholds",
+    "evidenceCompleteness",
+    "versions",
+    "provenanceReferences",
+  ];
+  const hasConsensus =
+    Object.hasOwn(record, "comparisonOutcomeEvidence") ||
+    Object.hasOwn(record, "consensusProvenance");
   exact(
     record,
-    [
-      "mode",
-      "sportKey",
-      "leagueKey",
-      "eventId",
-      "marketKey",
-      "selectionKey",
-      "offeredOdds",
-      "comparisonEvidence",
-      "probability",
-      "uncertainty",
-      "noVigProbability",
-      "expectedValue",
-      "thresholds",
-      "evidenceCompleteness",
-      "versions",
-      "provenanceReferences",
-    ],
+    hasConsensus
+      ? [...manifestKeys, "comparisonOutcomeEvidence", "consensusProvenance"]
+      : manifestKeys,
     "manifest",
   );
   if (record.mode !== "decision-time" && record.mode !== "backtest")
@@ -336,13 +353,24 @@ export function normalizeEvaluationManifest(
       throw new PaperEvaluationInputError("probability-range-invalid");
   }
   const thresholds = own(record.thresholds, "thresholds");
+  const thresholdKeys = [
+    "minimumExpectedValue",
+    "minimumComparisonBooks",
+    "maximumPriceAgeMinutes",
+  ];
+  const expandedThresholdKeys = [
+    ...thresholdKeys,
+    "maximumUncertainty",
+    "minimumEdge",
+    "outlierThreshold",
+    "conservativeProbability",
+  ];
+  const actualThresholdKeys = Object.keys(thresholds);
   exact(
     thresholds,
-    [
-      "minimumExpectedValue",
-      "minimumComparisonBooks",
-      "maximumPriceAgeMinutes",
-    ],
+    actualThresholdKeys.length === thresholdKeys.length
+      ? thresholdKeys
+      : expandedThresholdKeys,
     "thresholds",
   );
   const versions = own(record.versions, "versions");
@@ -371,6 +399,75 @@ export function normalizeEvaluationManifest(
   const uniqueComparisons = [
     ...new Map(comparisons.map((item) => [stable(item), item])).values(),
   ].sort((a, b) => compareBytes(stable(a), stable(b)));
+  const outcomeComparisons =
+    hasConsensus && Array.isArray(record.comparisonOutcomeEvidence)
+      ? record.comparisonOutcomeEvidence.map((item, index) =>
+          evidence(item, `comparison-outcome-evidence-${index}`),
+        )
+      : [];
+  if (outcomeComparisons.length > MAX_ARRAY)
+    throw new PaperEvaluationInputError("comparison-outcome-evidence-invalid");
+  const uniqueOutcomeComparisons = [
+    ...new Map(outcomeComparisons.map((item) => [stable(item), item])).values(),
+  ].sort((a, b) => compareBytes(stable(a), stable(b)));
+  let consensusProvenance: EvaluationManifestInput["consensusProvenance"];
+  if (hasConsensus) {
+    const consensus = own(record.consensusProvenance, "consensus-provenance");
+    exact(
+      consensus,
+      [
+        "includedSportsbookIds",
+        "comparisonWeights",
+        "outlierThreshold",
+        "conservativeProbability",
+      ],
+      "consensus-provenance",
+    );
+    const weights = own(
+      consensus.comparisonWeights,
+      "consensus-comparison-weights",
+    );
+    const normalizedWeights = Object.fromEntries(
+      Object.keys(weights)
+        .sort(compareBytes)
+        .map((book) => [
+          id(book, "consensus-comparison-book"),
+          finite(
+            weights[book],
+            "consensus-comparison-weight",
+            Number.MIN_VALUE,
+            1_000,
+          ),
+        ]),
+    );
+    const includedSportsbookIds = semanticStrings(
+      consensus.includedSportsbookIds,
+      "consensus-included-books",
+    );
+    if (
+      includedSportsbookIds.some(
+        (book) => normalizedWeights[book] === undefined,
+      )
+    )
+      throw new PaperEvaluationInputError(
+        "consensus-included-book-weight-missing",
+      );
+    if (consensus.conservativeProbability !== "interval-low")
+      throw new PaperEvaluationInputError(
+        "consensus-conservative-probability-invalid",
+      );
+    consensusProvenance = {
+      includedSportsbookIds,
+      comparisonWeights: normalizedWeights,
+      outlierThreshold: finite(
+        consensus.outlierThreshold,
+        "consensus-outlier-threshold",
+        0,
+        1,
+      ),
+      conservativeProbability: "interval-low",
+    };
+  }
   const completeness = record.evidenceCompleteness;
   if (!["complete", "partial", "insufficient"].includes(String(completeness)))
     throw new PaperEvaluationInputError("evidence-completeness-invalid");
@@ -383,6 +480,12 @@ export function normalizeEvaluationManifest(
     selectionKey: id(record.selectionKey, "selection-key"),
     offeredOdds: evidence(record.offeredOdds, "offered-odds"),
     comparisonEvidence: uniqueComparisons,
+    ...(hasConsensus
+      ? {
+          comparisonOutcomeEvidence: uniqueOutcomeComparisons,
+          consensusProvenance: consensusProvenance!,
+        }
+      : {}),
     probability: Object.hasOwn(probability, "point")
       ? { point: probability.point as number }
       : {
@@ -414,6 +517,31 @@ export function normalizeEvaluationManifest(
         0,
         10080,
       ),
+      ...(thresholds.maximumUncertainty === undefined
+        ? {}
+        : {
+            maximumUncertainty: finite(
+              thresholds.maximumUncertainty,
+              "maximum-uncertainty",
+              0,
+              1,
+            ),
+            minimumEdge: finite(thresholds.minimumEdge, "minimum-edge", -1, 1),
+            outlierThreshold: finite(
+              thresholds.outlierThreshold,
+              "outlier-threshold",
+              0,
+              1,
+            ),
+            conservativeProbability:
+              thresholds.conservativeProbability === "interval-low"
+                ? ("interval-low" as const)
+                : (() => {
+                    throw new PaperEvaluationInputError(
+                      "conservative-probability-invalid",
+                    );
+                  })(),
+          }),
     },
     evidenceCompleteness:
       completeness as EvaluationManifestInput["evidenceCompleteness"],
@@ -457,6 +585,17 @@ export function normalizeEvaluationManifest(
     )
       throw new PaperEvaluationInputError(
         `${index === 0 ? "offered" : "comparison"}-evidence-binding-invalid`,
+      );
+  }
+  for (const reference of normalizedBase.comparisonOutcomeEvidence ?? []) {
+    const [eventId, , sportKey, marketKey] = evidenceDimensions(reference);
+    if (
+      eventId !== normalizedBase.eventId ||
+      sportKey !== normalizedBase.sportKey ||
+      marketKey !== normalizedBase.marketKey
+    )
+      throw new PaperEvaluationInputError(
+        "comparison-outcome-evidence-binding-invalid",
       );
   }
   const encoded = stable(normalizedBase);

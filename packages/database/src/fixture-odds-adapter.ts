@@ -340,6 +340,19 @@ export function validateFixtureOddsCurrentItem(
   return validateStoredSnapshot(item, expectedPartitionKey, "CURRENT");
 }
 
+/** Read-side validation for one exact immutable snapshot item. */
+export function validateFixtureOddsSnapshotItem(
+  item: FixtureOddsItem | null,
+  expectedPartitionKey: string,
+  expectedSortKey: string,
+): NormalizedFixtureOddsSnapshot | null {
+  if (expectedSortKey === "CURRENT")
+    throw new FixtureOddsStateCorruptionError(
+      "immutable snapshot sort key required",
+    );
+  return validateStoredSnapshot(item, expectedPartitionKey, expectedSortKey);
+}
+
 function capturePlainData(
   value: unknown,
   required: readonly string[],

@@ -54,6 +54,36 @@ export const manifest = (
 });
 
 describe("paper evaluation domain", () => {
+  it("preserves complete comparison vectors and consensus provenance", () => {
+    const awayId = "d".repeat(64);
+    const away = {
+      partitionKey: `FIXTURE_ODDS#${JSON.stringify(["event-1", 1, "baseball", "moneyline", "away", "b"])}`,
+      sortKey: `SNAPSHOT#2026-08-03T20:00:00.000Z#${awayId}`,
+      snapshotId: awayId,
+    };
+    const first = normalizeEvaluationManifest(
+      manifest({
+        comparisonOutcomeEvidence: [ref("b"), away],
+        consensusProvenance: {
+          includedSportsbookIds: ["b"],
+          comparisonWeights: { b: 1.25 },
+          outlierThreshold: 0.1,
+          conservativeProbability: "interval-low",
+        },
+      }),
+    );
+    const { inputHash, ...firstWithoutHash } = first;
+    expect(inputHash).toMatch(/^[a-f0-9]{64}$/);
+    const changed = normalizeEvaluationManifest({
+      ...firstWithoutHash,
+      consensusProvenance: {
+        ...first.consensusProvenance!,
+        comparisonWeights: { b: 1.5 },
+      },
+    });
+    expect(first.comparisonOutcomeEvidence).toHaveLength(2);
+    expect(first.inputHash).not.toBe(changed.inputHash);
+  });
   it("canonicalizes semantic sets but preserves meaningful ordered data", () => {
     const a = normalizeEvaluationManifest(manifest());
     const b = normalizeEvaluationManifest(
