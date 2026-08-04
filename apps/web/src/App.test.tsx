@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
@@ -415,6 +415,77 @@ describe("Games", () => {
 });
 
 describe("Betting splits", () => {
+  it("refreshes an empty board when newly ingested splits become available", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const listSplits = vi
+        .fn<NonNullable<GamesClient["listSplits"]>>()
+        .mockResolvedValueOnce(splitsPage([{ ...splitGame, splits: [] }]))
+        .mockResolvedValueOnce(splitsPage());
+      render(
+        <App
+          initialPath="/splits"
+          gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+        />,
+      );
+
+      expect(
+        await screen.findByText("1 games · 0 with data · 0 observations"),
+      ).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(
+        await screen.findByText("1 games · 1 with data · 6 observations"),
+      ).toBeInTheDocument();
+      expect(listSplits).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains the last valid board through a failed refresh and retries", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const refreshed = {
+        ...splitGame,
+        splits: splitGame.splits.map((split) =>
+          split.id === "split-away-moneyline"
+            ? { ...split, scope: "consensus", betPercent: 47 }
+            : { ...split, scope: "consensus" },
+        ),
+      };
+      const listSplits = vi
+        .fn<NonNullable<GamesClient["listSplits"]>>()
+        .mockResolvedValueOnce(splitsPage())
+        .mockRejectedValueOnce(new Error("temporary failure"))
+        .mockResolvedValueOnce(splitsPage([refreshed]));
+      render(
+        <App
+          initialPath="/splits"
+          gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+        />,
+      );
+
+      expect(await screen.findByText("45%")).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(screen.getByText("45%")).toBeInTheDocument();
+      expect(
+        screen.queryByText("Betting splits are temporarily unavailable."),
+      ).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(await screen.findByText("47%")).toBeInTheDocument();
+      expect(listSplits).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders paired team rows across spread, total, and moneyline", async () => {
     const listSplits = vi
       .fn<NonNullable<GamesClient["listSplits"]>>()

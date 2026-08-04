@@ -30,6 +30,8 @@ import {
   sportsbookScopeKey,
 } from "./sportsbooks";
 
+const SPLITS_REFRESH_INTERVAL_MS = 30_000;
+
 const reasonLabels: Record<string, string> = {
   "positive-ev": "Qualified positive EV",
   "ev-below-threshold": "EV below 2% floor",
@@ -706,10 +708,15 @@ function SplitsExplorer() {
       }
     | { readonly kind: "error"; readonly message: string }
   >({ kind: "loading" });
+  const validBoardKey = useRef<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
+    let requestInFlight = false;
+    const boardKey = `${sport}:${day}`;
+    let hasValidBoard = validBoardKey.current === boardKey;
     const load = async () => {
+      if (requestInFlight || controller.signal.aborted) return;
       if (!client.ok || !client.value.listSplits) {
         setState({
           kind: "error",
@@ -717,12 +724,15 @@ function SplitsExplorer() {
         });
         return;
       }
+      requestInFlight = true;
       try {
         const page = await client.value.listSplits(
           { sport, day },
           controller.signal,
         );
-        if (!controller.signal.aborted)
+        if (!controller.signal.aborted) {
+          hasValidBoard = true;
+          validBoardKey.current = boardKey;
           setState({
             kind: "ready",
             items: page.items,
@@ -730,16 +740,25 @@ function SplitsExplorer() {
             snapshotAt: page.snapshotAt,
             observedAt: Date.now(),
           });
+        }
       } catch {
-        if (!controller.signal.aborted)
+        if (!controller.signal.aborted && !hasValidBoard)
           setState({
             kind: "error",
             message: "Betting splits are temporarily unavailable.",
           });
+      } finally {
+        requestInFlight = false;
       }
     };
     void load();
-    return () => controller.abort();
+    const refreshInterval = window.setInterval(() => {
+      void load();
+    }, SPLITS_REFRESH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(refreshInterval);
+      controller.abort();
+    };
   }, [client, day, sport]);
 
   const games = state.kind === "ready" ? state.items : [];
