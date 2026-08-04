@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EventStorageError,
+  MemoryCohortRepository,
   type GamesRepository,
   type EventRepository,
 } from "@find-the-edge/database";
@@ -23,6 +24,112 @@ const repository: EventRepository = {
   },
 };
 describe("event API", () => {
+  it("serves authenticated immutable performance cohorts", async () => {
+    const cohorts = new MemoryCohortRepository();
+    await cohorts.putCohort({
+      definition: {
+        window: {
+          from: "2026-07-01T00:00:00.000Z",
+          to: "2026-08-01T00:00:00.000Z",
+        },
+        filters: { wagerMode: "paper" },
+        policyVersions: {
+          cohort: "cohort-v1",
+          performance: "performance-v1",
+          oddsBand: "odds-band-v1",
+          calibration: "calibration-deciles-v1",
+          clv: "clv-same-book-15m-v1",
+        },
+      },
+      cutoff: "2026-08-02T00:00:00.000Z",
+      members: [],
+    });
+    const result = await createEventHandler(
+      repository,
+      undefined,
+      undefined,
+      undefined,
+      cohorts,
+    )({
+      route: "performance-list",
+      subject: "u",
+      scopes: ["events/events:read"],
+    });
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body) as {
+      readonly items: readonly unknown[];
+    };
+    expect(body.items).toHaveLength(1);
+  });
+  it("serves exact performance report and member evidence routes", async () => {
+    const cohorts = new MemoryCohortRepository();
+    const cohort = await cohorts.putCohort({
+      definition: {
+        window: {
+          from: "2026-07-01T00:00:00.000Z",
+          to: "2026-08-01T00:00:00.000Z",
+        },
+        filters: { wagerMode: "paper" },
+        policyVersions: {
+          cohort: "cohort-v1",
+          performance: "performance-v1",
+          oddsBand: "odds-band-v1",
+          calibration: "calibration-deciles-v1",
+          clv: "clv-same-book-15m-v1",
+        },
+      },
+      cutoff: "2026-08-02T00:00:00.000Z",
+      members: [],
+    });
+    const report = await cohorts.putReport({
+      facets: {
+        sports: [],
+        leagues: [],
+        markets: [],
+        oddsBands: [],
+        strategyVersions: [],
+        modelVersions: [],
+      },
+      cohortId: cohort.cohortId,
+      cutoff: cohort.cutoff,
+      evidenceDigest: "a".repeat(64),
+      revision: 1,
+      createdAt: cohort.cutoff,
+      metrics: { source: 0 },
+    });
+    const handler = createEventHandler(
+      repository,
+      undefined,
+      undefined,
+      undefined,
+      cohorts,
+    );
+    const detail = await handler({
+      route: "performance-detail",
+      eventId: report.reportId,
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(JSON.parse(detail.body)).toMatchObject({
+      reportId: report.reportId,
+    });
+    const members = await handler({
+      route: "performance-members",
+      eventId: cohort.cohortId,
+    });
+    expect(members.statusCode).toBe(200);
+    expect(JSON.parse(members.body)).toMatchObject({
+      cohortId: cohort.cohortId,
+      items: [],
+    });
+    expect(
+      (
+        await handler({
+          route: "performance-detail",
+          eventId: `performance-report:${"f".repeat(64)}`,
+        })
+      ).statusCode,
+    ).toBe(404);
+  });
   it("serves games through the scoped authenticated repository", async () => {
     const canonicalId =
       "event:mlb%3Amlb:%5B%22mlb%22%2C%5B%22boston%20red%20sox%22%2C%22new%20york%20yankees%22%5D%5D";

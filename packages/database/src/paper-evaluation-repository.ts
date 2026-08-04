@@ -30,6 +30,14 @@ export interface PaperEvaluationRepository {
     readonly items: readonly PaperBetRecord[];
     readonly nextCursor?: string;
   }>;
+  listPaperBetsByDecisionDay(input: {
+    readonly day: string;
+    readonly limit: number;
+    readonly cursor?: string;
+  }): Promise<{
+    readonly items: readonly PaperBetRecord[];
+    readonly nextCursor?: string;
+  }>;
 }
 
 const retryValue = (value: PaperEvaluationRecord | PaperBetRecord) => {
@@ -73,6 +81,7 @@ export class MemoryPaperEvaluationRepository implements PaperEvaluationRepositor
   private readonly evaluations = new Map<string, PaperEvaluationRecord>();
   private readonly paperBets = new Map<string, PaperBetRecord>();
   private readonly eventPaperBets = new Map<string, Set<string>>();
+  private readonly dayPaperBets = new Map<string, Set<string>>();
 
   persist(input: PaperEvaluationInput): Promise<PaperEvaluationPersistResult> {
     try {
@@ -100,6 +109,10 @@ export class MemoryPaperEvaluationRepository implements PaperEvaluationRepositor
         const ids = this.eventPaperBets.get(eventId) ?? new Set<string>();
         ids.add(stored.paperBet.paperBetId);
         this.eventPaperBets.set(eventId, ids);
+        const day = stored.paperBet.createdAt.slice(0, 10);
+        const dayIds = this.dayPaperBets.get(day) ?? new Set<string>();
+        dayIds.add(stored.paperBet.paperBetId);
+        this.dayPaperBets.set(day, dayIds);
       }
       return Promise.resolve({
         outcome: "created",
@@ -171,6 +184,51 @@ export class MemoryPaperEvaluationRepository implements PaperEvaluationRepositor
       items,
       ...(start + page.length < ids.length
         ? { nextCursor: page[page.length - 1]! }
+        : {}),
+    };
+  }
+  async listPaperBetsByDecisionDay(input: {
+    readonly day: string;
+    readonly limit: number;
+    readonly cursor?: string;
+  }) {
+    await Promise.resolve();
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(input.day) ||
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > 100
+    )
+      throw new Error("paper-bet-day-query-invalid");
+    const ids = [...(this.dayPaperBets.get(input.day) ?? [])].sort();
+    let cursorId: string | undefined;
+    if (input.cursor) {
+      try {
+        const parsed = JSON.parse(
+          Buffer.from(input.cursor, "base64url").toString(),
+        ) as { day?: unknown; id?: unknown };
+        if (parsed.day !== input.day || typeof parsed.id !== "string")
+          throw new Error();
+        cursorId = assertPaperBetId(parsed.id);
+      } catch {
+        throw new Error("paper-bet-day-cursor-invalid");
+      }
+    }
+    const start = cursorId === undefined ? 0 : ids.indexOf(cursorId) + 1;
+    if (cursorId !== undefined && start === 0)
+      throw new Error("paper-bet-day-cursor-invalid");
+    const page = ids.slice(start, start + input.limit),
+      items = page.map((id) =>
+        clonePaperEvaluationValue(this.paperBets.get(id)!),
+      );
+    return {
+      items,
+      ...(start + page.length < ids.length
+        ? {
+            nextCursor: Buffer.from(
+              JSON.stringify({ day: input.day, id: page.at(-1)! }),
+            ).toString("base64url"),
+          }
         : {}),
     };
   }

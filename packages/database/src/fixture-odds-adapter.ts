@@ -404,7 +404,12 @@ function capturePlainData(
 }
 
 export class DynamoFixtureOddsAdapter {
-  constructor(readonly gateway: FixtureOddsDynamoGateway) {}
+  constructor(
+    readonly gateway: FixtureOddsDynamoGateway,
+    private readonly exactSnapshotIndex?: {
+      put(snapshot: NormalizedFixtureOddsSnapshot): Promise<void>;
+    },
+  ) {}
 
   async persist(
     input: FixtureOddsIngestInput,
@@ -500,6 +505,7 @@ export class DynamoFixtureOddsAdapter {
       snapshotDecision = "existing";
     }
 
+    await this.exactSnapshotIndex?.put(snapshot);
     let current: "advanced" | "retained" = "advanced";
     try {
       await this.gateway.putCurrent({

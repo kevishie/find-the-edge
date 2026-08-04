@@ -398,6 +398,8 @@ export class PickEvaluationService {
     const evaluationInput: PaperEvaluationInput = {
       manifest: {
         mode: "decision-time",
+        scheduledStartAt: input.request.startsAt,
+        wagerMode: "paper",
         ...(input.execution ? { execution: input.execution } : {}),
         sportKey: input.request.sportKey,
         leagueKey: input.request.leagueKey,

@@ -9,6 +9,14 @@ import {
   type SplitsPageDto,
 } from "./api";
 
+it("shows an honest empty performance state before a frozen report exists", async () => {
+  render(<App initialPath="/performance" />);
+  expect(await screen.findByText("No frozen cohort report yet.")).toBeVisible();
+  expect(
+    screen.getByText(/Missing evidence is never shown as zero/),
+  ).toBeVisible();
+});
+
 const game = {
   id: "event:mlb%3Amlb:fixture-1",
   version: 1,

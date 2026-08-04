@@ -5,6 +5,7 @@ import {
   AwsFixtureOddsGateway,
   DynamoEventIngestionStore,
   DynamoFixtureOddsAdapter,
+  DynamoExactOddsSnapshotRepository,
 } from "@find-the-edge/database";
 import { seedFixtureOdds } from "./fixture-odds-seed";
 
@@ -25,7 +26,10 @@ export const handler = async () => {
   const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const summary = await seedFixtureOdds(
     new DynamoEventIngestionStore(new AwsDynamoGateway(client, tableName)),
-    new DynamoFixtureOddsAdapter(new AwsFixtureOddsGateway(client, tableName)),
+    new DynamoFixtureOddsAdapter(
+      new AwsFixtureOddsGateway(client, tableName),
+      new DynamoExactOddsSnapshotRepository(client, tableName),
+    ),
   );
   process.stdout.write(
     `${JSON.stringify({ event: "fixture-odds-seed-complete", ...summary })}\n`,

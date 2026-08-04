@@ -1175,6 +1175,110 @@ footer {
 .empty-state p {
   color: #8b8495;
 }
+.performance-state,
+.sample-caution,
+.performance-dashboard article {
+  border: 1px solid #302a3d;
+  background: #100d16;
+  padding: 24px;
+}
+.performance-state {
+  margin-top: 32px;
+  color: #a69dae;
+}
+.performance-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+.performance-facets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.performance-facets span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem;
+  color: var(--muted);
+  font: 600 0.72rem/1 var(--mono);
+}
+.performance-cards article span,
+.performance-counts dt {
+  display: block;
+  color: #8b8495;
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  text-transform: uppercase;
+}
+.performance-cards article strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 24px;
+}
+.sample-caution {
+  display: flex;
+  justify-content: space-between;
+  border-color: #5d4930;
+  color: #f7bd5b;
+}
+.sample-caution.established {
+  border-color: #285544;
+  color: #74d7a3;
+}
+.performance-panels {
+  display: grid;
+  grid-template-columns: 1fr 1.6fr;
+  gap: 16px;
+}
+.performance-panels h2 {
+  margin-top: 0;
+}
+.performance-counts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.performance-counts div {
+  border-bottom: 1px solid #282330;
+  padding-bottom: 8px;
+}
+.performance-counts dd {
+  margin: 4px 0 0;
+}
+.calibration-bars {
+  display: flex;
+  align-items: end;
+  height: 180px;
+  gap: 7px;
+}
+.calibration-bars div {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: end;
+  height: 100%;
+  text-align: center;
+}
+.calibration-bars i {
+  display: block;
+  min-height: 2px;
+  background: #8b5cf6;
+}
+.calibration-bars span,
+.calibration-bars small,
+.performance-provenance {
+  color: #8b8495;
+  font:
+    9px "IBM Plex Mono",
+    monospace;
+}
+.performance-provenance {
+  padding: 18px 0;
+  overflow-wrap: anywhere;
+}
 
 @media (max-width: 900px) {
   .shell {
@@ -1206,6 +1310,12 @@ footer {
   .sport-selector {
     margin-top: 22px;
   }
+  .performance-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .performance-panels {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 560px) {
@@ -1230,5 +1340,14 @@ footer {
 
   .panel {
     padding: 18px;
+  }
+  .performance-cards {
+    grid-template-columns: 1fr;
+  }
+  .sample-caution {
+    display: block;
+  }
+  .calibration-bars span {
+    writing-mode: vertical-rl;
   }
 }

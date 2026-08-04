@@ -46,6 +46,18 @@ describe("DynamoPaperEvaluationRepository", () => {
         Put: {
           TableName: "paper-table",
           Item: {
+            pk: `PAPER_BETS_BY_DAY#${intended.paperBet!.createdAt.slice(0, 10)}`,
+            sk: intended.paperBet!.paperBetId,
+            value: intended.paperBet,
+          },
+          ConditionExpression:
+            "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        },
+      },
+      {
+        Put: {
+          TableName: "paper-table",
+          Item: {
             pk: `PAPER_BETS_BY_EVENT#${intended.evaluation.manifest.eventId}`,
             sk: intended.paperBet!.paperBetId,
             value: intended.paperBet,
@@ -64,6 +76,7 @@ describe("DynamoPaperEvaluationRepository", () => {
       .mockRejectedValueOnce(conditionalCancellation())
       .mockResolvedValueOnce({ Item: { value: pair.evaluation } })
       .mockResolvedValueOnce({ Item: { value: pair.paperBet } })
+      .mockResolvedValueOnce({ Item: { value: pair.paperBet } })
       .mockResolvedValueOnce({ Item: { value: pair.paperBet } });
     const repository = new DynamoPaperEvaluationRepository(
       { send } as never,
@@ -75,7 +88,7 @@ describe("DynamoPaperEvaluationRepository", () => {
     });
     expect(result.outcome).toBe("duplicate");
     expect(result.pair.evaluation.createdAt).toBe("2026-08-03T21:00:00.000Z");
-    expect(send).toHaveBeenCalledTimes(4);
+    expect(send).toHaveBeenCalledTimes(5);
     for (const call of send.mock.calls.slice(1))
       expect(
         (call[0] as { input: { ConsistentRead: boolean } }).input

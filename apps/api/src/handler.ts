@@ -3,10 +3,19 @@ import {
   EventInputError,
   type GamesRepository,
   type BettingSplitRepository,
+  type CohortRepository,
   type EventRepository,
 } from "@find-the-edge/database";
 export interface ApiRequest {
-  readonly route: "list" | "detail" | "games" | "splits";
+  readonly route:
+    | "list"
+    | "detail"
+    | "games"
+    | "splits"
+    | "performance-list"
+    | "performance-detail"
+    | "performance-members"
+    | "performance-reports";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
@@ -29,6 +38,7 @@ export const createEventHandler =
       GamesRepository | ((entry: Readonly<Record<string, unknown>>) => void),
     suppliedLog?: (entry: Readonly<Record<string, unknown>>) => void,
     splitsRepository?: BettingSplitRepository,
+    cohortRepository?: CohortRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -40,6 +50,59 @@ export const createEventHandler =
     const started = Date.now();
     let status = 200;
     try {
+      if (request.route.startsWith("performance-")) {
+        if (!cohortRepository)
+          throw new Error("cohort-repository-not-configured");
+        if (
+          request.route === "performance-list" ||
+          request.route === "performance-reports"
+        ) {
+          const limitText = request.query?.["limit"] ?? "20";
+          if (
+            !/^(?:[1-9]|[1-4][0-9]|50)$/.test(limitText) ||
+            Object.keys(request.query ?? {}).some(
+              (key) => !["limit", "cursor"].includes(key),
+            )
+          )
+            throw new EventInputError("invalid-performance-filter");
+          return response(
+            200,
+            await (request.route === "performance-reports"
+              ? cohortRepository.listReports({
+                  limit: Number(limitText),
+                  ...(request.query?.["cursor"]
+                    ? { cursor: request.query["cursor"] }
+                    : {}),
+                })
+              : cohortRepository.listCohorts({
+                  limit: Number(limitText),
+                  ...(request.query?.["cursor"]
+                    ? { cursor: request.query["cursor"] }
+                    : {}),
+                })),
+          );
+        }
+        const id = request.eventId ?? "";
+        if (Object.keys(request.query ?? {}).length)
+          throw new EventInputError("performance-detail-query-invalid");
+        if (request.route === "performance-members") {
+          if (!/^cohort:[a-f0-9]{64}$/.test(id))
+            throw new EventInputError("cohort-id-invalid");
+          const cohort = await cohortRepository.getCohort(id);
+          if (!cohort) return response((status = 404), { error: "not-found" });
+          return response(200, {
+            cohortId: cohort.cohortId,
+            cutoff: cohort.cutoff,
+            membershipDigest: cohort.membershipDigest,
+            items: cohort.members,
+          });
+        }
+        if (!/^performance-report:[a-f0-9]{64}$/.test(id))
+          throw new EventInputError("performance-report-id-invalid");
+        const report = await cohortRepository.getReport(id);
+        if (!report) return response((status = 404), { error: "not-found" });
+        return response(200, report);
+      }
       if (request.route === "list" && !request.subject)
         return response((status = 401), { error: "unauthorized" });
       if (

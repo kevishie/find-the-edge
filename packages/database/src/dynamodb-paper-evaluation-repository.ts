@@ -78,6 +78,18 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
               Put: {
                 TableName: this.tableName,
                 Item: {
+                  pk: `PAPER_BETS_BY_DAY#${intended.paperBet.createdAt.slice(0, 10)}`,
+                  sk: intended.paperBet.paperBetId,
+                  value: intended.paperBet,
+                },
+                ConditionExpression:
+                  "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: {
                   pk: `PAPER_BETS_BY_EVENT#${intended.evaluation.manifest.eventId}`,
                   sk: intended.paperBet.paperBetId,
                   value: intended.paperBet,
@@ -100,16 +112,28 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
       ]);
       const pair = verifyPaperEvaluationReplay(intended, evaluation, paperBet);
       if (pair.paperBet) {
-        const indexed = await this.client.send(
-          new GetCommand({
-            TableName: this.tableName,
-            Key: {
-              pk: `PAPER_BETS_BY_EVENT#${pair.evaluation.manifest.eventId}`,
-              sk: pair.paperBet.paperBetId,
-            },
-            ConsistentRead: true,
-          }),
-        );
+        const [indexed, dayIndexed] = await Promise.all([
+          this.client.send(
+            new GetCommand({
+              TableName: this.tableName,
+              Key: {
+                pk: `PAPER_BETS_BY_EVENT#${pair.evaluation.manifest.eventId}`,
+                sk: pair.paperBet.paperBetId,
+              },
+              ConsistentRead: true,
+            }),
+          ),
+          this.client.send(
+            new GetCommand({
+              TableName: this.tableName,
+              Key: {
+                pk: `PAPER_BETS_BY_DAY#${pair.paperBet.createdAt.slice(0, 10)}`,
+                sk: pair.paperBet.paperBetId,
+              },
+              ConsistentRead: true,
+            }),
+          ),
+        ]);
         const indexedItem = indexed.Item as Record<string, unknown> | undefined;
         const value = indexedItem?.["value"];
         if (
@@ -119,6 +143,14 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
         )
           throw new PaperEvaluationReplayConflictError(
             "paper-bet-event-index-conflict",
+          );
+        if (
+          stablePaperEvaluationValue(
+            normalizePaperBetRecord(dayIndexed.Item?.["value"]),
+          ) !== stablePaperEvaluationValue(pair.paperBet)
+        )
+          throw new PaperEvaluationReplayConflictError(
+            "paper-bet-day-index-conflict",
           );
       }
       return { outcome: "duplicate", pair };
@@ -219,6 +251,66 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
       items,
       ...(response.LastEvaluatedKey?.["sk"]
         ? { nextCursor: String(response.LastEvaluatedKey["sk"]) }
+        : {}),
+    };
+  }
+  async listPaperBetsByDecisionDay(input: {
+    readonly day: string;
+    readonly limit: number;
+    readonly cursor?: string;
+  }) {
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(input.day) ||
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > 100
+    )
+      throw new Error("paper-bet-day-query-invalid");
+    let cursorId: string | undefined;
+    if (input.cursor) {
+      try {
+        const parsed = JSON.parse(
+          Buffer.from(input.cursor, "base64url").toString(),
+        ) as { day?: unknown; id?: unknown };
+        if (parsed.day !== input.day || typeof parsed.id !== "string")
+          throw new Error();
+        cursorId = assertPaperBetId(parsed.id);
+      } catch {
+        throw new Error("paper-bet-day-cursor-invalid");
+      }
+    }
+    const pk = `PAPER_BETS_BY_DAY#${input.day}`;
+    const response = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: "pk = :pk",
+        ExpressionAttributeValues: { ":pk": pk },
+        Limit: input.limit,
+        ConsistentRead: true,
+        ...(cursorId ? { ExclusiveStartKey: { pk, sk: cursorId } } : {}),
+      }),
+    );
+    const items = (response.Items ?? []).map((item) => {
+      const value = normalizePaperBetRecord(item["value"]);
+      if (
+        item["pk"] !== pk ||
+        item["sk"] !== value.paperBetId ||
+        value.createdAt.slice(0, 10) !== input.day
+      )
+        throw new Error("paper-bet-day-index-corrupt");
+      return value;
+    });
+    return {
+      items,
+      ...(response.LastEvaluatedKey?.["sk"]
+        ? {
+            nextCursor: Buffer.from(
+              JSON.stringify({
+                day: input.day,
+                id: String(response.LastEvaluatedKey["sk"]),
+              }),
+            ).toString("base64url"),
+          }
         : {}),
     };
   }

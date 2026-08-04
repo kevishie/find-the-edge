@@ -14,6 +14,7 @@ import {
   DynamoBettingSplitRepository,
   DynamoEventIngestionStore,
   DynamoFixtureOddsAdapter,
+  DynamoExactOddsSnapshotRepository,
   DynamoOddsControlPlaneStore,
 } from "@find-the-edge/database";
 import { ingestLiveOdds, type LiveOddsStateStore } from "./live-odds-ingestion";
@@ -107,6 +108,7 @@ export const handler = async (event?: unknown) => {
   );
   const oddsStore = new DynamoFixtureOddsAdapter(
     new AwsFixtureOddsGateway(client, tableName),
+    new DynamoExactOddsSnapshotRepository(client, tableName),
   );
   let provider = "the-odds-api";
   let summary: unknown;

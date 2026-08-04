@@ -36,6 +36,10 @@ export interface EvaluationThresholds {
 }
 export interface EvaluationManifestInput {
   readonly mode: "decision-time" | "backtest";
+  /** Bound event start used by cohort/closing-line evaluation. Legacy records omit it. */
+  readonly scheduledStartAt?: string;
+  /** Existing automated records are server-owned paper decisions only. */
+  readonly wagerMode?: "paper";
   /** Server-owned scheduled execution context. Legacy/manual evaluations omit it. */
   readonly execution?: {
     readonly mode: "shadow" | "paper";
@@ -355,6 +359,10 @@ export function normalizeEvaluationManifest(
     ? [...manifestKeys, "comparisonOutcomeEvidence", "consensusProvenance"]
     : manifestKeys;
   const withGrading = Object.hasOwn(record, "gradingTerms");
+  const learningKeys = [
+    ...(Object.hasOwn(record, "scheduledStartAt") ? ["scheduledStartAt"] : []),
+    ...(Object.hasOwn(record, "wagerMode") ? ["wagerMode"] : []),
+  ];
   exact(
     record,
     Object.hasOwn(record, "execution")
@@ -362,8 +370,13 @@ export function normalizeEvaluationManifest(
           ...expectedManifestKeys,
           "execution",
           ...(withGrading ? ["gradingTerms"] : []),
+          ...learningKeys,
         ]
-      : [...expectedManifestKeys, ...(withGrading ? ["gradingTerms"] : [])],
+      : [
+          ...expectedManifestKeys,
+          ...(withGrading ? ["gradingTerms"] : []),
+          ...learningKeys,
+        ],
     "manifest",
   );
   if (record.mode !== "decision-time" && record.mode !== "backtest")
@@ -608,6 +621,16 @@ export function normalizeEvaluationManifest(
   }
   const normalizedBase: EvaluationManifestInput = {
     mode: record.mode,
+    ...(Object.hasOwn(record, "scheduledStartAt")
+      ? { scheduledStartAt: iso(record.scheduledStartAt, "scheduled-start-at") }
+      : {}),
+    ...(Object.hasOwn(record, "wagerMode")
+      ? record.wagerMode === "paper"
+        ? { wagerMode: "paper" as const }
+        : (() => {
+            throw new PaperEvaluationInputError("wager-mode-invalid");
+          })()
+      : {}),
     ...(execution ? { execution } : {}),
     sportKey: id(record.sportKey, "sport-key"),
     leagueKey: id(record.leagueKey, "league-key"),

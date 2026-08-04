@@ -6,6 +6,7 @@ import {
   DynamoGamesRepository,
   DynamoBettingSplitRepository,
   DynamoEventRepository,
+  DynamoCohortRepository,
   EventCursorCodec,
 } from "@find-the-edge/database";
 import { createEventHandler } from "./handler";
@@ -47,14 +48,23 @@ export const handler = async (event: LambdaEvent) => {
     },
   );
   const games = new DynamoGamesRepository(repository, gateway);
+  const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const claims = event.requestContext?.authorizer?.jwt?.claims;
   const route = event.routeKey?.startsWith("GET /games")
     ? "games"
     : event.routeKey?.startsWith("GET /splits")
       ? "splits"
-      : event.routeKey?.includes("/{eventId}")
-        ? "detail"
-        : "list";
+      : event.routeKey === "GET /performance/reports"
+        ? "performance-reports"
+        : event.routeKey?.startsWith("GET /performance/reports/")
+          ? "performance-detail"
+          : event.routeKey?.startsWith("GET /performance/cohorts/")
+            ? "performance-members"
+            : event.routeKey?.startsWith("GET /performance/cohorts")
+              ? "performance-list"
+              : event.routeKey?.includes("/{eventId}")
+                ? "detail"
+                : "list";
   const eventId = event.pathParameters?.eventId;
   const subject =
     typeof claims?.["sub"] === "string" ? claims["sub"] : undefined;
@@ -68,6 +78,7 @@ export const handler = async (event: LambdaEvent) => {
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       tableName,
     ),
+    new DynamoCohortRepository(documentClient, tableName),
   )({
     route,
     ...(subject ? { subject } : {}),

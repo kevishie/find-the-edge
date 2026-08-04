@@ -19,7 +19,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 8);
+    template.resourceCountIs("AWS::Lambda::Function", 9);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -98,7 +98,7 @@ describe("foundation CDK app", () => {
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 7);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 8);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -115,8 +115,8 @@ describe("foundation CDK app", () => {
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
     template.resourceCountIs("AWS::SQS::Queue", 5);
-    template.resourceCountIs("AWS::Lambda::Function", 7);
-    template.resourceCountIs("AWS::Events::Rule", 4);
+    template.resourceCountIs("AWS::Lambda::Function", 8);
+    template.resourceCountIs("AWS::Events::Rule", 5);
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
@@ -220,7 +220,7 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::CloudFront::Function", {
       AutoPublish: true,
       FunctionCode:
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
     });
     expect(rendered).not.toContain("CustomErrorResponses");
     template.hasResourceProperties("Custom::AWS", {
@@ -460,7 +460,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 23);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 29);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

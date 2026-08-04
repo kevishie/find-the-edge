@@ -125,6 +125,33 @@ export class FoundationStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
       timeToLiveAttribute: "expiresAt",
     });
+    const performanceWorker = new NodejsFunction(this, "PerformanceWorker", {
+      runtime: Runtime.NODEJS_22_X,
+      entry: path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../../../apps/workers/src/performance-lambda.ts",
+      ),
+      handler: "handler",
+      timeout: Duration.minutes(5),
+      memorySize: 1024,
+      reservedConcurrentExecutions: 1,
+      environment: { FTE_EVENT_TABLE_NAME: table.tableName },
+    });
+    performanceWorker.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:TransactWriteItems",
+        ],
+        resources: [table.tableArn, `${table.tableArn}/index/*`],
+      }),
+    );
+    const performanceSchedule = new Rule(this, "PerformanceSchedule", {
+      schedule: Schedule.cron({ minute: "20", hour: "5" }),
+    });
+    performanceSchedule.addTarget(new LambdaFunction(performanceWorker));
     const paperPickDlq = new Queue(this, "PaperPickWorkerDlq", {
       encryption: QueueEncryption.SQS_MANAGED,
       retentionPeriod: Duration.days(14),
@@ -337,7 +364,7 @@ export class FoundationStack extends Stack {
     const webAssetOrigin = S3BucketOrigin.withOriginAccessControl(assets);
     const spaNavigation = new CloudFrontFunction(this, "WebSpaNavigation", {
       code: FunctionCode.fromInline(
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
       ),
     });
     const distribution = new Distribution(this, "WebDistribution", {
@@ -698,6 +725,17 @@ export class FoundationStack extends Stack {
       methods: [HttpMethod.GET],
       integration,
     });
+    for (const path of [
+      "/performance/cohorts",
+      "/performance/cohorts/{eventId}",
+      "/performance/reports",
+      "/performance/reports/{eventId}",
+    ])
+      api.addRoutes({
+        path,
+        methods: [HttpMethod.GET],
+        integration,
+      });
     const configureCorsCall = {
       service: "ApiGatewayV2",
       action: "updateApi",
@@ -936,7 +974,16 @@ export class FoundationStack extends Stack {
         threshold: 2000,
         evaluationPeriods: 2,
       }),
-      ...(["list", "detail"] as const).map(
+      ...(
+        [
+          "list",
+          "detail",
+          "performance-list",
+          "performance-reports",
+          "performance-detail",
+          "performance-members",
+        ] as const
+      ).map(
         (route) =>
           new Alarm(this, `EventApiCaught5xx${route}Alarm`, {
             metric: new Metric({
@@ -945,6 +992,19 @@ export class FoundationStack extends Stack {
               dimensionsMap: { Route: route },
               statistic: "Sum",
               period: Duration.minutes(1),
+            }),
+            threshold: 1,
+            evaluationPeriods: 1,
+          }),
+      ),
+      ...(["CohortBuildFailures", "PerformanceReportFailures"] as const).map(
+        (metricName) =>
+          new Alarm(this, `${metricName}Alarm`, {
+            metric: new Metric({
+              namespace: "FindTheEdge/Performance",
+              metricName,
+              statistic: "Sum",
+              period: Duration.minutes(5),
             }),
             threshold: 1,
             evaluationPeriods: 1,

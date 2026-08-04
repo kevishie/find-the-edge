@@ -66,7 +66,268 @@ export interface SplitsPageDto extends Omit<GamesPageDto, "items"> {
 export interface GamesClient {
   list(filter: GamesFilter, signal: AbortSignal): Promise<GamesPageDto>;
   listSplits?(filter: GamesFilter, signal: AbortSignal): Promise<SplitsPageDto>;
+  listPerformance?(signal: AbortSignal): Promise<PerformanceReportDto | null>;
 }
+export interface PerformanceReportDto {
+  readonly reportId: string;
+  readonly cohortId: string;
+  readonly cutoff: string;
+  readonly facets: {
+    readonly sports: readonly string[];
+    readonly leagues: readonly string[];
+    readonly markets: readonly string[];
+    readonly oddsBands: readonly string[];
+    readonly strategyVersions: readonly string[];
+    readonly modelVersions: readonly string[];
+  };
+  readonly metrics: {
+    readonly counts: {
+      readonly source: number;
+      readonly won: number;
+      readonly lost: number;
+      readonly push: number;
+      readonly void: number;
+      readonly unresolved: number;
+      readonly decisions: number;
+      readonly resolvedExposure: number;
+    };
+    readonly units: number;
+    readonly roi: number | null;
+    readonly roiInterval95: {
+      readonly low: number;
+      readonly high: number;
+    } | null;
+    readonly roiUnavailableReason: string | null;
+    readonly winRate: number | null;
+    readonly winRateInterval95: {
+      readonly low: number;
+      readonly high: number;
+    } | null;
+    readonly averageDecimalOdds: number | null;
+    readonly breakEvenProbability: number | null;
+    readonly estimatedEv: number | null;
+    readonly brierScore: number | null;
+    readonly expectedCalibrationError: number | null;
+    readonly maximumDrawdown: number;
+    readonly sampleCaution: "insufficient" | "limited" | "established";
+    readonly clv: {
+      readonly eligible: number;
+      readonly unavailable: number;
+      readonly averagePrice: number | null;
+      readonly averageImpliedProbability: number | null;
+      readonly unavailableReasons: Readonly<Record<string, number>>;
+    };
+    readonly calibration: readonly {
+      readonly lower: number;
+      readonly upper: number;
+      readonly count: number;
+      readonly meanForecast: number | null;
+      readonly observedRate: number | null;
+    }[];
+    readonly cumulativeUnits: readonly {
+      readonly id: string;
+      readonly value: number;
+    }[];
+  };
+}
+
+const nullableFinite = (value: unknown): value is number | null =>
+  value === null || (typeof value === "number" && Number.isFinite(value));
+const probability = (value: unknown): value is number =>
+  typeof value === "number" &&
+  Number.isFinite(value) &&
+  value >= 0 &&
+  value <= 1;
+const nullableProbability = (value: unknown): value is number | null =>
+  value === null || probability(value);
+const validPerformanceReport = (
+  value: unknown,
+): value is PerformanceReportDto => {
+  if (
+    !plain(value) ||
+    !exact(value, [
+      "reportId",
+      "cohortId",
+      "cutoff",
+      "evidenceDigest",
+      "revision",
+      "createdAt",
+      "facets",
+      "metrics",
+    ]) ||
+    !/^performance-report:[a-f0-9]{64}$/.test(String(value["reportId"])) ||
+    !/^cohort:[a-f0-9]{64}$/.test(String(value["cohortId"])) ||
+    !iso(value["cutoff"]) ||
+    !/^[a-f0-9]{64}$/.test(String(value["evidenceDigest"])) ||
+    !Number.isSafeInteger(value["revision"]) ||
+    Number(value["revision"]) < 1 ||
+    !iso(value["createdAt"]) ||
+    !plain(value["facets"]) ||
+    !plain(value["metrics"])
+  )
+    return false;
+  const facets = value["facets"];
+  if (
+    !exact(facets, [
+      "sports",
+      "leagues",
+      "markets",
+      "oddsBands",
+      "strategyVersions",
+      "modelVersions",
+    ]) ||
+    Object.values(facets).some(
+      (items) =>
+        !Array.isArray(items) ||
+        items.some((item) => !boundedString(item, 128)),
+    )
+  )
+    return false;
+  const metrics = value["metrics"];
+  if (
+    !exact(metrics, [
+      "counts",
+      "units",
+      "roi",
+      "roiInterval95",
+      "roiUnavailableReason",
+      "winRate",
+      "winRateInterval95",
+      "averageDecimalOdds",
+      "breakEvenProbability",
+      "estimatedEv",
+      "brierScore",
+      "expectedCalibrationError",
+      "calibration",
+      "clv",
+      "maximumDrawdown",
+      "cumulativeUnits",
+      "sampleCaution",
+    ]) ||
+    !plain(metrics["counts"]) ||
+    !plain(metrics["clv"]) ||
+    !Array.isArray(metrics["calibration"]) ||
+    !Array.isArray(metrics["cumulativeUnits"])
+  )
+    return false;
+  const counts = metrics["counts"];
+  if (
+    !exact(counts, [
+      "source",
+      "won",
+      "lost",
+      "push",
+      "void",
+      "unresolved",
+      "decisions",
+      "resolvedExposure",
+    ]) ||
+    Object.values(counts).some(
+      (item) => !Number.isSafeInteger(item) || Number(item) < 0,
+    )
+  )
+    return false;
+  if (
+    !["insufficient", "limited", "established"].includes(
+      String(metrics["sampleCaution"]),
+    ) ||
+    typeof metrics["units"] !== "number" ||
+    !Number.isFinite(metrics["units"]) ||
+    !nullableFinite(metrics["roi"]) ||
+    !(
+      metrics["roiInterval95"] === null ||
+      (plain(metrics["roiInterval95"]) &&
+        exact(metrics["roiInterval95"], ["low", "high"]) &&
+        typeof metrics["roiInterval95"]["low"] === "number" &&
+        Number.isFinite(metrics["roiInterval95"]["low"]) &&
+        typeof metrics["roiInterval95"]["high"] === "number" &&
+        Number.isFinite(metrics["roiInterval95"]["high"]) &&
+        metrics["roiInterval95"]["low"] <= metrics["roiInterval95"]["high"])
+    ) ||
+    !(
+      metrics["roiUnavailableReason"] === null ||
+      boundedString(metrics["roiUnavailableReason"], 128)
+    ) ||
+    !nullableProbability(metrics["winRate"]) ||
+    !(
+      metrics["winRateInterval95"] === null ||
+      (plain(metrics["winRateInterval95"]) &&
+        exact(metrics["winRateInterval95"], ["low", "high"]) &&
+        probability(metrics["winRateInterval95"]["low"]) &&
+        probability(metrics["winRateInterval95"]["high"]) &&
+        metrics["winRateInterval95"]["low"] <=
+          metrics["winRateInterval95"]["high"])
+    ) ||
+    !nullableFinite(metrics["averageDecimalOdds"]) ||
+    !nullableProbability(metrics["breakEvenProbability"]) ||
+    !nullableFinite(metrics["estimatedEv"]) ||
+    !nullableFinite(metrics["brierScore"]) ||
+    !nullableFinite(metrics["expectedCalibrationError"]) ||
+    typeof metrics["maximumDrawdown"] !== "number" ||
+    !Number.isFinite(metrics["maximumDrawdown"]) ||
+    metrics["maximumDrawdown"] < 0
+  )
+    return false;
+  const clv = metrics["clv"];
+  if (
+    !exact(clv, [
+      "eligible",
+      "unavailable",
+      "averagePrice",
+      "averageImpliedProbability",
+      "unavailableReasons",
+    ]) ||
+    !Number.isSafeInteger(clv["eligible"]) ||
+    Number(clv["eligible"]) < 0 ||
+    !Number.isSafeInteger(clv["unavailable"]) ||
+    Number(clv["unavailable"]) < 0 ||
+    !nullableFinite(clv["averagePrice"]) ||
+    !nullableFinite(clv["averageImpliedProbability"]) ||
+    !plain(clv["unavailableReasons"]) ||
+    Object.entries(clv["unavailableReasons"]).some(
+      ([reason, count]) =>
+        !boundedString(reason, 128) ||
+        !Number.isSafeInteger(count) ||
+        Number(count) < 0,
+    )
+  )
+    return false;
+  const cumulativeIds = new Set<string>();
+  if (
+    !metrics["cumulativeUnits"].every((point) => {
+      if (
+        !plain(point) ||
+        !exact(point, ["id", "value"]) ||
+        !boundedString(point["id"]) ||
+        typeof point["value"] !== "number" ||
+        !Number.isFinite(point["value"]) ||
+        cumulativeIds.has(point["id"])
+      )
+        return false;
+      cumulativeIds.add(point["id"]);
+      return true;
+    })
+  )
+    return false;
+  return metrics["calibration"].every(
+    (bucket) =>
+      plain(bucket) &&
+      exact(bucket, [
+        "lower",
+        "upper",
+        "count",
+        "meanForecast",
+        "observedRate",
+      ]) &&
+      probability(bucket["lower"]) &&
+      probability(bucket["upper"]) &&
+      bucket["lower"] < bucket["upper"] &&
+      Number.isSafeInteger(bucket["count"]) &&
+      Number(bucket["count"]) >= 0 &&
+      nullableProbability(bucket["meanForecast"]) &&
+      nullableProbability(bucket["observedRate"]),
+  );
+};
 
 export type GamesClientErrorCode =
   | "configuration"
@@ -649,6 +910,52 @@ export function createGamesClient(
           fetcher,
           parse: parseSplitsPage,
         });
+      },
+      async listPerformance(signal) {
+        let response: Response;
+        try {
+          response = await fetcher(
+            `${bootstrap.value.config.apiBase}/performance/reports?limit=1`,
+            { signal },
+          );
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw new GamesClientError(
+            "request-failed",
+            "Performance is temporarily unavailable.",
+          );
+        }
+        if (!response.ok)
+          throw new GamesClientError(
+            "request-failed",
+            "Performance is temporarily unavailable.",
+          );
+        let body: unknown;
+        try {
+          body = await response.json();
+        } catch {
+          throw new GamesClientError(
+            "invalid-response",
+            "The performance response was invalid.",
+          );
+        }
+        if (
+          !plain(body) ||
+          !Array.isArray(body["items"]) ||
+          body["items"].length > 1
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The performance response was invalid.",
+          );
+        const report: unknown = (body["items"] as unknown[])[0];
+        if (report === undefined) return null;
+        if (!validPerformanceReport(report))
+          throw new GamesClientError(
+            "invalid-response",
+            "The performance response was invalid.",
+          );
+        return report;
       },
     },
   };
