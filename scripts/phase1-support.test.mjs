@@ -47,7 +47,7 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
 
 function validTemplate() {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const webOrigin = {
     "Fn::Join": [
       "",
@@ -100,6 +100,11 @@ function validTemplate() {
                 "Review non-executable retrospective candidates",
               ScopeName: "retrospectives:approve",
             },
+            {
+              ScopeDescription:
+                "Approve, promote, and roll back deployed strategy artifacts",
+              ScopeName: "strategies:promote",
+            },
           ],
         },
       },
@@ -137,6 +142,9 @@ function validTemplate() {
             {
               "Fn::Join": ["", [{ Ref: "Server" }, "/retrospectives:approve"]],
             },
+            {
+              "Fn::Join": ["", [{ Ref: "Server" }, "/strategies:promote"]],
+            },
           ],
           UserPoolId: { Ref: "Pool" },
           CallbackURLs: [
@@ -158,6 +166,13 @@ function validTemplate() {
         Type: "AWS::Cognito::UserPoolGroup",
         Properties: {
           GroupName: "fte-retrospective-reviewers",
+          UserPoolId: { Ref: "Pool" },
+        },
+      },
+      StrategyPromoterGroup: {
+        Type: "AWS::Cognito::UserPoolGroup",
+        Properties: {
+          GroupName: "fte-strategy-promoters",
           UserPoolId: { Ref: "Pool" },
         },
       },
@@ -395,6 +410,46 @@ function validTemplate() {
           },
         },
       },
+      StrategyExperimentsRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /strategy-experiments",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      StrategyExperimentRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /strategy-experiments/{eventId}",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      ...Object.fromEntries(
+        ["approve", "promote", "rollback"].map((action) => [
+          `StrategyExperiment${action}Route`,
+          {
+            Type: "AWS::ApiGatewayV2::Route",
+            Properties: {
+              RouteKey: `POST /strategy-experiments/{eventId}/${action}`,
+              ApiId: { Ref: "Api" },
+              AuthorizationType: "JWT",
+              AuthorizerId: { Ref: "Auth" },
+              AuthorizationScopes: ["events/strategies:promote"],
+              Target: {
+                "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+              },
+            },
+          },
+        ]),
+      ),
       EventsRoute: {
         Type: "AWS::ApiGatewayV2::Route",
         Properties: {

@@ -201,7 +201,7 @@ function requireActions(actual, expected, label) {
 
 export function validateTemplate(template, config) {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const tables = entriesOfType(template, "AWS::DynamoDB::Table");
   const apis = entriesOfType(template, "AWS::ApiGatewayV2::Api");
   if (tables.length !== 1 || apis.length !== 1)
@@ -243,10 +243,10 @@ export function validateTemplate(template, config) {
       cloudFrontFunctions,
     ].some((items) => items.length !== 1) ||
     clients.length !== 2 ||
-    groups.length !== 1
+    groups.length !== 2
   )
     throw new Error(
-      "Phase1 requires one Cognito pool/resource server, ordinary and reviewer clients, reviewer group, and private web distribution",
+      "Phase1 requires one Cognito pool/resource server, ordinary and reviewer clients, reviewer/promoter groups, and private web distribution",
     );
   const [poolId, pool] = pools[0];
   const reviewerScopeFragment = "/retrospectives:approve";
@@ -267,7 +267,13 @@ export function validateTemplate(template, config) {
     );
   const [clientId, client] = ordinaryClients[0];
   const [, reviewerClient] = reviewerClients[0];
-  const [, reviewerGroup] = groups[0];
+  const reviewerGroup = groups.find(
+    ([, value]) =>
+      value.Properties?.GroupName === "fte-retrospective-reviewers",
+  )?.[1];
+  const promoterGroup = groups.find(
+    ([, value]) => value.Properties?.GroupName === "fte-strategy-promoters",
+  )?.[1];
   const [serverId, server] = servers[0];
   const [domainId, cognitoDomain] = domains[0];
   const [bucketId, bucket] = buckets[0];
@@ -323,10 +329,15 @@ export function validateTemplate(template, config) {
           ScopeDescription: "Review non-executable retrospective candidates",
           ScopeName: "retrospectives:approve",
         },
+        {
+          ScopeDescription:
+            "Approve, promote, and roll back deployed strategy artifacts",
+          ScopeName: "strategies:promote",
+        },
       ])
   )
     throw new Error(
-      "Cognito must define only the read and retrospective approval scopes",
+      "Cognito must define only the read, retrospective approval, and strategy promotion scopes",
     );
   if (!isRef(cognitoDomain.Properties?.UserPoolId, poolId))
     throw new Error("Cognito domain must bind to the selected user pool");
@@ -356,10 +367,14 @@ export function validateTemplate(template, config) {
       "Cognito web clients must be public authorization-code clients with exact hosted URLs",
     );
   if (
-    reviewerGroup.Properties?.GroupName !== "fte-retrospective-reviewers" ||
-    !isRef(reviewerGroup.Properties?.UserPoolId, poolId)
+    !reviewerGroup ||
+    !promoterGroup ||
+    !isRef(reviewerGroup.Properties?.UserPoolId, poolId) ||
+    !isRef(promoterGroup.Properties?.UserPoolId, poolId)
   )
-    throw new Error("Reviewer group must bind to the selected user pool");
+    throw new Error(
+      "Reviewer and strategy promoter groups must bind to the selected user pool",
+    );
   const publicBlock = bucket.Properties?.PublicAccessBlockConfiguration;
   if (
     ![
@@ -517,6 +532,11 @@ export function validateTemplate(template, config) {
     "GET /retrospectives/{eventId}",
     "GET /retrospectives/{eventId}/versions",
     "POST /retrospectives/{eventId}/review",
+    "GET /strategy-experiments",
+    "GET /strategy-experiments/{eventId}",
+    "POST /strategy-experiments/{eventId}/approve",
+    "POST /strategy-experiments/{eventId}/promote",
+    "POST /strategy-experiments/{eventId}/rollback",
   ];
   if (
     apiRoutes.length !== requiredRouteKeys.length ||
@@ -540,6 +560,19 @@ export function validateTemplate(template, config) {
           !isRef(value.Properties?.AuthorizerId, authorizerId) ||
           JSON.stringify(value.Properties?.AuthorizationScopes) !==
             JSON.stringify(["events/retrospectives:approve"])
+        );
+      if (
+        ["approve", "promote", "rollback"].some(
+          (action) =>
+            value.Properties?.RouteKey ===
+            `POST /strategy-experiments/{eventId}/${action}`,
+        )
+      )
+        return (
+          value.Properties?.AuthorizationType !== "JWT" ||
+          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
+          JSON.stringify(value.Properties?.AuthorizationScopes) !==
+            JSON.stringify(["events/strategies:promote"])
         );
       return (
         value.Properties?.AuthorizationType !== "NONE" ||
