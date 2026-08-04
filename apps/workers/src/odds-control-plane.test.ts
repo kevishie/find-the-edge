@@ -84,6 +84,17 @@ describe("odds collection control plane", () => {
         now,
       }),
     ).toMatchObject({ class: "transient", action: "exhausted" });
+    expect(
+      decideOddsRetry({
+        error: new Error("conflict-metric-pending"),
+        attempt: 1,
+        now,
+        jitter: () => 0,
+      }),
+    ).toMatchObject({ class: "transient", action: "retry" });
+    expect(
+      classifyOddsControlPlaneFailure(new Error("conflict-metric-pending")),
+    ).toBe("conflict-metric-pending");
   });
   it("expires only transient health and heals without deleting audit state", () => {
     const transient = unhealthyOddsProviderState(null, {

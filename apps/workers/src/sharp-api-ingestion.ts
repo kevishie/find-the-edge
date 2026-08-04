@@ -859,14 +859,12 @@ export async function ingestSharpApi(
         },
         scheduleResult.retrievedAt,
       );
-      const ingested = await reconcileScheduledProviderEvent(
+      await reconcileScheduledProviderEvent(
         store,
         SHARP_API_PROVIDER_ID,
         event,
         scheduleResult.retrievedAt,
       );
-      if (ingested.kind === "unresolved")
-        throw new Error(`sharpapi-schedule-mapping-${ingested.reason}`);
     }
     const oddsResult = await loadOdds(
       league,

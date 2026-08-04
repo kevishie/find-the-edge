@@ -248,6 +248,8 @@ const SAFE_FAILURES = [
   "mapping-quarantine",
   "pagination-invalid",
   "transition-conflict",
+  "stored-event-conflict",
+  "conflict-metric-pending",
 ] as const;
 export const classifyOddsControlPlaneFailure = (error: unknown) => {
   if (!(error instanceof Error)) return "internal-failure";
@@ -284,6 +286,7 @@ const TRANSIENT_FAILURES = new Set([
   "rate-limited",
   "provider-cooldown",
   "quota-reserve",
+  "conflict-metric-pending",
 ]);
 const TERMINAL_FAILURES = new Set([
   "unauthorized",
@@ -293,6 +296,7 @@ const TERMINAL_FAILURES = new Set([
   "coverage-missing",
   "mapping-quarantine",
   "pagination-invalid",
+  "stored-event-conflict",
 ]);
 
 /** One retry policy for every SharpAPI operation. Delay is bounded even when
@@ -375,10 +379,14 @@ export const healthyOddsProviderState = (
   delete retained.retryAt;
   delete retained.expiresAt;
   delete retained.cooldownUntil;
+  delete retained.degraded;
+  delete retained.degradedReason;
+  delete retained.degradedCount;
   return {
     ...retained,
     ...input,
     healthy: true as const,
+    status: "healthy" as const,
   };
 };
 
@@ -405,11 +413,15 @@ export const unhealthyOddsProviderState = (
   delete retained.expiresAt;
   delete retained.retryAt;
   delete retained.cooldownUntil;
+  delete retained.degraded;
+  delete retained.degradedReason;
+  delete retained.degradedCount;
   return {
     ...retained,
     providerId: input.providerId,
     healthKey: input.healthKey,
     healthy: false as const,
+    status: "unhealthy" as const,
     consecutiveSuccesses: 0,
     failureClass: input.decision.class,
     failureReason: input.decision.reason,

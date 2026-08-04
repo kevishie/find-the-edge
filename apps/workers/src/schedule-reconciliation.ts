@@ -1,4 +1,7 @@
-import type { EventIngestionStore } from "@find-the-edge/database";
+import {
+  EventDataConflict,
+  type EventIngestionStore,
+} from "@find-the-edge/database";
 import type {
   IsoTimestamp,
   ProviderRevision,
@@ -20,6 +23,38 @@ export interface ScheduledProviderEvent {
   readonly revision: ProviderRevision;
 }
 
+const SCHEDULE_EVENT_CONFLICT_REASON_CODES = [
+  "schedule-mapping-unresolved",
+  "canonical-candidate-conflict",
+  "identity-claim-conflict",
+  "mapping-provenance-conflict",
+  "provider-revision-content-conflict",
+  "bootstrap-content-mismatch",
+  "bootstrap-revision-content-conflict",
+] as const;
+
+export type ScheduleEventConflictReason =
+  (typeof SCHEDULE_EVENT_CONFLICT_REASON_CODES)[number];
+
+const scheduleEventConflictReasons = new Set<string>(
+  SCHEDULE_EVENT_CONFLICT_REASON_CODES,
+);
+
+export const isScheduleEventConflictReason = (
+  value: unknown,
+): value is ScheduleEventConflictReason =>
+  typeof value === "string" && scheduleEventConflictReasons.has(value);
+
+/** Created only at the schedule reconciliation boundary after an exact
+ * deterministic content conflict has been attributed to this event. */
+export class ScheduleEventConflictError extends Error {
+  override readonly name = "ScheduleEventConflictError";
+
+  constructor(readonly reason: ScheduleEventConflictReason) {
+    super("schedule-event-conflict");
+  }
+}
+
 /** Binds a provider alias without allowing its near-identical schedule to
  * rewrite the existing canonical identity or start time. */
 export async function reconcileScheduledProviderEvent(
@@ -36,8 +71,18 @@ export async function reconcileScheduledProviderEvent(
     participantIdentityIds: bootstrap.participantIds,
     observedAt,
   };
-  return store.reconcileScheduledEvent({
-    event: original,
-    bootstrap,
-  });
+  try {
+    const result = await store.reconcileScheduledEvent({
+      event: original,
+      bootstrap,
+    });
+    if (result.kind === "unresolved")
+      throw new ScheduleEventConflictError("schedule-mapping-unresolved");
+    return result;
+  } catch (error) {
+    if (error instanceof ScheduleEventConflictError) throw error;
+    if (error instanceof EventDataConflict)
+      throw new ScheduleEventConflictError(error.reason);
+    throw error;
+  }
 }

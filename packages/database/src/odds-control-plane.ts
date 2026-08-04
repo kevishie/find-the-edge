@@ -67,6 +67,8 @@ export interface OddsLeagueCheckpoint {
     readonly providerEventId: string;
     readonly startsAt: string;
   }[];
+  /** Contradictory committed schedule evidence invalidates prior readiness. */
+  readonly unavailableReason?: "stored-event-conflict";
 }
 export interface OddsProviderHealth {
   readonly version?: number;
@@ -74,6 +76,12 @@ export interface OddsProviderHealth {
   readonly healthKey?: string;
   readonly providerId: string;
   readonly healthy: boolean;
+  readonly status?: "healthy" | "degraded" | "unhealthy";
+  /** A usable but incomplete provider capability. Downstream may consume only
+   * the explicitly accepted evidence while operators retain the partial state. */
+  readonly degraded?: boolean;
+  readonly degradedReason?: "stored-event-conflict";
+  readonly degradedCount?: number;
   readonly consecutiveSuccesses: number;
   readonly cooldownUntil?: string;
   readonly quotaRemaining?: number;

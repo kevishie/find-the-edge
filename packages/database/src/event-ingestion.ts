@@ -203,6 +203,24 @@ export interface EventIngestionStore {
   putRun(run: LeagueIngestionRun): Promise<void>;
 }
 
+export type EventDataConflictReason =
+  | "canonical-candidate-conflict"
+  | "identity-claim-conflict"
+  | "mapping-provenance-conflict"
+  | "provider-revision-content-conflict"
+  | "bootstrap-content-mismatch"
+  | "bootstrap-revision-content-conflict";
+
+/** Deterministic stored-event content conflict. Infrastructure and ownership
+ * errors must never use this type, even if their message text collides. */
+export class EventDataConflict extends Error {
+  override readonly name = "EventDataConflict";
+
+  constructor(readonly reason: EventDataConflictReason) {
+    super(reason);
+  }
+}
+
 const sameCandidateSnapshot = (left: CanonicalEvent, right: CanonicalEvent) =>
   left.id === right.id &&
   left.version === right.version &&

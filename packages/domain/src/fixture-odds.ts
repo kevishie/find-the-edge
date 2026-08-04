@@ -23,7 +23,14 @@ export type OddsEvidenceGapReason =
   | "missing-provider-timestamp"
   | "participant-unavailable"
   | "participant-out-of-scope"
-  | "same-club-matchup";
+  | "same-club-matchup"
+  | "schedule-mapping-unresolved"
+  | "canonical-candidate-conflict"
+  | "identity-claim-conflict"
+  | "mapping-provenance-conflict"
+  | "provider-revision-content-conflict"
+  | "bootstrap-content-mismatch"
+  | "bootstrap-revision-content-conflict";
 export interface OddsEvidenceProvenance {
   readonly providerId: string;
   readonly policyVersion: string;

@@ -1,9 +1,13 @@
-import { MemoryEventIngestionStore } from "@find-the-edge/database";
+import {
+  EventDataConflict,
+  MemoryEventIngestionStore,
+} from "@find-the-edge/database";
 import type { IsoTimestamp, SportKey } from "@find-the-edge/domain";
 import { fixtureBootstrap } from "@find-the-edge/providers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   reconcileScheduledProviderEvent,
+  ScheduleEventConflictError,
   type ScheduledProviderEvent,
 } from "./schedule-reconciliation";
 
@@ -97,18 +101,69 @@ describe("scheduled provider reconciliation", () => {
     const store = new MemoryEventIngestionStore();
     await bootstrap(store, event("game-1", "2026-08-04T17:00:00.000Z"));
     await bootstrap(store, event("game-2", "2026-08-04T17:04:00.000Z"));
-    const result = await reconcileScheduledProviderEvent(
-      store,
-      "sharpapi",
-      event("game-3", "2026-08-04T17:02:00.000Z"),
-      observedAt,
-    );
-    expect(result).toEqual({
-      kind: "unresolved",
-      reason: "ambiguous-candidates",
+    await expect(
+      reconcileScheduledProviderEvent(
+        store,
+        "sharpapi",
+        event("game-3", "2026-08-04T17:02:00.000Z"),
+        observedAt,
+      ),
+    ).rejects.toMatchObject({
+      name: "ScheduleEventConflictError",
+      reason: "schedule-mapping-unresolved",
     });
     expect(store.events).toHaveLength(2);
     expect(store.mappings).toHaveLength(0);
+  });
+
+  it("wraps only the closed deterministic store conflicts at the event boundary", async () => {
+    for (const reason of [
+      "canonical-candidate-conflict",
+      "identity-claim-conflict",
+      "mapping-provenance-conflict",
+      "provider-revision-content-conflict",
+      "bootstrap-content-mismatch",
+      "bootstrap-revision-content-conflict",
+    ] as const) {
+      const store = new MemoryEventIngestionStore();
+      vi.spyOn(store, "reconcileScheduledEvent").mockRejectedValueOnce(
+        new EventDataConflict(reason),
+      );
+      await expect(
+        reconcileScheduledProviderEvent(
+          store,
+          "sharpapi",
+          event(`event-${reason}`, "2026-08-04T17:00:00.000Z"),
+          observedAt,
+        ),
+      ).rejects.toEqual(new ScheduleEventConflictError(reason));
+    }
+  });
+
+  it("preserves systemic and unknown failures without event-conflict wrapping", async () => {
+    for (const reason of [
+      "event-reconciliation-lock-timeout",
+      "event-reconciliation-ownership-lost",
+      "transaction-failed",
+      "checkpoint-write-failed",
+      "unknown-failure",
+      "provider-revision-content-conflict",
+      "identity-claim-conflict",
+    ]) {
+      const store = new MemoryEventIngestionStore();
+      vi.spyOn(store, "reconcileScheduledEvent").mockRejectedValueOnce(
+        new Error(reason),
+      );
+      const failure = await reconcileScheduledProviderEvent(
+        store,
+        "sharpapi",
+        event(`event-${reason}`, "2026-08-04T17:00:00.000Z"),
+        observedAt,
+      ).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(ScheduleEventConflictError);
+      expect((failure as Error).message).toBe(reason);
+    }
   });
 
   it("serializes concurrent book aliases into one canonical game", async () => {
@@ -127,7 +182,7 @@ describe("scheduled provider reconciliation", () => {
         observedAt,
       ),
     ]);
-    expect(results.every(({ kind }) => kind !== "unresolved")).toBe(true);
+    expect(results).toHaveLength(2);
     expect(store.events).toHaveLength(1);
     expect(store.mappings).toHaveLength(2);
   });

@@ -16,6 +16,7 @@ import {
   compareAuthority,
   compareRevision,
   equalProviderRevision,
+  EventDataConflict,
   continuationPendingSortKey,
   continuationOutboxId,
   identityKey,
@@ -219,7 +220,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
         existing.leagueKey !== canonical.leagueKey ||
         existing.candidateIdentity !== canonical.candidateIdentity)
     )
-      throw new Error("canonical-candidate-conflict");
+      throw new EventDataConflict("canonical-candidate-conflict");
     if (candidates.has(canonical.id)) {
       if (!existing) throw new Error("dangling-identity-aggregate");
       return "already-registered" as const;
@@ -526,7 +527,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
         JSON.stringify(existing.participantIds) !==
           JSON.stringify(input.participantIds)
       )
-        throw new Error("bootstrap-content-mismatch");
+        throw new EventDataConflict("bootstrap-content-mismatch");
       if (currentWinner && compareAuthority(input.revision, currentWinner) < 0)
         throw new Error("bootstrap-stale");
       if (
@@ -536,7 +537,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
           existing.startsAt !== input.startsAt ||
           existing.status !== input.status)
       )
-        throw new Error("bootstrap-revision-content-conflict");
+        throw new EventDataConflict("bootstrap-revision-content-conflict");
       const previousKey = identityKey(
         input.sportKey,
         input.leagueKey,
@@ -609,7 +610,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
           previous.candidateEventIds.length !== 1 ||
           previous.candidateEventIds[0] !== existing.id
         )
-          throw new Error("identity-claim-conflict");
+          throw new EventDataConflict("identity-claim-conflict");
         if (previousKey !== requestedKey)
           this.identityAggregates.set(previousKey, {
             candidateEventIds: [],
@@ -827,7 +828,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
       bindingKind: input.mappingKind ?? "source",
     };
     if (mapped && input.mappingKind && mapped.bindingKind !== input.mappingKind)
-      throw new Error("mapping-provenance-conflict");
+      throw new EventDataConflict("mapping-provenance-conflict");
     if (
       providerComparison === 0 &&
       (persistedIsProviderPrior &&
@@ -844,7 +845,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
             canonical.status !== input.status ||
             canonical.candidateIdentity !== input.normalizedIdentity)
     )
-      throw new Error("provider-revision-content-conflict");
+      throw new EventDataConflict("provider-revision-content-conflict");
     if (providerComparison <= 0) {
       this.commitProviderEventFence(input);
       if (!mapped) this.mappings.set(mid, mapping);
@@ -886,7 +887,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
     if (current.candidateIdentity !== input.normalizedIdentity) {
       const target = this.identityAggregates.get(key);
       if (target && target.candidateEventIds.length > 0)
-        throw new Error("identity-claim-conflict");
+        throw new EventDataConflict("identity-claim-conflict");
       const oldKey = identityKey(
         input.sportKey,
         input.leagueKey,
@@ -898,7 +899,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
         old.candidateEventIds.length !== 1 ||
         old.candidateEventIds[0] !== current.id
       )
-        throw new Error("identity-claim-conflict");
+        throw new EventDataConflict("identity-claim-conflict");
     }
     const next: CanonicalEvent = {
       ...current,

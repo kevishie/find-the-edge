@@ -21,6 +21,7 @@ import {
   validateCheckpointCommitLineage,
   validateContinuationLease,
   validateContinuationOutbox,
+  EventDataConflict,
   type ContinuationOutbox,
   type EventIngestionStore,
 } from "./event-ingestion";
@@ -643,12 +644,16 @@ function contract(name: string, create: () => EventIngestionStore) {
           },
         }),
       ).rejects.toThrow("duplicate-provider-event");
-      await expect(
-        store.ingestEvent({
+      const dataConflict = await store
+        .ingestEvent({
           ...input,
           status: "postponed",
-        }),
-      ).rejects.toThrow("provider-revision-content-conflict");
+        })
+        .catch((error: unknown) => error);
+      expect(dataConflict).toBeInstanceOf(EventDataConflict);
+      expect(dataConflict).toMatchObject({
+        reason: "provider-revision-content-conflict",
+      });
     });
 
     it("keeps three-plus identity candidates bounded and ambiguous", async () => {
@@ -925,8 +930,8 @@ function contract(name: string, create: () => EventIngestionStore) {
         observedAt,
       };
       await store.ingestEvent(original);
-      await expect(
-        store.ingestEvent({
+      const identityConflict = await store
+        .ingestEvent({
           ...original,
           normalizedIdentity: "occupied",
           startsAt: "2026-08-02T00:00:00.000Z" as IsoTimestamp,
@@ -935,8 +940,12 @@ function contract(name: string, create: () => EventIngestionStore) {
             updatedAt: "2026-07-31T00:00:00.000Z" as IsoTimestamp,
             sequence: 2,
           },
-        }),
-      ).rejects.toThrow();
+        })
+        .catch((error: unknown) => error);
+      expect(identityConflict).toBeInstanceOf(EventDataConflict);
+      expect(identityConflict).toMatchObject({
+        reason: "identity-claim-conflict",
+      });
       await expect(
         store.getCanonicalByIdentity(
           bootstrap.sportKey,

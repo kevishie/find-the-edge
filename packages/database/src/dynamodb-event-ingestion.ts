@@ -18,6 +18,7 @@ import {
   compareAuthority,
   compareRevision,
   equalProviderRevision,
+  EventDataConflict,
   continuationPendingSortKey,
   continuationOutboxId,
   identityKey,
@@ -886,7 +887,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
           existingEvent.leagueKey !== canonical.leagueKey ||
           existingEvent.candidateIdentity !== canonical.candidateIdentity)
       )
-        throw new Error("canonical-candidate-conflict");
+        throw new EventDataConflict("canonical-candidate-conflict");
       if (resolution.candidateIds.includes(canonical.id)) {
         if (!existingEvent) throw new Error("dangling-identity-aggregate");
         return "already-registered" as const;
@@ -1304,7 +1305,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
           JSON.stringify(value.participantIds) !==
             JSON.stringify(input.participantIds)
         )
-          throw new Error("bootstrap-content-mismatch");
+          throw new EventDataConflict("bootstrap-content-mismatch");
         if (
           currentWinner &&
           compareAuthority(input.revision, currentWinner) < 0
@@ -1317,7 +1318,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
             value.startsAt !== input.startsAt ||
             value.status !== input.status)
         )
-          throw new Error("bootstrap-revision-content-conflict");
+          throw new EventDataConflict("bootstrap-revision-content-conflict");
         const requestedOwnerPk = identityOwnerPk(
           input.sportKey,
           input.leagueKey,
@@ -1906,7 +1907,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
       bindingKind: input.mappingKind ?? "source",
     };
     if (mapped && input.mappingKind && mapped.bindingKind !== input.mappingKind)
-      throw new Error("mapping-provenance-conflict");
+      throw new EventDataConflict("mapping-provenance-conflict");
     const providerPrior = [
       persistedRevision,
       current.revisions[input.providerId],
@@ -1956,7 +1957,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
             current.status !== input.status ||
             current.candidateIdentity !== input.normalizedIdentity)
     )
-      throw new Error("provider-revision-content-conflict");
+      throw new EventDataConflict("provider-revision-content-conflict");
     if (providerComparison <= 0) {
       const legacyBackfill: DynamoWrite[] =
         revisionItem &&
@@ -2097,7 +2098,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         input.normalizedIdentity,
       );
       if (target.state !== "missing")
-        throw new Error("identity-claim-conflict");
+        throw new EventDataConflict("identity-claim-conflict");
       targetIdentityResolution = target;
     }
     const next: CanonicalEvent = {

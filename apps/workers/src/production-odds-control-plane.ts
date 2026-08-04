@@ -9,7 +9,12 @@ import type {
   SealedOddsPage,
 } from "@find-the-edge/database";
 import { randomUUID } from "node:crypto";
-import { reconcileScheduledProviderEvent } from "./schedule-reconciliation";
+import {
+  reconcileScheduledProviderEvent,
+  isScheduleEventConflictReason,
+  ScheduleEventConflictError,
+  type ScheduleEventConflictReason,
+} from "./schedule-reconciliation";
 
 const nonEmptyRateWindow = <
   T extends {
@@ -162,6 +167,21 @@ interface SharpPageMaterial {
 
 const digest = (value: unknown) => sha256Hex(JSON.stringify(value));
 
+const checkpointScheduleBindings = (
+  checkpoint: Awaited<ReturnType<OddsControlPlaneStore["getCheckpoint"]>>,
+) => {
+  if (!checkpoint) return [];
+  if (checkpoint.expectedProviderEvents)
+    return [...checkpoint.expectedProviderEvents];
+  const ids = checkpoint.expectedProviderEventIds;
+  const starts = checkpoint.upcomingStarts;
+  if (!ids || !starts || ids.length !== starts.length) return [];
+  return ids.map((providerEventId, index) => ({
+    providerEventId,
+    startsAt: starts[index]!,
+  }));
+};
+
 export interface FocusedSharpOddsRequest {
   readonly leagueKey: (typeof sharpApiLeagues)[number]["leagueKey"];
   readonly providerEventId: string;
@@ -201,6 +221,10 @@ export const capabilityFailure = (error: unknown) => {
   if (reason.includes("transition-conflict")) return "transition-conflict";
   if (reason === "quota-reserve") return reason;
   if (reason === "provider-request-ambiguous") return reason;
+  if (reason === "schedule-stored-event-conflict")
+    return "stored-event-conflict";
+  if (reason === "schedule-conflict-metric-pending")
+    return "conflict-metric-pending";
   if (
     [
       "provider-unavailable",
@@ -213,6 +237,14 @@ export const capabilityFailure = (error: unknown) => {
     return reason;
   return "provider-error";
 };
+
+/** Closed classifier for deterministic content conflicts scoped to one
+ * provider event. Storage, lease, ownership, pagination, and unknown failures
+ * deliberately remain fatal to the league run. */
+export const scheduleEventConflictReason = (
+  error: unknown,
+): ScheduleEventConflictReason | null =>
+  error instanceof ScheduleEventConflictError ? error.reason : null;
 export const evidenceGaps = (
   runId: string,
   providerId: string,
@@ -471,6 +503,71 @@ const scheduleExclusionGaps = (
     observedAt: page.retrievedAt,
   }));
 
+const scheduleConflictGap = (
+  runId: string,
+  leagueKey: string,
+  providerEventId: string,
+  reason: ScheduleEventConflictReason,
+  observedAt: IsoTimestamp,
+): OddsEvidenceGap => ({
+  // Per-run occurrence and bounded category are immutable audit identity.
+  gapId: digest([
+    "schedule-event-conflict",
+    runId,
+    SHARP_API_PROVIDER_ID,
+    leagueKey,
+    providerEventId,
+    reason,
+  ]),
+  runId,
+  leagueKey,
+  providerId: SHARP_API_PROVIDER_ID,
+  policyVersion: oddsCollectionPolicyVersion,
+  bookRole: "comparison",
+  sourceState: "unsupported",
+  reason,
+  observedAt,
+});
+
+interface ScheduleRowDisposition {
+  readonly eventIdentityHash: string;
+  readonly status: "accepted" | "conflict";
+  readonly reason?: ScheduleEventConflictReason;
+}
+
+const scheduleEventIdentityHash = (
+  leagueKey: string,
+  providerEventId: string,
+) => digest([SHARP_API_PROVIDER_ID, leagueKey, providerEventId]);
+
+const persistedScheduleDispositions = (
+  page: SealedOddsPage,
+  leagueKey: string,
+  events: SharpApiSchedulePage["events"],
+): readonly ScheduleRowDisposition[] => {
+  const value = page.normalizedItems[0];
+  if (!Array.isArray(value) || value.length !== events.length)
+    throw new Error("schedule-conflict-disposition-invalid");
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new Error("schedule-conflict-disposition-invalid");
+    const candidate = item as Partial<ScheduleRowDisposition>;
+    const expectedHash = scheduleEventIdentityHash(
+      leagueKey,
+      events[index]!.providerEventId,
+    );
+    if (
+      candidate.eventIdentityHash !== expectedHash ||
+      !["accepted", "conflict"].includes(candidate.status ?? "") ||
+      (candidate.status === "conflict" &&
+        !isScheduleEventConflictReason(candidate.reason)) ||
+      (candidate.status === "accepted" && candidate.reason !== undefined)
+    )
+      throw new Error("schedule-conflict-disposition-invalid");
+    return candidate as ScheduleRowDisposition;
+  });
+};
+
 async function bindScheduleEvent(
   store: EventIngestionStore,
   providerId: string,
@@ -485,8 +582,7 @@ async function bindScheduleEvent(
     event,
     observedAt,
   );
-  if (result.kind === "unresolved")
-    throw new Error("schedule-mapping-unresolved");
+  return result;
 }
 
 /** A quota-safe single-event refresh. The deterministic attempt identity is the
@@ -779,6 +875,12 @@ export async function runProductionOddsControlPlane(input: {
   for (const sharpLeague of sharpApiLeagues) {
     let activeScheduleRunId: string | undefined;
     let scheduleQuotaCost = 0;
+    let acceptedFutureScheduleEvents = 0;
+    let quarantinedScheduleEvents = 0;
+    let contradictoryCommittedScheduleEvidence = false;
+    let pendingConflictMetricDelivery = false;
+    const currentScheduleStarts: string[] = [];
+    const currentExpectedProviderEventIds: string[] = [];
     const schedulePolicy = productionScheduleDiscoveryPolicies.find(
       ({ providerId }) => providerId === SHARP_API_PROVIDER_ID,
     )!;
@@ -793,27 +895,22 @@ export async function runProductionOddsControlPlane(input: {
         throw new Error("quota-reserve");
       const checkpointKey = `schedule:${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`;
       const checkpoint = await input.control.getCheckpoint(checkpointKey);
-      if (
-        checkpoint?.expectedProviderEvents?.some(
-          ({ startsAt }) => Date.parse(startsAt) > now.getTime(),
-        )
-      )
+      const priorScheduleBindings = checkpointScheduleBindings(
+        checkpoint,
+      ).filter(({ startsAt }) => Date.parse(startsAt) > now.getTime());
+      if (priorScheduleBindings.length > 0)
         storedScheduleReady.add(
           `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
         );
-      if (checkpoint?.upcomingStarts)
+      if (priorScheduleBindings.length > 0)
         starts.set(
           sharpLeague.leagueKey,
-          checkpoint.upcomingStarts.filter(
-            (start) => Date.parse(start) > now.getTime(),
-          ),
+          priorScheduleBindings.map(({ startsAt }) => startsAt),
         );
-      if (checkpoint?.expectedProviderEvents)
+      if (priorScheduleBindings.length > 0)
         expectedProviderEvents.set(
           `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
-          checkpoint.expectedProviderEvents
-            .filter(({ startsAt }) => Date.parse(startsAt) > now.getTime())
-            .map(({ providerEventId }) => providerEventId),
+          priorScheduleBindings.map(({ providerEventId }) => providerEventId),
         );
       const existingContinuation =
         await input.control.getContinuation(checkpointKey);
@@ -826,8 +923,25 @@ export async function runProductionOddsControlPlane(input: {
         checkpoint &&
         Date.parse(checkpoint.nextDueAt) > now.getTime()
       ) {
-        sharpScheduleHealthy.add(sharpLeague.leagueKey);
-        scheduleReady.add(`${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`);
+        if (checkpoint.unavailableReason === "stored-event-conflict")
+          scheduleFailures.set(
+            sharpLeague.leagueKey,
+            "schedule-stored-event-conflict",
+          );
+        else if (
+          storedScheduleReady.has(
+            `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
+          )
+        ) {
+          sharpScheduleHealthy.add(sharpLeague.leagueKey);
+          scheduleReady.add(
+            `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
+          );
+        } else
+          scheduleFailures.set(
+            sharpLeague.leagueKey,
+            "schedule-dependency-failed",
+          );
         continue;
       }
       const claimNow = liveNow();
@@ -985,30 +1099,87 @@ export async function runProductionOddsControlPlane(input: {
           });
         }
         const page = sealed.normalizedItems[0] as SharpApiSchedulePage;
-        for (const event of page.events) {
+        const conflictPageToken = `${pageToken}:schedule-conflicts`;
+        const existingConflictPage = await input.control.getPage(
+          runId,
+          conflictPageToken,
+        );
+        const pageDispositions: ScheduleRowDisposition[] = existingConflictPage
+          ? [
+              ...persistedScheduleDispositions(
+                existingConflictPage,
+                sharpLeague.leagueKey,
+                page.events,
+              ),
+            ]
+          : [];
+        const pageConflictGaps: OddsEvidenceGap[] = existingConflictPage
+          ? [...existingConflictPage.gaps]
+          : [];
+        for (const [eventIndex, event] of page.events.entries()) {
           const scheduleIdentity = `${sharpLeague.leagueKey}:${event.providerEventId}`;
-          if (seenScheduleEvents.has(scheduleIdentity)) continue;
+          if (seenScheduleEvents.has(scheduleIdentity)) {
+            if (!existingConflictPage)
+              pageDispositions.push({
+                eventIdentityHash: scheduleEventIdentityHash(
+                  sharpLeague.leagueKey,
+                  event.providerEventId,
+                ),
+                status: "accepted",
+              });
+            continue;
+          }
           seenScheduleEvents.add(scheduleIdentity);
-          await bindScheduleEvent(
-            input.events,
-            SHARP_API_PROVIDER_ID,
-            sharpLeague,
-            event,
-            page.retrievedAt,
-          );
-          starts.set(sharpLeague.leagueKey, [
-            ...(starts.get(sharpLeague.leagueKey) ?? []),
-            event.startsAt,
-          ]);
-          expectedProviderEvents.set(
-            `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
-            [
-              ...(expectedProviderEvents.get(
-                `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
-              ) ?? []),
-              event.providerEventId,
-            ],
-          );
+          const persistedDisposition = existingConflictPage
+            ? pageDispositions[eventIndex]!
+            : undefined;
+          if (persistedDisposition?.status === "conflict") {
+            quarantinedScheduleEvents += 1;
+            continue;
+          }
+          if (!persistedDisposition)
+            try {
+              await bindScheduleEvent(
+                input.events,
+                SHARP_API_PROVIDER_ID,
+                sharpLeague,
+                event,
+                page.retrievedAt,
+              );
+              pageDispositions.push({
+                eventIdentityHash: scheduleEventIdentityHash(
+                  sharpLeague.leagueKey,
+                  event.providerEventId,
+                ),
+                status: "accepted",
+              });
+            } catch (error) {
+              const conflictReason = scheduleEventConflictReason(error);
+              if (!conflictReason) throw error;
+              quarantinedScheduleEvents += 1;
+              pageDispositions.push({
+                eventIdentityHash: scheduleEventIdentityHash(
+                  sharpLeague.leagueKey,
+                  event.providerEventId,
+                ),
+                status: "conflict",
+                reason: conflictReason,
+              });
+              pageConflictGaps.push(
+                scheduleConflictGap(
+                  runId,
+                  sharpLeague.leagueKey,
+                  event.providerEventId,
+                  conflictReason,
+                  page.retrievedAt,
+                ),
+              );
+              continue;
+            }
+          currentScheduleStarts.push(event.startsAt);
+          currentExpectedProviderEventIds.push(event.providerEventId);
+          if (Date.parse(event.startsAt) > now.getTime())
+            acceptedFutureScheduleEvents += 1;
         }
         await assertAndRenewOwner(
           input.control,
@@ -1017,15 +1188,62 @@ export async function runProductionOddsControlPlane(input: {
           ownerId,
           liveNow,
         );
-        if (!sealed.committedAt) {
-          for (const gap of sealed.gaps) await input.control.putGap(gap);
+        if (!sealed.committedAt)
           await input.control.commitEvidencePage(
             runId,
             pageToken,
             now.toISOString(),
           );
-        }
         const committedPage = await input.control.getPage(runId, pageToken);
+        if (!committedPage?.committedAt)
+          throw new Error("schedule-page-commit-missing");
+        for (const gap of committedPage.gaps) await input.control.putGap(gap);
+
+        if (!existingConflictPage) {
+          const conflictEvidencePage: SealedOddsPage = {
+            runId,
+            pageToken: conflictPageToken,
+            responseDigest: digest({ pageDispositions, pageConflictGaps }),
+            normalizedItems: [pageDispositions],
+            gaps: pageConflictGaps,
+            quotaCost: 0,
+            sealedAt: now.toISOString(),
+          };
+          await assertAndRenewOwner(
+            input.control,
+            checkpointKey,
+            runId,
+            ownerId,
+            liveNow,
+          );
+          await input.control.sealPage(conflictEvidencePage);
+        }
+        let committedConflictPage =
+          existingConflictPage ??
+          (await input.control.getPage(runId, conflictPageToken));
+        if (!committedConflictPage?.committedAt) {
+          await input.control.commitEvidencePage(
+            runId,
+            conflictPageToken,
+            now.toISOString(),
+          );
+          committedConflictPage = await input.control.getPage(
+            runId,
+            conflictPageToken,
+          );
+        }
+        if (!committedConflictPage?.committedAt)
+          throw new Error("schedule-conflict-page-commit-missing");
+        await assertAndRenewOwner(
+          input.control,
+          checkpointKey,
+          runId,
+          ownerId,
+          liveNow,
+        );
+        for (const gap of committedConflictPage.gaps)
+          await input.control.putGap(gap);
+
         if (!committedPage?.metricDeliveredAt) {
           for (const reason of [
             "participant-out-of-scope",
@@ -1044,6 +1262,38 @@ export async function runProductionOddsControlPlane(input: {
           await input.control.markPageMetricDelivered(
             runId,
             pageToken,
+            now.toISOString(),
+          );
+        }
+        if (!committedConflictPage.metricDeliveredAt) {
+          const persistedConflictCounts = new Map<
+            ScheduleEventConflictReason,
+            number
+          >();
+          for (const gap of committedConflictPage.gaps) {
+            if (!isScheduleEventConflictReason(gap.reason))
+              throw new Error("schedule-conflict-gap-invalid");
+            persistedConflictCounts.set(
+              gap.reason,
+              (persistedConflictCounts.get(gap.reason) ?? 0) + 1,
+            );
+          }
+          if (persistedConflictCounts.size > 0 && !input.metrics) {
+            pendingConflictMetricDelivery = true;
+            throw new Error("schedule-conflict-metric-pending");
+          }
+          for (const [reason, count] of persistedConflictCounts)
+            input.metrics?.emit("OddsScheduleEventConflict", count, {
+              provider: SHARP_API_PROVIDER_ID,
+              league: sharpLeague.leagueKey,
+              reason,
+            });
+          // The dedicated evidence page is the durable delivery marker. A
+          // sink crash after emit but before this write can redeliver once;
+          // downstream aggregation must therefore remain idempotent-aware.
+          await input.control.markPageMetricDelivered(
+            runId,
+            conflictPageToken,
             now.toISOString(),
           );
         }
@@ -1067,12 +1317,28 @@ export async function runProductionOddsControlPlane(input: {
       }
       if (!scheduleComplete)
         throw new Error("sharpapi-schedule-pagination-limit");
-      const sharpBindings = (starts.get(sharpLeague.leagueKey) ?? [])
+      if (quarantinedScheduleEvents > 0 && acceptedFutureScheduleEvents === 0) {
+        contradictoryCommittedScheduleEvidence = true;
+        await input.control.putCheckpoint({
+          ...(checkpoint?.version === undefined
+            ? {}
+            : { version: checkpoint.version }),
+          leagueKey: checkpointKey,
+          providerId: SHARP_API_PROVIDER_ID,
+          completedAt: now.toISOString(),
+          nextDueAt: new Date(now.getTime() + 3_600_000).toISOString(),
+          runId,
+          upcomingStarts: [],
+          expectedProviderEventIds: [],
+          expectedProviderEvents: [],
+          unavailableReason: "stored-event-conflict",
+        });
+      }
+      if (quarantinedScheduleEvents > 0 && acceptedFutureScheduleEvents === 0)
+        throw new Error("schedule-stored-event-conflict");
+      const sharpBindings = currentScheduleStarts
         .map((startsAt, index) => ({
-          providerEventId:
-            expectedProviderEvents.get(
-              `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
-            )?.[index] ?? "unknown",
+          providerEventId: currentExpectedProviderEventIds[index] ?? "unknown",
           startsAt,
         }))
         .filter(({ startsAt }) => Date.parse(startsAt) > now.getTime());
@@ -1085,7 +1351,9 @@ export async function runProductionOddsControlPlane(input: {
         sharpBindings.map(({ providerEventId }) => providerEventId),
       );
       await input.control.putCheckpoint({
-        ...checkpoint,
+        ...(checkpoint?.version === undefined
+          ? {}
+          : { version: checkpoint.version }),
         leagueKey: checkpointKey,
         providerId: SHARP_API_PROVIDER_ID,
         completedAt: now.toISOString(),
@@ -1115,6 +1383,14 @@ export async function runProductionOddsControlPlane(input: {
           updatedAt: now.toISOString(),
           consecutiveSuccesses: (scheduleHealth?.consecutiveSuccesses ?? 0) + 1,
         }),
+        ...(quarantinedScheduleEvents > 0
+          ? {
+              degraded: true,
+              status: "degraded" as const,
+              degradedReason: "stored-event-conflict" as const,
+              degradedCount: quarantinedScheduleEvents,
+            }
+          : {}),
         ...(authoritativeScheduleHealth?.quotaRemaining === undefined
           ? {}
           : {
@@ -1135,7 +1411,8 @@ export async function runProductionOddsControlPlane(input: {
             healthKey: scheduleHealthKey,
             now,
             decision: decideOddsRetry({
-              error,
+              error:
+                reason === "stored-event-conflict" ? new Error(reason) : error,
               attempt: 1,
               now,
               ...(error instanceof SharpApiError && error.retryAt
@@ -1159,12 +1436,20 @@ export async function runProductionOddsControlPlane(input: {
             quotaCost: scheduleQuotaCost,
           });
       }
+      if (reason === "stored-event-conflict" && activeScheduleRunId)
+        await clearOwned(
+          `schedule:${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
+          activeScheduleRunId,
+        );
       input.metrics?.emit("OddsScheduleFailure", 1, {
         league: sharpLeague.leagueKey,
         provider: SHARP_API_PROVIDER_ID,
         reason,
       });
       if (
+        reason !== "stored-event-conflict" &&
+        !pendingConflictMetricDelivery &&
+        !contradictoryCommittedScheduleEvidence &&
         storedScheduleReady.has(
           `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
         )
