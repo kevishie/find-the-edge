@@ -68,6 +68,28 @@ const easternDay = (instant: IsoTimestamp) =>
     day: "2-digit",
   }).format(new Date(instant));
 
+const normalizedParticipant = (value: string) =>
+  value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const splitProviderEventAliases = (
+  providerEventId: string,
+  leagueKey: SharpApiLeague["leagueKey"],
+) => {
+  if (leagueKey !== "mlb" || !/(?:^|_)\d{4}-\d{2}-\d{2}$/.test(providerEventId))
+    return [];
+  // SharpAPI's consensus split feed can omit the schedule/odds binding suffix
+  // (for example `_b3`). Probe the finite provider suffix namespace rather
+  // than dropping otherwise attributable evidence.
+  return Array.from(
+    { length: 10 },
+    (_, suffix) => `${providerEventId}_b${suffix}`,
+  );
+};
+
 const loadOdds = async (
   league: SharpApiLeague,
   apiKey: string,
@@ -331,6 +353,19 @@ export async function persistSharpApiSplitPage(
       sportKey: league.sportKey,
       leagueKey: league.leagueKey,
     });
+    if (!canonical)
+      for (const providerEventId of splitProviderEventAliases(
+        raw.providerEventId,
+        league.leagueKey,
+      )) {
+        canonical = await store.resolveExactCanonicalBinding({
+          providerId: SHARP_API_PROVIDER_ID,
+          providerEventId,
+          sportKey: league.sportKey,
+          leagueKey: league.leagueKey,
+        });
+        if (canonical) break;
+      }
     if (!canonical) {
       const splitDay = providerEventDay(raw.providerEventId);
       const candidates = canonicalOddsEvents.filter(
@@ -354,8 +389,11 @@ export async function persistSharpApiSplitPage(
       continue;
     }
     if (
-      canonical.participantLabels?.[0] !== raw.awayTeam ||
-      canonical.participantLabels?.[1] !== raw.homeTeam
+      canonical.participantLabels?.length !== 2 ||
+      normalizedParticipant(canonical.participantLabels[0]!) !==
+        normalizedParticipant(raw.awayTeam) ||
+      normalizedParticipant(canonical.participantLabels[1]!) !==
+        normalizedParticipant(raw.homeTeam)
     ) {
       await splitRepository.persistGap({
         providerId: SHARP_API_PROVIDER_ID,

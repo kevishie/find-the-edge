@@ -12,10 +12,78 @@ import type { SharpApiLeague } from "@find-the-edge/providers";
 
 import {
   ingestSharpApi,
+  persistSharpApiSplitPage,
   type SharpApiOddsPersister,
 } from "./sharp-api-ingestion";
 
 describe("SharpAPI primary ingestion", () => {
+  it("binds suffixless consensus splits to the exact suffixed MLB event", async () => {
+    const canonical = {
+      id: "event:mlb:cardinals-yankees",
+      version: 4,
+      sportKey: "mlb",
+      participantLabels: ["St. Louis Cardinals", "New York Yankees"],
+    } as unknown as CanonicalEvent;
+    const resolveExactCanonicalBinding = vi.fn(
+      ({ providerEventId }: { readonly providerEventId: string }) =>
+        Promise.resolve(
+          providerEventId === "mlb_cardinals_yankees_2026-08-04_b3"
+            ? canonical
+            : null,
+        ),
+    );
+    const persist = vi.fn(() =>
+      Promise.resolve({ history: "inserted", current: "advanced" }),
+    );
+    const persisted = await persistSharpApiSplitPage(
+      { resolveExactCanonicalBinding } as unknown as EventIngestionStore,
+      {
+        persist,
+        persistGap: vi.fn(),
+      } as unknown as BettingSplitRepository,
+      {
+        sportKey: "mlb",
+        leagueKey: "mlb",
+      } as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-04T12:00:01.000Z" as IsoTimestamp,
+        items: [
+          {
+            providerEventId: "mlb_cardinals_yankees_2026-08-04",
+            sport: "baseball",
+            league: "mlb",
+            sportsbookId: "consensus",
+            awayTeam: "ST Louis Cardinals",
+            homeTeam: "New York Yankees",
+            providerTimestamp: "2026-08-04T12:00:00.000Z" as IsoTimestamp,
+            markets: [
+              {
+                marketKey: "moneyline",
+                selections: [
+                  { selectionKey: "away", betPercent: 42 },
+                  { selectionKey: "home", betPercent: 58 },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(persisted).toBe(2);
+    expect(resolveExactCanonicalBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerEventId: "mlb_cardinals_yankees_2026-08-04_b3",
+      }),
+    );
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canonicalEventId: canonical.id,
+        scope: "consensus",
+      }),
+    );
+  });
+
   it("persists main odds and entitled splits with exact provider bindings", async () => {
     const bindings = new Map<string, CanonicalEvent>();
     const resolveExactCanonicalBinding = vi.fn(
