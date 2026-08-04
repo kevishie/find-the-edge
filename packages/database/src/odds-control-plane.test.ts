@@ -209,6 +209,43 @@ describe("odds control plane store", () => {
     });
     expect((await s.getContinuation("mlb"))?.runId).toBe("two");
   });
+  it("atomically resets an authoritative request window without treating RPM as quota", async () => {
+    const s = new MemoryOddsControlPlaneStore();
+    await s.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 10,
+        remaining: 0,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    });
+    expect(
+      await s.reserveQuota(
+        "sharpapi:mlb:odds",
+        2,
+        1,
+        "2026-08-03T00:00:30.000Z",
+      ),
+    ).toBe(false);
+    expect(
+      await s.reserveQuota(
+        "sharpapi:mlb:odds",
+        2,
+        1,
+        "2026-08-03T00:01:00.000Z",
+      ),
+    ).toBe(false);
+    expect((await s.getHealth("sharpapi:mlb:odds"))?.rateWindow).toMatchObject({
+      limit: 10,
+    });
+    expect(
+      (await s.getHealth("sharpapi:mlb:odds"))?.rateWindow?.remaining,
+    ).toBeUndefined();
+  });
   it("reserves attempts and seals pages exactly once while gaps remain immutable", async () => {
     const s = new MemoryOddsControlPlaneStore();
     const a = {
@@ -330,6 +367,132 @@ describe("memory/Dynamo control-plane parity", () => {
 });
 
 describe("atomic paid-call guards", () => {
+  it("grants one bounded probe after an authoritative window expires", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      quotaRemaining: 0,
+      rateWindow: {
+        limit: 60,
+        remaining: 0,
+        resetsAt: "2026-08-04T11:59:00.000Z",
+      },
+      updatedAt: "2026-08-04T11:58:00.000Z",
+    });
+    const attempt = (attemptId: string) => ({
+      attemptId,
+      runId: attemptId,
+      pageToken: "start",
+      requestedAt: "2026-08-04T12:00:00.000Z",
+    });
+    expect(
+      await store.reserveQuotaAttempt(
+        "sharpapi:mlb:odds",
+        10,
+        1,
+        attempt("probe-1"),
+      ),
+    ).toBe(true);
+    expect(
+      await store.reserveQuotaAttempt(
+        "sharpapi:mlb:odds",
+        10,
+        1,
+        attempt("probe-2"),
+      ),
+    ).toBe(false);
+  });
+
+  it("targets the nested rate-window remaining field in DynamoDB", async () => {
+    let updateInput: Record<string, unknown> | undefined;
+    const client = {
+      async send(command: { input: Record<string, unknown> }) {
+        if (command.constructor.name === "GetCommand")
+          return {
+            Item: {
+              value: {
+                providerId: "sharpapi",
+                healthKey: "sharpapi:mlb:odds",
+                healthy: true,
+                consecutiveSuccesses: 1,
+                rateWindow: { limit: 60, remaining: 41 },
+                updatedAt: "2026-08-04T12:00:00.000Z",
+              },
+            },
+          };
+        updateInput = command.input;
+        return {};
+      },
+    };
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    expect(
+      await store.reserveQuota(
+        "sharpapi:mlb:odds",
+        10,
+        1,
+        "2026-08-04T12:00:01.000Z",
+      ),
+    ).toBe(true);
+    expect(updateInput?.["ExpressionAttributeNames"]).toEqual(
+      expect.objectContaining({ "#window": "rateWindow", "#q": "remaining" }),
+    );
+  });
+
+  it("CAS-fences a Dynamo reset probe against newly authoritative remaining", async () => {
+    let transaction: Record<string, unknown> | undefined;
+    const client = {
+      async send(command: { input: Record<string, unknown> }) {
+        if (command.constructor.name === "GetCommand")
+          return {
+            Item: {
+              value: {
+                version: 7,
+                providerId: "sharpapi",
+                healthKey: "sharpapi:mlb:odds",
+                healthy: true,
+                consecutiveSuccesses: 1,
+                rateWindow: { limit: 60 },
+                updatedAt: "2026-08-04T12:00:00.000Z",
+              },
+            },
+          };
+        transaction = command.input;
+        const error = new Error("authoritative remaining won race");
+        error.name = "TransactionCanceledException";
+        throw error;
+      },
+    };
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    expect(
+      await store.reserveQuotaAttempt("sharpapi:mlb:odds", 10, 1, {
+        attemptId: "probe-race",
+        runId: "probe-race",
+        pageToken: "start",
+        requestedAt: "2026-08-04T12:00:01.000Z",
+      }),
+    ).toBe(false);
+    const update = (
+      transaction?.["TransactItems"] as Array<{
+        Update?: Record<string, unknown>;
+      }>
+    )[0]?.Update;
+    expect(update?.["ConditionExpression"]).toContain(
+      "attribute_not_exists(#v.#window.#remaining)",
+    );
+    expect(update?.["ExpressionAttributeValues"]).toEqual(
+      expect.objectContaining({ ":expectedVersion": 7 }),
+    );
+  });
+
   it("reserves quota and a unique attempt together", async () => {
     const store = new MemoryOddsControlPlaneStore();
     const at = "2026-08-03T00:00:00.000Z";

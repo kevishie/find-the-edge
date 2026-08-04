@@ -36,6 +36,7 @@ describe("SharpAPI primary ingestion", () => {
       .mockResolvedValueOnce({ snapshot: "created", current: "advanced" })
       .mockRejectedValueOnce(new Error("later-page-write-failed"));
     const outcomes: unknown[] = [];
+    const persistAvailability = vi.fn().mockResolvedValue(undefined);
     const base = {
       marketKey: "moneyline" as const,
       outcomeStructure: "two-way" as const,
@@ -54,7 +55,7 @@ describe("SharpAPI primary ingestion", () => {
     await expect(
       persistSharpApiOddsPage(
         store,
-        { persist },
+        { persist, persistAvailability },
         { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
         {
           retrievedAt: "2026-08-03T23:00:01.000Z" as IsoTimestamp,
@@ -84,6 +85,16 @@ describe("SharpAPI primary ingestion", () => {
                       selectionLabel: "Home",
                       providerSelectionId: "home-selection",
                     },
+                    {
+                      ...base,
+                      providerPriceId: "away-suspended-price",
+                      selectionKey: "away",
+                      selectionLabel: "Away",
+                      providerSelectionId: "away-suspended-selection",
+                      isActive: false,
+                      isSuspended: true,
+                      observedAt: "2026-08-03T23:00:02.000Z" as IsoTimestamp,
+                    },
                   ],
                 },
               ],
@@ -94,6 +105,16 @@ describe("SharpAPI primary ingestion", () => {
         (outcome) => outcomes.push(outcome),
       ),
     ).rejects.toThrow("later-page-write-failed");
+    const blocked = persistAvailability.mock.calls[0]?.[0] as unknown as {
+      readonly identity: string;
+      readonly state: string;
+      readonly observedAt: string;
+    };
+    expect(blocked.identity).toMatch(/^FIXTURE_ODDS#/);
+    expect(blocked).toMatchObject({
+      state: "suspended",
+      observedAt: "2026-08-03T23:00:02.000Z",
+    });
     expect(outcomes).toEqual([{ snapshot: "created", current: "advanced" }]);
   });
 

@@ -1,4 +1,5 @@
 import type {
+  FixtureOddsAvailabilityEvidence,
   FixtureOddsObservation,
   FixtureOddsSnapshotDecision,
   NormalizedFixtureOddsSnapshot,
@@ -11,8 +12,11 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import {
   FixtureOddsStateCorruptionError,
+  fixtureOddsGroupAvailabilityIdentity,
+  isFixtureOddsSnapshotActionable,
   normalizeFixtureOddsObservation,
   transitionFixtureOdds,
+  transitionFixtureOddsAvailability,
 } from "@find-the-edge/domain";
 import { mappingId } from "./event-ingestion";
 
@@ -94,6 +98,10 @@ export interface FixtureOddsDynamoGateway {
   getExact(pk: string, sk: string): Promise<FixtureOddsItem | null>;
   transactSnapshot(request: FixtureOddsSnapshotTransaction): Promise<void>;
   putCurrent(request: FixtureOddsCurrentWrite): Promise<void>;
+  getAvailability?(
+    partitionKey: string,
+  ): Promise<FixtureOddsAvailabilityEvidence | null>;
+  putAvailability?(value: FixtureOddsAvailabilityEvidence): Promise<void>;
 }
 
 export class AwsFixtureOddsGateway implements FixtureOddsDynamoGateway {
@@ -163,6 +171,56 @@ export class AwsFixtureOddsGateway implements FixtureOddsDynamoGateway {
           { code: "ConditionalCheckFailed" },
         ]);
       throw error;
+    }
+  }
+
+  async getAvailability(partitionKey: string) {
+    const result = await this.client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { pk: partitionKey, sk: "AVAILABILITY" },
+        ConsistentRead: true,
+      }),
+    );
+    return (
+      (result.Item?.["value"] as FixtureOddsAvailabilityEvidence | undefined) ??
+      null
+    );
+  }
+
+  async putAvailability(value: FixtureOddsAvailabilityEvidence) {
+    const priority = value.state === "active" ? 0 : 1;
+    try {
+      await this.client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: {
+            pk: value.identity,
+            sk: "AVAILABILITY",
+            value,
+            availabilityPriority: priority,
+          },
+          ConditionExpression:
+            "attribute_not_exists(pk) OR #v.#observedAt < :observedAt OR (#v.#observedAt = :observedAt AND (attribute_not_exists(#priority) OR #priority < :priority OR (#priority = :priority AND #v.#evidenceId < :evidenceId)))",
+          ExpressionAttributeNames: {
+            "#v": "value",
+            "#observedAt": "observedAt",
+            "#evidenceId": "evidenceId",
+            "#priority": "availabilityPriority",
+          },
+          ExpressionAttributeValues: {
+            ":observedAt": value.observedAt,
+            ":evidenceId": value.evidenceId,
+            ":priority": priority,
+          },
+        }),
+      );
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        error.name !== "ConditionalCheckFailedException"
+      )
+        throw error;
     }
   }
 }
@@ -587,6 +645,48 @@ export class DynamoFixtureOddsAdapter {
         );
       current = "retained";
     }
+    if (this.gateway.putAvailability) {
+      await this.persistAvailability({
+        identity: snapshot.partitionKey,
+        state: "active",
+        observedAt: snapshot.observedAt,
+        evidenceId: snapshot.snapshotId,
+        reason: "active-price",
+      });
+    }
     return { snapshot: snapshotDecision, current, value: snapshot };
+  }
+
+  async persistAvailability(value: FixtureOddsAvailabilityEvidence) {
+    if (!this.gateway.putAvailability)
+      throw new Error("odds-availability-store-unavailable");
+    const current = await this.gateway.getAvailability?.(value.identity);
+    const winner = transitionFixtureOddsAvailability(
+      current ?? undefined,
+      value,
+    );
+    await this.gateway.putAvailability(winner);
+    return winner;
+  }
+
+  async getActionableCurrent(partitionKey: string) {
+    try {
+      const item = await this.gateway.getExact(partitionKey, "CURRENT");
+      const snapshot = validateStoredSnapshot(item, partitionKey, "CURRENT");
+      if (!snapshot || !this.gateway.getAvailability) return null;
+      const availability = await this.gateway.getAvailability(partitionKey);
+      const groupAvailability = await this.gateway.getAvailability(
+        fixtureOddsGroupAvailabilityIdentity(snapshot),
+      );
+      return isFixtureOddsSnapshotActionable(
+        snapshot,
+        availability ?? undefined,
+        groupAvailability ?? undefined,
+      )
+        ? snapshot
+        : null;
+    } catch {
+      return null;
+    }
   }
 }

@@ -11,8 +11,22 @@ import type {
 import { randomUUID } from "node:crypto";
 import { reconcileScheduledProviderEvent } from "./schedule-reconciliation";
 
+const nonEmptyRateWindow = <
+  T extends {
+    readonly limit?: number;
+    readonly remaining?: number;
+    readonly resetsAt?: string;
+  },
+>(
+  value: T | undefined,
+): T | undefined =>
+  value && Object.keys(value).length > 0 ? value : undefined;
+
 export interface LiveOddsPersister {
   persist(input: FixtureOddsIngestInput): Promise<FixtureOddsPersistResult>;
+  persistAvailability?(
+    value: import("@find-the-edge/domain").FixtureOddsAvailabilityEvidence,
+  ): Promise<unknown>;
 }
 
 const putContinuationCas = async (
@@ -132,7 +146,10 @@ import {
   persistSharpApiSplitPage,
 } from "./sharp-api-ingestion";
 import {
+  decideOddsRetry,
+  healthyOddsProviderState,
   runDueOddsLeagues,
+  unhealthyOddsProviderState,
   withPaidLeaseHeartbeat,
   type ControlPlaneProvider,
   type OddsControlPlaneMetrics,
@@ -491,17 +508,46 @@ export async function runFocusedSharpOddsIngestion(input: {
   };
   const healthKey = `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:odds`;
   const health = await input.control.getHealth(healthKey);
+  const cooldownMs = health?.cooldownUntil
+    ? Date.parse(health.cooldownUntil)
+    : undefined;
+  const malformedCooldown =
+    health?.healthy === false &&
+    health.cooldownUntil !== undefined &&
+    !Number.isFinite(cooldownMs);
+  const rateRemaining = health?.rateWindow?.remaining;
+  const rateResetMs = health?.rateWindow?.resetsAt
+    ? Date.parse(health.rateWindow.resetsAt)
+    : undefined;
+  const rateWindowExpired =
+    rateResetMs !== undefined &&
+    Number.isFinite(rateResetMs) &&
+    rateResetMs <= now.getTime();
   if (
-    (health?.cooldownUntil &&
-      Date.parse(health.cooldownUntil) > now.getTime()) ||
-    (health?.quotaRemaining !== undefined &&
+    malformedCooldown ||
+    (cooldownMs !== undefined && cooldownMs > now.getTime()) ||
+    (health?.rateWindow !== undefined &&
+      rateRemaining === undefined &&
+      !rateWindowExpired) ||
+    (health?.rateWindow !== undefined &&
+      !rateWindowExpired &&
+      rateRemaining !== undefined &&
+      rateRemaining - 1 < (policy.providers[0]?.quotaReserve ?? 100)) ||
+    (health?.rateWindow === undefined &&
+      health?.quotaRemaining !== undefined &&
       health.quotaRemaining - 1 < (policy.providers[0]?.quotaReserve ?? 100))
   ) {
     input.metrics?.emit("OddsQuotaBlocked", 1, dimensions);
+    input.metrics?.emit("OddsRateWindowBlocked", 1, dimensions);
     return {
       status: "retryable" as const,
-      reason: health?.cooldownUntil ? "rate-limited" : "quota-reserve",
-      ...(health?.cooldownUntil ? { retryAt: health.cooldownUntil } : {}),
+      reason:
+        malformedCooldown || cooldownMs !== undefined
+          ? "rate-limited"
+          : "quota-reserve",
+      ...(!malformedCooldown && health?.cooldownUntil
+        ? { retryAt: health.cooldownUntil }
+        : {}),
     };
   }
   const reserved = await input.control.reserveQuotaAttempt(
@@ -511,8 +557,13 @@ export async function runFocusedSharpOddsIngestion(input: {
     attempt,
   );
   if (!reserved) {
-    input.metrics?.emit("OddsRequestDeduplicated", 1, dimensions);
-    return { status: "deduplicated" as const, requestIdentity: identity };
+    const existingAttempt = await input.control.getAttempt(identity);
+    if (existingAttempt) {
+      input.metrics?.emit("OddsRequestDeduplicated", 1, dimensions);
+      return { status: "deduplicated" as const, requestIdentity: identity };
+    }
+    input.metrics?.emit("OddsRateWindowBlocked", 1, dimensions);
+    return { status: "retryable" as const, reason: "quota-reserve" };
   }
   input.metrics?.emit("OddsProviderRequest", 1, dimensions);
   try {
@@ -527,6 +578,8 @@ export async function runFocusedSharpOddsIngestion(input: {
       sharpLeague,
       operation.page,
       policy.providers[0]?.books,
+      undefined,
+      policy.markets,
     );
     const gaps = [
       ...evidenceGaps(
@@ -553,12 +606,32 @@ export async function runFocusedSharpOddsIngestion(input: {
       quotaCost: 1,
       completedAt: now.toISOString(),
     });
+    const responseRateWindow = nonEmptyRateWindow(
+      operation.page.responseMetadata?.rateWindow,
+    );
+    await input.control.reconcileQuota(
+      healthKey,
+      1,
+      1,
+      responseRateWindow?.remaining,
+      now.toISOString(),
+    );
+    await input.control.putHealth({
+      ...healthyOddsProviderState(await input.control.getHealth(healthKey), {
+        providerId: SHARP_API_PROVIDER_ID,
+        healthKey,
+        updatedAt: now.toISOString(),
+        consecutiveSuccesses: (health?.consecutiveSuccesses ?? 0) + 1,
+      }),
+      ...(responseRateWindow ? { rateWindow: responseRateWindow } : {}),
+    });
     for (const [name, value] of [
       ["OddsSnapshotCreated", persisted.snapshotsCreated],
       ["OddsSnapshotDuplicate", persisted.snapshotsExisting],
       ["OddsCurrentAdvanced", persisted.currentAdvanced],
       ["OddsCurrentRetained", persisted.currentRetained],
       ["OddsPartialEvidence", persisted.partialEvidence + gaps.length],
+      ["OddsMarketSuspended", persisted.suspendedEvidence],
     ] as const)
       input.metrics?.emit(name, value, dimensions);
     for (const [reason, count] of Object.entries(persisted.rejectionCounts))
@@ -586,16 +659,24 @@ export async function runFocusedSharpOddsIngestion(input: {
       failureReason: reason,
     });
     input.metrics?.emit("OddsProviderFailure", 1, { ...dimensions, reason });
-    if (error instanceof SharpApiError && error.retryAt)
-      await input.control.putHealth({
-        ...(await input.control.getHealth(healthKey)),
+    const decision = decideOddsRetry({
+      error,
+      attempt: 1,
+      now,
+      ...(error instanceof SharpApiError && error.retryAt
+        ? { providerRetryAt: error.retryAt }
+        : {}),
+      jitter: () => 0,
+    });
+    await input.control.putHealth(
+      unhealthyOddsProviderState(await input.control.getHealth(healthKey), {
         providerId: SHARP_API_PROVIDER_ID,
         healthKey,
-        healthy: false,
-        consecutiveSuccesses: 0,
-        cooldownUntil: error.retryAt,
-        updatedAt: now.toISOString(),
-      });
+        now,
+        decision,
+        cooldownSeconds: policy.providers[0]?.cooldownSeconds ?? 1_800,
+      }),
+    );
     throw error;
   }
 }
@@ -658,10 +739,10 @@ export async function runProductionOddsControlPlane(input: {
   for (const sharpLeague of sharpApiLeagues) {
     let activeScheduleRunId: string | undefined;
     let scheduleQuotaCost = 0;
+    const schedulePolicy = productionScheduleDiscoveryPolicies.find(
+      ({ providerId }) => providerId === SHARP_API_PROVIDER_ID,
+    )!;
     try {
-      const schedulePolicy = productionScheduleDiscoveryPolicies.find(
-        ({ providerId }) => providerId === SHARP_API_PROVIDER_ID,
-      )!;
       const scheduleHealth = await input.control.getHealth(
         `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`,
       );
@@ -961,23 +1042,44 @@ export async function runProductionOddsControlPlane(input: {
         `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`,
       );
       await input.control.putHealth({
-        ...authoritativeScheduleHealth,
-        providerId: SHARP_API_PROVIDER_ID,
-        healthKey: `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`,
-        healthy: true,
-        consecutiveSuccesses: (scheduleHealth?.consecutiveSuccesses ?? 0) + 1,
+        ...healthyOddsProviderState(authoritativeScheduleHealth, {
+          providerId: SHARP_API_PROVIDER_ID,
+          healthKey: `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`,
+          updatedAt: now.toISOString(),
+          consecutiveSuccesses: (scheduleHealth?.consecutiveSuccesses ?? 0) + 1,
+        }),
         ...(authoritativeScheduleHealth?.quotaRemaining === undefined
           ? {}
           : {
               quotaRemaining: authoritativeScheduleHealth.quotaRemaining,
             }),
-        updatedAt: now.toISOString(),
       });
       sharpScheduleHealthy.add(sharpLeague.leagueKey);
       scheduleReady.add(`${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`);
       await clearOwned(checkpointKey, runId);
     } catch (error) {
       const reason = capabilityFailure(error);
+      const scheduleHealthKey = `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`;
+      await input.control.putHealth(
+        unhealthyOddsProviderState(
+          await input.control.getHealth(scheduleHealthKey),
+          {
+            providerId: SHARP_API_PROVIDER_ID,
+            healthKey: scheduleHealthKey,
+            now,
+            decision: decideOddsRetry({
+              error,
+              attempt: 1,
+              now,
+              ...(error instanceof SharpApiError && error.retryAt
+                ? { providerRetryAt: error.retryAt }
+                : {}),
+              jitter: () => 0,
+            }),
+            cooldownSeconds: 1_800,
+          },
+        ),
+      );
       scheduleFailures.set(sharpLeague.leagueKey, `schedule-${reason}`);
       if (activeScheduleRunId) {
         const run = await input.control.getRun(activeScheduleRunId);
@@ -1037,9 +1139,12 @@ export async function runProductionOddsControlPlane(input: {
               const account = await (
                 input.fetchSharpAccount ?? fetchSharpApiAccount
               )(input.sharpApiKey);
+              const accountRateWindow = nonEmptyRateWindow(
+                account.responseMetadata?.rateWindow,
+              );
               return {
                 quotaCost: 1,
-                quotaRemaining: Math.max(0, account.requestsPerMinute - 1),
+                ...(accountRateWindow ? { rateWindow: accountRateWindow } : {}),
               };
             },
             fetchPage: async ({ runId, pageToken }) => {
@@ -1066,6 +1171,9 @@ export async function runProductionOddsControlPlane(input: {
                     )
                   ).page;
               const material: SharpPageMaterial = { kind: "sharpapi", page };
+              const pageRateWindow = nonEmptyRateWindow(
+                page.responseMetadata?.rateWindow,
+              );
               return {
                 items: [material],
                 gaps: [
@@ -1087,6 +1195,16 @@ export async function runProductionOddsControlPlane(input: {
                   ),
                 ],
                 quotaCost: 1,
+                ...(pageRateWindow
+                  ? {
+                      rateWindow: pageRateWindow,
+                      ...(pageRateWindow.remaining === undefined
+                        ? {}
+                        : {
+                            quotaRemaining: pageRateWindow.remaining,
+                          }),
+                    }
+                  : {}),
                 seenProviderEventIds: page.events.map(
                   ({ providerEventId }) => providerEventId,
                 ),
@@ -1158,6 +1276,7 @@ export async function runProductionOddsControlPlane(input: {
                       dimensions,
                     );
                 },
+                policy.markets,
               );
               input.metrics?.emit(
                 "OddsNormalizedObservation",
@@ -1167,6 +1286,7 @@ export async function runProductionOddsControlPlane(input: {
               const persistenceMetrics = [
                 ["OddsStaleEvidence", persisted.staleEvidence],
                 ["OddsPartialEvidence", persisted.partialEvidence],
+                ["OddsMarketSuspended", persisted.suspendedEvidence],
                 [
                   "OddsMissingProviderTimestamp",
                   persisted.rejectionCounts["missing-provider-timestamp"] ?? 0,
@@ -1370,17 +1490,18 @@ export async function runProductionOddsControlPlane(input: {
         readonly features: readonly string[];
         readonly requestsPerMinute: number;
       };
-      await input.control.putHealth({
-        ...(await input.control.getHealth(
-          `${SHARP_API_PROVIDER_ID}:account:account`,
-        )),
-        providerId: SHARP_API_PROVIDER_ID,
-        healthKey: `${SHARP_API_PROVIDER_ID}:account:account`,
-        healthy: true,
-        consecutiveSuccesses: 1,
-        quotaRemaining: Math.max(0, account.requestsPerMinute - 1),
-        updatedAt: now.toISOString(),
-      });
+      const accountHealthKey = `${SHARP_API_PROVIDER_ID}:account:account`;
+      await input.control.putHealth(
+        healthyOddsProviderState(
+          await input.control.getHealth(accountHealthKey),
+          {
+            providerId: SHARP_API_PROVIDER_ID,
+            healthKey: accountHealthKey,
+            consecutiveSuccesses: 1,
+            updatedAt: now.toISOString(),
+          },
+        ),
+      );
       if (!account.features.includes("splits"))
         for (const league of sharpApiLeagues)
           await input.control.putGap({
@@ -1620,9 +1741,41 @@ export async function runProductionOddsControlPlane(input: {
               evidenceCommitted: true,
               quotaCost: splitQuotaCost,
             });
+            const splitHealthKey = `${SHARP_API_PROVIDER_ID}:${league.leagueKey}:splits`;
+            const splitHealth = await input.control.getHealth(splitHealthKey);
+            await input.control.putHealth(
+              healthyOddsProviderState(splitHealth, {
+                providerId: SHARP_API_PROVIDER_ID,
+                healthKey: splitHealthKey,
+                consecutiveSuccesses:
+                  (splitHealth?.consecutiveSuccesses ?? 0) + 1,
+                updatedAt: now.toISOString(),
+              }),
+            );
             await clearOwned(continuationKey, runId);
           } catch (error) {
             const reason = capabilityFailure(error);
+            const splitHealthKey = `${SHARP_API_PROVIDER_ID}:${league.leagueKey}:splits`;
+            await input.control.putHealth(
+              unhealthyOddsProviderState(
+                await input.control.getHealth(splitHealthKey),
+                {
+                  providerId: SHARP_API_PROVIDER_ID,
+                  healthKey: splitHealthKey,
+                  now,
+                  decision: decideOddsRetry({
+                    error,
+                    attempt: 1,
+                    now,
+                    ...(error instanceof SharpApiError && error.retryAt
+                      ? { providerRetryAt: error.retryAt }
+                      : {}),
+                    jitter: () => 0,
+                  }),
+                  cooldownSeconds: 1_800,
+                },
+              ),
+            );
             input.metrics?.emit("OddsSplitFailure", 1, {
               league: league.leagueKey,
               provider: SHARP_API_PROVIDER_ID,
@@ -1675,6 +1828,27 @@ export async function runProductionOddsControlPlane(input: {
       await clearOwned(splitCheckpointKey, accountRunId);
     } catch (error) {
       const reason = capabilityFailure(error);
+      const accountHealthKey = `${SHARP_API_PROVIDER_ID}:account:account`;
+      await input.control.putHealth(
+        unhealthyOddsProviderState(
+          await input.control.getHealth(accountHealthKey),
+          {
+            providerId: SHARP_API_PROVIDER_ID,
+            healthKey: accountHealthKey,
+            now,
+            decision: decideOddsRetry({
+              error,
+              attempt: 1,
+              now,
+              ...(error instanceof SharpApiError && error.retryAt
+                ? { providerRetryAt: error.retryAt }
+                : {}),
+              jitter: () => 0,
+            }),
+            cooldownSeconds: 1_800,
+          },
+        ),
+      );
       const run = await input.control.getRun(accountRunId);
       if (run)
         await input.control.putRun({

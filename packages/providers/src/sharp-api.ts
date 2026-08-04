@@ -88,7 +88,73 @@ export interface SharpApiAccount {
   readonly requestsPerMinute: number;
   readonly maxBooks: number;
   readonly streamingEnabled: boolean;
+  readonly responseMetadata?: SharpApiResponseMetadata;
 }
+
+/** Provider-enforced request window. This is deliberately not the customer's
+ * subscription quota: SharpAPI's account response currently exposes RPM, not
+ * durable monthly credits. Missing headers remain unknown. */
+export interface SharpApiRateWindow {
+  readonly limit?: number;
+  readonly remaining?: number;
+  readonly resetsAt?: IsoTimestamp;
+}
+
+export interface SharpApiResponseMetadata {
+  readonly rateWindow: SharpApiRateWindow;
+  readonly retryAt?: IsoTimestamp;
+}
+
+const boundedHeaderInteger = (value: string | null) => {
+  if (value === null || !/^\d{1,16}$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
+
+export const parseSharpApiResponseMetadata = (
+  headers: Headers,
+  now = new Date(),
+): SharpApiResponseMetadata => {
+  const limit = boundedHeaderInteger(
+    headers.get("x-ratelimit-limit") ?? headers.get("ratelimit-limit"),
+  );
+  const remaining = boundedHeaderInteger(
+    headers.get("x-ratelimit-remaining") ?? headers.get("ratelimit-remaining"),
+  );
+  const rawReset =
+    headers.get("x-ratelimit-reset") ?? headers.get("ratelimit-reset");
+  const resetNumber = boundedHeaderInteger(rawReset);
+  const resetMs =
+    resetNumber === undefined
+      ? rawReset
+        ? Date.parse(rawReset)
+        : Number.NaN
+      : resetNumber > 10_000_000_000
+        ? resetNumber
+        : resetNumber > now.getTime() / 2_000
+          ? resetNumber * 1_000
+          : now.getTime() + resetNumber * 1_000;
+  const retryAfter = headers.get("retry-after");
+  const retrySeconds = boundedHeaderInteger(retryAfter);
+  const retryMs =
+    retrySeconds !== undefined
+      ? now.getTime() + retrySeconds * 1_000
+      : retryAfter
+        ? Date.parse(retryAfter)
+        : Number.NaN;
+  return {
+    rateWindow: {
+      ...(limit === undefined ? {} : { limit }),
+      ...(remaining === undefined ? {} : { remaining }),
+      ...(Number.isFinite(resetMs)
+        ? { resetsAt: new Date(resetMs).toISOString() as IsoTimestamp }
+        : {}),
+    },
+    ...(Number.isFinite(retryMs)
+      ? { retryAt: new Date(retryMs).toISOString() as IsoTimestamp }
+      : {}),
+  };
+};
 
 export interface SharpApiPrice {
   readonly providerPriceId: string;
@@ -138,6 +204,7 @@ export interface SharpApiOddsPage {
   readonly hasMore: boolean;
   readonly nextCursor?: string;
   readonly retrievedAt: IsoTimestamp;
+  readonly responseMetadata?: SharpApiResponseMetadata;
 }
 
 export interface SharpApiNormalizationRejection {
@@ -160,6 +227,7 @@ export interface SharpApiSchedulePage {
   readonly hasMore: boolean;
   readonly nextOffset?: number;
   readonly retrievedAt: IsoTimestamp;
+  readonly responseMetadata?: SharpApiResponseMetadata;
 }
 
 const derivativeLabelKind = (value: string) => {
@@ -226,6 +294,7 @@ export interface SharpApiSplitPage {
   readonly hasMore: boolean;
   readonly nextOffset?: number;
   readonly retrievedAt: IsoTimestamp;
+  readonly responseMetadata?: SharpApiResponseMetadata;
 }
 
 export class SharpApiError extends Error {
@@ -236,6 +305,7 @@ export class SharpApiError extends Error {
       | "unauthorized"
       | "not-entitled"
       | "rate-limited"
+      | "provider-request-ambiguous"
       | "provider-unavailable"
       | "invalid-response",
     readonly retryable = false,
@@ -279,7 +349,10 @@ const request = async (
   path: string,
   apiKey: string,
   fetcher: typeof fetch,
-): Promise<unknown> => {
+): Promise<{
+  readonly payload: unknown;
+  readonly metadata: SharpApiResponseMetadata;
+}> => {
   if (!canonical(apiKey, 512)) throw new SharpApiError("configuration");
   let response: Response;
   try {
@@ -288,7 +361,9 @@ const request = async (
       headers: { accept: "application/json", "X-API-Key": apiKey },
     });
   } catch {
-    throw new SharpApiError("provider-unavailable", true);
+    // A transport failure after dispatch has unknown provider-side outcome. It
+    // must be reconciled rather than blindly repeated.
+    throw new SharpApiError("provider-request-ambiguous", false);
   }
   if (!response.ok) {
     if ([401, 403].includes(response.status)) {
@@ -299,26 +374,18 @@ const request = async (
       throw new SharpApiError("unauthorized");
     }
     if (response.status === 429) {
-      const retryAfter = response.headers.get("retry-after");
-      const retryMs = retryAfter
-        ? /^\d+$/.test(retryAfter)
-          ? Date.now() + Number(retryAfter) * 1_000
-          : Date.parse(retryAfter)
-        : NaN;
-      throw new SharpApiError(
-        "rate-limited",
-        true,
-        Number.isFinite(retryMs)
-          ? (new Date(retryMs).toISOString() as IsoTimestamp)
-          : undefined,
-      );
+      const retryAt = parseSharpApiResponseMetadata(response.headers).retryAt;
+      throw new SharpApiError("rate-limited", true, retryAt);
     }
     throw new SharpApiError(
       response.status >= 500 ? "provider-unavailable" : "invalid-response",
       response.status >= 500,
     );
   }
-  return boundedJson(response);
+  return {
+    payload: await boundedJson(response),
+    metadata: parseSharpApiResponseMetadata(response.headers),
+  };
 };
 
 export function parseSharpApiAccount(input: unknown): SharpApiAccount {
@@ -996,8 +1063,9 @@ export function parseSharpApiSplitPage(
 export async function fetchSharpApiAccount(
   apiKey: string,
   fetcher: typeof fetch = fetch,
-) {
-  return parseSharpApiAccount(await request("/account", apiKey, fetcher));
+): Promise<SharpApiAccount> {
+  const { payload, metadata } = await request("/account", apiKey, fetcher);
+  return { ...parseSharpApiAccount(payload), responseMetadata: metadata };
 }
 
 export async function fetchSharpApiOddsPage(
@@ -1005,7 +1073,7 @@ export async function fetchSharpApiOddsPage(
   apiKey: string,
   cursor?: string,
   fetcher: typeof fetch = fetch,
-) {
+): Promise<SharpApiOddsPage> {
   const query = new URLSearchParams({
     league: league.providerLeague,
     market: "main",
@@ -1014,11 +1082,15 @@ export async function fetchSharpApiOddsPage(
   });
   if (cursor) query.set("cursor", cursor);
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
-  return parseSharpApiOddsPage(
-    await request(`/odds?${query.toString()}`, apiKey, fetcher),
-    league,
-    retrievedAt,
+  const { payload, metadata } = await request(
+    `/odds?${query.toString()}`,
+    apiKey,
+    fetcher,
   );
+  return {
+    ...parseSharpApiOddsPage(payload, league, retrievedAt),
+    responseMetadata: metadata,
+  };
 }
 
 export interface SharpApiOddsRequestMetadata {
@@ -1060,11 +1132,12 @@ export async function fetchSharpApiEventOdds(
   if (!canonical(providerEventId, 256))
     throw new SharpApiError("configuration");
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
-  const payload = await request(
+  const response = await request(
     `/events/${encodeURIComponent(providerEventId)}/odds`,
     apiKey,
     fetcher,
   );
+  const payload = response.payload;
   if (!record(payload) || !Array.isArray(payload["data"]))
     throw new SharpApiError("invalid-response");
   if (payload["data"].length === 0 || payload["data"].length > 5_000)
@@ -1080,15 +1153,18 @@ export async function fetchSharpApiEventOdds(
     )
       throw new SharpApiError("invalid-response");
   }
-  const page = parseSharpApiOddsPage(
-    {
-      ...payload,
-      pagination: { has_more: false, next_cursor: null },
-    },
-    league,
-    retrievedAt,
-    5_000,
-  );
+  const page = {
+    ...parseSharpApiOddsPage(
+      {
+        ...payload,
+        pagination: { has_more: false, next_cursor: null },
+      },
+      league,
+      retrievedAt,
+      5_000,
+    ),
+    responseMetadata: response.metadata,
+  };
   if (page.events.some((event) => event.providerEventId !== providerEventId))
     throw new SharpApiError("invalid-response");
   return {
@@ -1108,7 +1184,7 @@ export async function fetchSharpApiSchedulePage(
   apiKey: string,
   offset = 0,
   fetcher: typeof fetch = fetch,
-) {
+): Promise<SharpApiSchedulePage> {
   const query = new URLSearchParams({
     league: league.providerLeague.toLowerCase(),
     live: "false",
@@ -1116,11 +1192,15 @@ export async function fetchSharpApiSchedulePage(
     offset: String(offset),
   });
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
-  return parseSharpApiSchedulePage(
-    await request(`/events?${query.toString()}`, apiKey, fetcher),
-    league,
-    retrievedAt,
+  const { payload, metadata } = await request(
+    `/events?${query.toString()}`,
+    apiKey,
+    fetcher,
   );
+  return {
+    ...parseSharpApiSchedulePage(payload, league, retrievedAt),
+    responseMetadata: metadata,
+  };
 }
 
 export async function fetchSharpApiSplitsPage(
@@ -1128,17 +1208,22 @@ export async function fetchSharpApiSplitsPage(
   apiKey: string,
   offset = 0,
   fetcher: typeof fetch = fetch,
-) {
+): Promise<SharpApiSplitPage> {
   const query = new URLSearchParams({
     league: league.providerLeague.toLowerCase(),
     limit: "200",
     offset: String(offset),
   });
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
-  return parseSharpApiSplitPage(
-    await request(`/splits?${query.toString()}`, apiKey, fetcher),
-    retrievedAt,
+  const { payload, metadata } = await request(
+    `/splits?${query.toString()}`,
+    apiKey,
+    fetcher,
   );
+  return {
+    ...parseSharpApiSplitPage(payload, retrievedAt),
+    responseMetadata: metadata,
+  };
 }
 
 export function validateSharpApiActivation(value: SharpApiActivationConfig) {

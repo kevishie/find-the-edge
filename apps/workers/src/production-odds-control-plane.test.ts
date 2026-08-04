@@ -61,6 +61,9 @@ describe("production odds control-plane composition", () => {
     );
     expect(fetchFocused).toHaveBeenCalledTimes(1);
     expect(
+      (await control.getHealth("sharpapi:mls:odds"))?.rateWindow,
+    ).toBeUndefined();
+    expect(
       sharpOddsRequestIdentity({
         leagueKey: "mls",
         endpointMode: "focused",
@@ -89,6 +92,87 @@ describe("production odds control-plane composition", () => {
         pollingWindowSeconds: 300,
       }),
     );
+  });
+
+  it("fails closed on unknown capacity or malformed cooldown and persists authoritative focused rate metadata", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const events = new MemoryEventIngestionStore();
+    vi.spyOn(events, "resolveExactCanonicalBinding").mockResolvedValue({
+      id: "canonical-event-1",
+      version: 1,
+      sportKey: "soccer",
+      startsAt: "2026-08-03T20:00:00.000Z",
+      participantIds: ["away", "home"],
+      participantLabels: ["Away", "Home"],
+    } as never);
+    const common = {
+      events,
+      odds: { persist: vi.fn() },
+      control,
+      sharpApiKey: "server-secret",
+      request: { leagueKey: "mls" as const, providerEventId: "event-rate" },
+      now,
+    };
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mls:odds",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: { limit: 1_000 },
+      updatedAt: at,
+    });
+    expect(await runFocusedSharpOddsIngestion(common)).toMatchObject({
+      status: "retryable",
+      reason: "quota-reserve",
+    });
+    await control.putHealth({
+      ...(await control.getHealth("sharpapi:mls:odds"))!,
+      healthy: false,
+      cooldownUntil: "not-an-instant",
+      rateWindow: { limit: 1_000, remaining: 900 },
+      updatedAt: at,
+    });
+    expect(await runFocusedSharpOddsIngestion(common)).toMatchObject({
+      status: "retryable",
+      reason: "rate-limited",
+    });
+    await control.putHealth({
+      ...(await control.getHealth("sharpapi:mls:odds"))!,
+      healthy: true,
+      cooldownUntil: undefined,
+      quotaRemaining: 0,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 0,
+        resetsAt: "2026-08-03T11:59:00.000Z",
+      },
+      updatedAt: at,
+    } as never);
+    const fetchFocused = vi.fn().mockResolvedValue({
+      request: {},
+      page: {
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+        responseMetadata: {
+          rateWindow: {
+            limit: 1_000,
+            remaining: 731,
+            resetsAt: "2026-08-03T12:01:00.000Z",
+          },
+        },
+      },
+    });
+    expect(
+      await runFocusedSharpOddsIngestion({
+        ...common,
+        request: { ...common.request, providerEventId: "event-rate-success" },
+        fetchFocused,
+      }),
+    ).toMatchObject({ status: "completed" });
+    expect(await control.getHealth("sharpapi:mls:odds")).toMatchObject({
+      rateWindow: { limit: 1_000, remaining: 731 },
+    });
   });
 
   it("distinguishes quota blocking and records persistence failure before success", async () => {

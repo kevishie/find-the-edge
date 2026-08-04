@@ -5,6 +5,7 @@ import {
   parseSharpApiOddsPage,
   parseSharpApiSchedulePage,
   parseSharpApiSplitPage,
+  parseSharpApiResponseMetadata,
   fetchSharpApiEventOdds,
   fetchSharpApiFeaturedOdds,
   sharpApiLeagueByKey,
@@ -72,6 +73,35 @@ describe("SharpAPI activation boundary", () => {
     ...overrides,
   });
 
+  it("captures authoritative rate-window metadata without inventing plan quota", () => {
+    expect(
+      parseSharpApiResponseMetadata(
+        new Headers({
+          "x-ratelimit-limit": "60",
+          "x-ratelimit-remaining": "17",
+          "x-ratelimit-reset": "30",
+          "retry-after": "12",
+        }),
+        new Date("2026-08-04T12:00:00.000Z"),
+      ),
+    ).toEqual({
+      rateWindow: {
+        limit: 60,
+        remaining: 17,
+        resetsAt: "2026-08-04T12:00:30.000Z",
+      },
+      retryAt: "2026-08-04T12:00:12.000Z",
+    });
+    expect(parseSharpApiResponseMetadata(new Headers())).toEqual({
+      rateWindow: {},
+    });
+    expect(
+      parseSharpApiResponseMetadata(
+        new Headers({ "x-ratelimit-reset": "1785862830000" }),
+      ).rateWindow.resetsAt,
+    ).toBe("2026-08-04T17:00:30.000Z");
+  });
+
   it("resolves only exact catalog-backed runtime leagues", () => {
     expect(sharpApiLeagues.map(({ leagueKey }) => leagueKey)).toEqual([
       "mlb",
@@ -104,7 +134,13 @@ describe("SharpAPI activation boundary", () => {
             data: [oddsRow()],
             pagination: { has_more: false, next_cursor: null },
           }),
-          { status: 200 },
+          {
+            status: 200,
+            headers: {
+              "x-ratelimit-limit": "60",
+              "x-ratelimit-remaining": "41",
+            },
+          },
         ),
       );
     });
@@ -120,6 +156,10 @@ describe("SharpAPI activation boundary", () => {
     );
     expect(calls[0]).not.toContain("secret-key");
     expect(featured.request.endpointMode).toBe("featured");
+    expect(featured.page.responseMetadata?.rateWindow).toEqual({
+      limit: 60,
+      remaining: 41,
+    });
 
     const focused = await fetchSharpApiEventOdds(
       league,

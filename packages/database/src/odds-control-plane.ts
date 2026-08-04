@@ -76,8 +76,34 @@ export interface OddsProviderHealth {
   readonly consecutiveSuccesses: number;
   readonly cooldownUntil?: string;
   readonly quotaRemaining?: number;
+  /** Authoritative provider request window. Never populated from account RPM. */
+  readonly rateWindow?: {
+    readonly limit?: number;
+    readonly remaining?: number;
+    readonly resetsAt?: string;
+    readonly probeUntil?: string;
+  };
+  readonly failureClass?: "transient" | "terminal" | "ambiguous";
+  readonly failureReason?: string;
+  readonly retryAt?: string;
+  /** Only transient unhealthy records expire. Success and terminal audit remain durable. */
+  readonly expiresAt?: number;
   readonly updatedAt: string;
 }
+const resetProviderRateWindow = (
+  window: NonNullable<OddsProviderHealth["rateWindow"]>,
+) => {
+  const reset: {
+    limit?: number;
+    remaining?: number;
+    resetsAt?: string;
+    probeUntil?: string;
+  } = { ...window };
+  delete reset.remaining;
+  delete reset.probeUntil;
+  delete reset.resetsAt;
+  return reset;
+};
 export interface OddsRunContinuation {
   readonly version?: number;
   readonly leagueKey: string;
@@ -207,17 +233,57 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
     attempt: OddsAttemptRecord,
   ) {
     if (this.attempts.has(attempt.attemptId)) return false;
-    const health = this.health.get(k);
+    let health = this.health.get(k);
     if (
-      health?.quotaRemaining !== undefined &&
-      health.quotaRemaining - cost < reserve
-    )
-      return false;
-    if (health?.quotaRemaining !== undefined)
+      health?.rateWindow?.resetsAt &&
+      Date.parse(health.rateWindow.resetsAt) <= Date.parse(attempt.requestedAt)
+    ) {
+      const resetHealth: OddsProviderHealth = {
+        ...health,
+        version: (health.version ?? 0) + 1,
+        rateWindow: resetProviderRateWindow(health.rateWindow),
+        updatedAt: attempt.requestedAt,
+      };
+      health = resetHealth;
+      this.health.set(k, resetHealth);
+    }
+    const remaining = health?.rateWindow?.remaining ?? health?.quotaRemaining;
+    if (health?.rateWindow && health.rateWindow.remaining === undefined)
+      if (
+        health.rateWindow.probeUntil &&
+        Date.parse(health.rateWindow.probeUntil) >
+          Date.parse(attempt.requestedAt)
+      )
+        return false;
+      else if (health) {
+        const probeUntil = new Date(
+          Date.parse(attempt.requestedAt) + 60_000,
+        ).toISOString();
+        this.health.set(k, {
+          ...health,
+          version: (health.version ?? 0) + 1,
+          rateWindow: { ...health.rateWindow, probeUntil },
+          updatedAt: attempt.requestedAt,
+        });
+        this.attempts.set(
+          attempt.attemptId,
+          clone({ ...attempt, state: "reserved" }),
+        );
+        return true;
+      }
+    if (remaining !== undefined && remaining - cost < reserve) return false;
+    if (remaining !== undefined && health)
       this.health.set(k, {
         ...health,
         version: (health.version ?? 0) + 1,
-        quotaRemaining: health.quotaRemaining - cost,
+        ...(health.rateWindow
+          ? {
+              rateWindow: {
+                ...health.rateWindow,
+                remaining: remaining - cost,
+              },
+            }
+          : { quotaRemaining: remaining - cost }),
         updatedAt: attempt.requestedAt,
       });
     this.attempts.set(
@@ -326,13 +392,35 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
     cost: number,
     updatedAt: string,
   ) {
-    const old = this.health.get(k);
-    if (old?.quotaRemaining === undefined) return true;
-    if (old.quotaRemaining - cost < reserve) return false;
+    let old = this.health.get(k);
+    if (
+      old?.rateWindow?.resetsAt &&
+      Date.parse(old.rateWindow.resetsAt) <= Date.parse(updatedAt)
+    ) {
+      const resetHealth: OddsProviderHealth = {
+        ...old,
+        version: (old.version ?? 0) + 1,
+        rateWindow: resetProviderRateWindow(old.rateWindow),
+        updatedAt,
+      };
+      old = resetHealth;
+      this.health.set(k, resetHealth);
+    }
+    const remaining = old?.rateWindow?.remaining ?? old?.quotaRemaining;
+    if (old?.rateWindow && old.rateWindow.remaining === undefined) return false;
+    if (remaining === undefined || !old) return true;
+    if (remaining - cost < reserve) return false;
     this.health.set(k, {
       ...old,
       version: (old.version ?? 0) + 1,
-      quotaRemaining: old.quotaRemaining - cost,
+      ...(old.rateWindow
+        ? {
+            rateWindow: {
+              ...old.rateWindow,
+              remaining: remaining - cost,
+            },
+          }
+        : { quotaRemaining: remaining - cost }),
       updatedAt,
     });
     return true;
@@ -345,17 +433,20 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
     updatedAt: string,
   ) {
     const old = this.health.get(k);
-    if (!old?.quotaRemaining && old?.quotaRemaining !== 0) return;
+    const remaining = old?.rateWindow?.remaining ?? old?.quotaRemaining;
+    if (remaining === undefined || !old) return;
+    const nextRemaining =
+      reported === undefined
+        ? Math.max(0, remaining + reserved - actual)
+        : Math.min(reported, Math.max(0, remaining + reserved - actual));
     this.health.set(k, {
       ...old,
       version: (old.version ?? 0) + 1,
-      quotaRemaining:
-        reported === undefined
-          ? Math.max(0, old.quotaRemaining + reserved - actual)
-          : Math.min(
-              reported,
-              Math.max(0, old.quotaRemaining + reserved - actual),
-            ),
+      ...(old.rateWindow
+        ? {
+            rateWindow: { ...old.rateWindow, remaining: nextRemaining },
+          }
+        : { quotaRemaining: nextRemaining }),
       updatedAt,
     });
   }
@@ -494,6 +585,41 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
     if (winner && equalReplay(winner, value)) return;
     throw new Error(conflict);
   }
+  private async currentRateHealth(healthKey: string, updatedAt: string) {
+    for (let retry = 0; retry < 8; retry += 1) {
+      const old = await this.getHealth(healthKey);
+      if (
+        !old?.rateWindow?.resetsAt ||
+        Date.parse(old.rateWindow.resetsAt) > Date.parse(updatedAt)
+      )
+        return old;
+      const reset: OddsProviderHealth = {
+        ...old,
+        rateWindow: resetProviderRateWindow(old.rateWindow),
+        updatedAt,
+      };
+      try {
+        await this.putVersioned(
+          "HEALTH",
+          healthKey,
+          {
+            ...reset,
+            ...(old.version === undefined ? {} : { version: old.version }),
+          },
+          "health-transition-conflict",
+        );
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "health-transition-conflict"
+        )
+          throw error;
+        continue;
+      }
+      return this.getHealth(healthKey);
+    }
+    throw new Error("health-transition-conflict");
+  }
   getRun(id: string) {
     return this.get<OddsRunRecord>("RUN", id);
   }
@@ -524,9 +650,72 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
     cost: number,
     attempt: OddsAttemptRecord,
   ) {
-    const health = await this.getHealth(healthKey);
-    if (health?.quotaRemaining === undefined)
+    const health = await this.currentRateHealth(healthKey, attempt.requestedAt);
+    const rateRemaining = health?.rateWindow?.remaining;
+    const legacyRemaining = health?.quotaRemaining;
+    if (health?.rateWindow && rateRemaining === undefined) {
+      const probeUntil = new Date(
+        Date.parse(attempt.requestedAt) + 60_000,
+      ).toISOString();
+      try {
+        await this.client.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                Update: {
+                  TableName: this.tableName,
+                  Key: key("HEALTH", healthKey),
+                  UpdateExpression:
+                    "SET #v.#window.#probe = :probe, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one",
+                  ConditionExpression: `attribute_not_exists(#v.#window.#remaining) AND ${health.version === undefined ? "attribute_not_exists(#v.#version)" : "#v.#version = :expectedVersion"} AND (attribute_not_exists(#v.#window.#probe) OR #v.#window.#probe <= :updated)`,
+                  ExpressionAttributeNames: {
+                    "#v": "value",
+                    "#window": "rateWindow",
+                    "#probe": "probeUntil",
+                    "#remaining": "remaining",
+                    "#u": "updatedAt",
+                    "#version": "version",
+                  },
+                  ExpressionAttributeValues: {
+                    ":probe": probeUntil,
+                    ":updated": attempt.requestedAt,
+                    ":one": 1,
+                    ":zero": 0,
+                    ...(health.version === undefined
+                      ? {}
+                      : { ":expectedVersion": health.version }),
+                  },
+                },
+              },
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: {
+                    ...key("ATTEMPT", attempt.attemptId),
+                    value: { ...attempt, state: "reserved" },
+                  },
+                  ConditionExpression: "attribute_not_exists(pk)",
+                },
+              },
+            ],
+          }),
+        );
+        return true;
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          [
+            "ConditionalCheckFailedException",
+            "TransactionCanceledException",
+          ].includes(error.name)
+        )
+          return false;
+        throw error;
+      }
+    }
+    if (rateRemaining === undefined && legacyRemaining === undefined)
       return this.reserveAttempt(attempt);
+    const rateWindow = rateRemaining !== undefined;
     try {
       await this.client.send(
         new TransactWriteCommand({
@@ -535,12 +724,12 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
               Update: {
                 TableName: this.tableName,
                 Key: key("HEALTH", healthKey),
-                UpdateExpression:
-                  "SET #v.#q = #v.#q - :cost, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one",
-                ConditionExpression: "#v.#q >= :minimum",
+                UpdateExpression: `SET ${rateWindow ? "#v.#window.#q" : "#v.#q"} = ${rateWindow ? "#v.#window.#q" : "#v.#q"} - :cost, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one`,
+                ConditionExpression: `${rateWindow ? "#v.#window.#q" : "#v.#q"} >= :minimum`,
                 ExpressionAttributeNames: {
                   "#v": "value",
-                  "#q": "quotaRemaining",
+                  ...(rateWindow ? { "#window": "rateWindow" } : {}),
+                  "#q": rateWindow ? "remaining" : "quotaRemaining",
                   "#u": "updatedAt",
                   "#version": "version",
                 },
@@ -794,19 +983,24 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
     cost: number,
     updatedAt: string,
   ) {
-    const old = await this.getHealth(healthKey);
-    if (old?.quotaRemaining === undefined) return true;
+    const old = await this.currentRateHealth(healthKey, updatedAt);
+    const rateRemaining = old?.rateWindow?.remaining;
+    const legacyRemaining = old?.quotaRemaining;
+    if (old?.rateWindow && rateRemaining === undefined) return false;
+    if (rateRemaining === undefined && legacyRemaining === undefined)
+      return true;
+    const rateWindow = rateRemaining !== undefined;
     try {
       await this.client.send(
         new UpdateCommand({
           TableName: this.tableName,
           Key: key("HEALTH", healthKey),
-          UpdateExpression:
-            "SET #v.#q = #v.#q - :cost, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one",
-          ConditionExpression: "#v.#q >= :minimum",
+          UpdateExpression: `SET ${rateWindow ? "#v.#window.#q" : "#v.#q"} = ${rateWindow ? "#v.#window.#q" : "#v.#q"} - :cost, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one`,
+          ConditionExpression: `${rateWindow ? "#v.#window.#q" : "#v.#q"} >= :minimum`,
           ExpressionAttributeNames: {
             "#v": "value",
-            "#q": "quotaRemaining",
+            ...(rateWindow ? { "#window": "rateWindow" } : {}),
+            "#q": rateWindow ? "remaining" : "quotaRemaining",
             "#u": "updatedAt",
             "#version": "version",
           },
@@ -837,20 +1031,24 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
     updatedAt: string,
   ) {
     for (let retry = 0; retry < 8; retry += 1) {
-      const old = await this.getHealth(healthKey);
-      if (old?.quotaRemaining === undefined) return;
-      const adjusted = Math.max(0, old.quotaRemaining + reserved - actual);
+      const old = await this.currentRateHealth(healthKey, updatedAt);
+      const rateRemaining = old?.rateWindow?.remaining;
+      const legacyRemaining = old?.quotaRemaining;
+      const remaining = rateRemaining ?? legacyRemaining;
+      if (remaining === undefined) return;
+      const rateWindow = rateRemaining !== undefined;
+      const adjusted = Math.max(0, remaining + reserved - actual);
       try {
         await this.client.send(
           new UpdateCommand({
             TableName: this.tableName,
             Key: key("HEALTH", healthKey),
-            UpdateExpression:
-              "SET #v.#q = :remaining, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one",
-            ConditionExpression: "#v.#q = :expected",
+            UpdateExpression: `SET ${rateWindow ? "#v.#window.#q" : "#v.#q"} = :remaining, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one`,
+            ConditionExpression: `${rateWindow ? "#v.#window.#q" : "#v.#q"} = :expected`,
             ExpressionAttributeNames: {
               "#v": "value",
-              "#q": "quotaRemaining",
+              ...(rateWindow ? { "#window": "rateWindow" } : {}),
+              "#q": rateWindow ? "remaining" : "quotaRemaining",
               "#u": "updatedAt",
               "#version": "version",
             },
@@ -859,7 +1057,7 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
                 reported === undefined
                   ? adjusted
                   : Math.min(reported, adjusted),
-              ":expected": old.quotaRemaining,
+              ":expected": remaining,
               ":updated": updatedAt,
               ":one": 1,
               ":zero": 0,

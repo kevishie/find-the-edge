@@ -5,10 +5,16 @@ import type {
   FixtureOddsPersistResult,
 } from "@find-the-edge/database";
 import type {
+  FixtureOddsAvailabilityEvidence,
   IsoTimestamp,
   OddsNormalizationReason,
 } from "@find-the-edge/domain";
-import { participantSelectionKey } from "@find-the-edge/domain";
+import {
+  fixtureOddsGroupAvailabilityIdentity,
+  fixtureOddsPartition,
+  participantSelectionKey,
+  sha256Hex,
+} from "@find-the-edge/domain";
 import {
   normalizeSportsbook,
   oddsCollectionPolicyVersion,
@@ -32,6 +38,9 @@ import { reconcileScheduledProviderEvent } from "./schedule-reconciliation";
 
 export interface SharpApiOddsPersister {
   persist(input: FixtureOddsIngestInput): Promise<FixtureOddsPersistResult>;
+  persistAvailability?(
+    value: FixtureOddsAvailabilityEvidence,
+  ): Promise<unknown>;
 }
 
 export interface SharpApiIngestionSummary {
@@ -299,6 +308,7 @@ export async function persistSharpApiOddsPage(
     readonly current?: "advanced" | "retained";
     readonly mirrorFailure?: true;
   }) => void,
+  expectedMarkets?: readonly string[],
 ) {
   const comparableParticipant = (value: string) =>
     value
@@ -319,6 +329,7 @@ export async function persistSharpApiOddsPage(
   let currentRetained = 0;
   let staleEvidence = 0;
   let partialEvidence = 0;
+  let suspendedEvidence = 0;
   const rejectionCounts: Partial<Record<OddsNormalizationReason, number>> = {};
   for (const rejection of page.rejections ?? [])
     rejectionCounts[rejection.reason] =
@@ -355,6 +366,73 @@ export async function persistSharpApiOddsPage(
         ? bookRoles[sportsbook.id]
         : sportsbook.productionRole;
       if (!bookRole) continue;
+      if (odds.persistAvailability)
+        for (const price of book.prices) {
+          const state =
+            price.isSuspended === true
+              ? "suspended"
+              : price.isActive === false
+                ? "closed"
+                : undefined;
+          if (!state) continue;
+          if (state === "suspended") suspendedEvidence += 1;
+          const providerParticipantIndex =
+            price.selectionKey === "away"
+              ? 0
+              : price.selectionKey === "home"
+                ? 1
+                : price.participantSide === "away"
+                  ? 0
+                  : price.participantSide === "home"
+                    ? 1
+                    : -1;
+          let participantIndex = providerParticipantIndex;
+          if (providerParticipantIndex >= 0 && canonical.participantLabels) {
+            const providerLabel =
+              providerParticipantIndex === 0 ? raw.awayTeam : raw.homeTeam;
+            participantIndex = canonical.participantLabels.findIndex(
+              (label) =>
+                comparableParticipant(label) ===
+                comparableParticipant(providerLabel),
+            );
+          }
+          const participantId =
+            participantIndex >= 0
+              ? canonical.participantIds[participantIndex]
+              : undefined;
+          if (participantIndex >= 0 && !participantId) continue;
+          const selectionKey = participantId
+            ? participantSelectionKey(
+                participantId,
+                price.marketKey === "team_total"
+                  ? (price.selectionKey as "over" | "under")
+                  : undefined,
+              )
+            : price.selectionKey;
+          const identity = fixtureOddsPartition({
+            canonicalEventId: canonical.id,
+            canonicalEventVersion: canonical.version,
+            sportKey: canonical.sportKey,
+            marketKey: price.marketKey,
+            selectionKey,
+            sportsbookId: sportsbook.id,
+          }).key;
+          await odds.persistAvailability({
+            identity,
+            state,
+            observedAt: price.observedAt,
+            evidenceId: sha256Hex(
+              JSON.stringify([
+                SHARP_API_PROVIDER_ID,
+                raw.providerEventId,
+                identity,
+                state,
+                price.providerPriceId,
+              ]),
+            ),
+            reason: state,
+          });
+        }
       staleEvidence += book.prices.filter(
         (price) =>
           price.isMainLine &&
@@ -376,8 +454,64 @@ export async function persistSharpApiOddsPage(
       if (complete.rejected)
         rejectionCounts["incomplete-market"] =
           (rejectionCounts["incomplete-market"] ?? 0) + complete.rejected;
+      if (complete.rejected && odds.persistAvailability)
+        for (const marketKey of [
+          ...new Set(
+            book.prices
+              .filter(
+                (price) =>
+                  price.isMainLine &&
+                  !price.isAlternateLine &&
+                  !price.isPlayerProp,
+              )
+              .map(({ marketKey }) => marketKey),
+          ),
+        ].filter(
+          (candidate) =>
+            completeMainPrices(
+              book.prices.filter(
+                (price) =>
+                  price.marketKey === candidate &&
+                  price.isMainLine &&
+                  !price.isAlternateLine &&
+                  !price.isPlayerProp &&
+                  !price.isStalePregamePrice &&
+                  !price.isSuspended,
+              ),
+              league.leagueKey,
+            ).rejected > 0,
+        )) {
+          const identity = fixtureOddsGroupAvailabilityIdentity({
+            canonicalEventId: canonical.id,
+            canonicalEventVersion: canonical.version,
+            sportKey: canonical.sportKey,
+            marketKey,
+            sportsbookId: sportsbook.id,
+          });
+          await odds.persistAvailability({
+            identity,
+            state: "incomplete",
+            observedAt: page.retrievedAt,
+            evidenceId: sha256Hex(
+              JSON.stringify([
+                SHARP_API_PROVIDER_ID,
+                raw.providerEventId,
+                identity,
+                "incomplete",
+              ]),
+            ),
+            reason: "incomplete-market",
+          });
+        }
       // One unit represents one rejected/incomplete market group, not a row.
       partialEvidence += complete.rejected;
+      const expectedByMarket = new Map<string, number>();
+      const persistedByMarket = new Map<string, number>();
+      for (const price of complete.prices)
+        expectedByMarket.set(
+          price.marketKey,
+          (expectedByMarket.get(price.marketKey) ?? 0) + 1,
+        );
       for (const price of complete.prices) {
         const providerParticipantIndex =
           price.marketKey === "team_total"
@@ -474,7 +608,86 @@ export async function persistSharpApiOddsPage(
         else currentRetained += 1;
         observations += 1;
         eventObservations += 1;
+        persistedByMarket.set(
+          price.marketKey,
+          (persistedByMarket.get(price.marketKey) ?? 0) + 1,
+        );
       }
+      if (odds.persistAvailability)
+        for (const [marketKey, expected] of expectedByMarket) {
+          const persistedCount = persistedByMarket.get(marketKey) ?? 0;
+          {
+            const identity = fixtureOddsGroupAvailabilityIdentity({
+              canonicalEventId: canonical.id,
+              canonicalEventVersion: canonical.version,
+              sportKey: canonical.sportKey,
+              marketKey,
+              sportsbookId: sportsbook.id,
+            });
+            await odds.persistAvailability({
+              identity,
+              state: persistedCount === expected ? "active" : "incomplete",
+              observedAt: page.retrievedAt,
+              evidenceId: sha256Hex(
+                JSON.stringify([
+                  SHARP_API_PROVIDER_ID,
+                  raw.providerEventId,
+                  identity,
+                  persistedCount === expected ? "active" : "incomplete",
+                ]),
+              ),
+              reason:
+                persistedCount === expected
+                  ? "complete-market"
+                  : "incomplete-market",
+            });
+          }
+        }
+    }
+    if (odds.persistAvailability && bookRoles && expectedMarkets) {
+      const observed = new Map<string, Set<string>>();
+      for (const book of raw.bookmakers) {
+        const normalized = normalizeSportsbook(book.id);
+        if (normalized.kind === "rejected") continue;
+        observed.set(
+          normalized.sportsbook.id,
+          new Set(book.prices.map(({ marketKey }) => marketKey)),
+        );
+      }
+      for (const sportsbookId of Object.keys(bookRoles))
+        for (const expectedMarket of expectedMarkets) {
+          if (
+            !["moneyline", "spread", "total", "btts", "team_total"].includes(
+              expectedMarket,
+            )
+          )
+            continue;
+          const marketKey = expectedMarket as
+            "moneyline" | "spread" | "total" | "btts" | "team_total";
+          if (!observed.get(sportsbookId)?.has(marketKey)) {
+            const identity = fixtureOddsGroupAvailabilityIdentity({
+              canonicalEventId: canonical.id,
+              canonicalEventVersion: canonical.version,
+              sportKey: canonical.sportKey,
+              marketKey,
+              sportsbookId,
+            });
+            await odds.persistAvailability({
+              identity,
+              state: "missing",
+              observedAt: page.retrievedAt,
+              evidenceId: sha256Hex(
+                JSON.stringify([
+                  SHARP_API_PROVIDER_ID,
+                  raw.providerEventId,
+                  identity,
+                  "missing",
+                ]),
+              ),
+              reason: "provider-market-omitted",
+            });
+          }
+        }
     }
     if (eventObservations > 0) events += 1;
   }
@@ -489,6 +702,7 @@ export async function persistSharpApiOddsPage(
     currentRetained,
     staleEvidence,
     partialEvidence,
+    suspendedEvidence,
   };
 }
 

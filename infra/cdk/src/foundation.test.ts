@@ -34,12 +34,14 @@ describe("foundation CDK app", () => {
         Variables: Match.objectLike({
           FTE_SHARP_API_ENABLED: "true",
           FTE_SHARP_API_SECRET_ID: Match.anyValue(),
+          FTE_LIVE_ODDS_QUEUE_URL: Match.anyValue(),
         }),
       },
     });
     template.hasOutput("SharpApiSecretName", {});
     const sharpRendered = JSON.stringify(template.toJSON());
     expect(sharpRendered).toContain("sharpapi");
+    expect(sharpRendered).toContain("sqs:ChangeMessageVisibility");
     expect(sharpRendered).not.toContain("sk_live_");
     template.hasOutput("FixtureOddsSeedFunctionName", {});
     template.hasResourceProperties("AWS::IAM::Policy", {
@@ -143,6 +145,15 @@ describe("foundation CDK app", () => {
     expect(paperResources).not.toContain("replayCommand");
     expect(paperResources).not.toContain('"DeadLetterConfig"');
     expect(paperResources).not.toContain("dynamodb:Scan");
+    for (const alarm of [
+      "OddsCommandOutcomeAlarm",
+      "OddsProviderHealthUnavailableAlarm",
+      "OddsRateWindowBlockedAlarm",
+      "OddsMarketSuspendedAlarm",
+      "OddsPartialEvidenceAlarm",
+      "LiveOddsControlPlaneDlqAlarm",
+    ])
+      expect(paperResources).toContain(alarm);
     template.hasResourceProperties("AWS::Lambda::Function", {
       ReservedConcurrentExecutions: 1,
       Environment: { Variables: { FTE_EVENT_TABLE: Match.anyValue() } },
@@ -567,7 +578,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 48);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 53);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

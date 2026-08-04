@@ -4,6 +4,9 @@ import { MemoryOddsControlPlaneStore } from "@find-the-edge/database";
 import {
   classifyOddsControlPlaneFailure,
   deduplicateProviderBookEvidence,
+  decideOddsRetry,
+  healthyOddsProviderState,
+  unhealthyOddsProviderState,
   runDueOddsLeagues,
   runOddsLeague,
   withPaidLeaseHeartbeat,
@@ -50,6 +53,77 @@ const provider = (
   fetchPage: ControlPlaneProvider["fetchPage"],
 ): ControlPlaneProvider => ({ providerId: id, fetchPage });
 describe("odds collection control plane", () => {
+  it("retries only safe transient failures and reconciles ambiguous paid calls", () => {
+    expect(
+      decideOddsRetry({
+        error: new Error("rate-limited"),
+        attempt: 1,
+        now,
+        providerRetryAt: "2026-08-03T12:02:00.000Z",
+        jitter: () => 0,
+      }),
+    ).toMatchObject({
+      class: "transient",
+      action: "retry",
+      retryAt: "2026-08-03T12:02:00.000Z",
+    });
+    expect(
+      decideOddsRetry({ error: new Error("unauthorized"), attempt: 1, now }),
+    ).toMatchObject({ class: "terminal", action: "stop" });
+    expect(
+      decideOddsRetry({
+        error: Object.assign(new Error("socket closed"), { name: "Error" }),
+        attempt: 1,
+        now,
+      }),
+    ).toMatchObject({ class: "ambiguous", action: "reconcile" });
+    expect(
+      decideOddsRetry({
+        error: new Error("provider-unavailable"),
+        attempt: 5,
+        now,
+      }),
+    ).toMatchObject({ class: "transient", action: "exhausted" });
+  });
+  it("expires only transient health and heals without deleting audit state", () => {
+    const transient = unhealthyOddsProviderState(null, {
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      now,
+      cooldownSeconds: 60,
+      decision: decideOddsRetry({
+        error: new Error("rate-limited"),
+        attempt: 1,
+        now,
+        jitter: () => 0,
+      }),
+    });
+    expect(transient).toMatchObject({
+      failureClass: "transient",
+      failureReason: "rate-limited",
+    });
+    expect(typeof transient.expiresAt).toBe("number");
+    const terminal = unhealthyOddsProviderState(null, {
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      now,
+      cooldownSeconds: 60,
+      decision: decideOddsRetry({
+        error: new Error("unauthorized"),
+        attempt: 1,
+        now,
+      }),
+    });
+    expect(terminal).not.toHaveProperty("expiresAt");
+    expect(
+      healthyOddsProviderState(transient, {
+        providerId: "sharpapi",
+        healthKey: "sharpapi:mlb:odds",
+        updatedAt: "2026-08-03T12:02:00.000Z",
+        consecutiveSuccesses: 1,
+      }),
+    ).not.toHaveProperty("failureReason");
+  });
   it("classifies bounded recovery and pagination failures without raw errors", () => {
     expect(classifyOddsControlPlaneFailure(new Error("run-owned"))).toBe(
       "provider-recovering",
@@ -665,7 +739,10 @@ describe("odds collection control plane", () => {
       updatedAt: now.toISOString(),
     });
     const sharpFetch = vi.fn();
-    const probe = vi.fn().mockResolvedValue({ quotaCost: 1 });
+    const probe = vi.fn().mockResolvedValue({
+      quotaCost: 1,
+      rateWindow: { limit: 60, remaining: 47 },
+    });
     const fallback = vi.fn().mockResolvedValue({
       items: [],
       gaps: [],
@@ -696,7 +773,37 @@ describe("odds collection control plane", () => {
     expect(await store.getHealth("sharpapi:mlb:odds")).toMatchObject({
       healthy: false,
       consecutiveSuccesses: 1,
+      rateWindow: { limit: 60, remaining: 47 },
     });
+  });
+
+  it("ignores stale legacy quota when an authoritative rate window exists", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      quotaRemaining: 0,
+      rateWindow: { limit: 1_000, remaining: 900 },
+      updatedAt: now.toISOString(),
+    });
+    const fetchPage = vi.fn().mockResolvedValue({
+      items: [],
+      gaps: [],
+      quotaCost: 1,
+      digest: "authoritative-window",
+    });
+    expect(
+      await runOddsLeague({
+        policy,
+        store,
+        providers: new Map([["sharpapi", provider("sharpapi", fetchPage)]]),
+        committer: { commit: vi.fn().mockResolvedValue(false) },
+        now,
+      }),
+    ).toMatchObject({ status: "completed", providerId: "sharpapi" });
+    expect(fetchPage).toHaveBeenCalledOnce();
   });
   it("leases recovery probes so concurrent unhealthy ticks spend once", async () => {
     const store = new MemoryOddsControlPlaneStore();

@@ -89,6 +89,89 @@ export interface FixtureOddsState {
 export type FixtureOddsSnapshotDecision = "created" | "existing";
 export type FixtureOddsCurrentDecision = "advanced" | "retained";
 
+export type FixtureOddsAvailabilityState =
+  | "active"
+  | "suspended"
+  | "closed"
+  | "missing"
+  | "malformed"
+  | "incomplete"
+  | "unavailable";
+
+export interface FixtureOddsAvailabilityEvidence {
+  readonly identity: string;
+  readonly state: FixtureOddsAvailabilityState;
+  readonly observedAt: string;
+  readonly evidenceId: string;
+  readonly reason: string;
+}
+
+export const fixtureOddsGroupAvailabilityIdentity = (input: {
+  readonly canonicalEventId: string;
+  readonly canonicalEventVersion: number;
+  readonly sportKey: string;
+  readonly marketKey: string;
+  readonly sportsbookId: string;
+}) =>
+  `FIXTURE_ODDS_GROUP#${sha256Hex(
+    JSON.stringify([
+      input.canonicalEventId,
+      input.canonicalEventVersion,
+      input.sportKey,
+      input.marketKey,
+      input.sportsbookId,
+    ]),
+  )}`;
+
+const compareAvailabilityEvidence = (
+  left: FixtureOddsAvailabilityEvidence,
+  right: FixtureOddsAvailabilityEvidence,
+) =>
+  Date.parse(left.observedAt) - Date.parse(right.observedAt) ||
+  (left.state === right.state
+    ? left.evidenceId.localeCompare(right.evidenceId)
+    : left.state === "active"
+      ? -1
+      : right.state === "active"
+        ? 1
+        : left.evidenceId.localeCompare(right.evidenceId));
+
+export const transitionFixtureOddsAvailability = (
+  prior: FixtureOddsAvailabilityEvidence | undefined,
+  next: FixtureOddsAvailabilityEvidence,
+): FixtureOddsAvailabilityEvidence =>
+  prior && compareAvailabilityEvidence(next, prior) <= 0 ? prior : next;
+
+/** A price is actionable only if it is not older than the latest exact
+ * availability evidence and that evidence is active. History is unaffected. */
+export const isFixtureOddsSnapshotActionable = (
+  snapshot: Pick<
+    NormalizedFixtureOddsSnapshot,
+    | "observedAt"
+    | "snapshotId"
+    | "partitionKey"
+    | "canonicalEventId"
+    | "canonicalEventVersion"
+    | "sportKey"
+    | "marketKey"
+    | "sportsbookId"
+  >,
+  selectionAvailability?: FixtureOddsAvailabilityEvidence,
+  groupAvailability?: FixtureOddsAvailabilityEvidence,
+) => {
+  if (!selectionAvailability || !groupAvailability) return false;
+  const groupIdentity = fixtureOddsGroupAvailabilityIdentity(snapshot);
+  return (
+    selectionAvailability.identity === snapshot.partitionKey &&
+    groupAvailability.identity === groupIdentity &&
+    selectionAvailability.state === "active" &&
+    groupAvailability.state === "active" &&
+    Date.parse(selectionAvailability.observedAt) >=
+      Date.parse(snapshot.observedAt) &&
+    Date.parse(groupAvailability.observedAt) >= Date.parse(snapshot.observedAt)
+  );
+};
+
 export interface FixtureOddsTransitionResult {
   readonly state: FixtureOddsState;
   readonly snapshot: FixtureOddsSnapshotDecision;

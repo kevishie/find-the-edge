@@ -4,6 +4,7 @@ import { oddsCollectionPolicyVersion } from "@find-the-edge/config";
 import type { OddsEvidenceGap } from "@find-the-edge/domain";
 import type {
   OddsControlPlaneStore,
+  OddsProviderHealth,
   OddsRunContinuation,
   OddsRunRecord,
 } from "@find-the-edge/database";
@@ -63,6 +64,11 @@ export interface NormalizedOddsPage {
   readonly nextPageToken?: string;
   readonly quotaCost: number;
   readonly quotaRemaining?: number;
+  readonly rateWindow?: {
+    readonly limit?: number;
+    readonly remaining?: number;
+    readonly resetsAt?: string;
+  };
   readonly digest: string;
   readonly seenProviderEventIds?: readonly string[];
 }
@@ -106,6 +112,7 @@ export interface ControlPlaneProvider {
   probe?(): Promise<{
     readonly quotaCost: number;
     readonly quotaRemaining?: number;
+    readonly rateWindow?: NormalizedOddsPage["rateWindow"];
   }>;
   reconcileMissing?(input: {
     readonly runId: string;
@@ -262,13 +269,164 @@ const ambiguousTransport = (error: unknown) =>
     /timeout|timed out|socket|network|econn|ambiguous|run-owned/i.test(
       error.message,
     ));
+export type OddsFailureClass = "transient" | "terminal" | "ambiguous";
+export interface OddsRetryDecision {
+  readonly class: OddsFailureClass;
+  readonly action: "retry" | "stop" | "reconcile" | "exhausted";
+  readonly retryAt?: string;
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly reason: string;
+}
+
+const TRANSIENT_FAILURES = new Set([
+  "provider-unavailable",
+  "rate-limited",
+  "provider-cooldown",
+  "quota-reserve",
+]);
+const TERMINAL_FAILURES = new Set([
+  "unauthorized",
+  "not-entitled",
+  "configuration",
+  "invalid-response",
+  "coverage-missing",
+  "mapping-quarantine",
+  "pagination-invalid",
+]);
+
+/** One retry policy for every SharpAPI operation. Delay is bounded even when
+ * the provider sends a pathological value; jitter is injectable for tests. */
+export const decideOddsRetry = (input: {
+  readonly error: unknown;
+  readonly attempt: number;
+  readonly now: Date;
+  readonly providerRetryAt?: string;
+  readonly maxAttempts?: number;
+  readonly jitter?: () => number;
+}): OddsRetryDecision => {
+  const maxAttempts = Math.max(1, Math.min(5, input.maxAttempts ?? 5));
+  const reason = classifyOddsControlPlaneFailure(input.error);
+  if (
+    ambiguousTransport(input.error) ||
+    reason === "provider-request-ambiguous"
+  )
+    return {
+      class: "ambiguous",
+      action: input.attempt >= maxAttempts ? "exhausted" : "reconcile",
+      attempt: input.attempt,
+      maxAttempts,
+      reason: "provider-request-ambiguous",
+    };
+  if (TERMINAL_FAILURES.has(reason) || !TRANSIENT_FAILURES.has(reason))
+    return {
+      class: "terminal",
+      action: "stop",
+      attempt: input.attempt,
+      maxAttempts,
+      reason,
+    };
+  if (input.attempt >= maxAttempts)
+    return {
+      class: "transient",
+      action: "exhausted",
+      attempt: input.attempt,
+      maxAttempts,
+      reason,
+    };
+  const providerMs = input.providerRetryAt
+    ? Date.parse(input.providerRetryAt)
+    : Number.NaN;
+  const exponentialMs = Math.min(60_000, 1_000 * 2 ** (input.attempt - 1));
+  const jitterMs = Math.floor(
+    Math.max(0, Math.min(1, input.jitter?.() ?? Math.random())) * 1_000,
+  );
+  const retryMs = Math.min(
+    input.now.getTime() + 15 * 60_000,
+    Math.max(
+      input.now.getTime() + exponentialMs + jitterMs,
+      Number.isFinite(providerMs) ? providerMs : 0,
+    ),
+  );
+  return {
+    class: "transient",
+    action: "retry",
+    retryAt: new Date(retryMs).toISOString(),
+    attempt: input.attempt,
+    maxAttempts,
+    reason,
+  };
+};
+
+export const healthyOddsProviderState = (
+  current: OddsProviderHealth | null,
+  input: {
+    readonly providerId: string;
+    readonly healthKey: string;
+    readonly updatedAt: string;
+    readonly consecutiveSuccesses: number;
+  },
+) => {
+  const retained: {
+    -readonly [K in keyof OddsProviderHealth]?: OddsProviderHealth[K];
+  } = { ...(current ?? {}) };
+  delete retained.failureClass;
+  delete retained.failureReason;
+  delete retained.retryAt;
+  delete retained.expiresAt;
+  delete retained.cooldownUntil;
+  return {
+    ...retained,
+    ...input,
+    healthy: true as const,
+  };
+};
+
+export const unhealthyOddsProviderState = (
+  current: OddsProviderHealth | null,
+  input: {
+    readonly providerId: string;
+    readonly healthKey: string;
+    readonly now: Date;
+    readonly decision: OddsRetryDecision;
+    readonly cooldownSeconds: number;
+  },
+) => {
+  const fallbackRetryAt = new Date(
+    input.now.getTime() + input.cooldownSeconds * 1_000,
+  ).toISOString();
+  const retryAt =
+    input.decision.class === "transient"
+      ? (input.decision.retryAt ?? fallbackRetryAt)
+      : undefined;
+  const retained: {
+    -readonly [K in keyof OddsProviderHealth]?: OddsProviderHealth[K];
+  } = { ...(current ?? {}) };
+  delete retained.expiresAt;
+  delete retained.retryAt;
+  delete retained.cooldownUntil;
+  return {
+    ...retained,
+    providerId: input.providerId,
+    healthKey: input.healthKey,
+    healthy: false as const,
+    consecutiveSuccesses: 0,
+    failureClass: input.decision.class,
+    failureReason: input.decision.reason,
+    ...(retryAt
+      ? {
+          retryAt,
+          cooldownUntil: retryAt,
+          expiresAt: Math.floor(Date.parse(retryAt) / 1_000) + 3_600,
+        }
+      : {}),
+    updatedAt: input.now.toISOString(),
+  };
+};
+
 const retryable = (error: unknown) =>
-  [
-    "provider-unavailable",
-    "rate-limited",
-    "not-entitled",
-    "coverage-missing",
-  ].includes(classifyOddsControlPlaneFailure(error));
+  decideOddsRetry({ error, attempt: 1, now: new Date(0), jitter: () => 0 })
+    .class === "transient";
 
 export async function runOddsLeague(input: {
   readonly policy: LeagueOddsCollectionPolicy;
@@ -391,13 +549,19 @@ export async function runOddsLeague(input: {
     const accountHealth = await store.getHealth(
       `${candidate.providerId}:account:account`,
     );
+    const cooldownMs = health?.cooldownUntil
+      ? Date.parse(health.cooldownUntil)
+      : undefined;
     const effectiveQuotaRemaining = [
-      health?.quotaRemaining,
-      accountHealth?.quotaRemaining,
+      health?.rateWindow ? health.rateWindow.remaining : health?.quotaRemaining,
+      accountHealth?.rateWindow
+        ? accountHealth.rateWindow.remaining
+        : accountHealth?.quotaRemaining,
     ].filter((value): value is number => value !== undefined);
     if (
-      health?.cooldownUntil &&
-      Date.parse(health.cooldownUntil) > now.getTime()
+      cooldownMs !== undefined &&
+      Number.isFinite(cooldownMs) &&
+      cooldownMs > now.getTime()
     ) {
       lastReason = "provider-cooldown";
       continue;
@@ -405,7 +569,8 @@ export async function runOddsLeague(input: {
     if (
       health?.healthy === false &&
       (health.cooldownUntil === undefined ||
-        Date.parse(health.cooldownUntil) <= now.getTime()) &&
+        !Number.isFinite(cooldownMs) ||
+        (cooldownMs !== undefined && cooldownMs <= now.getTime())) &&
       health.consecutiveSuccesses < candidate.failbackSuccesses
     ) {
       if (provider.probe) {
@@ -496,15 +661,17 @@ export async function runOddsLeague(input: {
               quotaCost: probe.quotaCost,
             });
             await store.putHealth({
-              ...(await store.getHealth(healthKey)),
-              providerId: candidate.providerId,
-              healthKey,
+              ...healthyOddsProviderState(await store.getHealth(healthKey), {
+                providerId: candidate.providerId,
+                healthKey,
+                updatedAt: iso(now),
+                consecutiveSuccesses: successes,
+              }),
               healthy: successes >= candidate.failbackSuccesses,
-              consecutiveSuccesses: successes,
               ...(probe.quotaRemaining === undefined
                 ? {}
                 : { quotaRemaining: probe.quotaRemaining }),
-              updatedAt: iso(now),
+              ...(probe.rateWindow ? { rateWindow: probe.rateWindow } : {}),
             });
             await clearOwnedContinuation(
               store,
@@ -525,17 +692,22 @@ export async function runOddsLeague(input: {
                 ? "provider-request-ambiguous"
                 : classifyOddsControlPlaneFailure(error),
             });
-            await store.putHealth({
-              ...(await store.getHealth(healthKey)),
-              providerId: candidate.providerId,
-              healthKey,
-              healthy: false,
-              consecutiveSuccesses: 0,
-              cooldownUntil: new Date(
-                now.getTime() + candidate.cooldownSeconds * 1000,
-              ).toISOString(),
-              updatedAt: iso(now),
-            });
+            await store.putHealth(
+              unhealthyOddsProviderState(await store.getHealth(healthKey), {
+                providerId: candidate.providerId,
+                healthKey,
+                now,
+                decision: decideOddsRetry({
+                  error: ambiguous
+                    ? new Error("provider-request-ambiguous")
+                    : error,
+                  attempt: 1,
+                  now,
+                  jitter: () => 0,
+                }),
+                cooldownSeconds: candidate.cooldownSeconds,
+              }),
+            );
             if (ambiguous)
               await putContinuationCas(store, {
                 ...probeOwner,
@@ -579,6 +751,10 @@ export async function runOddsLeague(input: {
         quotaCost: 0,
       });
       input.metrics?.emit("OddsQuotaReserveSkip", 1, {
+        league: policy.leagueKey,
+        provider: candidate.providerId,
+      });
+      input.metrics?.emit("OddsRateWindowBlocked", 1, {
         league: policy.leagueKey,
         provider: candidate.providerId,
       });
@@ -782,13 +958,26 @@ export async function runOddsLeague(input: {
             });
             if (response.quotaRemaining !== undefined)
               await store.putHealth({
-                ...(await store.getHealth(healthKey)),
-                providerId: candidate.providerId,
-                healthKey,
-                healthy: true,
-                consecutiveSuccesses: (health?.consecutiveSuccesses ?? 0) + 1,
+                ...healthyOddsProviderState(await store.getHealth(healthKey), {
+                  providerId: candidate.providerId,
+                  healthKey,
+                  updatedAt: iso(now),
+                  consecutiveSuccesses: (health?.consecutiveSuccesses ?? 0) + 1,
+                }),
                 quotaRemaining: response.quotaRemaining,
-                updatedAt: iso(now),
+                ...(response.rateWindow
+                  ? { rateWindow: response.rateWindow }
+                  : {}),
+              });
+            else if (response.rateWindow)
+              await store.putHealth({
+                ...healthyOddsProviderState(await store.getHealth(healthKey), {
+                  providerId: candidate.providerId,
+                  healthKey,
+                  updatedAt: iso(now),
+                  consecutiveSuccesses: (health?.consecutiveSuccesses ?? 0) + 1,
+                }),
+                rateWindow: response.rateWindow,
               });
           } catch (error) {
             const durablePage = await store.getPage(runId, pageToken);
@@ -920,17 +1109,17 @@ export async function runOddsLeague(input: {
       });
       const completedHealth = await store.getHealth(healthKey);
       await store.putHealth({
-        ...(await store.getHealth(healthKey)),
-        providerId: candidate.providerId,
-        healthKey,
-        healthy: true,
-        consecutiveSuccesses:
-          completedHealth?.consecutiveSuccesses ??
-          (health?.consecutiveSuccesses ?? 0) + 1,
+        ...healthyOddsProviderState(await store.getHealth(healthKey), {
+          providerId: candidate.providerId,
+          healthKey,
+          updatedAt: iso(now),
+          consecutiveSuccesses:
+            completedHealth?.consecutiveSuccesses ??
+            (health?.consecutiveSuccesses ?? 0) + 1,
+        }),
         ...(completedHealth?.quotaRemaining === undefined
           ? {}
           : { quotaRemaining: completedHealth.quotaRemaining }),
-        updatedAt: iso(now),
       });
       await clearOwnedContinuation(store, policy.leagueKey, runId, ownerId);
       input.metrics?.emit("OddsLeagueCompleted", 1, {
@@ -971,17 +1160,38 @@ export async function runOddsLeague(input: {
           quotaCost,
         };
       }
-      if (retryable(error))
-        await store.putHealth({
-          ...(await store.getHealth(healthKey)),
-          providerId: candidate.providerId,
-          healthKey,
-          healthy: false,
-          consecutiveSuccesses: 0,
-          cooldownUntil: new Date(
-            now.getTime() + candidate.cooldownSeconds * 1000,
-          ).toISOString(),
-          updatedAt: iso(now),
+      const retryDecision = decideOddsRetry({
+        error,
+        attempt: 1,
+        now,
+        jitter: () => 0,
+      });
+      if (
+        [
+          "provider-unavailable",
+          "rate-limited",
+          "unauthorized",
+          "not-entitled",
+          "configuration",
+          "invalid-response",
+          "coverage-missing",
+          "provider-request-ambiguous",
+        ].includes(retryDecision.reason)
+      )
+        await store.putHealth(
+          unhealthyOddsProviderState(await store.getHealth(healthKey), {
+            providerId: candidate.providerId,
+            healthKey,
+            now,
+            decision: retryDecision,
+            cooldownSeconds: candidate.cooldownSeconds,
+          }),
+        );
+      if (retryDecision.reason !== "quota-reserve")
+        input.metrics?.emit("OddsProviderHealthUnavailable", 1, {
+          league: policy.leagueKey,
+          provider: candidate.providerId,
+          reason: retryDecision.reason,
         });
       input.metrics?.emit("OddsLeagueFailure", 1, {
         league: policy.leagueKey,

@@ -568,6 +568,8 @@ export class FoundationStack extends Stack {
       deadLetterQueue: { queue: liveOddsDlq, maxReceiveCount: 5 },
       visibilityTimeout: Duration.minutes(6),
     });
+    liveOdds.addEnvironment("FTE_LIVE_ODDS_QUEUE_URL", liveOddsQueue.queueUrl);
+    liveOddsQueue.grantConsumeMessages(liveOdds);
     liveOdds.addEventSource(
       new SqsEventSource(liveOddsQueue, {
         batchSize: 1,
@@ -1074,6 +1076,27 @@ export class FoundationStack extends Stack {
         comparisonOperator:
           ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       }),
+      ...[
+        "OddsCommandOutcome",
+        "OddsProviderHealthUnavailable",
+        "OddsRateWindowBlocked",
+        "OddsMarketSuspended",
+        "OddsPartialEvidence",
+      ].map(
+        (metricName) =>
+          new Alarm(this, `${metricName}Alarm`, {
+            metric: new Metric({
+              namespace: "FindTheEdge/OddsControlPlane",
+              metricName,
+              statistic: "Sum",
+              period: Duration.minutes(5),
+            }),
+            threshold: 1,
+            evaluationPeriods: 1,
+            comparisonOperator:
+              ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+          }),
+      ),
       new Alarm(this, "CompletedResultsErrorsAlarm", {
         metric: completedResults.metricErrors(),
         threshold: 1,

@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-023
+nextReadyStory: FTE-025
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -584,7 +584,7 @@ stories:
   - id: FTE-024
     title: Provider Quota, Retry, DLQ, and Suspended/Partial States
     epic: Odds ingestion and market normalization
-    status: backlog
+    status: review
     dependencies: [FTE-023]
     risk: High
     approvalRequiredBeforeMerge: false

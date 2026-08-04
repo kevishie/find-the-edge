@@ -49,8 +49,11 @@ reports `not-entitled` only for `public-betting`; it must not mark entitled odds
 coverage unhealthy. Retain prior current odds or splits on an outage and report
 them stale using their independent freshness thresholds.
 
-Provider priority, quota reserve, health thresholds, and cooldown remain
-explicit even with one enabled production provider. A future fallback requires
+Provider priority, rate-window reserve, health thresholds, and cooldown remain
+explicit even with one enabled production provider. Requests per minute is a
+rate ceiling, not subscription quota remaining. Only authoritative response
+headers may populate the current window; missing limit, remaining, or reset
+values remain explicitly unknown. A future fallback requires
 an approved policy change and must not blend the same sportsbook from multiple
 aggregators.
 
@@ -62,3 +65,27 @@ latency, quota, normalized counts, mapping gaps, and entitlement. Disable the
 SharpAPI immediately on malformed material or unexpected licensing constraints;
 production ingestion then remains unavailable until SharpAPI is re-enabled or a
 separately approved fallback policy is deployed.
+
+## Failure, health, and redrive matrix
+
+HTTP 429 and an unambiguous connection failure are transient. Honor the
+provider retry time when supplied, otherwise use bounded exponential delay with
+jitter; never exceed five deliveries or a fifteen-minute delay. Authentication,
+entitlement, configuration, malformed response, and coverage failures are
+terminal and must be acknowledged without another paid call. A timeout or lost
+connection after dispatch is ambiguous: inspect the durable attempt and sealed
+page during its reconciliation lease before permitting a new call.
+
+Transient unhealthy health records carry a retry time and bounded TTL. Success
+heals current health but does not delete runs, attempts, gaps, or prior failure
+evidence. Terminal health is durable until configuration or entitlement is
+corrected. An exhausted FIFO command reaches the odds DLQ after five receives.
+Before redrive, identify the bounded reason, verify the provider cooldown/window
+has reset, and verify no ambiguous attempt or sealed page already owns the paid
+request. Redrive the exact command once; never bulk-redrive unknown messages.
+
+Newer suspended, closed, missing, malformed, incomplete, or unavailable market
+evidence blocks the older current price from recommendation inputs while leaving
+the immutable snapshot in history. Only newer valid active evidence restores
+eligibility. A partial response retains valid siblings and persists exact gaps;
+it never implies group completeness.

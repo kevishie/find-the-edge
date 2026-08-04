@@ -90,7 +90,7 @@ export FTE_PHASE1_SMOKE=1
 pnpm phase1:smoke
 ```
 
-Normal MLB/MLS odds refresh hourly. Inside 90 minutes of first pitch, MLB refreshes every 15 minutes and MLS every 30 minutes. Other league profiles default to six hours. The durable provider quota value blocks paid calls at the configured 100-request reserve. Schedule discovery continues independently. CloudWatch logs emit only bounded summaries, never keys or credential-bearing URLs.
+Normal MLB/MLS odds refresh hourly. Inside 90 minutes of first pitch, MLB refreshes every 15 minutes and MLS every 30 minutes. Other league profiles default to six hours. An authoritative provider rate window blocks paid calls at its configured reserve; requests-per-minute is never represented as durable subscription quota, and absent headers remain unknown. Schedule discovery continues independently. CloudWatch logs emit only bounded summaries, never keys or credential-bearing URLs.
 
 The versioned control-plane policy keeps a 100-request SharpAPI reserve. Schedule discovery has its own explicit request-cost/reserve policy and fails closed with a bounded reason when SharpAPI is unavailable. Every physical request is reserved before execution, and its redacted outcome, quota cost, sealed normalized page, cursor, gap evidence, provider-and-league health and league checkpoint are durable. An unsealed paid response remains ambiguous behind a five-minute reconciliation lease; it is not automatically recalled during that lease. A retry consumes a sealed normalized page before making another paid call.
 

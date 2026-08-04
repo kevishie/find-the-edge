@@ -1,7 +1,11 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+/* eslint-disable @typescript-eslint/require-await -- fake AWS clients implement the SDK async send contract */
 import { describe, expect, it, vi } from "vitest";
 import {
+  type FixtureOddsAvailabilityEvidence,
+  type IsoTimestamp,
   FixtureOddsStateCorruptionError,
+  fixtureOddsGroupAvailabilityIdentity,
   normalizeFixtureOddsObservation,
 } from "@find-the-edge/domain";
 import {
@@ -42,6 +46,7 @@ class ConditionHarness implements FixtureOddsDynamoGateway {
   readonly items = new Map<string, FixtureOddsItem>();
   readonly transactions: FixtureOddsSnapshotTransaction[] = [];
   readonly currents: FixtureOddsCurrentWrite[] = [];
+  readonly availability = new Map<string, FixtureOddsAvailabilityEvidence>();
   beforeSnapshot?: (request: FixtureOddsSnapshotTransaction) => void;
   beforeCurrent?: (request: FixtureOddsCurrentWrite) => void;
   snapshotFailure?: FixtureOddsTransactionCanceledError;
@@ -117,6 +122,13 @@ class ConditionHarness implements FixtureOddsDynamoGateway {
     this.items.set(key, request.item);
     return Promise.resolve();
   }
+  getAvailability(partitionKey: string) {
+    return Promise.resolve(this.availability.get(partitionKey) ?? null);
+  }
+  putAvailability(value: FixtureOddsAvailabilityEvidence) {
+    this.availability.set(value.identity, value);
+    return Promise.resolve();
+  }
 }
 
 function boundHarness() {
@@ -144,6 +156,88 @@ function boundHarness() {
 }
 
 describe("DynamoFixtureOddsAdapter", () => {
+  it("makes equal-time blocking availability win concurrent Dynamo writes", async () => {
+    let row: Record<string, unknown> | undefined;
+    const client = {
+      async send(command: { input: Record<string, unknown> }) {
+        if (command.constructor.name === "GetCommand") return { Item: row };
+        const item = command.input["Item"] as Record<string, unknown>;
+        const incoming = item["availabilityPriority"] as number;
+        const current = row?.["availabilityPriority"] as number | undefined;
+        if (current !== undefined && current > incoming) {
+          const error = new Error("conditional");
+          error.name = "ConditionalCheckFailedException";
+          throw error;
+        }
+        row = structuredClone(item);
+        return {};
+      },
+    };
+    const gateway = new AwsFixtureOddsGateway(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    const common = {
+      identity: "selection",
+      observedAt: "2026-08-04T12:00:00.000Z" as IsoTimestamp,
+      reason: "race",
+    };
+    await Promise.allSettled([
+      gateway.putAvailability({
+        ...common,
+        state: "suspended",
+        evidenceId: "a-blocking",
+      }),
+      gateway.putAvailability({
+        ...common,
+        state: "active",
+        evidenceId: "z-active",
+      }),
+    ]);
+    expect(await gateway.getAvailability("selection")).toMatchObject({
+      state: "suspended",
+    });
+  });
+
+  it("keeps blocked prices historical and restores actionable current only with newer active evidence", async () => {
+    const gateway = boundHarness();
+    const adapter = new DynamoFixtureOddsAdapter(gateway);
+    const persisted = await adapter.persist(input());
+    const groupIdentity = fixtureOddsGroupAvailabilityIdentity(persisted.value);
+    await adapter.persistAvailability({
+      identity: groupIdentity,
+      state: "active",
+      observedAt: persisted.value.observedAt,
+      evidenceId: "group-active-1",
+      reason: "complete-market",
+    });
+    expect(
+      await adapter.getActionableCurrent(persisted.value.partitionKey),
+    ).not.toBeNull();
+    await adapter.persistAvailability({
+      identity: persisted.value.partitionKey,
+      state: "suspended",
+      observedAt: "2026-08-01T12:02:00.000Z",
+      evidenceId: "suspended-1",
+      reason: "suspended",
+    });
+    expect(
+      await adapter.getActionableCurrent(persisted.value.partitionKey),
+    ).toBeNull();
+    await adapter.persist(input("2026-08-01T12:03:00.000Z", -105));
+    await adapter.persistAvailability({
+      identity: groupIdentity,
+      state: "active",
+      observedAt: "2026-08-01T12:03:00.000Z",
+      evidenceId: "group-active-2",
+      reason: "complete-market",
+    });
+    expect(
+      await adapter.getActionableCurrent(persisted.value.partitionKey),
+    ).toMatchObject({
+      americanOdds: -105,
+    });
+  });
   it("rejects post-start evidence and fences the canonical status/start", async () => {
     const gateway = boundHarness();
     gateway.seed("EVENT#event-1", "CURRENT", {

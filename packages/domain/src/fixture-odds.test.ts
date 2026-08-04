@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   FixtureOddsInputError,
   FixtureOddsStateCorruptionError,
+  fixtureOddsGroupAvailabilityIdentity,
   normalizeFixtureOddsObservation,
+  isFixtureOddsSnapshotActionable,
   sha256Hex,
   transitionFixtureOdds,
+  transitionFixtureOddsAvailability,
   type FixtureOddsObservation,
   type FixtureOddsState,
 } from "./fixture-odds.js";
@@ -444,6 +447,41 @@ describe("fixture odds transition", () => {
         (run) =>
           run.state.currentSnapshotId === runs[0]!.state.currentSnapshotId,
       ),
+    ).toBe(true);
+  });
+
+  it("blocks older current prices on newer unavailable evidence and resumes monotonically", () => {
+    const snapshot = normalizeFixtureOddsObservation(base());
+    const blocked = transitionFixtureOddsAvailability(undefined, {
+      identity: snapshot.partitionKey,
+      state: "suspended",
+      observedAt: "2026-08-01T12:01:00Z",
+      evidenceId: "gap-1",
+      reason: "suspended",
+    });
+    expect(isFixtureOddsSnapshotActionable(snapshot, blocked)).toBe(false);
+    expect(
+      transitionFixtureOddsAvailability(blocked, {
+        ...blocked,
+        state: "active",
+        observedAt: "2026-08-01T11:59:00Z",
+        evidenceId: "old-active",
+      }),
+    ).toBe(blocked);
+    const resumed = transitionFixtureOddsAvailability(blocked, {
+      ...blocked,
+      state: "active",
+      observedAt: "2026-08-01T12:04:00Z",
+      evidenceId: "active-2",
+    });
+    const current = normalizeFixtureOddsObservation(
+      base({ observedAt: "2026-08-01T12:03:00Z" }),
+    );
+    expect(
+      isFixtureOddsSnapshotActionable(current, resumed, {
+        ...resumed,
+        identity: fixtureOddsGroupAvailabilityIdentity(current),
+      }),
     ).toBe(true);
   });
 });

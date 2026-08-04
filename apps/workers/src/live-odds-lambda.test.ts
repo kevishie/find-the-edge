@@ -1,8 +1,78 @@
 import { describe, expect, it } from "vitest";
 
-import { parseLiveOddsInvocation } from "./live-odds-lambda";
+import {
+  boundedRetryVisibilitySeconds,
+  liveOddsErrorRetryDecision,
+  liveOddsSummaryRetryDecision,
+  liveOddsSummaryRetryReason,
+  parseLiveOddsInvocation,
+} from "./live-odds-lambda";
+import { SharpApiError } from "@find-the-edge/providers";
 
 describe("live odds Lambda invocation", () => {
+  it("retains SQS retry ownership for transient summaries but acknowledges terminal work", () => {
+    expect(
+      liveOddsSummaryRetryReason({
+        focused: { status: "retryable", reason: "quota-reserve" },
+      }),
+    ).toBe("quota-reserve");
+    expect(
+      liveOddsSummaryRetryReason([
+        { status: "failed", reason: "schedule-rate-limited" },
+      ]),
+    ).toBe("rate-limited");
+    expect(
+      liveOddsSummaryRetryReason([
+        { status: "failed", reason: "not-entitled" },
+      ]),
+    ).toBeUndefined();
+  });
+  it("bounds provider-directed visibility without retrying early", () => {
+    expect(
+      boundedRetryVisibilitySeconds(
+        "2026-08-03T14:00:00.000Z",
+        new Date("2026-08-03T12:00:00.000Z"),
+      ),
+    ).toBe(7_200);
+    expect(
+      boundedRetryVisibilitySeconds(
+        "2026-08-04T12:00:01.000Z",
+        new Date("2026-08-03T12:00:00.000Z"),
+      ),
+    ).toBe(43_200);
+    expect(
+      boundedRetryVisibilitySeconds(
+        "2026-08-03T11:59:00.000Z",
+        new Date("2026-08-03T12:00:00.000Z"),
+      ),
+    ).toBeUndefined();
+  });
+  it("keeps retryAt associated with its own retryable record and honors top-level provider timing", () => {
+    expect(
+      liveOddsSummaryRetryDecision({
+        unrelated: { retryAt: "2026-08-03T13:00:00.000Z" },
+        focused: {
+          status: "retryable",
+          reason: "rate-limited",
+          retryAt: "2026-08-03T12:20:00.000Z",
+        },
+      }),
+    ).toEqual({
+      reason: "rate-limited",
+      retryAt: "2026-08-03T12:20:00.000Z",
+    });
+    expect(
+      liveOddsErrorRetryDecision(
+        new SharpApiError(
+          "rate-limited",
+          true,
+          "2026-08-03T12:20:00.000Z" as never,
+        ),
+        2,
+        new Date("2026-08-03T12:00:00.000Z"),
+      ).retryAt,
+    ).toBe("2026-08-03T12:20:00.000Z");
+  });
   it("defaults scheduled invocations and allows the guarded release refresh", () => {
     expect(parseLiveOddsInvocation(undefined)).toEqual({ forceRefresh: false });
     expect(parseLiveOddsInvocation({})).toEqual({ forceRefresh: false });
@@ -28,9 +98,19 @@ describe("live odds Lambda invocation", () => {
     });
     expect(
       parseLiveOddsInvocation({
-        Records: [{ eventSource: "aws:sqs", body: "{}" }],
+        Records: [
+          {
+            eventSource: "aws:sqs",
+            body: "{}",
+            messageId: "message-1",
+            attributes: { ApproximateReceiveCount: "3" },
+          },
+        ],
       }),
-    ).toEqual({ forceRefresh: false });
+    ).toEqual({
+      forceRefresh: false,
+      sqs: { messageId: "message-1", receiveCount: 3 },
+    });
   });
 
   it.each([
