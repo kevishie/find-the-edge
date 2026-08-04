@@ -187,6 +187,9 @@ export function assertLiveIngestionResourceBinding(resources, environment) {
 export function assertLiveIngestionSummary(summary) {
   if (Array.isArray(summary)) {
     const expectedLeagues = new Set(["mlb", "mls"]);
+    const isOwnershipOverlap = (result) =>
+      result?.status === "failed" &&
+      result?.reason === "schedule-provider-recovering";
     const safeResult = (result) =>
       result &&
       typeof result === "object" &&
@@ -214,23 +217,22 @@ export function assertLiveIngestionSummary(summary) {
         /^schedule-(provider-error|provider-unavailable|rate-limited|unauthorized|not-entitled|invalid-response|coverage-missing|provider-request-ambiguous|provider-response-unsealed|quota-reserve|provider-cooldown|provider-recovering|schedule-dependency-failed|mapping-quarantine|pagination-invalid|transition-conflict|internal-failure)$/.test(
           result.reason,
         )) &&
-      Number.isSafeInteger(result.pages) &&
-      result.pages >= 0 &&
-      Number.isSafeInteger(result.quotaCost) &&
-      result.quotaCost >= 0;
+      (isOwnershipOverlap(result) ||
+        (Number.isSafeInteger(result.pages) && result.pages >= 0)) &&
+      (isOwnershipOverlap(result) ||
+        (Number.isSafeInteger(result.quotaCost) && result.quotaCost >= 0));
+    const leagues = summary.map((result) => result?.leagueKey);
     if (
       summary.length !== expectedLeagues.size ||
+      new Set(leagues).size !== leagues.length ||
       summary.some(
         (result) =>
           !safeResult(result) ||
-          !expectedLeagues.delete(result.leagueKey) ||
+          !expectedLeagues.has(result.leagueKey) ||
           (!["completed", "skipped"].includes(result.status) &&
-            !(
-              result.status === "failed" &&
-              result.reason === "schedule-provider-recovering"
-            )),
+            !isOwnershipOverlap(result)),
       ) ||
-      expectedLeagues.size !== 0
+      leagues.some((leagueKey) => !expectedLeagues.has(leagueKey))
     )
       throw new Error(
         `live ingestion returned an invalid control-plane summary: ${
