@@ -224,7 +224,11 @@ export function assertLiveIngestionSummary(summary) {
         (result) =>
           !safeResult(result) ||
           !expectedLeagues.delete(result.leagueKey) ||
-          !["completed", "skipped"].includes(result.status),
+          (!["completed", "skipped"].includes(result.status) &&
+            !(
+              result.status === "failed" &&
+              result.reason === "schedule-provider-recovering"
+            )),
       ) ||
       expectedLeagues.size !== 0
     )

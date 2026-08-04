@@ -296,6 +296,7 @@ test("live ingestion retries only bounded schedule ownership overlap", () => {
     quotaCost: 0,
   }));
   assert.equal(isTransientLiveIngestionSummary(recovering), true);
+  assert.doesNotThrow(() => assertLiveIngestionSummary(recovering));
   assert.equal(
     isTransientLiveIngestionSummary(
       recovering.map((result) => ({ ...result, providerId: "sharpapi" })),
