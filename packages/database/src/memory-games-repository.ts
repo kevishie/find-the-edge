@@ -5,7 +5,12 @@ import {
 } from "./games-repository";
 
 export class MemoryGamesRepository extends JoinedGamesRepository {
-  constructor(events: EventRepository, gateway: CurrentOddsReadGateway) {
-    super(events, gateway, ["fixture-book"]);
+  constructor(
+    events: EventRepository,
+    gateway: CurrentOddsReadGateway,
+    sportsbookIds: readonly string[] = ["fixture-book"],
+    now: () => Date = () => new Date(),
+  ) {
+    super(events, gateway, sportsbookIds, now);
   }
 }

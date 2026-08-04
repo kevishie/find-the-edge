@@ -371,7 +371,9 @@ export const createEventHandler =
       )
         return response((status = 403), { error: "forbidden" });
       if (request.route === "detail") {
-        const result = await repository.detail(request.eventId ?? "");
+        const result = gamesRepository?.detail
+          ? await gamesRepository.detail(request.eventId ?? "")
+          : await repository.detail(request.eventId ?? "");
         if (result.projectionState === "uninitialized") {
           metadataCounts = { stale: 0, partial: 0, unavailable: 1 };
           return response(200, result);

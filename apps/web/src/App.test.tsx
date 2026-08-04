@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { assessEventMetadata } from "@find-the-edge/domain";
 
 import { App } from "./App";
+import { detailMatchesRoute } from "./route-state";
 import {
   GamesClientError,
   type GamesClient,
@@ -322,17 +323,94 @@ it("renders independent accessible lifecycle and freshness badges on games and d
   expect(screen.getByText(/Evidence .* Eastern/)).toBeVisible();
   unmount();
 
-  const listSplits = vi.fn(() =>
-    Promise.resolve({ ...page(), items: [{ ...game, splits: [] }] }),
+  const eventDetail = (({ odds, ...rest }) => {
+    void odds;
+    return rest;
+  })(game);
+  const detail = vi.fn(() =>
+    Promise.resolve({
+      ...eventDetail,
+      oddsComparison: {
+        targetSportsbookId: "hardrock",
+        targetQualified: false,
+        generatedAt: "2026-08-01T12:30:00.000Z",
+        sportsbooks: [{ id: "hardrock", label: "Hard Rock Bet", target: true }],
+        markets: [
+          {
+            marketKey: "moneyline",
+            selections: [
+              {
+                selectionKey: "away",
+                selectionLabel: "Boston",
+                cells: {
+                  hardrock: {
+                    state: "suspended",
+                    eligible: false,
+                    reason: "market-suspended",
+                    evidenceAt: "2026-08-01T12:15:00.000Z",
+                    americanOdds: 120,
+                    observedAt: "2026-08-01T12:00:00.000Z",
+                    retrievedAt: "2026-08-01T12:00:01.000Z",
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    } as const),
   );
   render(
     <App
       initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
-      gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      gamesClient={{ ok: true, value: { list: vi.fn(), detail } }}
     />,
   );
   expect(await screen.findByLabelText("Lifecycle: scheduled")).toBeVisible();
   expect(screen.getByLabelText("Event metadata is current")).toBeVisible();
+  expect(
+    screen.getByRole("heading", { name: "Sportsbook comparison" }),
+  ).toBeVisible();
+  expect(screen.getByText("Target unavailable")).toBeVisible();
+  const tab = screen.getByRole("tab", { name: "Moneyline" });
+  expect(tab).toHaveAttribute("aria-selected", "true");
+  expect(tab).toHaveAttribute("aria-controls", "market-panel-moneyline");
+  expect(screen.getByRole("tabpanel")).toHaveAttribute(
+    "aria-labelledby",
+    "market-tab-moneyline",
+  );
+  expect(screen.getByText("Market suspended")).toBeVisible();
+  expect(
+    screen.getByText("Market suspended").closest("td")?.querySelector("time"),
+  ).toHaveAttribute("datetime", "2026-08-01T12:15:00.000Z");
+});
+
+it("keeps not-found detail distinct from retryable outages", async () => {
+  render(
+    <App
+      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          detail: vi.fn(() =>
+            Promise.reject(
+              new GamesClientError("not-found", "This game was not found."),
+            ),
+          ),
+        },
+      }}
+    />,
+  );
+  expect(await screen.findByText("This game was not found.")).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Retry" }),
+  ).not.toBeInTheDocument();
+});
+
+it("never considers a prior deferred detail result visible after route identity changes", () => {
+  expect(detailMatchesRoute("event:first", "event:second")).toBe(false);
+  expect(detailMatchesRoute("event:second", "event:second")).toBe(true);
 });
 
 it.each([

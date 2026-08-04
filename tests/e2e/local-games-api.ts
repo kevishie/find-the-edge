@@ -4,7 +4,10 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { normalizeFixtureOddsObservation } from "../../packages/domain/src/index.js";
+import {
+  fixtureOddsGroupAvailabilityIdentity,
+  normalizeFixtureOddsObservation,
+} from "../../packages/domain/src/index.js";
 import { createEventHandler } from "../../apps/api/src/index.js";
 import {
   EventCursorCodec,
@@ -23,12 +26,50 @@ class MemoryOdds implements FixtureOddsPersister {
     string,
     ReturnType<typeof normalizeFixtureOddsObservation>
   >();
+  readonly availability = new Map<
+    string,
+    {
+      readonly identity: string;
+      readonly state: "active";
+      readonly observedAt: string;
+      readonly evidenceId: string;
+      readonly reason: string;
+    }
+  >();
 
   async persist(input: Parameters<FixtureOddsPersister["persist"]>[0]) {
     await Promise.resolve();
-    const value = normalizeFixtureOddsObservation(input.observation);
+    const value = normalizeFixtureOddsObservation({
+      ...input.observation,
+      sportsbookId: "hardrock",
+      sportsbookLabel: "Hard Rock Bet",
+    });
+    const comparison = normalizeFixtureOddsObservation({
+      ...input.observation,
+      sportsbookId: "draftkings",
+      sportsbookLabel: "DraftKings",
+      americanOdds: input.observation.americanOdds + 5,
+    });
     const existing = this.snapshots.has(value.snapshotId);
     this.snapshots.set(value.snapshotId, value);
+    this.snapshots.set(comparison.snapshotId, comparison);
+    for (const snapshot of [value, comparison]) {
+      this.availability.set(snapshot.partitionKey, {
+        identity: snapshot.partitionKey,
+        state: "active",
+        observedAt: snapshot.observedAt,
+        evidenceId: snapshot.snapshotId,
+        reason: "active-price",
+      });
+      const group = fixtureOddsGroupAvailabilityIdentity(snapshot);
+      this.availability.set(group, {
+        identity: group,
+        state: "active",
+        observedAt: snapshot.observedAt,
+        evidenceId: `group-${snapshot.snapshotId}`,
+        reason: "market-complete",
+      });
+    }
     return {
       snapshot: existing ? ("existing" as const) : ("created" as const),
       current: existing ? ("retained" as const) : ("advanced" as const),
@@ -37,15 +78,25 @@ class MemoryOdds implements FixtureOddsPersister {
   }
 
   async batchGet(
-    keys: readonly { readonly pk: string; readonly sk: "CURRENT" }[],
+    keys: readonly {
+      readonly pk: string;
+      readonly sk: "CURRENT" | "AVAILABILITY";
+    }[],
   ) {
     await Promise.resolve();
-    return keys.flatMap((key) => {
+    const rows: unknown[] = [];
+    for (const key of keys) {
+      if (key.sk === "AVAILABILITY") {
+        const value = this.availability.get(key.pk);
+        if (value) rows.push({ pk: key.pk, sk: key.sk, value });
+        continue;
+      }
       const value = [...this.snapshots.values()].find(
         (snapshot) => snapshot.partitionKey === key.pk,
       );
-      return value ? [{ pk: key.pk, sk: key.sk, value }] : [];
-    });
+      if (value) rows.push({ pk: key.pk, sk: key.sk, value });
+    }
+    return rows;
   }
 }
 
@@ -86,7 +137,12 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
   );
   const handler = createEventHandler(
     events,
-    new MemoryGamesRepository(events, odds),
+    new MemoryGamesRepository(
+      events,
+      odds,
+      ["hardrock", "draftkings"],
+      () => new Date("2026-08-01T12:31:00.000Z"),
+    ),
     () => undefined,
   );
   const respond = async (

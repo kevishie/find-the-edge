@@ -1,12 +1,15 @@
 import type {
   EventStatus,
   GameDisplayDto,
+  GameOddsComparisonDto,
   GameOddsSelectionDto,
+  EntityId,
 } from "@find-the-edge/domain";
 import {
   collapseNearDuplicateGames,
   EVENT_LIFECYCLE_STATES,
   validateEventMetadataAssessment,
+  participantSelectionKey,
 } from "@find-the-edge/domain";
 
 import type {
@@ -116,7 +119,7 @@ export interface GamesClient {
     signal: AbortSignal,
   ): Promise<unknown>;
   list(filter: GamesFilter, signal: AbortSignal): Promise<GamesExplorerPageDto>;
-  detail?(eventId: string, signal: AbortSignal): Promise<GameDisplayDto>;
+  detail?(eventId: string, signal: AbortSignal): Promise<GameOddsComparisonDto>;
   listSplits?(filter: GamesFilter, signal: AbortSignal): Promise<SplitsPageDto>;
   listPerformance?(signal: AbortSignal): Promise<PerformanceReportDto | null>;
   listRetrospectives?(
@@ -747,6 +750,7 @@ export type GamesClientErrorCode =
   | "unauthorized"
   | "forbidden"
   | "request-failed"
+  | "not-found"
   | "conflict"
   | "invalid-response";
 
@@ -778,6 +782,191 @@ const iso = (value: unknown): value is string =>
   boundedString(value, 40) &&
   Number.isFinite(Date.parse(value)) &&
   new Date(value).toISOString() === value;
+const validAmericanOdds = (value: unknown): value is number =>
+  Number.isSafeInteger(value) &&
+  Math.abs(Number(value)) >= 100 &&
+  Math.abs(Number(value)) <= 100_000;
+
+const validOddsComparisonCell = (value: unknown) => {
+  if (!plain(value) || typeof value["state"] !== "string") return false;
+  if (value["state"] === "active")
+    return (
+      exact(value, [
+        "state",
+        "eligible",
+        "americanOdds",
+        "observedAt",
+        "retrievedAt",
+        ...(Object.hasOwn(value, "point") ? ["point"] : []),
+      ]) &&
+      value["eligible"] === true &&
+      validAmericanOdds(value["americanOdds"]) &&
+      iso(value["observedAt"]) &&
+      iso(value["retrievedAt"]) &&
+      (value["point"] === undefined || typeof value["point"] === "number")
+    );
+  if (
+    !["stale", "suspended", "partial", "unavailable"].includes(value["state"])
+  )
+    return false;
+  const optional = [
+    "point",
+    "americanOdds",
+    "observedAt",
+    "retrievedAt",
+  ].filter((key) => Object.hasOwn(value, key));
+  return (
+    exact(value, ["state", "eligible", "reason", "evidenceAt", ...optional]) &&
+    value["eligible"] === false &&
+    boundedString(value["reason"], 256) &&
+    (value["evidenceAt"] === null || iso(value["evidenceAt"])) &&
+    (value["point"] === undefined || typeof value["point"] === "number") &&
+    (value["americanOdds"] === undefined ||
+      validAmericanOdds(value["americanOdds"])) &&
+    (value["observedAt"] === undefined || iso(value["observedAt"])) &&
+    (value["retrievedAt"] === undefined || iso(value["retrievedAt"]))
+  );
+};
+
+const validOddsComparison = (
+  value: unknown,
+  sportKey: unknown,
+  participants: unknown,
+) => {
+  if (
+    !plain(value) ||
+    !exact(value, [
+      "targetSportsbookId",
+      "targetQualified",
+      "generatedAt",
+      "sportsbooks",
+      "markets",
+    ]) ||
+    !boundedString(value["targetSportsbookId"], 128) ||
+    typeof value["targetQualified"] !== "boolean" ||
+    !iso(value["generatedAt"]) ||
+    !Array.isArray(value["sportsbooks"]) ||
+    !Array.isArray(value["markets"]) ||
+    !Array.isArray(participants) ||
+    participants.length < 2 ||
+    !participants
+      .slice(0, 2)
+      .every(
+        (participant) =>
+          plain(participant) && boundedString(participant["id"], 256),
+      )
+  )
+    return false;
+  const books = value["sportsbooks"];
+  if (
+    !books.length ||
+    !books.every(
+      (book) =>
+        plain(book) &&
+        exact(book, ["id", "label", "target"]) &&
+        boundedString(book["id"], 128) &&
+        boundedString(book["label"], 160) &&
+        typeof book["target"] === "boolean",
+    )
+  )
+    return false;
+  const bookIds = books.map((book) =>
+    String((book as Record<string, unknown>)["id"]),
+  );
+  if (new Set(bookIds).size !== bookIds.length) return false;
+  const targetId = String(value["targetSportsbookId"]);
+  if (
+    books.filter(
+      (book) =>
+        (book as Record<string, unknown>)["target"] === true &&
+        (book as Record<string, unknown>)["id"] === targetId,
+    ).length !== 1 ||
+    books.filter((book) => (book as Record<string, unknown>)["target"] === true)
+      .length !== 1
+  )
+    return false;
+  const sides = participants
+    .slice(0, 2)
+    .map((participant) =>
+      participantSelectionKey(
+        String((participant as Record<string, unknown>)["id"]) as EntityId,
+      ),
+    );
+  const expected: Readonly<Record<string, readonly string[]>> = {
+    moneyline: sportKey === "soccer" ? [sides[0]!, "draw", sides[1]!] : sides,
+    spread: sides,
+    total: ["over", "under"],
+  };
+  const markets = value["markets"];
+  const marketKeys = markets.map((market) =>
+    plain(market) ? market["marketKey"] : undefined,
+  );
+  if (
+    marketKeys.length !== 3 ||
+    new Set(marketKeys).size !== 3 ||
+    !Object.keys(expected).every((key) => marketKeys.includes(key))
+  )
+    return false;
+  for (const market of markets) {
+    if (
+      !plain(market) ||
+      !exact(market, ["marketKey", "selections"]) ||
+      typeof market["marketKey"] !== "string" ||
+      !Array.isArray(market["selections"])
+    )
+      return false;
+    const expectedSelections = expected[market["marketKey"]];
+    if (!expectedSelections) return false;
+    const selectionKeys = market["selections"].map((selection) =>
+      plain(selection) ? selection["selectionKey"] : undefined,
+    );
+    if (
+      selectionKeys.length !== expectedSelections.length ||
+      new Set(selectionKeys).size !== selectionKeys.length ||
+      !expectedSelections.every((key) => selectionKeys.includes(key))
+    )
+      return false;
+    for (const selection of market["selections"]) {
+      if (
+        !plain(selection) ||
+        !exact(selection, ["selectionKey", "selectionLabel", "cells"]) ||
+        !boundedString(selection["selectionKey"], 256) ||
+        !boundedString(selection["selectionLabel"], 256) ||
+        !plain(selection["cells"])
+      )
+        return false;
+      const cellKeys = Object.keys(selection["cells"]).sort();
+      if (
+        cellKeys.join("|") !== [...bookIds].sort().join("|") ||
+        !bookIds.every((id) =>
+          validOddsComparisonCell(
+            (selection["cells"] as Record<string, unknown>)[id],
+          ),
+        )
+      )
+        return false;
+    }
+  }
+  const computedQualified = markets.every(
+    (market) =>
+      (market as Record<string, unknown>)["selections"] instanceof Array &&
+      (
+        (market as Record<string, unknown>)["selections"] as Record<
+          string,
+          unknown
+        >[]
+      ).every(
+        (selection) =>
+          (
+            (selection["cells"] as Record<string, unknown>)[targetId] as Record<
+              string,
+              unknown
+            >
+          )["eligible"] === true,
+      ),
+  );
+  return value["targetQualified"] === computedQualified;
+};
 
 export const isCanonicalEventStatus = (value: unknown): value is EventStatus =>
   EVENT_LIFECYCLE_STATES.some((state) => state === value);
@@ -1494,7 +1683,6 @@ export function createGamesClient(
 ): Result<GamesClient, GamesClientError> {
   if (!bootstrap.ok)
     return { ok: false, error: bootstrapFailure(bootstrap.error) };
-  const knownGames = new Map<string, GameDisplayDto>();
   return {
     ok: true,
     value: {
@@ -1645,7 +1833,6 @@ export function createGamesClient(
                 "The games response contained contradictory duplicate events.",
               );
             items.set(item.id, item);
-            knownGames.set(item.id, item);
           }
         }
         if (
@@ -1694,10 +1881,7 @@ export function createGamesClient(
           );
         }
         if (response.status === 404)
-          throw new GamesClientError(
-            "request-failed",
-            "This game was not found.",
-          );
+          throw new GamesClientError("not-found", "This game was not found.");
         if (!response.ok)
           throw new GamesClientError(
             "request-failed",
@@ -1716,33 +1900,34 @@ export function createGamesClient(
             "The game details response was invalid.",
           );
         const item = body["item"];
-        const known = knownGames.get(eventId);
-        const candidate = {
-          ...item,
-          odds:
-            known &&
-            known.version === item["version"] &&
-            known.status === item["status"]
-              ? known.odds
-              : { state: "unavailable" },
-        };
+        const comparison = item["oddsComparison"];
+        const eventFields = { ...item };
+        delete eventFields["oddsComparison"];
         if (
           (item["sportKey"] !== "mlb" && item["sportKey"] !== "soccer") ||
           typeof item["startsAt"] !== "string" ||
           !plain(item["eastern"]) ||
           typeof item["eastern"]["calendarDay"] !== "string" ||
-          !validGame(candidate, {
-            sport: item["sportKey"],
-            day: item["eastern"]["calendarDay"],
-            status: item["status"] as EventStatus,
-          }) ||
-          candidate.id !== eventId
+          !validOddsComparison(
+            comparison,
+            item["sportKey"],
+            item["participants"],
+          ) ||
+          !validGame(
+            { ...eventFields, odds: { state: "unavailable" } },
+            {
+              sport: item["sportKey"],
+              day: item["eastern"]["calendarDay"],
+              status: item["status"] as EventStatus,
+            },
+          ) ||
+          item["id"] !== eventId
         )
           throw new GamesClientError(
             "invalid-response",
             "The game details response was invalid.",
           );
-        return candidate;
+        return item as unknown as GameOddsComparisonDto;
       },
       async listSplits(filter, signal) {
         return exhaustPages({

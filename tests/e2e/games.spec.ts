@@ -134,3 +134,89 @@ test("uses an explicit second MLB Eastern day", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByText("-105").first()).toBeVisible();
 });
+
+test("opens multi-book comparison directly and keeps Hard Rock first", async ({
+  page,
+}) => {
+  await page.goto(
+    "/games/event%3Amlb%253Amlb%3A2026-regular-boston-new-york-001?sport=mlb&day=2026-08-01",
+  );
+  await expect(
+    page.getByRole("heading", { name: "Boston Red Sox vs New York Yankees" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Sportsbook comparison" }),
+  ).toBeVisible();
+  const headings = page.locator(".comparison-board thead th");
+  await expect(headings.nth(1)).toContainText("Hard Rock Bet");
+  await expect(headings.nth(2)).toContainText("DraftKings");
+  await expect(page.getByText("Target unavailable")).toBeVisible();
+  await page.getByRole("tab", { name: "Moneyline" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Spread" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("tab", { name: "Moneyline" })).toBeVisible();
+});
+
+test("shows target-missing and suspended evidence without treating it as active", async ({
+  page,
+}) => {
+  const id = "event:mlb%3Amlb:2026-regular-boston-new-york-001";
+  const source = (await (
+    await page.request.get(`${api.apiBase}/events/${encodeURIComponent(id)}`)
+  ).json()) as {
+    item: {
+      oddsComparison: {
+        targetQualified: boolean;
+        markets: { selections: { cells: Record<string, unknown> }[] }[];
+      };
+    };
+  };
+  const serveState = async (state: "unavailable" | "suspended") => {
+    const body = structuredClone(source);
+    body.item.oddsComparison.targetQualified = false;
+    for (const selection of body.item.oddsComparison.markets[0]!.selections)
+      selection.cells["hardrock"] =
+        state === "unavailable"
+          ? {
+              state,
+              eligible: false,
+              reason: "price-unavailable",
+              evidenceAt: null,
+            }
+          : {
+              state,
+              eligible: false,
+              reason: "market-suspended",
+              evidenceAt: "2026-08-01T12:15:00.000Z",
+              americanOdds: 120,
+              observedAt: "2026-08-01T12:00:00.000Z",
+              retrievedAt: "2026-08-01T12:00:00.000Z",
+            };
+    await page.route("**/events/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      }),
+    );
+  };
+  await serveState("unavailable");
+  await page.goto(`/games/${encodeURIComponent(id)}?sport=mlb&day=2026-08-01`);
+  await expect(page.getByText("Target unavailable")).toBeVisible();
+  await expect(
+    page.locator(".target-book.state-unavailable").first(),
+  ).toContainText("Unavailable");
+  await page.unroute("**/events/**");
+  await serveState("suspended");
+  await page.reload();
+  await expect(
+    page.locator(".target-book.state-suspended").first(),
+  ).toContainText("Suspended");
+  await expect(
+    page.locator(".target-book.state-suspended").first(),
+  ).not.toContainText("Best eligible");
+});

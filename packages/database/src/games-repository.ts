@@ -4,8 +4,12 @@ import {
   fixtureOddsPartition,
   participantSelectionKey,
   type GameDisplayDto,
+  type GameOddsComparisonDto,
+  type GameOddsCellDto,
   type GameOddsSelectionDto,
   type EntityId,
+  fixtureOddsGroupAvailabilityIdentity,
+  type FixtureOddsAvailabilityEvidence,
 } from "@find-the-edge/domain";
 import { EventStorageError } from "./event-errors";
 import {
@@ -27,10 +31,18 @@ export interface GamesRepository {
     limit: number,
     cursor?: string,
   ): Promise<GamesPage>;
+  detail?(eventId: string): Promise<{
+    readonly projectionState: "ready" | "uninitialized";
+    readonly item: GameOddsComparisonDto | null;
+    readonly unavailableReason: "projection-uninitialized" | null;
+  }>;
 }
 export interface CurrentOddsReadGateway {
   batchGet(
-    keys: readonly { readonly pk: string; readonly sk: "CURRENT" }[],
+    keys: readonly {
+      readonly pk: string;
+      readonly sk: "CURRENT" | "AVAILABILITY";
+    }[],
   ): Promise<readonly unknown[]>;
 }
 
@@ -76,6 +88,20 @@ const marketSpecifications = (event: EventPage["items"][number]) => {
       },
     ] as const;
   throw new EventStorageError("unsupported-games-sport");
+};
+
+const canonicalSelectionLabel = (
+  event: EventPage["items"][number],
+  selectionKey: string,
+) => {
+  const participant = event.participants.find(
+    ({ id }) => participantSelectionKey(id as EntityId) === selectionKey,
+  );
+  if (participant) return participant.label;
+  if (selectionKey === "over") return "Over";
+  if (selectionKey === "under") return "Under";
+  if (selectionKey === "draw") return "Draw";
+  throw new EventStorageError("unsupported-detail-selection");
 };
 
 const currentKey = (
@@ -171,7 +197,252 @@ export class JoinedGamesRepository implements GamesRepository {
       "betmgm",
       "caesars",
     ],
+    readonly now: () => Date = () => new Date(),
+    readonly freshnessWindowMs = 2 * 60 * 60 * 1000,
+    readonly targetSportsbookId = "hardrock",
+    readonly clockSkewToleranceMs = 5 * 60 * 1000,
   ) {}
+  async detail(eventId: string) {
+    const detail = await this.events.detail(eventId);
+    if (detail.projectionState === "uninitialized" || !detail.item)
+      return { ...detail, item: null };
+    const event = detail.item;
+    const readAt = this.now().getTime();
+    if (
+      new Set(this.sportsbookIds).size !== this.sportsbookIds.length ||
+      this.sportsbookIds.filter((id) => id === this.targetSportsbookId)
+        .length !== 1
+    )
+      throw new EventStorageError("invalid-detail-sportsbook-roster");
+    const specifications = marketSpecifications(event);
+    const requested = this.sportsbookIds.flatMap((sportsbookId) =>
+      specifications.flatMap((specification) => [
+        ...specification.selectionKeys.flatMap((selectionKey) => {
+          const key = currentKey(
+            event,
+            specification.marketKey,
+            selectionKey,
+            sportsbookId,
+          );
+          return [key, { pk: key.pk, sk: "AVAILABILITY" as const }];
+        }),
+        {
+          pk: fixtureOddsGroupAvailabilityIdentity({
+            canonicalEventId: event.id,
+            canonicalEventVersion: event.version,
+            sportKey: event.sportKey,
+            marketKey: specification.marketKey,
+            sportsbookId,
+          }),
+          sk: "AVAILABILITY" as const,
+        },
+      ]),
+    );
+    let rows: readonly unknown[];
+    try {
+      rows = await this.odds.batchGet(requested);
+    } catch (error) {
+      throw new EventStorageError("detail-odds-read-failed", { cause: error });
+    }
+    const allowed = new Set(requested.map(({ pk, sk }) => `${pk}|${sk}`));
+    const byKey = new Map<string, unknown>();
+    for (const row of rows) {
+      if (!row || typeof row !== "object" || Array.isArray(row))
+        throw new EventStorageError("invalid-detail-odds-row");
+      const record = row as Record<string, unknown>;
+      const identity = `${String(record["pk"])}|${String(record["sk"])}`;
+      if (!allowed.has(identity) || byKey.has(identity))
+        throw new EventStorageError("unexpected-detail-odds-row");
+      byKey.set(identity, row);
+    }
+    const availability = (pk: string) => {
+      const row = byKey.get(`${pk}|AVAILABILITY`);
+      if (row === undefined) return null;
+      const record = row as Record<string, unknown>;
+      if (
+        Object.keys(record).sort().join("|") !== "pk|sk|value" ||
+        record["pk"] !== pk ||
+        record["sk"] !== "AVAILABILITY"
+      )
+        throw new EventStorageError("invalid-detail-availability-row");
+      const value = record["value"];
+      if (
+        !value ||
+        typeof value !== "object" ||
+        Array.isArray(value) ||
+        (value as FixtureOddsAvailabilityEvidence).identity !== pk ||
+        ![
+          "active",
+          "suspended",
+          "closed",
+          "missing",
+          "malformed",
+          "incomplete",
+          "unavailable",
+        ].includes((value as FixtureOddsAvailabilityEvidence).state) ||
+        typeof (value as FixtureOddsAvailabilityEvidence).observedAt !==
+          "string" ||
+        typeof (value as FixtureOddsAvailabilityEvidence).evidenceId !==
+          "string" ||
+        typeof (value as FixtureOddsAvailabilityEvidence).reason !== "string" ||
+        !Number.isFinite(
+          Date.parse((value as FixtureOddsAvailabilityEvidence).observedAt),
+        ) ||
+        Date.parse((value as FixtureOddsAvailabilityEvidence).observedAt) >
+          readAt + this.clockSkewToleranceMs
+      )
+        throw new EventStorageError("invalid-detail-availability-row");
+      return value as FixtureOddsAvailabilityEvidence;
+    };
+    const generatedAt = this.now().toISOString();
+    const markets = specifications.map((specification) => ({
+      marketKey: specification.marketKey,
+      selections: specification.selectionKeys.map((selectionKey) => {
+        const cells: Record<string, GameOddsCellDto> = {};
+        const label = canonicalSelectionLabel(event, selectionKey);
+        for (const sportsbookId of this.sportsbookIds) {
+          const key = currentKey(
+            event,
+            specification.marketKey,
+            selectionKey,
+            sportsbookId,
+          );
+          const raw = byKey.get(`${key.pk}|CURRENT`);
+          const exact = availability(key.pk);
+          const group = availability(
+            fixtureOddsGroupAvailabilityIdentity({
+              canonicalEventId: event.id,
+              canonicalEventVersion: event.version,
+              sportKey: event.sportKey,
+              marketKey: specification.marketKey,
+              sportsbookId,
+            }),
+          );
+          if (raw === undefined) {
+            const blocker = [exact, group]
+              .filter(Boolean)
+              .sort(
+                (a, b) => Date.parse(b!.observedAt) - Date.parse(a!.observedAt),
+              )[0];
+            cells[sportsbookId] = {
+              state:
+                blocker?.state === "incomplete"
+                  ? "partial"
+                  : blocker?.state === "suspended" ||
+                      blocker?.state === "closed"
+                    ? "suspended"
+                    : "unavailable",
+              eligible: false,
+              reason: blocker?.reason ?? "price-unavailable",
+              evidenceAt: blocker?.observedAt ?? null,
+            };
+            continue;
+          }
+          const price = validateCurrent(raw, key, event);
+          if (
+            Date.parse(price.observedAt) > readAt + this.clockSkewToleranceMs ||
+            Date.parse(price.retrievedAt) > readAt + this.clockSkewToleranceMs
+          )
+            throw new EventStorageError("future-detail-odds-evidence");
+          const latestBlocker = [exact, group]
+            .filter(
+              (item): item is FixtureOddsAvailabilityEvidence =>
+                !!item && item.state !== "active",
+            )
+            .sort(
+              (a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt),
+            )[0];
+          const stale =
+            this.now().getTime() - Date.parse(price.observedAt) >
+            this.freshnessWindowMs;
+          const missingAvailability = !exact || !group;
+          if (
+            !exact ||
+            !group ||
+            latestBlocker ||
+            exact.state !== "active" ||
+            group.state !== "active" ||
+            Date.parse(exact.observedAt) < Date.parse(price.observedAt) ||
+            Date.parse(group.observedAt) < Date.parse(price.observedAt) ||
+            stale
+          ) {
+            const blocker =
+              latestBlocker ??
+              (!exact || !group
+                ? null
+                : Date.parse(exact.observedAt) < Date.parse(group.observedAt)
+                  ? group
+                  : exact);
+            cells[sportsbookId] = {
+              state:
+                stale && !latestBlocker && !missingAvailability
+                  ? "stale"
+                  : blocker?.state === "incomplete"
+                    ? "partial"
+                    : blocker?.state === "suspended" ||
+                        blocker?.state === "closed"
+                      ? "suspended"
+                      : "unavailable",
+              eligible: false,
+              reason:
+                stale && !latestBlocker && !missingAvailability
+                  ? "price-stale"
+                  : (blocker?.reason ?? "availability-evidence-missing"),
+              evidenceAt: blocker?.observedAt ?? null,
+              ...(price.point === undefined ? {} : { point: price.point }),
+              americanOdds: price.americanOdds,
+              observedAt: price.observedAt,
+              retrievedAt: price.retrievedAt,
+            };
+          } else
+            cells[sportsbookId] = {
+              state: "active",
+              eligible: true,
+              ...(price.point === undefined ? {} : { point: price.point }),
+              americanOdds: price.americanOdds,
+              observedAt: price.observedAt,
+              retrievedAt: price.retrievedAt,
+            };
+        }
+        return { selectionKey, selectionLabel: label, cells };
+      }),
+    }));
+    const targetSportsbookId = this.targetSportsbookId;
+    return {
+      projectionState: "ready" as const,
+      unavailableReason: null,
+      item: {
+        ...event,
+        oddsComparison: {
+          targetSportsbookId,
+          targetQualified: markets.every((market) =>
+            market.selections.every(
+              (selection) =>
+                selection.cells[targetSportsbookId]?.eligible === true,
+            ),
+          ),
+          generatedAt,
+          sportsbooks: this.sportsbookIds.map((id) => ({
+            id,
+            label:
+              id === "hardrock"
+                ? "Hard Rock Bet"
+                : id === "draftkings"
+                  ? "DraftKings"
+                  : id === "fanduel"
+                    ? "FanDuel"
+                    : id === "betmgm"
+                      ? "BetMGM"
+                      : id === "caesars"
+                        ? "Caesars"
+                        : id,
+            target: id === targetSportsbookId,
+          })),
+          markets,
+        },
+      },
+    };
+  }
   async list(
     filter: EventListFilter,
     limit: number,

@@ -4,3 +4,4 @@ export interface MaturityPresentation {
 }
 export * from "./event-metadata";
 export * from "./event-explorer";
+export * from "./odds-comparison";

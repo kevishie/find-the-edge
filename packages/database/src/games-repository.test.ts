@@ -3,6 +3,7 @@ import {
   normalizeFixtureOddsObservation,
   assessEventMetadata,
   participantSelectionKey,
+  fixtureOddsGroupAvailabilityIdentity,
   type EventDisplayDto,
   type EntityId,
 } from "@find-the-edge/domain";
@@ -98,6 +99,339 @@ const row = (value: ReturnType<typeof current>) => ({
 });
 
 describe("joined games repository", () => {
+  it("builds authoritative multi-book detail and fails target qualification when Hard Rock is blocked", async () => {
+    const hardrockAway = current(
+      event,
+      "away",
+      "Incorrect provider label",
+      "moneyline",
+      "hardrock",
+    );
+    const hardrockHome = current(
+      event,
+      "home",
+      "New York Yankees",
+      "moneyline",
+      "hardrock",
+    );
+    const dkAway = current(event, "away", "Boston Red Sox");
+    const dkHome = current(event, "home", "New York Yankees");
+    const prices = [hardrockAway, hardrockHome, dkAway, dkHome];
+    const evidence = prices.map((price) => ({
+      pk: price.partitionKey,
+      sk: "AVAILABILITY",
+      value: {
+        identity: price.partitionKey,
+        state: price.sportsbookId === "hardrock" ? "suspended" : "active",
+        observedAt: "2026-08-01T12:05:00.000Z",
+        evidenceId: `e-${price.selectionKey}-${price.sportsbookId}`,
+        reason:
+          price.sportsbookId === "hardrock"
+            ? "market-suspended"
+            : "active-price",
+      },
+    }));
+    for (const sportsbookId of ["hardrock", "draftkings"])
+      evidence.push({
+        pk: fixtureOddsGroupAvailabilityIdentity({
+          canonicalEventId: event.id,
+          canonicalEventVersion: event.version,
+          sportKey: event.sportKey,
+          marketKey: "moneyline",
+          sportsbookId,
+        }),
+        sk: "AVAILABILITY",
+        value: {
+          identity: fixtureOddsGroupAvailabilityIdentity({
+            canonicalEventId: event.id,
+            canonicalEventVersion: event.version,
+            sportKey: event.sportKey,
+            marketKey: "moneyline",
+            sportsbookId,
+          }),
+          state: sportsbookId === "hardrock" ? "suspended" : "active",
+          observedAt: "2026-08-01T12:05:00.000Z",
+          evidenceId: `group-${sportsbookId}`,
+          reason:
+            sportsbookId === "hardrock"
+              ? "market-suspended"
+              : "market-complete",
+        },
+      });
+    const eventRepository = events();
+    eventRepository.detail = () =>
+      Promise.resolve({
+        projectionState: "ready",
+        item: event,
+        unavailableReason: null,
+      });
+    const detail = await new JoinedGamesRepository(
+      eventRepository,
+      { batchGet: () => Promise.resolve([...prices.map(row), ...evidence]) },
+      ["hardrock", "draftkings"],
+      () => new Date("2026-08-01T13:00:00.000Z"),
+    ).detail("event-1");
+    expect(detail.item?.oddsComparison).toMatchObject({
+      targetSportsbookId: "hardrock",
+      targetQualified: false,
+    });
+    expect(
+      detail.item?.oddsComparison.markets[0]?.selections[0]?.cells,
+    ).toMatchObject({
+      hardrock: { state: "suspended", eligible: false, americanOdds: 120 },
+      draftkings: { state: "active", eligible: true, americanOdds: 120 },
+    });
+    expect(
+      detail.item?.oddsComparison.markets[0]?.selections[0]?.selectionLabel,
+    ).toBe("Boston Red Sox");
+  });
+
+  it("renders every configured book as unavailable without inventing evidence", async () => {
+    const eventRepository = events();
+    eventRepository.detail = () =>
+      Promise.resolve({
+        projectionState: "ready",
+        item: event,
+        unavailableReason: null,
+      });
+    const detail = await new JoinedGamesRepository(
+      eventRepository,
+      { batchGet: () => Promise.resolve([]) },
+      ["hardrock", "draftkings"],
+    ).detail("event-1");
+    expect(
+      detail.item?.oddsComparison.markets[0]?.selections[0]?.cells,
+    ).toEqual({
+      hardrock: {
+        state: "unavailable",
+        eligible: false,
+        reason: "price-unavailable",
+        evidenceAt: null,
+      },
+      draftkings: {
+        state: "unavailable",
+        eligible: false,
+        reason: "price-unavailable",
+        evidenceAt: null,
+      },
+    });
+  });
+
+  it("keeps missing availability unavailable before staleness and lets retained blockers win", async () => {
+    const away = current(
+      event,
+      "away",
+      "Boston Red Sox",
+      "moneyline",
+      "hardrock",
+      "2026-08-01T12:00:00.000Z",
+    );
+    const eventRepository = events();
+    eventRepository.detail = () =>
+      Promise.resolve({
+        projectionState: "ready",
+        item: event,
+        unavailableReason: null,
+      });
+    const blocked = {
+      identity: away.partitionKey,
+      state: "suspended" as const,
+      observedAt: "2026-08-01T07:00:00-04:00",
+      evidenceId: "older-blocker",
+      reason: "market-suspended",
+    };
+    const groupIdentity = fixtureOddsGroupAvailabilityIdentity(away);
+    const group = {
+      identity: groupIdentity,
+      state: "active" as const,
+      observedAt: "2026-08-01T08:05:00-04:00",
+      evidenceId: "group-active",
+      reason: "market-complete",
+    };
+    const blockedDetail = await new JoinedGamesRepository(
+      eventRepository,
+      {
+        batchGet: () =>
+          Promise.resolve([
+            row(away),
+            { pk: away.partitionKey, sk: "AVAILABILITY", value: blocked },
+            { pk: groupIdentity, sk: "AVAILABILITY", value: group },
+          ]),
+      },
+      ["hardrock"],
+      () => new Date("2026-08-01T12:30:00.000Z"),
+    ).detail(event.id);
+    expect(
+      blockedDetail.item?.oddsComparison.markets[0]?.selections[0]?.cells
+        .hardrock,
+    ).toMatchObject({ state: "suspended", reason: "market-suspended" });
+    const missingDetail = await new JoinedGamesRepository(
+      eventRepository,
+      { batchGet: () => Promise.resolve([row(away)]) },
+      ["hardrock"],
+      () => new Date("2026-08-02T12:30:00.000Z"),
+    ).detail(event.id);
+    expect(
+      missingDetail.item?.oddsComparison.markets[0]?.selections[0]?.cells
+        .hardrock,
+    ).toMatchObject({
+      state: "unavailable",
+      reason: "availability-evidence-missing",
+    });
+  });
+
+  it("uses an explicit target independent of sportsbook roster order", async () => {
+    const eventRepository = events();
+    eventRepository.detail = () =>
+      Promise.resolve({
+        projectionState: "ready",
+        item: event,
+        unavailableReason: null,
+      });
+    const detail = await new JoinedGamesRepository(
+      eventRepository,
+      { batchGet: () => Promise.resolve([]) },
+      ["draftkings", "hardrock"],
+      () => new Date("2026-08-01T12:30:00.000Z"),
+      7_200_000,
+      "hardrock",
+    ).detail(event.id);
+    expect(detail.item?.oddsComparison).toMatchObject({
+      targetSportsbookId: "hardrock",
+      targetQualified: false,
+      sportsbooks: [
+        { id: "draftkings", target: false },
+        { id: "hardrock", target: true },
+      ],
+    });
+  });
+
+  it("qualifies the explicit target only when every expected market cell is eligible", async () => {
+    const prices = [
+      current(event, "away", "Boston", "moneyline", "hardrock"),
+      current(event, "home", "New York", "moneyline", "hardrock"),
+      current(event, "away", "Boston", "spread", "hardrock", undefined, 1.5),
+      current(event, "home", "New York", "spread", "hardrock", undefined, -1.5),
+      current(event, "over", "Over", "total", "hardrock", undefined, 8.5),
+      current(event, "under", "Under", "total", "hardrock", undefined, 8.5),
+    ];
+    const evidence = prices.map((price) => ({
+      pk: price.partitionKey,
+      sk: "AVAILABILITY",
+      value: {
+        identity: price.partitionKey,
+        state: "active",
+        observedAt: price.observedAt,
+        evidenceId: price.snapshotId,
+        reason: "active-price",
+      },
+    }));
+    for (const marketKey of ["moneyline", "spread", "total"]) {
+      const identity = fixtureOddsGroupAvailabilityIdentity({
+        canonicalEventId: event.id,
+        canonicalEventVersion: event.version,
+        sportKey: event.sportKey,
+        marketKey,
+        sportsbookId: "hardrock",
+      });
+      evidence.push({
+        pk: identity,
+        sk: "AVAILABILITY",
+        value: {
+          identity,
+          state: "active",
+          observedAt: "2026-08-01T12:00:00.000Z",
+          evidenceId: `group-${marketKey}`,
+          reason: "market-complete",
+        },
+      });
+    }
+    const eventRepository = events();
+    eventRepository.detail = () =>
+      Promise.resolve({
+        projectionState: "ready",
+        item: event,
+        unavailableReason: null,
+      });
+    const detail = await new JoinedGamesRepository(
+      eventRepository,
+      { batchGet: () => Promise.resolve([...prices.map(row), ...evidence]) },
+      ["hardrock"],
+      () => new Date("2026-08-01T12:30:00.000Z"),
+    ).detail(event.id);
+    expect(detail.item?.oddsComparison.targetQualified).toBe(true);
+  });
+
+  it("rejects a missing or duplicated explicit target", async () => {
+    const eventRepository = events();
+    eventRepository.detail = () =>
+      Promise.resolve({
+        projectionState: "ready",
+        item: event,
+        unavailableReason: null,
+      });
+    for (const books of [["draftkings"], ["hardrock", "hardrock"]])
+      await expect(
+        new JoinedGamesRepository(
+          eventRepository,
+          { batchGet: () => Promise.resolve([]) },
+          books,
+          undefined,
+          undefined,
+          "hardrock",
+        ).detail(event.id),
+      ).rejects.toThrow("invalid-detail-sportsbook-roster");
+  });
+
+  it("fails closed for price or availability evidence beyond clock-skew tolerance", async () => {
+    const eventRepository = events();
+    eventRepository.detail = () =>
+      Promise.resolve({
+        projectionState: "ready",
+        item: event,
+        unavailableReason: null,
+      });
+    const futurePrice = current(
+      event,
+      "away",
+      "Boston",
+      "moneyline",
+      "hardrock",
+      "2026-08-01T12:06:00.000Z",
+    );
+    await expect(
+      new JoinedGamesRepository(
+        eventRepository,
+        { batchGet: () => Promise.resolve([row(futurePrice)]) },
+        ["hardrock"],
+        () => new Date("2026-08-01T12:00:00.000Z"),
+      ).detail(event.id),
+    ).rejects.toThrow("future-detail-odds-evidence");
+    const key = futurePrice.partitionKey;
+    await expect(
+      new JoinedGamesRepository(
+        eventRepository,
+        {
+          batchGet: () =>
+            Promise.resolve([
+              {
+                pk: key,
+                sk: "AVAILABILITY",
+                value: {
+                  identity: key,
+                  state: "active",
+                  observedAt: "2026-08-01T12:05:00.001Z",
+                  evidenceId: "future",
+                  reason: "active-price",
+                },
+              },
+            ]),
+        },
+        ["hardrock"],
+        () => new Date("2026-08-01T12:00:00.000Z"),
+      ).detail(event.id),
+    ).rejects.toThrow("invalid-detail-availability-row");
+  });
   it("preserves page metadata and rebuilds MLB away/home order independently of response order", async () => {
     const seen: {
       cursor: string | undefined;

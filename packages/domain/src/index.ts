@@ -455,6 +455,47 @@ export interface GameDisplayDto extends EventDisplayDto {
     | { readonly state: "unavailable" };
 }
 
+export type GameOddsCellDto =
+  | {
+      readonly state: "active";
+      readonly eligible: true;
+      readonly point?: number;
+      readonly americanOdds: number;
+      readonly observedAt: string;
+      readonly retrievedAt: string;
+    }
+  | {
+      readonly state: "stale" | "suspended" | "partial" | "unavailable";
+      readonly eligible: false;
+      readonly reason: string;
+      readonly evidenceAt: string | null;
+      readonly point?: number;
+      readonly americanOdds?: number;
+      readonly observedAt?: string;
+      readonly retrievedAt?: string;
+    };
+
+export interface GameOddsComparisonDto extends EventDisplayDto {
+  readonly oddsComparison: {
+    readonly targetSportsbookId: string;
+    readonly targetQualified: boolean;
+    readonly generatedAt: string;
+    readonly sportsbooks: readonly {
+      readonly id: string;
+      readonly label: string;
+      readonly target: boolean;
+    }[];
+    readonly markets: readonly {
+      readonly marketKey: string;
+      readonly selections: readonly {
+        readonly selectionKey: string;
+        readonly selectionLabel: string;
+        readonly cells: Readonly<Record<string, GameOddsCellDto>>;
+      }[];
+    }[];
+  };
+}
+
 const normalizedParticipantAlias = (label: string) =>
   label
     .normalize("NFKD")

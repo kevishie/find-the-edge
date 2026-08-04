@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { GameOddsSelectionDto } from "@find-the-edge/domain";
-import { assessEventMetadata } from "@find-the-edge/domain";
+import type { EntityId, GameOddsSelectionDto } from "@find-the-edge/domain";
+import {
+  assessEventMetadata,
+  participantSelectionKey,
+} from "@find-the-edge/domain";
 
 import {
   createGamesClient,
@@ -68,6 +71,49 @@ const payload = {
   snapshotAt: "2026-08-01T12:30:00.000Z",
   freshness: "2026-08-01T12:30:00.000Z",
   unavailableReason: null,
+};
+
+const detailFixture = () => {
+  const item: Record<string, unknown> = structuredClone(payload.items[0]!);
+  delete item["odds"];
+  const sides = payload.items[0]!.participants.map(({ id }) =>
+    participantSelectionKey(id as EntityId),
+  );
+  const active = (point?: number) => ({
+    state: "active",
+    eligible: true,
+    ...(point === undefined ? {} : { point }),
+    americanOdds: 120,
+    observedAt: "2026-08-01T12:00:00.000Z",
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+  });
+  const selections = (keys: readonly string[], point?: number) =>
+    keys.map((selectionKey) => ({
+      selectionKey,
+      selectionLabel: selectionKey,
+      cells: { hardrock: active(point) },
+    }));
+  item["oddsComparison"] = {
+    targetSportsbookId: "hardrock",
+    targetQualified: true,
+    generatedAt: "2026-08-01T12:30:00.000Z",
+    sportsbooks: [{ id: "hardrock", label: "Hard Rock Bet", target: true }],
+    markets: [
+      { marketKey: "moneyline", selections: selections(sides) },
+      { marketKey: "spread", selections: selections(sides, 1.5) },
+      { marketKey: "total", selections: selections(["over", "under"], 8.5) },
+    ],
+  };
+  return item;
+};
+const mutableRecord = (value: unknown): Record<string, unknown> => {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("fixture-record-invalid");
+  return value as Record<string, unknown>;
+};
+const mutableArray = (value: unknown): unknown[] => {
+  if (!Array.isArray(value)) throw new Error("fixture-array-invalid");
+  return value;
 };
 
 const bootstrap = (): RuntimeBootstrap => ({
@@ -152,9 +198,8 @@ describe("games client", () => {
     }
   });
 
-  it("preserves authoritative explorer odds on canonical detail", async () => {
-    const detailItem: Record<string, unknown> = { ...payload.items[0]! };
-    delete detailItem["odds"];
+  it("loads authoritative detail odds without a prior list cache", async () => {
+    const detailItem = detailFixture();
     const fetcher = vi.fn<typeof fetch>((input) =>
       Promise.resolve(
         requestHref(input).includes("/events/")
@@ -170,13 +215,134 @@ describe("games client", () => {
     );
     const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
     if (!client.ok) throw client.error;
-    await client.value.list(
-      { sport: "mlb", day: "2026-08-01", status: "scheduled" },
-      new AbortController().signal,
-    );
     await expect(
       client.value.detail!(payload.items[0]!.id, new AbortController().signal),
-    ).resolves.toMatchObject({ odds: payload.items[0]!.odds });
+    ).resolves.toMatchObject({ oddsComparison: { targetQualified: true } });
+  });
+
+  it.each([
+    [
+      "qualification",
+      (item: Record<string, unknown>) => {
+        mutableRecord(item["oddsComparison"])["targetQualified"] = false;
+      },
+    ],
+    [
+      "duplicate book",
+      (item: Record<string, unknown>) => {
+        const books = mutableArray(
+          mutableRecord(item["oddsComparison"])["sportsbooks"],
+        );
+        books.push(structuredClone(books[0]));
+      },
+    ],
+    [
+      "duplicate market",
+      (item: Record<string, unknown>) => {
+        const markets = mutableArray(
+          mutableRecord(item["oddsComparison"])["markets"],
+        );
+        mutableRecord(markets[1])["marketKey"] = "moneyline";
+      },
+    ],
+    [
+      "wrong selection",
+      (item: Record<string, unknown>) => {
+        const markets = mutableArray(
+          mutableRecord(item["oddsComparison"])["markets"],
+        );
+        const selections = mutableArray(
+          mutableRecord(markets[0])["selections"],
+        );
+        mutableRecord(selections[0])["selectionKey"] = "participant:intruder";
+      },
+    ],
+    [
+      "extra cell",
+      (item: Record<string, unknown>) => {
+        const markets = mutableArray(
+          mutableRecord(item["oddsComparison"])["markets"],
+        );
+        const selections = mutableArray(
+          mutableRecord(markets[0])["selections"],
+        );
+        const cells = mutableRecord(mutableRecord(selections[0])["cells"]);
+        cells["ghost"] = cells["hardrock"];
+      },
+    ],
+    [
+      "out-of-domain active American odds",
+      (item: Record<string, unknown>) => {
+        const markets = mutableArray(
+          mutableRecord(item["oddsComparison"])["markets"],
+        );
+        const selections = mutableArray(
+          mutableRecord(markets[0])["selections"],
+        );
+        const hardrock = mutableRecord(
+          mutableRecord(mutableRecord(selections[0])["cells"])["hardrock"],
+        );
+        hardrock["americanOdds"] = 99;
+      },
+    ],
+    [
+      "out-of-domain retained American odds",
+      (item: Record<string, unknown>) => {
+        const comparison = mutableRecord(item["oddsComparison"]);
+        comparison["targetQualified"] = false;
+        const markets = mutableArray(comparison["markets"]);
+        const selections = mutableArray(
+          mutableRecord(markets[0])["selections"],
+        );
+        const cells = mutableRecord(mutableRecord(selections[0])["cells"]);
+        cells["hardrock"] = {
+          state: "suspended",
+          eligible: false,
+          reason: "market-suspended",
+          evidenceAt: "2026-08-01T12:01:00.000Z",
+          americanOdds: 100_001,
+          observedAt: "2026-08-01T12:00:00.000Z",
+          retrievedAt: "2026-08-01T12:00:00.000Z",
+        };
+      },
+    ],
+  ])("rejects inconsistent detail %s", async (_label, mutate) => {
+    const item = detailFixture();
+    mutate(item);
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            projectionState: "ready",
+            item,
+            unavailableReason: null,
+          }),
+        ),
+      ),
+    );
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.detail!(payload.items[0]!.id, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it("preserves a typed not-found detail response", async () => {
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: "not-found" }), { status: 404 }),
+        ),
+    );
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.detail!(payload.items[0]!.id, new AbortController().signal),
+    ).rejects.toMatchObject({
+      code: "not-found",
+      message: "This game was not found.",
+    });
   });
 
   it("rejects an unsupported canonical detail sport key", async () => {

@@ -33,6 +33,7 @@ import {
   filterAndSortEvents,
   eventLifecyclePresentation,
   eventMetadataReasonText,
+  buildOddsComparisonViewModel,
 } from "@find-the-edge/ui";
 import type {
   EventExplorerSortDirection,
@@ -44,10 +45,21 @@ import {
   sportsbookMetadata,
   sportsbookScopeKey,
 } from "./sportsbooks";
-import type { RetrospectiveDto } from "./api";
+import { GamesClientError, type RetrospectiveDto } from "./api";
+import { detailMatchesRoute } from "./route-state";
 
 const SPLITS_REFRESH_INTERVAL_MS = 30_000;
-
+const oddsCellTimestamp = (
+  cell: import("@find-the-edge/domain").GameOddsCellDto,
+) =>
+  cell.state === "active" || cell.state === "stale"
+    ? cell.observedAt
+    : (cell.evidenceAt ?? cell.observedAt);
+const oddsCellReason = (reason: string) =>
+  reason
+    .slice(0, 120)
+    .replace(/[-_]+/g, " ")
+    .replace(/^./, (value) => value.toUpperCase());
 function EventMetadataBadges({
   game,
 }: {
@@ -233,7 +245,7 @@ interface UiGamesClient {
   detail?(
     eventId: string,
     signal: AbortSignal,
-  ): Promise<UiGamesPage["items"][number]>;
+  ): Promise<import("@find-the-edge/domain").GameOddsComparisonDto>;
   listSplits?(
     filter: { readonly sport: GamesSport; readonly day: string },
     signal: AbortSignal,
@@ -1204,6 +1216,7 @@ function SplitsExplorer() {
         readonly snapshotAt: string | null | undefined;
         readonly observedAt: number;
       }
+    | { readonly kind: "not-found"; readonly message: string }
     | { readonly kind: "error"; readonly message: string }
   >({ kind: "loading" });
   const validBoardKey = useRef<string | null>(null);
@@ -1668,45 +1681,75 @@ function GameDetail() {
     | { readonly kind: "loading" }
     | {
         readonly kind: "ready";
-        readonly game: UiGamesPage["items"][number];
+        readonly game: import("@find-the-edge/domain").GameOddsComparisonDto;
       }
+    | { readonly kind: "not-found"; readonly message: string }
     | { readonly kind: "error"; readonly message: string }
   >({ kind: "loading" });
+  const [reload, setReload] = useState(0);
+  const [activeMarket, setActiveMarket] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
+    queueMicrotask(() => {
+      if (controller.signal.aborted) return;
+      setState({ kind: "loading" });
+      setActiveMarket("");
+    });
     const load = async () => {
-      if (!client.ok || (!client.value.detail && !client.value.listSplits)) {
+      if (!client.ok || !client.value.detail) {
         setState({ kind: "error", message: "Game details are unavailable." });
         return;
       }
       try {
-        const game = client.value.detail
-          ? await client.value.detail(gameId, controller.signal)
-          : (
-              await client.value.listSplits!(detailSearch, controller.signal)
-            ).items.find((item) => item.id === gameId);
+        const game = await client.value.detail(gameId, controller.signal);
         if (!controller.signal.aborted)
           setState(
             game
               ? { kind: "ready", game }
               : { kind: "error", message: "This game was not found." },
           );
-      } catch {
+      } catch (error) {
         if (!controller.signal.aborted)
-          setState({
-            kind: "error",
-            message: "Game details are temporarily unavailable.",
-          });
+          setState(
+            error instanceof GamesClientError && error.code === "not-found"
+              ? { kind: "not-found", message: "This game was not found." }
+              : {
+                  kind: "error",
+                  message: "Game details are temporarily unavailable.",
+                },
+          );
       }
     };
     void load();
     return () => controller.abort();
-  }, [client, detailSearch, gameId]);
+  }, [client, detailSearch, gameId, reload]);
 
   if (state.kind === "loading") return <p>Loading game details…</p>;
-  if (state.kind === "error") return <p role="alert">{state.message}</p>;
+  if (state.kind === "not-found") return <p role="status">{state.message}</p>;
+  if (state.kind === "error")
+    return (
+      <div role="alert">
+        <p>{state.message}</p>
+        <button
+          type="button"
+          onClick={() => {
+            setState({ kind: "loading" });
+            setReload((value) => value + 1);
+          }}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  if (!detailMatchesRoute(state.game.id, gameId))
+    return <p>Loading game details…</p>;
   const game = state.game;
+  const comparison = buildOddsComparisonViewModel(game);
+  const targetBook = comparison.books.find(({ target }) => target)!;
+  const market =
+    comparison.markets.find(({ key }) => key === activeMarket) ??
+    comparison.markets[0];
   return (
     <>
       <header className="explorer-header">
@@ -1720,47 +1763,138 @@ function GameDetail() {
           Back to games
         </Link>
       </header>
-      <section className="detail-grid">
-        <article className="split-card">
-          <h2>Current odds</h2>
-          {game.odds.state === "available" ? (
-            <table className="split-board">
+      <section
+        className="odds-comparison"
+        aria-labelledby="odds-comparison-title"
+      >
+        <div className="odds-comparison-heading">
+          <div>
+            <h2 id="odds-comparison-title">Sportsbook comparison</h2>
+            <p>
+              {comparison.targetQualified
+                ? `${targetBook.label} prices are currently eligible.`
+                : `${targetBook.label} coverage is incomplete — comparison is not qualified.`}
+            </p>
+          </div>
+          <span
+            className={
+              comparison.targetQualified
+                ? "qualification qualified"
+                : "qualification blocked"
+            }
+          >
+            {comparison.targetQualified
+              ? "Target qualified"
+              : "Target unavailable"}
+          </span>
+        </div>
+        <div role="tablist" aria-label="Odds markets" className="market-tabs">
+          {comparison.markets.map((item, index) => (
+            <button
+              key={item.key}
+              id={`market-tab-${item.key}`}
+              role="tab"
+              aria-controls={`market-panel-${item.key}`}
+              aria-selected={item.key === market?.key}
+              tabIndex={item.key === market?.key ? 0 : -1}
+              onClick={() => setActiveMarket(item.key)}
+              onKeyDown={(event) => {
+                if (
+                  !["ArrowLeft", "ArrowRight", "Home", "End"].includes(
+                    event.key,
+                  )
+                )
+                  return;
+                event.preventDefault();
+                const nextIndex =
+                  event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? comparison.markets.length - 1
+                      : (index +
+                          (event.key === "ArrowRight" ? 1 : -1) +
+                          comparison.markets.length) %
+                        comparison.markets.length;
+                const next = comparison.markets[nextIndex];
+                if (!next) return;
+                setActiveMarket(next.key);
+                const buttons =
+                  event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+                    '[role="tab"]',
+                  );
+                buttons?.[nextIndex]?.focus();
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        {market ? (
+          <div
+            className="comparison-scroll"
+            role="tabpanel"
+            id={`market-panel-${market.key}`}
+            aria-labelledby={`market-tab-${market.key}`}
+            tabIndex={0}
+          >
+            <table className="comparison-board">
               <thead>
                 <tr>
-                  <th>Market</th>
-                  <th>Side</th>
-                  <th>Line</th>
-                  <th>Price</th>
+                  <th>Selection</th>
+                  {comparison.books.map((book) => (
+                    <th
+                      key={book.id}
+                      className={book.target ? "target-book" : ""}
+                    >
+                      <SportsbookLogo scope={book.id} />
+                      <span>{book.label}</span>
+                      {book.target && <small>Target book</small>}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {game.odds.selections.map((price) => (
-                  <tr key={`${price.marketKey}-${price.selectionKey}`}>
-                    <td>{price.marketKey}</td>
-                    <td>{price.selectionLabel ?? price.selectionKey}</td>
-                    <td>
-                      {price.point === undefined ? "—" : linePoint(price.point)}
-                    </td>
-                    <td>{oddsPrice(price.americanOdds)}</td>
+                {market.selections.map((selection) => (
+                  <tr key={selection.key}>
+                    <th scope="row">{selection.label}</th>
+                    {selection.cells.map(
+                      ({ bookId, cell, stateLabel, best }) => (
+                        <td
+                          key={bookId}
+                          className={`${bookId === game.oddsComparison.targetSportsbookId ? "target-book" : ""} odds-cell state-${cell.state}`}
+                        >
+                          <strong>
+                            {cell.americanOdds === undefined
+                              ? "—"
+                              : `${cell.point === undefined ? "" : `${linePoint(cell.point)} · `}${oddsPrice(cell.americanOdds)}`}
+                          </strong>
+                          <span>
+                            {best ? "Best eligible · " : ""}
+                            {stateLabel}
+                          </span>
+                          {!cell.eligible && (
+                            <small className="odds-cell-reason">
+                              {oddsCellReason(cell.reason)}
+                            </small>
+                          )}
+                          <time dateTime={oddsCellTimestamp(cell) ?? undefined}>
+                            {oddsCellTimestamp(cell)
+                              ? new Date(
+                                  oddsCellTimestamp(cell)!,
+                                ).toLocaleString()
+                              : "No timestamp"}
+                          </time>
+                        </td>
+                      ),
+                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
-          ) : (
-            <p>Odds unavailable.</p>
-          )}
-        </article>
-        <article className="split-card">
-          <h2>Current betting splits</h2>
-          <p className="split-card-context">
-            DraftKings is recreational and Circa is sharp-adjacent. Treat splits
-            as one signal alongside line movement and +EV analysis.
-          </p>
-          <p>
-            Splits are unavailable in canonical event detail. Scheduled-event
-            splits remain on the Betting Splits screen.
-          </p>
-        </article>
+          </div>
+        ) : (
+          <p>No supported markets are available.</p>
+        )}
       </section>
     </>
   );
