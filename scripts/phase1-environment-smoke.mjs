@@ -211,7 +211,7 @@ export function assertLiveIngestionSummary(summary) {
           "internal-failure",
           "cadence-not-due",
         ].includes(result.reason) ||
-        /^schedule-(provider-unavailable|rate-limited|not-entitled|coverage-missing|provider-request-ambiguous|quota-reserve|provider-cooldown|provider-recovering|pagination-invalid|transition-conflict|internal-failure)$/.test(
+        /^schedule-(provider-error|provider-unavailable|rate-limited|unauthorized|not-entitled|invalid-response|coverage-missing|provider-request-ambiguous|provider-response-unsealed|quota-reserve|provider-cooldown|provider-recovering|schedule-dependency-failed|mapping-quarantine|pagination-invalid|transition-conflict|internal-failure)$/.test(
           result.reason,
         )) &&
       Number.isSafeInteger(result.pages) &&

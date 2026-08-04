@@ -82,6 +82,10 @@ Manual refresh is only a scheduler hint. It does not bypass provider activation,
 
 Deploy the retained-table schema and disabled FIFO path first, verify the `LiveOddsControlPlaneDlqAlarm` notification target, then enable the scheduler. Existing odds rows remain readable; new rows add optional provider/policy provenance. Roll back by disabling `FTE_UPCOMING_SCHEDULER_ENABLED` and redeploying the prior worker bundle. Do not delete the retained table, queues, secrets or immutable snapshots. Before re-enabling, inspect failed run/page/attempt records and redrive only the failed league command.
 
+Odds history starts when live collection is activated. Do not infer or synthesize pre-launch opening prices. Immutable `SNAPSHOT` rows intentionally have no TTL even though the shared table supports TTL for transient records. Legacy positional `away`/`home` selection partitions may coexist with participant-bound partitions; leave them untouched and treat them as legacy evidence rather than merging histories implicitly.
+
+Each primary snapshot also receives a repairable content-hash lookup row. If that mirror write is interrupted after the primary snapshot commits, ingestion emits `OddsExactSnapshotMirrorFailure`; replay the same sealed ingestion page so the conditional snapshot insert resolves as an identical duplicate, the exact-ID mirror is recreated, and `CURRENT` converges without rewriting history. Alert on repeated nonzero mirror-failure metrics. DynamoDB Streams projection, replay automation, projection DLQ handling, and rebuild procedures remain the FTE-022 boundary.
+
 ## Automatic deployment from GitHub
 
 Pushes to `main` first run `.github/workflows/ci.yml`. After that workflow

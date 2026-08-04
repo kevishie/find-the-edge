@@ -20,6 +20,7 @@ export type OddsEvidenceGapReason =
   | "unsupported-market"
   | "unsupported-selection"
   | "incomplete-market"
+  | "missing-provider-timestamp"
   | "participant-unavailable";
 export interface OddsEvidenceProvenance {
   readonly providerId: string;

@@ -344,7 +344,10 @@ const normalizationGaps = (
         sportsbookId: rejection.sportsbookId,
         policyVersion: oddsCollectionPolicyVersion,
         bookRole,
-        sourceState: "unsupported",
+        sourceState:
+          rejection.reason === "missing-provider-timestamp"
+            ? "missing"
+            : "unsupported",
         reason: rejection.reason,
         observedAt: page.retrievedAt,
       },
@@ -906,12 +909,53 @@ export async function runProductionOddsControlPlane(input: {
                 sharpLeague,
                 material.page,
                 policy.providers[0]?.books,
+                (outcome) => {
+                  const dimensions = {
+                    provider: SHARP_API_PROVIDER_ID,
+                    league: policy.leagueKey,
+                  };
+                  if (outcome.snapshot)
+                    input.metrics?.emit(
+                      outcome.snapshot === "created"
+                        ? "OddsSnapshotCreated"
+                        : "OddsSnapshotDuplicate",
+                      1,
+                      dimensions,
+                    );
+                  if (outcome.current)
+                    input.metrics?.emit(
+                      outcome.current === "advanced"
+                        ? "OddsCurrentAdvanced"
+                        : "OddsCurrentRetained",
+                      1,
+                      dimensions,
+                    );
+                  if (outcome.mirrorFailure)
+                    input.metrics?.emit(
+                      "OddsExactSnapshotMirrorFailure",
+                      1,
+                      dimensions,
+                    );
+                },
               );
               input.metrics?.emit(
                 "OddsNormalizedObservation",
                 persisted.observations,
                 { provider: SHARP_API_PROVIDER_ID, league: policy.leagueKey },
               );
+              const persistenceMetrics = [
+                ["OddsStaleEvidence", persisted.staleEvidence],
+                ["OddsPartialEvidence", persisted.partialEvidence],
+                [
+                  "OddsMissingProviderTimestamp",
+                  persisted.rejectionCounts["missing-provider-timestamp"] ?? 0,
+                ],
+              ] as const;
+              for (const [name, value] of persistenceMetrics)
+                input.metrics?.emit(name, value, {
+                  provider: SHARP_API_PROVIDER_ID,
+                  league: policy.leagueKey,
+                });
               for (const [reason, count] of Object.entries(
                 persisted.rejectionCounts,
               ))

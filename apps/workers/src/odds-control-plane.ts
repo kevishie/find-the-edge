@@ -149,7 +149,7 @@ export const embeddedOddsControlPlaneMetrics: OddsControlPlaneMetrics = {
           CloudWatchMetrics: [
             {
               Namespace: "FindTheEdge/OddsControlPlane",
-              Dimensions: [[]],
+              Dimensions: [Object.keys(bounded)],
               Metrics: [{ Name: name, Unit: "Count" }],
             },
           ],

@@ -294,6 +294,11 @@ export async function persistSharpApiOddsPage(
   page: Pick<SharpApiOddsPage, "events" | "retrievedAt"> &
     Partial<Pick<SharpApiOddsPage, "rejections">>,
   bookRoles?: Readonly<Record<string, "offered" | "comparison" | "splits">>,
+  onPersistenceOutcome?: (outcome: {
+    readonly snapshot?: "created" | "existing";
+    readonly current?: "advanced" | "retained";
+    readonly mirrorFailure?: true;
+  }) => void,
 ) {
   const comparableParticipant = (value: string) =>
     value
@@ -308,6 +313,12 @@ export async function persistSharpApiOddsPage(
   }[] = [];
   let events = 0;
   let observations = 0;
+  let snapshotsCreated = 0;
+  let snapshotsExisting = 0;
+  let currentAdvanced = 0;
+  let currentRetained = 0;
+  let staleEvidence = 0;
+  let partialEvidence = 0;
   const rejectionCounts: Partial<Record<OddsNormalizationReason, number>> = {};
   for (const rejection of page.rejections ?? [])
     rejectionCounts[rejection.reason] =
@@ -344,6 +355,13 @@ export async function persistSharpApiOddsPage(
         ? bookRoles[sportsbook.id]
         : sportsbook.productionRole;
       if (!bookRole) continue;
+      staleEvidence += book.prices.filter(
+        (price) =>
+          price.isMainLine &&
+          !price.isAlternateLine &&
+          !price.isPlayerProp &&
+          price.isStalePregamePrice,
+      ).length;
       const complete = completeMainPrices(
         book.prices.filter(
           (price) =>
@@ -357,6 +375,8 @@ export async function persistSharpApiOddsPage(
       if (complete.rejected)
         rejectionCounts["incomplete-market"] =
           (rejectionCounts["incomplete-market"] ?? 0) + complete.rejected;
+      // One unit represents one rejected/incomplete market group, not a row.
+      partialEvidence += complete.rejected;
       for (const price of complete.prices) {
         const providerParticipantIndex =
           price.marketKey === "team_total"
@@ -406,40 +426,69 @@ export async function persistSharpApiOddsPage(
           participantIndex >= 0
             ? canonical.participantLabels?.[participantIndex]
             : undefined;
-        await odds.persist({
-          providerId: SHARP_API_PROVIDER_ID,
-          providerEventId: raw.providerEventId,
-          leagueKey: league.leagueKey,
-          expectedStartsAt: canonical.startsAt,
-          expectedStatus: "scheduled",
-          observation: {
-            canonicalEventId: canonical.id,
-            canonicalEventVersion: canonical.version,
-            sportKey: canonical.sportKey,
-            marketKey: price.marketKey,
-            selectionKey,
-            selectionLabel: canonicalSelectionLabel ?? price.selectionLabel,
-            sportsbookId: sportsbook.id,
-            sportsbookLabel: sportsbook.name,
-            ...(price.point === undefined ? {} : { point: price.point }),
-            americanOdds: price.americanOdds,
-            observedAt: price.observedAt,
-            retrievedAt: page.retrievedAt,
-            provenance: {
-              providerId: SHARP_API_PROVIDER_ID,
-              policyVersion: oddsCollectionPolicyVersion,
-              bookRole: bookRole ?? "offered",
-              sourceState: "active",
+        let persisted: FixtureOddsPersistResult;
+        try {
+          persisted = await odds.persist({
+            providerId: SHARP_API_PROVIDER_ID,
+            providerEventId: raw.providerEventId,
+            leagueKey: league.leagueKey,
+            expectedStartsAt: canonical.startsAt,
+            expectedStatus: "scheduled",
+            observation: {
+              canonicalEventId: canonical.id,
+              canonicalEventVersion: canonical.version,
+              sportKey: canonical.sportKey,
+              marketKey: price.marketKey,
+              selectionKey,
+              selectionLabel: canonicalSelectionLabel ?? price.selectionLabel,
+              sportsbookId: sportsbook.id,
+              sportsbookLabel: sportsbook.name,
+              ...(price.point === undefined ? {} : { point: price.point }),
+              americanOdds: price.americanOdds,
+              observedAt: price.observedAt,
+              retrievedAt: page.retrievedAt,
+              provenance: {
+                providerId: SHARP_API_PROVIDER_ID,
+                policyVersion: oddsCollectionPolicyVersion,
+                bookRole: bookRole ?? "offered",
+                sourceState: "active",
+              },
             },
-          },
+          });
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message === "exact-snapshot-index-write-failed"
+          )
+            onPersistenceOutcome?.({ mirrorFailure: true });
+          throw error;
+        }
+        onPersistenceOutcome?.({
+          snapshot: persisted.snapshot,
+          current: persisted.current,
         });
+        if (persisted.snapshot === "created") snapshotsCreated += 1;
+        else snapshotsExisting += 1;
+        if (persisted.current === "advanced") currentAdvanced += 1;
+        else currentRetained += 1;
         observations += 1;
         eventObservations += 1;
       }
     }
     if (eventObservations > 0) events += 1;
   }
-  return { events, observations, canonicalOddsEvents, rejectionCounts };
+  return {
+    events,
+    observations,
+    canonicalOddsEvents,
+    rejectionCounts,
+    snapshotsCreated,
+    snapshotsExisting,
+    currentAdvanced,
+    currentRetained,
+    staleEvidence,
+    partialEvidence,
+  };
 }
 
 export async function persistSharpApiSplitPage(

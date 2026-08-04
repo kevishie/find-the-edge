@@ -118,16 +118,105 @@ describe("production odds control-plane composition", () => {
             awayTeam: "Away",
             homeTeam: "Home",
             startsAt: "2026-08-03T12:45:00.000Z" as IsoTimestamp,
-            bookmakers: [],
+            bookmakers:
+              league.leagueKey === "mlb"
+                ? [
+                    {
+                      id: "draftkings",
+                      label: "DraftKings",
+                      prices: [
+                        ...(["away", "home"] as const).map(
+                          (selectionKey, index) => ({
+                            providerPriceId: `price-${selectionKey}`,
+                            marketKey: "moneyline" as const,
+                            outcomeStructure: "two-way" as const,
+                            providerMarketType: "moneyline",
+                            providerMarketId: "market-1",
+                            selectionKey,
+                            selectionLabel:
+                              selectionKey === "away" ? "Away" : "Home",
+                            providerSelectionId: `selection-${selectionKey}`,
+                            americanOdds: index === 0 ? 110 : -120,
+                            decimalOdds: index === 0 ? 2.1 : 1.83,
+                            impliedProbability: index === 0 ? 0.476 : 0.545,
+                            isLive: false,
+                            isMainLine: true,
+                            isAlternateLine: false,
+                            isPlayerProp: false,
+                            isStalePregamePrice: false,
+                            observedAt: at,
+                          }),
+                        ),
+                        {
+                          providerPriceId: "spread-away",
+                          marketKey: "spread" as const,
+                          providerMarketType: "run_line",
+                          providerMarketId: "spread-1",
+                          selectionKey: "away" as const,
+                          selectionLabel: "Away",
+                          providerSelectionId: "spread-away",
+                          point: 1.5,
+                          americanOdds: -110,
+                          decimalOdds: 1.91,
+                          impliedProbability: 0.524,
+                          isLive: false,
+                          isMainLine: true,
+                          isAlternateLine: false,
+                          isPlayerProp: false,
+                          isStalePregamePrice: false,
+                          observedAt: at,
+                        },
+                        {
+                          providerPriceId: "stale-total-over",
+                          marketKey: "total" as const,
+                          providerMarketType: "total_runs",
+                          providerMarketId: "total-1",
+                          selectionKey: "over" as const,
+                          selectionLabel: "Over",
+                          providerSelectionId: "total-over",
+                          point: 8.5,
+                          americanOdds: -110,
+                          decimalOdds: 1.91,
+                          impliedProbability: 0.524,
+                          isLive: false,
+                          isMainLine: true,
+                          isAlternateLine: false,
+                          isPlayerProp: false,
+                          isStalePregamePrice: true,
+                          observedAt: at,
+                        },
+                      ],
+                    },
+                  ]
+                : [],
           },
         ],
         hasMore: false,
         retrievedAt: at,
+        ...(league.leagueKey === "mlb"
+          ? {
+              rejections: [
+                {
+                  providerId: "sharpapi" as const,
+                  providerEventId: "mlb-event",
+                  sportsbookId: "draftkings",
+                  reason: "missing-provider-timestamp" as const,
+                  auditId: "price-missing-time",
+                },
+              ],
+            }
+          : {}),
       }),
     );
     const options = {
       events,
-      odds: { persist: vi.fn() },
+      odds: {
+        persist: vi
+          .fn()
+          .mockResolvedValue({ snapshot: "existing", current: "retained" })
+          .mockResolvedValueOnce({ snapshot: "created", current: "advanced" })
+          .mockResolvedValueOnce({ snapshot: "existing", current: "retained" }),
+      },
       splits: {
         persist: vi.fn(),
         current: vi.fn(),
@@ -157,12 +246,39 @@ describe("production odds control-plane composition", () => {
     expect(fetchSharpOdds).toHaveBeenCalledTimes(2);
     expect(options.metrics.emit).toHaveBeenCalledWith(
       "OddsNormalizedObservation",
-      0,
+      2,
       expect.objectContaining({ provider: "sharpapi" }),
     );
+    for (const metric of ["OddsStaleEvidence", "OddsPartialEvidence"])
+      expect(options.metrics.emit).toHaveBeenCalledWith(
+        metric,
+        1,
+        expect.objectContaining({ provider: "sharpapi", league: "mlb" }),
+      );
+    expect(options.metrics.emit).toHaveBeenCalledWith(
+      "OddsMissingProviderTimestamp",
+      1,
+      expect.objectContaining({ provider: "sharpapi", league: "mlb" }),
+    );
+    for (const metric of [
+      "OddsSnapshotCreated",
+      "OddsSnapshotDuplicate",
+      "OddsCurrentAdvanced",
+      "OddsCurrentRetained",
+    ])
+      expect(options.metrics.emit).toHaveBeenCalledWith(
+        metric,
+        1,
+        expect.objectContaining({ provider: "sharpapi", league: "mlb" }),
+      );
     expect(
       [...control.gaps.values()].filter((gap) => gap.reason === "missing"),
-    ).toHaveLength(30);
+    ).toHaveLength(27);
+    expect(
+      [...control.gaps.values()].find(
+        (gap) => gap.reason === "missing-provider-timestamp",
+      ),
+    ).toMatchObject({ sourceState: "missing", sportsbookId: "draftkings" });
     expect(
       [...control.gaps.values()].filter((gap) => gap.reason === "unsupported"),
     ).toHaveLength(2);

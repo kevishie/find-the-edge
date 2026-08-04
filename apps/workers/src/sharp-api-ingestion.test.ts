@@ -12,11 +12,91 @@ import type { SharpApiLeague } from "@find-the-edge/providers";
 
 import {
   ingestSharpApi,
+  persistSharpApiOddsPage,
   persistSharpApiSplitPage,
   type SharpApiOddsPersister,
 } from "./sharp-api-ingestion";
 
 describe("SharpAPI primary ingestion", () => {
+  it("reports completed persistence decisions before a later write fails", async () => {
+    const canonical = {
+      id: "event-1",
+      version: 1,
+      sportKey: "mlb",
+      startsAt: "2026-08-04T01:00:00.000Z",
+      participantIds: ["away-id", "home-id"],
+      participantLabels: ["Away", "Home"],
+    } as unknown as CanonicalEvent;
+    const store = {
+      ingestEvent: vi.fn().mockResolvedValue({ kind: "updated" }),
+      resolveExactCanonicalBinding: vi.fn().mockResolvedValue(canonical),
+    } as unknown as EventIngestionStore;
+    const persist = vi
+      .fn()
+      .mockResolvedValueOnce({ snapshot: "created", current: "advanced" })
+      .mockRejectedValueOnce(new Error("later-page-write-failed"));
+    const outcomes: unknown[] = [];
+    const base = {
+      marketKey: "moneyline" as const,
+      outcomeStructure: "two-way" as const,
+      providerMarketType: "moneyline",
+      providerMarketId: "market-1",
+      americanOdds: -110,
+      decimalOdds: 1.91,
+      impliedProbability: 0.524,
+      isLive: false,
+      isMainLine: true,
+      isAlternateLine: false,
+      isPlayerProp: false,
+      isStalePregamePrice: false,
+      observedAt: "2026-08-03T23:00:00.000Z" as IsoTimestamp,
+    };
+    await expect(
+      persistSharpApiOddsPage(
+        store,
+        { persist },
+        { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
+        {
+          retrievedAt: "2026-08-03T23:00:01.000Z" as IsoTimestamp,
+          events: [
+            {
+              providerEventId: "event-1",
+              providerEventUuid: "event-uuid-1",
+              awayTeam: "Away",
+              homeTeam: "Home",
+              startsAt: canonical.startsAt,
+              bookmakers: [
+                {
+                  id: "draftkings",
+                  label: "DraftKings",
+                  prices: [
+                    {
+                      ...base,
+                      providerPriceId: "away-price",
+                      selectionKey: "away",
+                      selectionLabel: "Away",
+                      providerSelectionId: "away-selection",
+                    },
+                    {
+                      ...base,
+                      providerPriceId: "home-price",
+                      selectionKey: "home",
+                      selectionLabel: "Home",
+                      providerSelectionId: "home-selection",
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        { draftkings: "comparison" },
+        (outcome) => outcomes.push(outcome),
+      ),
+    ).rejects.toThrow("later-page-write-failed");
+    expect(outcomes).toEqual([{ snapshot: "created", current: "advanced" }]);
+  });
+
   it("binds suffixless consensus splits to the exact suffixed MLB event", async () => {
     const canonical = {
       id: "event:mlb:cardinals-yankees",

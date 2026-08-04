@@ -4,6 +4,7 @@ import {
   type DynamoDBDocumentClient,
 } from "@aws-sdk/lib-dynamodb";
 import type { NormalizedFixtureOddsSnapshot } from "@find-the-edge/domain";
+import { FixtureOddsStateCorruptionError } from "@find-the-edge/domain";
 import type { ClosingCandidate } from "./closing-odds-repository.js";
 
 export interface ExactOddsSnapshotIndex {
@@ -45,7 +46,7 @@ export class DynamoExactOddsSnapshotRepository implements ExactOddsSnapshotIndex
         }),
       );
       if (JSON.stringify(existing.Item?.["value"]) !== JSON.stringify(snapshot))
-        throw new Error("snapshot-index-conflict");
+        throw new FixtureOddsStateCorruptionError("snapshot-index-conflict");
     }
   }
   async get(snapshotId: string): Promise<ClosingCandidate | null> {

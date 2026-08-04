@@ -129,6 +129,7 @@ export type OddsNormalizationReason =
   | "unsupported-market"
   | "unsupported-selection"
   | "incomplete-market"
+  | "missing-provider-timestamp"
   | "participant-unavailable";
 export type CanonicalSelectionKey =
   | `participant:${string}`

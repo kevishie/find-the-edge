@@ -7,9 +7,26 @@ import {
   runDueOddsLeagues,
   runOddsLeague,
   withPaidLeaseHeartbeat,
+  embeddedOddsControlPlaneMetrics,
   type ControlPlaneProvider,
 } from "./odds-control-plane";
 const now = new Date("2026-08-03T12:00:00.000Z");
+
+it("publishes bounded EMF dimensions instead of an empty dimension set", () => {
+  const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  embeddedOddsControlPlaneMetrics.emit("OddsSnapshotCreated", 1, {
+    provider: "sharpapi",
+    league: "mlb",
+    reason: "created",
+  });
+  const payload = JSON.parse(String(write.mock.calls[0]?.[0])) as {
+    _aws: { CloudWatchMetrics: { Dimensions: string[][] }[] };
+  };
+  expect(payload._aws.CloudWatchMetrics[0]?.Dimensions).toEqual([
+    ["provider", "league", "reason"],
+  ]);
+  write.mockRestore();
+});
 // The generic control-plane retains explicit failover behavior for reusable
 // callers. Production policy is SharpAPI-only, so these unit tests opt into a
 // secondary provider locally when exercising the generic state machine.

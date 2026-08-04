@@ -1,6 +1,9 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { normalizeFixtureOddsObservation } from "@find-the-edge/domain";
+import {
+  FixtureOddsStateCorruptionError,
+  normalizeFixtureOddsObservation,
+} from "@find-the-edge/domain";
 import {
   DynamoFixtureOddsAdapter,
   AwsFixtureOddsGateway,
@@ -13,6 +16,7 @@ import {
   type FixtureOddsSnapshotTransaction,
 } from "./fixture-odds-adapter";
 import { mappingId } from "./event-ingestion";
+import { DynamoExactOddsSnapshotRepository } from "./exact-odds-snapshot-repository";
 
 const input = (observedAt = "2026-08-01T12:00:00.000Z", odds = -110) => ({
   providerId: "fixture",
@@ -235,6 +239,68 @@ describe("DynamoFixtureOddsAdapter", () => {
     await expect(
       new DynamoFixtureOddsAdapter(gateway).persist(input()),
     ).resolves.toMatchObject({ snapshot: "existing", current: "advanced" });
+  });
+
+  it("repairs an interrupted exact-id mirror on retry without duplicating history", async () => {
+    const gateway = boundHarness();
+    let failMirror = true;
+    let mirrored: Record<string, unknown> | undefined;
+    const send = vi.fn((raw: unknown) => {
+      const command = raw as {
+        constructor: { name: string };
+        input: Record<string, unknown>;
+      };
+      if (command.constructor.name === "PutCommand") {
+        if (failMirror) {
+          failMirror = false;
+          return Promise.reject(new Error("mirror-unavailable"));
+        }
+        mirrored = command.input["Item"] as Record<string, unknown>;
+        return Promise.resolve({});
+      }
+      if (command.constructor.name === "GetCommand")
+        return Promise.resolve({ Item: mirrored });
+      return Promise.reject(new Error("unexpected-command"));
+    });
+    const mirror = new DynamoExactOddsSnapshotRepository(
+      { send } as unknown as DynamoDBDocumentClient,
+      "events",
+    );
+    const adapter = new DynamoFixtureOddsAdapter(gateway, mirror);
+    await expect(adapter.persist(input())).rejects.toBeInstanceOf(
+      FixtureOddsStorageError,
+    );
+    await expect(adapter.persist(input())).resolves.toMatchObject({
+      snapshot: "existing",
+      current: "advanced",
+    });
+    const normalized = normalizeFixtureOddsObservation(input().observation);
+    expect(
+      [...gateway.items.values()].filter(
+        (item) => item.pk === normalized.partitionKey && item.sk !== "CURRENT",
+      ),
+    ).toHaveLength(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    await expect(mirror.get(normalized.snapshotId)).resolves.toMatchObject({
+      snapshotId: normalized.snapshotId,
+      americanOdds: normalized.americanOdds,
+    });
+    expect(
+      (await gateway.getExact(normalized.partitionKey, "CURRENT"))?.value
+        .snapshotId,
+    ).toBe(normalized.snapshotId);
+  });
+
+  it("does not translate an exact-index content conflict into retryable storage", async () => {
+    const adapter = new DynamoFixtureOddsAdapter(boundHarness(), {
+      put: () =>
+        Promise.reject(
+          new FixtureOddsStateCorruptionError("snapshot-index-conflict"),
+        ),
+    });
+    await expect(adapter.persist(input())).rejects.toBeInstanceOf(
+      FixtureOddsStateCorruptionError,
+    );
   });
 
   it("detects immutable snapshot content collisions", async () => {

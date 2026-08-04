@@ -354,6 +354,32 @@ const auditId = (value: unknown) =>
     .replace(/[^a-z0-9_-]+/g, "")
     .slice(0, 64) || "unknown";
 
+const providerInstant = (value: unknown): value is IsoTimestamp => {
+  if (typeof value !== "string") return false;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+      value,
+    );
+  if (!match) return false;
+  const [, year, month, day, hour, minute, second, zoneHour, zoneMinute] =
+    match;
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  return (
+    m >= 1 &&
+    m <= 12 &&
+    d >= 1 &&
+    d <= new Date(Date.UTC(y, m, 0)).getUTCDate() &&
+    Number(hour) <= 23 &&
+    Number(minute) <= 59 &&
+    Number(second) <= 59 &&
+    (zoneHour === undefined || Number(zoneHour) <= 23) &&
+    (zoneMinute === undefined || Number(zoneMinute) <= 59) &&
+    Number.isFinite(Date.parse(value))
+  );
+};
+
 const teamName = (raw: Record<string, unknown>, side: "away" | "home") => {
   const reference = raw[side];
   if (record(reference) && canonical(reference["name"]))
@@ -373,7 +399,7 @@ export function parseSharpApiOddsPage(
     input["data"].length > 200
   )
     throw new SharpApiError("invalid-response");
-  const deduplicatedRows: Record<string, unknown>[] = [];
+  const deduplicatedRows: (Record<string, unknown> | null)[] = [];
   const rejections: SharpApiNormalizationRejection[] = [];
   const priceIdentities = new Map<
     string,
@@ -469,6 +495,22 @@ export function parseSharpApiOddsPage(
       });
       continue;
     }
+    if (!providerInstant(value["timestamp"])) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "missing-provider-timestamp",
+        auditId: auditId(value["id"]),
+        sportsbookId: bookResult.sportsbook.id,
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      if (canonical(value["id"])) {
+        const previous = priceIdentities.get(value["id"]);
+        if (previous) deduplicatedRows[previous.index] = null;
+      }
+      continue;
+    }
     if (
       marketKey === "team_total" &&
       value["participant_side"] !== "away" &&
@@ -531,6 +573,7 @@ export function parseSharpApiOddsPage(
   const grouped = new Map<string, Map<string, SharpApiPrice[]>>();
   const identities = new Map<string, Omit<SharpApiEvent, "bookmakers">>();
   for (const value of deduplicatedRows) {
+    if (!value) continue;
     const marketKey = market(value, league);
     const selectionKey = selection(value, league);
     if (!marketKey || !selectionKey) continue;

@@ -505,7 +505,15 @@ export class DynamoFixtureOddsAdapter {
       snapshotDecision = "existing";
     }
 
-    await this.exactSnapshotIndex?.put(snapshot);
+    try {
+      await this.exactSnapshotIndex?.put(snapshot);
+    } catch (error) {
+      if (error instanceof FixtureOddsStateCorruptionError) throw error;
+      throw new FixtureOddsStorageError(
+        "exact-snapshot-index-write-failed",
+        error,
+      );
+    }
     let current: "advanced" | "retained" = "advanced";
     try {
       await this.gateway.putCurrent({

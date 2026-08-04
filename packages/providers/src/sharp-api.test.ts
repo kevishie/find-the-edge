@@ -461,6 +461,80 @@ describe("SharpAPI activation boundary", () => {
     ).toThrow("invalid-response");
   });
 
+  it("keeps valid sibling prices when a provider timestamp is unavailable", () => {
+    const base = {
+      id: "price-valid",
+      event_id: "mlb-away-home-2026-08-03",
+      event_uuid: "event-uuid-1",
+      away_team: "Away Club",
+      home_team: "Home Club",
+      event_start_time: "2026-08-03T22:40:00.000Z",
+      sportsbook: "draftkings",
+      market_type: "moneyline",
+      market_id: "market-1",
+      selection: "Away Club",
+      selection_type: "away",
+      selection_id: "selection-away",
+      odds_american: 120,
+      odds_decimal: 2.2,
+      odds_probability: 0.4545,
+      timestamp: "2026-08-03T21:42:00.000Z",
+      is_live: false,
+      is_main_line: true,
+      is_alternate_line: false,
+      is_player_prop: false,
+      is_stale_pregame_price: false,
+    };
+    const page = parseSharpApiOddsPage(
+      {
+        data: [
+          base,
+          { ...base, id: "price-missing", timestamp: undefined },
+          { ...base, id: "price-malformed", timestamp: "not-an-instant" },
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagues[0]!,
+      "2026-08-03T21:42:01.000Z" as never,
+    );
+    expect(page.events[0]?.bookmakers[0]?.prices).toHaveLength(1);
+    expect(page.rejections).toHaveLength(2);
+    expect(page.rejections).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: "missing-provider-timestamp",
+          providerEventId: base.event_id,
+          sportsbookId: "draftkings",
+        }),
+      ]),
+    );
+    const invalidated = parseSharpApiOddsPage(
+      {
+        data: [base, { ...base, timestamp: undefined }],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagues[0]!,
+      "2026-08-03T21:42:01.000Z" as never,
+    );
+    expect(invalidated.events).toHaveLength(0);
+    for (const timestamp of [
+      "2026-08-03",
+      "2026-08-03T21:42:00",
+      "2026-02-30T21:42:00Z",
+    ]) {
+      const strict = parseSharpApiOddsPage(
+        {
+          data: [{ ...base, id: `invalid-${timestamp}`, timestamp }],
+          pagination: { has_more: false, next_cursor: null },
+        },
+        sharpApiLeagues[0]!,
+        "2026-08-03T21:42:01.000Z" as never,
+      );
+      expect(strict.events).toHaveLength(0);
+      expect(strict.rejections?.[0]?.reason).toBe("missing-provider-timestamp");
+    }
+  });
+
   it("normalizes the documented split contract without inferring values", () => {
     const page = parseSharpApiSplitPage(
       {
