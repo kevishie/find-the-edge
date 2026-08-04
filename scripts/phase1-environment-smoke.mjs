@@ -276,8 +276,11 @@ export function isTransientLiveIngestionSummary(summary) {
       result &&
       typeof result === "object" &&
       !Array.isArray(result) &&
-      Object.keys(result).sort().join(",") ===
-        "leagueKey,pages,quotaCost,reason,status" &&
+      [
+        "leagueKey,pages,quotaCost,reason,status",
+        "leagueKey,pages,providerId,quotaCost,reason,status",
+      ].includes(Object.keys(result).sort().join(",")) &&
+      (result.providerId === undefined || result.providerId === "sharpapi") &&
       leagues.delete(result.leagueKey) &&
       result.status === "failed" &&
       result.reason === "schedule-provider-recovering" &&

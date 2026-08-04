@@ -297,6 +297,12 @@ test("live ingestion retries only bounded schedule ownership overlap", () => {
   }));
   assert.equal(isTransientLiveIngestionSummary(recovering), true);
   assert.equal(
+    isTransientLiveIngestionSummary(
+      recovering.map((result) => ({ ...result, providerId: "sharpapi" })),
+    ),
+    true,
+  );
+  assert.equal(
     isTransientLiveIngestionSummary([
       recovering[0],
       { ...recovering[1], pages: 2, quotaCost: 3 },
@@ -309,6 +315,7 @@ test("live ingestion retries only bounded schedule ownership overlap", () => {
     [recovering[0], { ...recovering[1], quotaCost: -1 }],
     [recovering[0], { ...recovering[1], pages: 0.5 }],
     [recovering[0], { ...recovering[1], extra: true }],
+    [recovering[0], { ...recovering[1], providerId: "other" }],
   ])
     assert.equal(isTransientLiveIngestionSummary(malformed), false);
   assert.equal(
