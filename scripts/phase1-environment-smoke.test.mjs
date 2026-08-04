@@ -299,8 +299,8 @@ test("live ingestion retries only bounded schedule ownership overlap", () => {
   assert.doesNotThrow(() => assertLiveIngestionSummary(recovering));
   assert.doesNotThrow(() =>
     assertLiveIngestionSummary(
-      recovering.map(({ pages: _pages, quotaCost: _quotaCost, ...result }) =>
-        result,
+      recovering.map(
+        ({ pages: _pages, quotaCost: _quotaCost, ...result }) => result,
       ),
     ),
   );
