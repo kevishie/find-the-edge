@@ -350,7 +350,7 @@ stories:
     league: enabled
     module: pick-evaluation
     priority: P0
-    status: review
+    status: done
     dependencies: [FTE-PICK-001, FTE-PICK-002, FTE-SPORT-007]
     risk: High
     approvalRequiredBeforeMerge: false
