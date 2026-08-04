@@ -29,7 +29,7 @@ Focused Lambda payloads have exactly this shape:
 
 The focused endpoint returns all entitled books/markets. Local normalization keeps only supported full-game main markets, excludes suspended (`is_active=false`), stale, alternate, live, and player-prop prices from current odds, retains valid siblings, and writes reason-coded gaps including missing Hard Rock coverage. HTTP 429 responses are not retried immediately; provider retry timing is retained on the typed error boundary and the durable request window prevents duplicate calls. Raw paid-provider responses and credentials are never logged or archived.
 
-Operational verification should confirm `OddsProviderRequest`, `OddsRequestDeduplicated`, `OddsNormalizedObservation`, `OddsNormalizationRejected`, snapshot/current outcomes, and provider failures with bounded `provider`, `league`, `endpoint`, `markets`, `partial`, and `reason` dimensions. Production Lambda configuration must contain only `FTE_SHARP_API_SECRET_ID`; `THE_ODDS_API_KEY` and any provider fallback are forbidden.
+Operational verification should confirm `OddsProviderRequest`, `OddsRequestDeduplicated`, `OddsNormalizedObservation`, `OddsNormalizationRejected`, snapshot/current outcomes, and provider failures with bounded `provider`, `league`, `endpoint`, `markets`, `partial`, and `reason` dimensions. SharpAPI is the sole production schedule and odds source. Production Lambda configuration must contain only `FTE_SHARP_API_SECRET_ID`; `THE_ODDS_API_KEY`, calls to The Odds API, and any provider fallback are forbidden.
 
 - For environment smoke: the deployed API, live-ingestion function output, cursor-secret identifier, and exact hosted browser origin.
 

@@ -674,7 +674,7 @@ function compareSnapshots(
   if (a.observedAt < b.observedAt) return -1;
   if (a.observedAt > b.observedAt) return 1;
   const providerRank = (providerId: string) =>
-    providerId === "sharpapi" ? 2 : providerId === "the-odds-api" ? 1 : 0;
+    providerId === "sharpapi" ? 1 : 0;
   const providerDifference =
     providerRank(a.provenance?.providerId ?? "") -
     providerRank(b.provenance?.providerId ?? "");
