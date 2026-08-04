@@ -184,6 +184,44 @@ export function assertLiveIngestionResourceBinding(resources, environment) {
     throw new Error("Live ingestion is not the intended stack Lambda");
 }
 
+export function assertLiveIngestionSummary(summary) {
+  if (Array.isArray(summary)) {
+    const expectedLeagues = new Set(["mlb", "mls"]);
+    if (
+      summary.length !== expectedLeagues.size ||
+      summary.some(
+        (result) =>
+          !result ||
+          typeof result !== "object" ||
+          !expectedLeagues.delete(result.leagueKey) ||
+          !["completed", "skipped"].includes(result.status) ||
+          !Number.isSafeInteger(result.pages) ||
+          result.pages < 0 ||
+          !Number.isSafeInteger(result.quotaCost) ||
+          result.quotaCost < 0,
+      ) ||
+      expectedLeagues.size !== 0
+    )
+      throw new Error(
+        "live ingestion returned an invalid control-plane summary",
+      );
+    return;
+  }
+  if (
+    !summary ||
+    typeof summary !== "object" ||
+    summary.leagues !== 2 ||
+    !Number.isSafeInteger(summary.events) ||
+    summary.events < 0 ||
+    !Number.isSafeInteger(summary.observations) ||
+    summary.observations < 0 ||
+    !Number.isSafeInteger(summary.skippedLeagues) ||
+    summary.skippedLeagues < 0 ||
+    summary.skippedLeagues > 2
+  )
+    throw new Error("live ingestion returned an invalid legacy summary");
+}
+
 export function assertLiveGame(game, sport) {
   if (
     !game ||
@@ -398,17 +436,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       if (invocationResult.StatusCode !== 200 || invocationResult.FunctionError)
         throw new Error("live ingestion Lambda invocation failed");
       const summary = JSON.parse(await readFile(responseFile, "utf8"));
-      if (
-        summary.leagues !== 2 ||
-        !Number.isSafeInteger(summary.events) ||
-        summary.events < 0 ||
-        !Number.isSafeInteger(summary.observations) ||
-        summary.observations < 0 ||
-        !Number.isSafeInteger(summary.skippedLeagues) ||
-        summary.skippedLeagues < 0 ||
-        summary.skippedLeagues > 2
-      )
-        throw new Error("live ingestion returned an invalid summary");
+      assertLiveIngestionSummary(summary);
     }
     const apiBase = environment.FTE_PHASE1_API_BASE.replace(/\/$/, "");
     let liveGames = 0;

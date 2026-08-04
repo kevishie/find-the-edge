@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertHostedIndexHeaders,
   assertLiveGame,
+  assertLiveIngestionSummary,
   assertLiveIngestionResourceBinding,
   assertWrongOriginDenied,
   liveOddsInvocationArguments,
@@ -185,6 +186,47 @@ test("release refresh payload is attached only to the Lambda invocation", () => 
       "out.json",
     ],
   );
+});
+
+test("live ingestion proof accepts production control-plane summaries", () => {
+  assert.doesNotThrow(() =>
+    assertLiveIngestionSummary([
+      {
+        leagueKey: "mlb",
+        status: "completed",
+        providerId: "sharpapi",
+        pages: 1,
+        quotaCost: 1,
+      },
+      {
+        leagueKey: "mls",
+        status: "skipped",
+        reason: "not-due",
+        pages: 0,
+        quotaCost: 0,
+      },
+    ]),
+  );
+  assert.doesNotThrow(() =>
+    assertLiveIngestionSummary({
+      leagues: 2,
+      events: 1,
+      observations: 6,
+      skippedLeagues: 1,
+    }),
+  );
+  for (const invalid of [
+    [],
+    [
+      { leagueKey: "mlb", status: "failed", pages: 0, quotaCost: 1 },
+      { leagueKey: "mls", status: "completed", pages: 1, quotaCost: 1 },
+    ],
+    [
+      { leagueKey: "mlb", status: "completed", pages: 1, quotaCost: 1 },
+      { leagueKey: "mlb", status: "completed", pages: 1, quotaCost: 1 },
+    ],
+  ])
+    assert.throws(() => assertLiveIngestionSummary(invalid));
 });
 
 test("live game proof accepts complete real sportsbook markets and rejects fixtures", () => {
