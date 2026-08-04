@@ -7,6 +7,7 @@ import {
   assertDeployedOutputBindings,
   combineLaunchAndCleanupFailures,
   combineLaunchAndRollbackFailures,
+  classifyReleaseVerificationFailure,
   cleanupTemporaryLaunch,
   requireInvalidationId,
   resolveExistingStackSummary,
@@ -255,6 +256,26 @@ test("release rollback restores prior versions and removes partial new keys", ()
   assert.match(combined.message, /Launch operation failed/);
   assert.match(combined.message, /rollback also failed/);
   assert.doesNotMatch(combined.message, /secret|\/path/);
+});
+
+test("release verification failures expose only bounded diagnostic codes", () => {
+  assert.equal(
+    classifyReleaseVerificationFailure(
+      new Error("live ingestion returned an invalid control-plane summary"),
+    ),
+    "live-ingestion-summary-invalid",
+  );
+  assert.equal(
+    classifyReleaseVerificationFailure(new Error("secret raw provider error")),
+    "release-verification-failed",
+  );
+  assert.equal(
+    combineLaunchAndRollbackFailures(
+      new Error("no provider-backed games were visible"),
+      new Error("sensitive rollback failure"),
+    ).message,
+    "Launch operation failed (provider-games-unavailable); release rollback also failed (details redacted)",
+  );
 });
 test("launch validates cursor secret input before AWS", () => {
   assert.throws(

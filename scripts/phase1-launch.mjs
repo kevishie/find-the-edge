@@ -712,7 +712,9 @@ function restoreRelease(snapshot, outputs, environment) {
         "--key",
         item.Key,
         "--copy-source",
-        `${outputs.WebAssetsBucketName}/${encodeURIComponent(item.Key)}?versionId=${encodeURIComponent(item.VersionId)}`,
+        `${outputs.WebAssetsBucketName}/${item.Key.split("/")
+          .map(encodeURIComponent)
+          .join("/")}?versionId=${encodeURIComponent(item.VersionId)}`,
         "--region",
         LAUNCH_REGION,
       ],
@@ -769,10 +771,40 @@ function restoreRelease(snapshot, outputs, environment) {
 }
 
 export function combineLaunchAndRollbackFailures(primary, rollback) {
-  void primary;
+  const primaryCode = classifyReleaseVerificationFailure(primary);
   void rollback;
   return new Error(
-    "Launch operation failed (details redacted); release rollback also failed (details redacted)",
+    `Launch operation failed (${primaryCode}); release rollback also failed (details redacted)`,
+  );
+}
+
+export function classifyReleaseVerificationFailure(error) {
+  const message = error instanceof Error ? error.message : "";
+  const known = [
+    [
+      "live ingestion returned an invalid control-plane summary",
+      "live-ingestion-summary-invalid",
+    ],
+    [
+      "live ingestion returned an invalid legacy summary",
+      "live-ingestion-summary-invalid",
+    ],
+    [
+      "live ingestion Lambda invocation failed",
+      "live-ingestion-invocation-failed",
+    ],
+    ["no provider-backed games were visible", "provider-games-unavailable"],
+    [
+      "no provider-backed spread/total/moneyline board was visible",
+      "full-market-board-unavailable",
+    ],
+    ["CloudFront HTTP did not redirect", "cloudfront-redirect-invalid"],
+    ["Anonymous direct S3 object access was not denied", "s3-origin-public"],
+    ["Hosted index was unavailable", "hosted-index-unavailable"],
+  ];
+  return (
+    known.find(([prefix]) => message.startsWith(prefix))?.[1] ??
+    "release-verification-failed"
   );
 }
 
