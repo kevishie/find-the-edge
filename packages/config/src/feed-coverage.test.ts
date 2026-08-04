@@ -16,7 +16,7 @@ const PRO_ENTITLED_ODDS_BOOKS = new Set([
 describe("production odds policy", () => {
   it("is Sharp-primary, independently budgeted and adaptive", () => {
     expect(oddsCollectionPolicyVersion).toContain("control-plane");
-    expect(productionOddsCollectionPolicies).toHaveLength(2);
+    expect(productionOddsCollectionPolicies).toHaveLength(5);
     for (const policy of productionOddsCollectionPolicies) {
       expect(policy.baseCadenceSeconds).toBe(3600);
       expect(policy.nearStart.cadenceSeconds).toBeLessThan(

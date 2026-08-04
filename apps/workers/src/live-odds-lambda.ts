@@ -13,7 +13,10 @@ import {
   DynamoExactOddsSnapshotRepository,
   DynamoOddsControlPlaneStore,
 } from "@find-the-edge/database";
-import { runProductionOddsControlPlane } from "./production-odds-control-plane";
+import {
+  runFocusedSharpOddsIngestion,
+  runProductionOddsControlPlane,
+} from "./production-odds-control-plane";
 import { embeddedOddsControlPlaneMetrics } from "./odds-control-plane";
 
 export function parseProviderApiSecret(value: string | undefined): string {
@@ -41,11 +44,39 @@ export function parseProviderApiSecret(value: string | undefined): string {
 
 export function parseLiveOddsInvocation(event: unknown): {
   readonly forceRefresh: boolean;
+  readonly focused?: {
+    readonly leagueKey:
+      "mlb" | "mls" | "epl" | "liga-mx" | "uefa-champions-league";
+    readonly providerEventId: string;
+  };
 } {
   if (event === undefined || event === null) return { forceRefresh: false };
   if (!event || typeof event !== "object" || Array.isArray(event))
     throw new Error("live-odds-invocation-invalid");
   const record = event as Record<string, unknown>;
+  if (record["mode"] === "focused") {
+    const leagueKey = record["leagueKey"];
+    const providerEventId = record["providerEventId"];
+    if (
+      Reflect.ownKeys(record).length !== 3 ||
+      !["mlb", "mls", "epl", "liga-mx", "uefa-champions-league"].includes(
+        String(leagueKey),
+      ) ||
+      typeof providerEventId !== "string" ||
+      providerEventId.trim() !== providerEventId ||
+      providerEventId.length === 0 ||
+      providerEventId.length > 256
+    )
+      throw new Error("live-odds-invocation-invalid");
+    return {
+      forceRefresh: false,
+      focused: {
+        leagueKey: leagueKey as
+          "mlb" | "mls" | "epl" | "liga-mx" | "uefa-champions-league",
+        providerEventId,
+      },
+    };
+  }
   if (Array.isArray(record["Records"])) {
     const records = record["Records"];
     if (
@@ -85,15 +116,23 @@ export const handler = async (event?: unknown) => {
     new GetSecretValueCommand({ SecretId: sharpSecretId }),
   );
   const sharpApiKey = parseProviderApiSecret(sharpSecret.SecretString);
-  const summary = await runProductionOddsControlPlane({
+  const common = {
     events: eventStore,
     odds: oddsStore,
-    splits: new DynamoBettingSplitRepository(client, tableName),
     control: new DynamoOddsControlPlaneStore(client, tableName),
     sharpApiKey,
-    ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
     metrics: embeddedOddsControlPlaneMetrics,
-  });
+  };
+  const summary = invocation.focused
+    ? await runFocusedSharpOddsIngestion({
+        ...common,
+        request: invocation.focused,
+      })
+    : await runProductionOddsControlPlane({
+        ...common,
+        splits: new DynamoBettingSplitRepository(client, tableName),
+        ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
+      });
   process.stdout.write(
     `${JSON.stringify({ event: "live-odds-ingestion-complete", provider, summary })}\n`,
   );

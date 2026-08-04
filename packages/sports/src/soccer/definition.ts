@@ -6,7 +6,7 @@ import type { StrategyDefinition } from "../shared/contracts";
 export const soccerAnalysisPolicy = {
   enabled: true,
   sportKey: "soccer",
-  leagueKeys: ["mls"],
+  leagueKeys: ["mls", "epl", "liga-mx", "uefa-champions-league"],
   markets: [
     {
       marketKey: "moneyline",
@@ -103,7 +103,7 @@ export const soccerModule = createDeclarativeSportModule({
     displayName: "Soccer",
     version: "1.0.0",
     maturity: "experimental",
-    supportedLeagues: ["mls"],
+    supportedLeagues: ["mls", "epl", "liga-mx", "uefa-champions-league"],
     participantStructure: "two teams",
     eventPhases: [
       "scheduled",

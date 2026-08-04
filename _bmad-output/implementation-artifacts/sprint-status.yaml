@@ -577,7 +577,7 @@ stories:
   - id: FTE-023
     title: Featured and Event-Specific Odds Ingestion
     epic: Odds ingestion and market normalization
-    status: backlog
+    status: done
     dependencies: [FTE-015, FTE-021]
     risk: High
     approvalRequiredBeforeMerge: false

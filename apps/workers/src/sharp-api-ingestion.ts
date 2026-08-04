@@ -368,7 +368,8 @@ export async function persistSharpApiOddsPage(
             price.isMainLine &&
             !price.isAlternateLine &&
             !price.isPlayerProp &&
-            !price.isStalePregamePrice,
+            !price.isStalePregamePrice &&
+            !price.isSuspended,
         ),
         league.leagueKey,
       );

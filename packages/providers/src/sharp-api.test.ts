@@ -1,12 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SportKey } from "@find-the-edge/domain";
 import {
   isSharpDerivativeMatchup,
   parseSharpApiOddsPage,
   parseSharpApiSchedulePage,
   parseSharpApiSplitPage,
+  fetchSharpApiEventOdds,
+  fetchSharpApiFeaturedOdds,
+  sharpApiLeagueByKey,
   sharpApiLeagues,
   sharpApiDescriptor,
+  SharpApiError,
   validateSharpApiActivation,
   type SharpApiActivationConfig,
 } from "./sharp-api";
@@ -44,6 +48,7 @@ describe("SharpAPI activation boundary", () => {
     id: "price-normalization-1",
     event_id: "mls-away-home-2026-08-04",
     event_uuid: "event-normalization-1",
+    league: "mls",
     away_team: "Away Club",
     home_team: "Home Club",
     event_start_time: "2026-08-04T22:00:00.000Z",
@@ -63,7 +68,168 @@ describe("SharpAPI activation boundary", () => {
     is_alternate_line: false,
     is_player_prop: false,
     is_stale_pregame_price: false,
+    is_active: true,
     ...overrides,
+  });
+
+  it("resolves only exact catalog-backed runtime leagues", () => {
+    expect(sharpApiLeagues.map(({ leagueKey }) => leagueKey)).toEqual([
+      "mlb",
+      "mls",
+      "epl",
+      "liga-mx",
+      "uefa-champions-league",
+    ]);
+    expect(sharpApiLeagueByKey("epl").providerLeague).toBe(
+      "england_-_premier_league",
+    );
+    expect(() => sharpApiLeagueByKey("premier-league")).toThrow(
+      "configuration",
+    );
+  });
+
+  it("builds featured and focused prematch operations without leaking the key", async () => {
+    const calls: string[] = [];
+    const fetcher = vi.fn((input: string | URL | Request) => {
+      calls.push(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      );
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: [oddsRow()],
+            pagination: { has_more: false, next_cursor: null },
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+    const league = sharpApiLeagueByKey("mls");
+    const featured = await fetchSharpApiFeaturedOdds(
+      league,
+      "secret-key",
+      undefined,
+      fetcher,
+    );
+    expect(calls[0]).toContain(
+      "league=MLS&market=main&is_live=false&limit=200",
+    );
+    expect(calls[0]).not.toContain("secret-key");
+    expect(featured.request.endpointMode).toBe("featured");
+
+    const focused = await fetchSharpApiEventOdds(
+      league,
+      "mls-away-home-2026-08-04",
+      "secret-key",
+      fetcher,
+    );
+    expect(calls[1]).toContain("/events/mls-away-home-2026-08-04/odds");
+    expect(focused.request).toEqual(
+      expect.objectContaining({
+        endpointMode: "focused",
+        providerEventId: "mls-away-home-2026-08-04",
+        marketSet: ["main"],
+      }),
+    );
+  });
+
+  it("preserves suspension and rejects a mismatched focused event", async () => {
+    const league = sharpApiLeagueByKey("mls");
+    const suspended = parseSharpApiOddsPage(
+      {
+        data: [oddsRow({ is_active: false })],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      league,
+      "2026-08-04T20:00:01.000Z" as never,
+    );
+    expect(suspended.events[0]?.bookmakers[0]?.prices[0]).toEqual(
+      expect.objectContaining({ isActive: false, isSuspended: true }),
+    );
+    await expect(
+      fetchSharpApiEventOdds(league, "expected-event", "secret-key", () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ data: [oddsRow({ event_id: "wrong-event" })] }),
+            { status: 200 },
+          ),
+        ),
+      ),
+    ).rejects.toThrow("invalid-response");
+  });
+
+  it("parses Retry-After without immediately retrying a paid request", async () => {
+    const calls = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: "limited" }), {
+          status: 429,
+          headers: { "retry-after": "60" },
+        }),
+      ),
+    );
+    const error = await fetchSharpApiFeaturedOdds(
+      sharpApiLeagueByKey("mls"),
+      "secret-key",
+      undefined,
+      calls,
+    ).catch((value: unknown) => value);
+    expect(error).toEqual(
+      expect.objectContaining({ code: "rate-limited", retryable: true }),
+    );
+    if (!(error instanceof SharpApiError)) throw new Error("expected-error");
+    expect(error.retryAt).toMatch(/^\d{4}-/);
+    expect(calls).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps valid siblings while failing closed on inactive ambiguity", () => {
+    const page = parseSharpApiOddsPage(
+      {
+        data: [
+          oddsRow(),
+          oddsRow({ id: "missing-active", is_active: undefined }),
+          oddsRow({ id: "bad-price", odds_american: 20 }),
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagueByKey("mls"),
+      "2026-08-04T20:00:01.000Z" as never,
+    );
+    expect(page.events[0]?.bookmakers[0]?.prices).toHaveLength(1);
+    expect(page.rejections?.map(({ reason }) => reason)).toEqual([
+      "incomplete-market",
+      "incomplete-market",
+    ]);
+  });
+
+  it("accepts an unambiguous soccer Draw label outside MLS", () => {
+    const page = parseSharpApiOddsPage(
+      {
+        data: [oddsRow({ league: "england_-_premier_league" })],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagueByKey("epl"),
+      "2026-08-04T20:00:01.000Z" as never,
+    );
+    expect(page.events[0]?.bookmakers[0]?.prices[0]?.selectionKey).toBe("draw");
+  });
+
+  it.each([
+    { data: [] },
+    { data: [oddsRow({ event_id: "wrong-event" })] },
+    { data: [oddsRow({ league: "mlb" })] },
+  ])("rejects focused payload identity failures", async (payload) => {
+    await expect(
+      fetchSharpApiEventOdds(
+        sharpApiLeagueByKey("mls"),
+        "mls-away-home-2026-08-04",
+        "secret-key",
+        () => Promise.resolve(new Response(JSON.stringify(payload))),
+      ),
+    ).rejects.toThrow("invalid-response");
   });
 
   it("canonicalizes approved bookmaker aliases and reason-codes unsupported rows", () => {
@@ -424,6 +590,7 @@ describe("SharpAPI activation boundary", () => {
       is_alternate_line: false,
       is_player_prop: false,
       is_stale_pregame_price: false,
+      is_active: true,
     };
     const page = parseSharpApiOddsPage(
       {
@@ -484,6 +651,7 @@ describe("SharpAPI activation boundary", () => {
       is_alternate_line: false,
       is_player_prop: false,
       is_stale_pregame_price: false,
+      is_active: true,
     };
     const page = parseSharpApiOddsPage(
       {

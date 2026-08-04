@@ -116,7 +116,10 @@ import {
 } from "@find-the-edge/domain";
 import {
   SHARP_API_PROVIDER_ID,
+  SharpApiError,
+  fetchSharpApiFeaturedOdds,
   fetchSharpApiOddsPage,
+  fetchSharpApiEventOdds,
   fetchSharpApiAccount,
   fetchSharpApiSchedulePage,
   fetchSharpApiSplitsPage,
@@ -141,6 +144,36 @@ interface SharpPageMaterial {
 }
 
 const digest = (value: unknown) => sha256Hex(JSON.stringify(value));
+
+export interface FocusedSharpOddsRequest {
+  readonly leagueKey: (typeof sharpApiLeagues)[number]["leagueKey"];
+  readonly providerEventId: string;
+  readonly pollingWindowSeconds?: number;
+}
+
+export const sharpOddsRequestIdentity = (input: {
+  readonly leagueKey: string;
+  readonly endpointMode: "featured" | "focused";
+  readonly providerEventId?: string;
+  readonly marketSet: readonly string[];
+  readonly now: Date;
+  readonly pollingWindowSeconds: number;
+}) => {
+  const window = Math.floor(
+    input.now.getTime() / (input.pollingWindowSeconds * 1_000),
+  );
+  return sha256Hex(
+    JSON.stringify([
+      SHARP_API_PROVIDER_ID,
+      input.leagueKey,
+      input.endpointMode,
+      input.providerEventId ?? null,
+      [...input.marketSet].sort(),
+      input.pollingWindowSeconds,
+      window,
+    ]),
+  );
+};
 export const capabilityFailure = (error: unknown) => {
   const reason = error instanceof Error ? error.message : "provider-error";
   if (reason === "run-owned") return "provider-recovering";
@@ -400,6 +433,173 @@ async function bindScheduleEvent(
     throw new Error("schedule-mapping-unresolved");
 }
 
+/** A quota-safe single-event refresh. The deterministic attempt identity is the
+ * durable deduplication boundary shared by scheduler and manual triggers. */
+export async function runFocusedSharpOddsIngestion(input: {
+  readonly events: EventIngestionStore;
+  readonly odds: LiveOddsPersister;
+  readonly control: OddsControlPlaneStore;
+  readonly sharpApiKey: string;
+  readonly request: FocusedSharpOddsRequest;
+  readonly now?: Date;
+  readonly fetchFocused?: typeof fetchSharpApiEventOdds;
+  readonly metrics?: OddsControlPlaneMetrics;
+}) {
+  const now = input.now ?? new Date();
+  const sharpLeague = sharpApiLeagues.find(
+    ({ leagueKey }) => leagueKey === input.request.leagueKey,
+  );
+  if (!sharpLeague || !input.request.providerEventId.trim())
+    throw new Error("focused-request-invalid");
+  const policy = productionOddsCollectionPolicies.find(
+    ({ leagueKey }) => leagueKey === sharpLeague.leagueKey,
+  );
+  if (!policy) throw new Error("coverage-missing");
+  const pollingWindowSeconds = input.request.pollingWindowSeconds ?? 300;
+  if (!Number.isSafeInteger(pollingWindowSeconds) || pollingWindowSeconds < 60)
+    throw new Error("focused-request-invalid");
+  const identity = sharpOddsRequestIdentity({
+    leagueKey: sharpLeague.leagueKey,
+    endpointMode: "focused",
+    providerEventId: input.request.providerEventId,
+    marketSet: ["main"],
+    now,
+    pollingWindowSeconds,
+  });
+  const runId = `focused:${sharpLeague.leagueKey}:${identity}`;
+  const binding = await input.events.resolveExactCanonicalBinding({
+    providerId: SHARP_API_PROVIDER_ID,
+    providerEventId: input.request.providerEventId,
+    sportKey: sharpLeague.sportKey,
+    leagueKey: sharpLeague.leagueKey,
+  });
+  if (!binding) throw new Error("focused-event-binding-unavailable");
+  const attempt = {
+    attemptId: identity,
+    runId,
+    pageToken: input.request.providerEventId,
+    requestedAt: now.toISOString(),
+    providerId: SHARP_API_PROVIDER_ID,
+    leagueKey: sharpLeague.leagueKey,
+    capability: "odds" as const,
+  };
+  const dimensions = {
+    provider: SHARP_API_PROVIDER_ID,
+    league: sharpLeague.leagueKey,
+    endpoint: "focused",
+    markets: "main",
+  };
+  const healthKey = `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:odds`;
+  const health = await input.control.getHealth(healthKey);
+  if (
+    (health?.cooldownUntil &&
+      Date.parse(health.cooldownUntil) > now.getTime()) ||
+    (health?.quotaRemaining !== undefined &&
+      health.quotaRemaining - 1 < (policy.providers[0]?.quotaReserve ?? 100))
+  ) {
+    input.metrics?.emit("OddsQuotaBlocked", 1, dimensions);
+    return {
+      status: "retryable" as const,
+      reason: health?.cooldownUntil ? "rate-limited" : "quota-reserve",
+      ...(health?.cooldownUntil ? { retryAt: health.cooldownUntil } : {}),
+    };
+  }
+  const reserved = await input.control.reserveQuotaAttempt(
+    healthKey,
+    policy.providers[0]?.quotaReserve ?? 100,
+    1,
+    attempt,
+  );
+  if (!reserved) {
+    input.metrics?.emit("OddsRequestDeduplicated", 1, dimensions);
+    return { status: "deduplicated" as const, requestIdentity: identity };
+  }
+  input.metrics?.emit("OddsProviderRequest", 1, dimensions);
+  try {
+    const operation = await (input.fetchFocused ?? fetchSharpApiEventOdds)(
+      sharpLeague,
+      input.request.providerEventId,
+      input.sharpApiKey,
+    );
+    const persisted = await persistSharpApiOddsPage(
+      input.events,
+      input.odds,
+      sharpLeague,
+      operation.page,
+      policy.providers[0]?.books,
+    );
+    const gaps = [
+      ...evidenceGaps(
+        runId,
+        SHARP_API_PROVIDER_ID,
+        sharpLeague.leagueKey,
+        operation.page.events,
+        policy.markets,
+        policy.providers[0]?.books ?? {},
+        operation.page.retrievedAt,
+        [input.request.providerEventId],
+      ),
+      ...normalizationGaps(
+        runId,
+        sharpLeague.leagueKey,
+        operation.page,
+        policy.providers[0]?.books ?? {},
+      ),
+    ];
+    for (const gap of gaps) await input.control.putGap(gap);
+    await input.control.completeAttempt({
+      ...attempt,
+      state: "succeeded",
+      quotaCost: 1,
+      completedAt: now.toISOString(),
+    });
+    for (const [name, value] of [
+      ["OddsSnapshotCreated", persisted.snapshotsCreated],
+      ["OddsSnapshotDuplicate", persisted.snapshotsExisting],
+      ["OddsCurrentAdvanced", persisted.currentAdvanced],
+      ["OddsCurrentRetained", persisted.currentRetained],
+      ["OddsPartialEvidence", persisted.partialEvidence + gaps.length],
+    ] as const)
+      input.metrics?.emit(name, value, dimensions);
+    for (const [reason, count] of Object.entries(persisted.rejectionCounts))
+      input.metrics?.emit("OddsNormalizationRejected", count, {
+        ...dimensions,
+        reason,
+      });
+    input.metrics?.emit("OddsNormalizedObservation", persisted.observations, {
+      ...dimensions,
+      partial: gaps.length > 0 ? "true" : "false",
+    });
+    return {
+      status: "completed" as const,
+      requestIdentity: identity,
+      observations: persisted.observations,
+      gaps: gaps.length,
+    };
+  } catch (error) {
+    const reason = capabilityFailure(error);
+    await input.control.completeAttempt({
+      ...attempt,
+      state: "failed",
+      quotaCost: 1,
+      completedAt: now.toISOString(),
+      failureReason: reason,
+    });
+    input.metrics?.emit("OddsProviderFailure", 1, { ...dimensions, reason });
+    if (error instanceof SharpApiError && error.retryAt)
+      await input.control.putHealth({
+        ...(await input.control.getHealth(healthKey)),
+        providerId: SHARP_API_PROVIDER_ID,
+        healthKey,
+        healthy: false,
+        consecutiveSuccesses: 0,
+        cooldownUntil: error.retryAt,
+        updatedAt: now.toISOString(),
+      });
+    throw error;
+  }
+}
+
 export async function runProductionOddsControlPlane(input: {
   readonly events: EventIngestionStore;
   readonly odds: LiveOddsPersister;
@@ -412,6 +612,7 @@ export async function runProductionOddsControlPlane(input: {
   readonly metrics?: OddsControlPlaneMetrics;
   readonly fetchSharpSchedule?: typeof fetchSharpApiSchedulePage;
   readonly fetchSharpOdds?: typeof fetchSharpApiOddsPage;
+  readonly fetchSharpFeatured?: typeof fetchSharpApiFeaturedOdds;
   readonly fetchSharpAccount?: typeof fetchSharpApiAccount;
   readonly fetchSharpSplits?: typeof fetchSharpApiSplitsPage;
   readonly heartbeatIntervalMs?: number;
@@ -842,13 +1043,28 @@ export async function runProductionOddsControlPlane(input: {
               };
             },
             fetchPage: async ({ runId, pageToken }) => {
-              const page = await (
-                input.fetchSharpOdds ?? fetchSharpApiOddsPage
-              )(
-                sharpLeague,
-                input.sharpApiKey,
-                pageToken === "start" ? undefined : pageToken,
-              );
+              input.metrics?.emit("OddsProviderRequest", 1, {
+                provider: SHARP_API_PROVIDER_ID,
+                league: policy.leagueKey,
+                endpoint: "featured",
+                markets: "main",
+                quota: "reserved",
+              });
+              const page = input.fetchSharpOdds
+                ? await input.fetchSharpOdds(
+                    sharpLeague,
+                    input.sharpApiKey,
+                    pageToken === "start" ? undefined : pageToken,
+                  )
+                : (
+                    await (
+                      input.fetchSharpFeatured ?? fetchSharpApiFeaturedOdds
+                    )(
+                      sharpLeague,
+                      input.sharpApiKey,
+                      pageToken === "start" ? undefined : pageToken,
+                    )
+                  ).page;
               const material: SharpPageMaterial = { kind: "sharpapi", page };
               return {
                 items: [material],
@@ -916,6 +1132,8 @@ export async function runProductionOddsControlPlane(input: {
                   const dimensions = {
                     provider: SHARP_API_PROVIDER_ID,
                     league: policy.leagueKey,
+                    endpoint: "featured",
+                    markets: "main",
                   };
                   if (outcome.snapshot)
                     input.metrics?.emit(

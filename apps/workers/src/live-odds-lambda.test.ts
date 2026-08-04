@@ -18,6 +18,16 @@ describe("live odds Lambda invocation", () => {
     });
     expect(
       parseLiveOddsInvocation({
+        mode: "focused",
+        leagueKey: "epl",
+        providerEventId: "provider-event-1",
+      }),
+    ).toEqual({
+      forceRefresh: false,
+      focused: { leagueKey: "epl", providerEventId: "provider-event-1" },
+    });
+    expect(
+      parseLiveOddsInvocation({
         Records: [{ eventSource: "aws:sqs", body: "{}" }],
       }),
     ).toEqual({ forceRefresh: false });

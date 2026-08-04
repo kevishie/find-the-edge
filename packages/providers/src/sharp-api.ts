@@ -36,8 +36,10 @@ export interface SharpApiActivationConfig {
 
 export interface SharpApiLeague {
   readonly sportKey: SportKey;
-  readonly leagueKey: "mlb" | "mls";
-  readonly providerLeague: "MLB" | "MLS";
+  readonly leagueKey:
+    "mlb" | "mls" | "epl" | "liga-mx" | "uefa-champions-league";
+  /** Exact, catalog-verified SharpAPI league identity. Never fuzzy matched. */
+  readonly providerLeague: string;
   readonly moneylineMarket: "moneyline";
 }
 
@@ -54,7 +56,31 @@ export const sharpApiLeagues: readonly SharpApiLeague[] = [
     providerLeague: "MLS",
     moneylineMarket: "moneyline",
   },
+  {
+    sportKey: "soccer" as SportKey,
+    leagueKey: "epl",
+    providerLeague: "england_-_premier_league",
+    moneylineMarket: "moneyline",
+  },
+  {
+    sportKey: "soccer" as SportKey,
+    leagueKey: "liga-mx",
+    providerLeague: "mexico_-_liga_mx",
+    moneylineMarket: "moneyline",
+  },
+  {
+    sportKey: "soccer" as SportKey,
+    leagueKey: "uefa-champions-league",
+    providerLeague: "uefa_-_champions_league",
+    moneylineMarket: "moneyline",
+  },
 ];
+
+export const sharpApiLeagueByKey = (leagueKey: string): SharpApiLeague => {
+  const league = sharpApiLeagues.find((entry) => entry.leagueKey === leagueKey);
+  if (!league) throw new SharpApiError("configuration");
+  return league;
+};
 
 export interface SharpApiAccount {
   readonly tier: string;
@@ -86,6 +112,8 @@ export interface SharpApiPrice {
   readonly isAlternateLine: boolean;
   readonly isPlayerProp: boolean;
   readonly isStalePregamePrice: boolean;
+  readonly isActive?: boolean;
+  readonly isSuspended?: boolean;
   readonly observedAt: IsoTimestamp;
 }
 
@@ -211,6 +239,7 @@ export class SharpApiError extends Error {
       | "provider-unavailable"
       | "invalid-response",
     readonly retryable = false,
+    readonly retryAt?: IsoTimestamp,
   ) {
     super(code);
   }
@@ -269,7 +298,21 @@ const request = async (
         throw new SharpApiError("not-entitled");
       throw new SharpApiError("unauthorized");
     }
-    if (response.status === 429) throw new SharpApiError("rate-limited", true);
+    if (response.status === 429) {
+      const retryAfter = response.headers.get("retry-after");
+      const retryMs = retryAfter
+        ? /^\d+$/.test(retryAfter)
+          ? Date.now() + Number(retryAfter) * 1_000
+          : Date.parse(retryAfter)
+        : NaN;
+      throw new SharpApiError(
+        "rate-limited",
+        true,
+        Number.isFinite(retryMs)
+          ? (new Date(retryMs).toISOString() as IsoTimestamp)
+          : undefined,
+      );
+    }
     throw new SharpApiError(
       response.status >= 500 ? "provider-unavailable" : "invalid-response",
       response.status >= 500,
@@ -317,7 +360,8 @@ const selection = (
     return type as SharpApiPrice["selectionKey"];
   if (label === raw["away_team"]) return "away";
   if (label === raw["home_team"]) return "home";
-  if (/^draw$/i.test(label) && league.leagueKey === "mls") return "draw";
+  if (/^draw$/i.test(label) && String(league.sportKey) === "soccer")
+    return "draw";
   if (/^over\b/i.test(label)) return "over";
   if (/^under\b/i.test(label)) return "under";
   if (/^yes$/i.test(label)) return "yes";
@@ -392,11 +436,12 @@ export function parseSharpApiOddsPage(
   input: unknown,
   league: SharpApiLeague,
   retrievedAt: IsoTimestamp,
+  maximumRows = 200,
 ): SharpApiOddsPage {
   if (
     !record(input) ||
     !Array.isArray(input["data"]) ||
-    input["data"].length > 200
+    input["data"].length > maximumRows
   )
     throw new SharpApiError("invalid-response");
   const deduplicatedRows: (Record<string, unknown> | null)[] = [];
@@ -461,6 +506,18 @@ export function parseSharpApiOddsPage(
         providerId: SHARP_API_PROVIDER_ID,
         reason: "unsupported-selection",
         auditId: auditId(value["selection_type"] ?? value["selection"]),
+        sportsbookId: bookResult.sportsbook.id,
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      continue;
+    }
+    if (typeof value["is_active"] !== "boolean") {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "incomplete-market",
+        auditId: auditId(value["id"]),
         sportsbookId: bookResult.sportsbook.id,
         ...(canonical(value["event_id"])
           ? { providerEventId: value["event_id"] }
@@ -541,8 +598,20 @@ export function parseSharpApiOddsPage(
       !canonical(value["market_id"]) ||
       !canonical(value["selection"]) ||
       !canonical(value["selection_id"])
-    )
-      throw new SharpApiError("invalid-response");
+    ) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "incomplete-market",
+        auditId: auditId(value["id"]),
+        ...(canonical(value["sportsbook"], 128)
+          ? { sportsbookId: value["sportsbook"] }
+          : {}),
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+      });
+      continue;
+    }
     const signature = JSON.stringify([
       value["event_id"],
       value["event_uuid"],
@@ -600,8 +669,20 @@ export function parseSharpApiOddsPage(
       value["odds_probability"] < 0 ||
       value["odds_probability"] > 1 ||
       !instant(value["timestamp"])
-    )
-      throw new SharpApiError("invalid-response");
+    ) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "incomplete-market",
+        auditId: auditId(value["id"]),
+        ...(canonical(value["event_id"])
+          ? { providerEventId: value["event_id"] }
+          : {}),
+        ...(canonical(value["sportsbook"], 128)
+          ? { sportsbookId: value["sportsbook"] }
+          : {}),
+      });
+      continue;
+    }
     const eventId = value["event_id"];
     const existing = identities.get(eventId);
     let identity = {
@@ -637,15 +718,31 @@ export function parseSharpApiOddsPage(
     const book = value["sportsbook"];
     const prices = books.get(book) ?? [];
     const line = value["line"];
-    if ((marketKey === "spread" || marketKey === "total") && !finite(line))
-      throw new SharpApiError("invalid-response");
+    if ((marketKey === "spread" || marketKey === "total") && !finite(line)) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "incomplete-market",
+        auditId: auditId(value["id"]),
+        providerEventId: value["event_id"],
+        sportsbookId: value["sportsbook"],
+      });
+      continue;
+    }
     const publicPct = value["public_bet_pct"];
     if (
       publicPct !== undefined &&
       publicPct !== null &&
       (!finite(publicPct) || publicPct < 0 || publicPct > 1)
-    )
-      throw new SharpApiError("invalid-response");
+    ) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "incomplete-market",
+        auditId: auditId(value["id"]),
+        providerEventId: value["event_id"],
+        sportsbookId: value["sportsbook"],
+      });
+      continue;
+    }
     prices.push({
       providerPriceId: value["id"],
       marketKey,
@@ -682,6 +779,8 @@ export function parseSharpApiOddsPage(
       isAlternateLine: value["is_alternate_line"] === true,
       isPlayerProp: value["is_player_prop"] === true,
       isStalePregamePrice: value["is_stale_pregame_price"] === true,
+      isActive: value["is_active"] !== false,
+      isSuspended: value["is_active"] === false,
       observedAt: iso(value["timestamp"]),
     });
     books.set(book, prices);
@@ -734,7 +833,12 @@ export function parseSharpApiSchedulePage(
     // The endpoint can include valid but differently shaped rows from related
     // catalogues despite an exact filter. League identity is the only field we
     // need in order to exclude those rows safely.
-    if (value["league"].toLowerCase() !== league.leagueKey) continue;
+    if (
+      ![league.leagueKey, league.providerLeague.toLowerCase()].includes(
+        value["league"].toLowerCase(),
+      )
+    )
+      continue;
     if (
       !instant(value["start_time"]) ||
       value["status"] !== "upcoming" ||
@@ -905,6 +1009,7 @@ export async function fetchSharpApiOddsPage(
   const query = new URLSearchParams({
     league: league.providerLeague,
     market: "main",
+    is_live: "false",
     limit: "200",
   });
   if (cursor) query.set("cursor", cursor);
@@ -914,6 +1019,88 @@ export async function fetchSharpApiOddsPage(
     league,
     retrievedAt,
   );
+}
+
+export interface SharpApiOddsRequestMetadata {
+  readonly endpointMode: "featured" | "focused";
+  readonly leagueKey: SharpApiLeague["leagueKey"];
+  readonly providerLeague: string;
+  readonly marketSet: readonly ["main"];
+  readonly providerEventId?: string;
+}
+
+export interface SharpApiOddsOperation {
+  readonly page: SharpApiOddsPage;
+  readonly request: SharpApiOddsRequestMetadata;
+}
+
+export async function fetchSharpApiFeaturedOdds(
+  league: SharpApiLeague,
+  apiKey: string,
+  cursor?: string,
+  fetcher: typeof fetch = fetch,
+): Promise<SharpApiOddsOperation> {
+  return {
+    page: await fetchSharpApiOddsPage(league, apiKey, cursor, fetcher),
+    request: {
+      endpointMode: "featured",
+      leagueKey: league.leagueKey,
+      providerLeague: league.providerLeague,
+      marketSet: ["main"],
+    },
+  };
+}
+
+export async function fetchSharpApiEventOdds(
+  league: SharpApiLeague,
+  providerEventId: string,
+  apiKey: string,
+  fetcher: typeof fetch = fetch,
+): Promise<SharpApiOddsOperation> {
+  if (!canonical(providerEventId, 256))
+    throw new SharpApiError("configuration");
+  const retrievedAt = new Date().toISOString() as IsoTimestamp;
+  const payload = await request(
+    `/events/${encodeURIComponent(providerEventId)}/odds`,
+    apiKey,
+    fetcher,
+  );
+  if (!record(payload) || !Array.isArray(payload["data"]))
+    throw new SharpApiError("invalid-response");
+  if (payload["data"].length === 0 || payload["data"].length > 5_000)
+    throw new SharpApiError("invalid-response");
+  for (const row of payload["data"]) {
+    if (
+      !record(row) ||
+      row["event_id"] !== providerEventId ||
+      !canonical(row["league"], 128) ||
+      ![league.leagueKey, league.providerLeague.toLowerCase()].includes(
+        row["league"].toLowerCase(),
+      )
+    )
+      throw new SharpApiError("invalid-response");
+  }
+  const page = parseSharpApiOddsPage(
+    {
+      ...payload,
+      pagination: { has_more: false, next_cursor: null },
+    },
+    league,
+    retrievedAt,
+    5_000,
+  );
+  if (page.events.some((event) => event.providerEventId !== providerEventId))
+    throw new SharpApiError("invalid-response");
+  return {
+    page,
+    request: {
+      endpointMode: "focused",
+      leagueKey: league.leagueKey,
+      providerLeague: league.providerLeague,
+      marketSet: ["main"],
+      providerEventId,
+    },
+  };
 }
 
 export async function fetchSharpApiSchedulePage(

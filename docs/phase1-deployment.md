@@ -13,6 +13,24 @@ this release.
 - Node 20.19 or newer and pnpm 10.28.2.
 - For local validation: no AWS login is required.
 - For deployment: an authenticated AWS profile/role in account `228246988391`, region `us-east-1`, the existing cursor-signing secret, and `find-the-edge/dev/sharpapi` in Secrets Manager. Store either the plain API key or `{ "apiKey": "..." }`; never put it in CDK context, Lambda environment variables, browser assets, or logs. SharpAPI is the sole production schedule and odds provider.
+
+## SharpAPI odds request modes
+
+Production has two paid-request modes, both using the same server-side SharpAPI secret and immutable snapshot path:
+
+- **Featured** scans use `GET /api/v1/odds` with an exact catalog league identity, `market=main`, `is_live=false`, and opaque cursor pagination. The runtime allowlist is MLB, MLS, English Premier League, Liga MX, and UEFA Champions League. Unknown or friendly-name aliases fail closed.
+- **Focused** refreshes accept only a canonical SharpAPI event ID and use `GET /api/v1/events/{eventId}/odds`. A durable identity hashes provider, league, endpoint mode, event ID, sorted market set, and five-minute polling window, so duplicate scheduler/manual triggers cannot issue a second paid call.
+
+Focused Lambda payloads have exactly this shape:
+
+```json
+{ "mode": "focused", "leagueKey": "epl", "providerEventId": "<sharp-event-id>" }
+```
+
+The focused endpoint returns all entitled books/markets. Local normalization keeps only supported full-game main markets, excludes suspended (`is_active=false`), stale, alternate, live, and player-prop prices from current odds, retains valid siblings, and writes reason-coded gaps including missing Hard Rock coverage. HTTP 429 responses are not retried immediately; provider retry timing is retained on the typed error boundary and the durable request window prevents duplicate calls. Raw paid-provider responses and credentials are never logged or archived.
+
+Operational verification should confirm `OddsProviderRequest`, `OddsRequestDeduplicated`, `OddsNormalizedObservation`, `OddsNormalizationRejected`, snapshot/current outcomes, and provider failures with bounded `provider`, `league`, `endpoint`, `markets`, `partial`, and `reason` dimensions. Production Lambda configuration must contain only `FTE_SHARP_API_SECRET_ID`; `THE_ODDS_API_KEY` and any provider fallback are forbidden.
+
 - For environment smoke: the deployed API, live-ingestion function output, cursor-secret identifier, and exact hosted browser origin.
 
 ## Credential-free preflight and bundle

@@ -4,17 +4,179 @@ import {
   MemoryOddsControlPlaneStore,
 } from "@find-the-edge/database";
 import type { IsoTimestamp } from "@find-the-edge/domain";
-import type { SharpApiLeague } from "@find-the-edge/providers";
+import { SharpApiError, type SharpApiLeague } from "@find-the-edge/providers";
 import {
   capabilityFailure,
   evidenceGaps,
+  runFocusedSharpOddsIngestion,
   runProductionOddsControlPlane,
+  sharpOddsRequestIdentity,
 } from "./production-odds-control-plane";
 
 const now = new Date("2026-08-03T12:00:00.000Z");
 const at = now.toISOString() as IsoTimestamp;
 
 describe("production odds control-plane composition", () => {
+  it("deduplicates focused event refreshes by durable polling-window identity", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const events = new MemoryEventIngestionStore();
+    vi.spyOn(events, "resolveExactCanonicalBinding").mockResolvedValue({
+      id: "canonical-event-1",
+      version: 1,
+      sportKey: "soccer",
+      startsAt: "2026-08-03T20:00:00.000Z",
+      participantIds: ["away", "home"],
+      participantLabels: ["Away", "Home"],
+    } as never);
+    const fetchFocused = vi.fn((league: SharpApiLeague, eventId: string) =>
+      Promise.resolve({
+        request: {
+          endpointMode: "focused" as const,
+          leagueKey: league.leagueKey,
+          providerLeague: league.providerLeague,
+          marketSet: ["main"] as const,
+          providerEventId: eventId,
+        },
+        page: {
+          events: [],
+          hasMore: false,
+          retrievedAt: at,
+        },
+      }),
+    );
+    const input = {
+      events,
+      odds: { persist: vi.fn() },
+      control,
+      sharpApiKey: "server-secret",
+      request: { leagueKey: "mls" as const, providerEventId: "event-1" },
+      now,
+      fetchFocused,
+    };
+    expect(await runFocusedSharpOddsIngestion(input)).toEqual(
+      expect.objectContaining({ status: "completed", gaps: 15 }),
+    );
+    expect(await runFocusedSharpOddsIngestion(input)).toEqual(
+      expect.objectContaining({ status: "deduplicated" }),
+    );
+    expect(fetchFocused).toHaveBeenCalledTimes(1);
+    expect(
+      sharpOddsRequestIdentity({
+        leagueKey: "mls",
+        endpointMode: "focused",
+        providerEventId: "event-1",
+        marketSet: ["main"],
+        now,
+        pollingWindowSeconds: 300,
+      }),
+    ).toHaveLength(64);
+    expect(
+      sharpOddsRequestIdentity({
+        leagueKey: "mls",
+        endpointMode: "focused",
+        providerEventId: "event-1",
+        marketSet: ["main"],
+        now,
+        pollingWindowSeconds: 600,
+      }),
+    ).not.toBe(
+      sharpOddsRequestIdentity({
+        leagueKey: "mls",
+        endpointMode: "focused",
+        providerEventId: "event-1",
+        marketSet: ["main"],
+        now,
+        pollingWindowSeconds: 300,
+      }),
+    );
+  });
+
+  it("distinguishes quota blocking and records persistence failure before success", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const events = new MemoryEventIngestionStore();
+    vi.spyOn(events, "resolveExactCanonicalBinding").mockResolvedValue({
+      id: "canonical-event-1",
+      version: 1,
+      sportKey: "soccer",
+      startsAt: at,
+      participantIds: ["away", "home"],
+      participantLabels: ["Away", "Home"],
+    } as never);
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mls:odds",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      quotaRemaining: 100,
+      updatedAt: at,
+    });
+    const fetchFocused = vi.fn();
+    const common = {
+      events,
+      odds: { persist: vi.fn() },
+      control,
+      sharpApiKey: "server-secret",
+      request: { leagueKey: "mls" as const, providerEventId: "event-2" },
+      now,
+      fetchFocused,
+    };
+    expect(await runFocusedSharpOddsIngestion(common)).toEqual(
+      expect.objectContaining({ status: "retryable", reason: "quota-reserve" }),
+    );
+    expect(fetchFocused).not.toHaveBeenCalled();
+
+    await control.putHealth({
+      ...(await control.getHealth("sharpapi:mls:odds"))!,
+      quotaRemaining: 1000,
+      updatedAt: at,
+    });
+    fetchFocused.mockResolvedValue({
+      request: {},
+      page: { events: [], hasMore: false, retrievedAt: at },
+    });
+    vi.spyOn(control, "putGap").mockRejectedValueOnce(
+      new Error("gap-write-failed"),
+    );
+    await expect(runFocusedSharpOddsIngestion(common)).rejects.toThrow(
+      "gap-write-failed",
+    );
+    expect(
+      (
+        await control.getAttempt(
+          sharpOddsRequestIdentity({
+            leagueKey: "mls",
+            endpointMode: "focused",
+            providerEventId: "event-2",
+            marketSet: ["main"],
+            now,
+            pollingWindowSeconds: 300,
+          }),
+        )
+      )?.state,
+    ).toBe("failed");
+
+    const retryAt = "2026-08-03T12:20:00.000Z" as IsoTimestamp;
+    fetchFocused.mockRejectedValueOnce(
+      new SharpApiError("rate-limited", true, retryAt),
+    );
+    await expect(
+      runFocusedSharpOddsIngestion({
+        ...common,
+        request: { leagueKey: "mls", providerEventId: "event-3" },
+        now: new Date("2026-08-03T12:05:00.000Z"),
+      }),
+    ).rejects.toThrow("rate-limited");
+    expect(await control.getHealth("sharpapi:mls:odds")).toEqual(
+      expect.objectContaining({ cooldownUntil: retryAt }),
+    );
+    expect(
+      await runFocusedSharpOddsIngestion({
+        ...common,
+        request: { leagueKey: "mls", providerEventId: "event-4" },
+        now: new Date("2026-08-03T12:10:00.000Z"),
+      }),
+    ).toEqual(expect.objectContaining({ status: "retryable", retryAt }));
+  });
   it("preserves recoverable ownership and reservation failure mappings", () => {
     expect(capabilityFailure(new Error("run-owned"))).toBe(
       "provider-recovering",
@@ -250,9 +412,12 @@ describe("production odds control-plane composition", () => {
     expect(first.map((result) => result.providerId)).toEqual([
       "sharpapi",
       "sharpapi",
+      "sharpapi",
+      "sharpapi",
+      "sharpapi",
     ]);
-    expect(fetchSharpSchedule).toHaveBeenCalledTimes(2);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(2);
+    expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(5);
     expect(options.metrics.emit).toHaveBeenCalledWith(
       "OddsNormalizedObservation",
       2,
@@ -282,7 +447,7 @@ describe("production odds control-plane composition", () => {
       );
     expect(
       [...control.gaps.values()].filter((gap) => gap.reason === "missing"),
-    ).toHaveLength(27);
+    ).toHaveLength(72);
     expect(
       [...control.gaps.values()].find(
         (gap) => gap.reason === "missing-provider-timestamp",
@@ -290,7 +455,7 @@ describe("production odds control-plane composition", () => {
     ).toMatchObject({ sourceState: "missing", sportsbookId: "draftkings" });
     expect(
       [...control.gaps.values()].filter((gap) => gap.reason === "unsupported"),
-    ).toHaveLength(2);
+    ).toHaveLength(5);
 
     const second = await runProductionOddsControlPlane({
       ...options,
@@ -299,9 +464,12 @@ describe("production odds control-plane composition", () => {
     expect(second.map((result) => result.status)).toEqual([
       "completed",
       "skipped",
+      "skipped",
+      "skipped",
+      "skipped",
     ]);
-    expect(fetchSharpSchedule).toHaveBeenCalledTimes(2);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(3);
+    expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
   });
   it("fails closed without a secondary schedule and isolates account setup failure", async () => {
     const events = new MemoryEventIngestionStore();
@@ -354,12 +522,15 @@ describe("production odds control-plane composition", () => {
     expect(result.map(({ providerId }) => providerId)).toEqual([
       undefined,
       "sharpapi",
+      "sharpapi",
+      "sharpapi",
+      "sharpapi",
     ]);
     expect(result[0]).toMatchObject({
       status: "failed",
       reason: "schedule-provider-unavailable",
     });
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(1);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(4);
     expect(fetchSharpOdds.mock.calls[0]?.[0].leagueKey).toBe("mls");
     expect(
       [...control.runs.values()].some(
@@ -432,7 +603,10 @@ describe("production odds control-plane composition", () => {
     ).toEqual([
       ["sharpapi", "completed"],
       ["sharpapi", "completed"],
+      ["sharpapi", "completed"],
+      ["sharpapi", "completed"],
+      ["sharpapi", "completed"],
     ]);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(4);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(10);
   });
 });

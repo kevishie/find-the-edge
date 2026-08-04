@@ -387,13 +387,13 @@ describe("SharpAPI primary ingestion", () => {
     });
 
     expect(result).toMatchObject({
-      leagues: 2,
-      events: 2,
-      observations: 5,
-      splits: 2,
+      leagues: 5,
+      events: 5,
+      observations: 11,
+      splits: 5,
       splitsEntitled: true,
     });
-    expect(oddsPersist).toHaveBeenCalledTimes(5);
+    expect(oddsPersist).toHaveBeenCalledTimes(11);
     expect(
       oddsPersist.mock.calls.map(([input]) => input.observation.selectionKey),
     ).toEqual([
@@ -402,11 +402,23 @@ describe("SharpAPI primary ingestion", () => {
       "participant:away-club",
       "participant:home-club",
       "draw",
+      "participant:away-club",
+      "participant:home-club",
+      "participant:away-club",
+      "participant:home-club",
+      "participant:away-club",
+      "participant:home-club",
     ]);
-    expect(splitPersist).toHaveBeenCalledTimes(2);
+    expect(splitPersist).toHaveBeenCalledTimes(5);
     expect(
       splitPersist.mock.calls.map(([input]) => input.providerEventId),
-    ).toEqual(["mlb-event_2026-08-03", "mls-event_2026-08-03"]);
+    ).toEqual([
+      "mlb-event_2026-08-03",
+      "mls-event_2026-08-03",
+      "epl-event_2026-08-03",
+      "liga-mx-event_2026-08-03",
+      "uefa-champions-league-event_2026-08-03",
+    ]);
     expect(splitPersist).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: "consensus",

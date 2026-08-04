@@ -21,7 +21,8 @@ export interface OddsProviderPolicy {
   readonly books: Readonly<Record<string, OddsBookRole>>;
 }
 export interface LeagueOddsCollectionPolicy {
-  readonly leagueKey: "mlb" | "mls";
+  readonly leagueKey:
+    "mlb" | "mls" | "epl" | "liga-mx" | "uefa-champions-league";
   readonly baseCadenceSeconds: number;
   readonly nearStart: {
     readonly windowSeconds: number;
@@ -53,7 +54,7 @@ export const productionScheduleDiscoveryPolicies: readonly ScheduleDiscoveryPoli
   ]);
 
 const providerPolicy = (
-  leagueKey: "mlb" | "mls",
+  leagueKey: LeagueOddsCollectionPolicy["leagueKey"],
 ): LeagueOddsCollectionPolicy => ({
   leagueKey,
   baseCadenceSeconds: 3_600,
@@ -80,7 +81,13 @@ const providerPolicy = (
 
 /** Versioned, immutable production policy. Scheduling ticks do not imply paid calls. */
 export const productionOddsCollectionPolicies: readonly LeagueOddsCollectionPolicy[] =
-  deepFreeze([providerPolicy("mlb"), providerPolicy("mls")]);
+  deepFreeze([
+    providerPolicy("mlb"),
+    providerPolicy("mls"),
+    providerPolicy("epl"),
+    providerPolicy("liga-mx"),
+    providerPolicy("uefa-champions-league"),
+  ]);
 const capabilities = ["schedule", "odds", "results"] as const;
 
 function enabledLeague(
