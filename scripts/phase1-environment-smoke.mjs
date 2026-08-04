@@ -320,23 +320,35 @@ export function isTransientLiveIngestionSummary(summary) {
   )
     return false;
   const leagues = new Set(RELEASE_REFRESH_LEAGUES);
-  return summary.every(
-    (result) =>
-      result &&
-      typeof result === "object" &&
-      !Array.isArray(result) &&
-      [
-        "leagueKey,pages,quotaCost,reason,status",
-        "leagueKey,pages,providerId,quotaCost,reason,status",
-      ].includes(Object.keys(result).sort().join(",")) &&
-      (result.providerId === undefined || result.providerId === "sharpapi") &&
-      leagues.delete(result.leagueKey) &&
-      result.status === "failed" &&
-      result.reason === "schedule-provider-recovering" &&
-      Number.isSafeInteger(result.pages) &&
-      result.pages >= 0 &&
-      Number.isSafeInteger(result.quotaCost) &&
-      result.quotaCost >= 0,
+  let recovering = false;
+  return (
+    summary.every((result) => {
+      if (
+        !result ||
+        typeof result !== "object" ||
+        Array.isArray(result) ||
+        ![
+          "leagueKey,pages,providerId,quotaCost,status",
+          "leagueKey,pages,quotaCost,reason,status",
+          "leagueKey,pages,providerId,quotaCost,reason,status",
+        ].includes(Object.keys(result).sort().join(",")) ||
+        (result.providerId !== undefined && result.providerId !== "sharpapi") ||
+        !leagues.delete(result.leagueKey) ||
+        !Number.isSafeInteger(result.pages) ||
+        result.pages < 0 ||
+        !Number.isSafeInteger(result.quotaCost) ||
+        result.quotaCost < 0
+      )
+        return false;
+      if (result.status === "completed") return result.reason === undefined;
+      const isRecovering =
+        ["failed", "skipped"].includes(result.status) &&
+        ["provider-recovering", "schedule-provider-recovering"].includes(
+          result.reason,
+        );
+      recovering ||= isRecovering;
+      return isRecovering;
+    }) && recovering
   );
 }
 

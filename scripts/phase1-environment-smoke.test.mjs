@@ -305,7 +305,7 @@ test("live ingestion proof accepts production control-plane summaries", () => {
   );
 });
 
-test("live ingestion retries only bounded schedule ownership overlap", () => {
+test("live ingestion retries bounded schedule and provider recovery", () => {
   const recovering = [
     "mlb",
     "mls",
@@ -341,6 +341,32 @@ test("live ingestion retries only bounded schedule ownership overlap", () => {
       ...recovering.slice(2),
     ]),
     true,
+  );
+  const providerRecovering = recovering.map((result, index) =>
+    index === 0
+      ? {
+          leagueKey: result.leagueKey,
+          status: "completed",
+          providerId: "sharpapi",
+          pages: 23,
+          quotaCost: 23,
+        }
+      : {
+          ...result,
+          status: "skipped",
+          reason: "provider-recovering",
+          providerId: "sharpapi",
+        },
+  );
+  assert.equal(isTransientLiveIngestionSummary(providerRecovering), true);
+  assert.equal(
+    isTransientLiveIngestionSummary(
+      providerRecovering.map((result) => ({
+        ...result,
+        ...(result.status === "completed" ? { reason: "cadence-not-due" } : {}),
+      })),
+    ),
+    false,
   );
   for (const malformed of [
     [recovering[0], recovering[0]],
