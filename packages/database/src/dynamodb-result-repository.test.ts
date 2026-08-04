@@ -35,6 +35,7 @@ class Fake {
   failCurrent = true;
   queryPages: unknown[] = [];
   raceCurrent?: ReturnType<typeof normalizeCompletedResult>;
+  queryCalls = 0;
   key(v: Record<string, unknown>) {
     return `${String(v["pk"])}|${String(v["sk"])}`;
   }
@@ -75,8 +76,10 @@ class Fake {
       return Promise.resolve({
         Item: this.items.get(this.key(input["Key"] as Record<string, unknown>)),
       });
-    if (name === "QueryCommand")
+    if (name === "QueryCommand") {
+      this.queryCalls++;
       return Promise.resolve(this.queryPages.shift() ?? { Items: [] });
+    }
     if (name === "DeleteCommand") return Promise.resolve({});
     throw new Error(name);
   }
@@ -97,6 +100,9 @@ describe("Dynamo result repository", () => {
       current: "stale",
       observation: { retrievedAt: "2026-08-03T20:01:00.000Z" },
     });
+    const exact = await repo.exact("event", replay.observation.id);
+    expect(exact?.id).toBe(replay.observation.id);
+    expect(fake.queryCalls).toBe(0);
   });
   it("replays unresolved idempotently and detects conflicts", async () => {
     const fake = new Fake();

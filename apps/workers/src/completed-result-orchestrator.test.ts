@@ -62,6 +62,7 @@ describe("completed result orchestration", () => {
       [[raw("known"), raw("missing")]],
     );
     const repo = new MemoryResultRepository();
+    const gradedResultIds: string[] = [];
     const orchestrator = new CompletedResultOrchestrator(
       new FeedCoverageRegistry(
         feedCoverageCatalogVersion,
@@ -84,6 +85,12 @@ describe("completed result orchestration", () => {
               }))
               .reverse(),
           ),
+      },
+      {
+        gradeCurrentResult: (_eventId, resultObservationId) => {
+          gradedResultIds.push(resultObservationId);
+          return Promise.resolve({ failed: 0 });
+        },
       },
     );
     const run = await orchestrator.execute({
@@ -121,6 +128,10 @@ describe("completed result orchestration", () => {
       maxPages: 2,
     });
     expect(replay.counters).toMatchObject({ duplicate: 1, stale: 0 });
+    expect(gradedResultIds).toEqual([
+      (await repo.current("event-1"))!.id,
+      (await repo.current("event-1"))!.id,
+    ]);
   });
   it("isolates checkpoint identities and rejects corrupt stored checkpoints before provider calls", async () => {
     let calls = 0;

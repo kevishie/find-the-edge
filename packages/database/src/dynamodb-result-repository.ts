@@ -93,6 +93,36 @@ export class DynamoResultRepository implements ResultRepository {
       history = "duplicate";
       observation = existing;
     }
+    const exactKey = {
+      pk: `RESULT_EXACT#${observation.canonicalEventId}`,
+      sk: observation.id,
+    };
+    try {
+      await this.client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: { ...exactKey, value: observation },
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+    } catch (e) {
+      if (!conditional(e)) throw e;
+      const found = await this.client.send(
+        new GetCommand({
+          TableName: this.tableName,
+          Key: exactKey,
+          ConsistentRead: true,
+        }),
+      );
+      const existing = found.Item?.["value"] as
+        CompletedEventResultObservation | undefined;
+      if (
+        !existing ||
+        stableResolvedReplay(existing) !== stableResolvedReplay(observation)
+      )
+        throw new ResultReplayConflictError("result-exact-index-conflict");
+      observation = existing;
+    }
     if (current && compareResultAuthority(observation, current) <= 0)
       return { history, current: "stale", observation };
     try {
@@ -157,6 +187,30 @@ export class DynamoResultRepository implements ResultRepository {
     return (
       (v.Item?.["value"] as CompletedEventResultObservation | undefined) ?? null
     );
+  }
+  async exact(eventId: string, resultObservationId: string) {
+    if (!/^result:[a-f0-9]{64}$/.test(resultObservationId))
+      throw new ResultReplayConflictError("result-id-invalid");
+    const found = await this.client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: {
+          pk: `RESULT_EXACT#${eventId}`,
+          sk: resultObservationId,
+        },
+        ConsistentRead: true,
+      }),
+    );
+    const value = found.Item?.["value"] as
+      CompletedEventResultObservation | undefined;
+    if (!value) return null;
+    const normalized = normalizeCompletedResult(value);
+    if (
+      normalized.id !== resultObservationId ||
+      normalized.canonicalEventId !== eventId
+    )
+      throw new ResultReplayConflictError("result-exact-index-conflict");
+    return normalized;
   }
   async historyPage(
     eventId: string,

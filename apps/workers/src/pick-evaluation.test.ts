@@ -193,6 +193,13 @@ describe("pick evaluation service", () => {
     expect(second.terminal === "evaluation" && second.outcome).toBe(
       "duplicate",
     );
+    if (first.terminal !== "evaluation") throw new Error("expected evaluation");
+    expect(first.pair.evaluation.manifest.gradingTerms).toEqual({
+      schemaVersion: "1",
+      canonicalEventVersion: 1,
+      participants: ["away", "home"],
+      market: { kind: "moneyline", outcomeCount: 2, resultScope: "full-event" },
+    });
   });
   it("canonicalizes selection order and binds the complete evidence vectors", async () => {
     const fixture = service();

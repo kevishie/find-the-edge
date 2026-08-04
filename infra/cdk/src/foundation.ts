@@ -517,6 +517,7 @@ export class FoundationStack extends Stack {
           "dynamodb:GetItem",
           "dynamodb:Query",
           "dynamodb:PutItem",
+          "dynamodb:TransactWriteItems",
         ],
         resources: [table.tableArn],
       }),
@@ -858,6 +859,25 @@ export class FoundationStack extends Stack {
         comparisonOperator:
           ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       }),
+      ...[
+        ["PaperGradingFailuresAlarm", "PaperGradingFailed"],
+        ["PaperGradingUnresolvedAlarm", "PaperGradingUnresolved"],
+        ["PaperGradingRegradesAlarm", "PaperGradingRegraded"],
+      ].map(
+        ([id, metricName]) =>
+          new Alarm(this, id!, {
+            metric: new Metric({
+              namespace: "FindTheEdge/PaperGrading",
+              metricName: metricName!,
+              statistic: "Sum",
+              period: Duration.minutes(15),
+            }),
+            threshold: 1,
+            evaluationPeriods: 1,
+            comparisonOperator:
+              ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+          }),
+      ),
       new Alarm(this, "UpcomingEventsDlqAlarm", {
         metric: dlq.metricApproximateNumberOfMessagesVisible(),
         threshold: 1,

@@ -264,6 +264,9 @@ importers:
       '@find-the-edge/domain':
         specifier: workspace:*
         version: link:../domain
+      '@find-the-edge/odds':
+        specifier: workspace:*
+        version: link:../odds
     devDependencies:
       vitest:
         specifier: ^4.0.18

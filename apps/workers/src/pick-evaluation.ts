@@ -29,6 +29,7 @@ import {
   type NormalizedAnalysisRequest,
   type StructuredAnalysisModelAdapter,
 } from "@find-the-edge/scouting";
+import { gradingTermsForCandidate } from "@find-the-edge/sports";
 
 export interface PickEvaluationInput {
   readonly request: NormalizedAnalysisRequest;
@@ -381,6 +382,19 @@ export class PickEvaluationService {
       analysisMaturity: analysis.status === "reduced" ? "reduced" : "complete",
       policy: input.evaluationPolicy,
     });
+    const gradingTerms = gradingTermsForCandidate({
+      sportKey: input.request.sportKey,
+      eventVersion: input.eventVersion,
+      participantIds: input.request.participantIds,
+      marketKey: input.request.candidate.marketKey,
+      outcomeStructure: input.request.candidate.outcomeStructure,
+      ...(analysis.candidate.selection.participantId
+        ? { selectedParticipantId: analysis.candidate.selection.participantId }
+        : {}),
+      ...(input.request.candidate.point !== undefined
+        ? { point: input.request.candidate.point }
+        : {}),
+    });
     const evaluationInput: PaperEvaluationInput = {
       manifest: {
         mode: "decision-time",
@@ -390,6 +404,7 @@ export class PickEvaluationService {
         eventId: input.request.eventId,
         marketKey: input.request.candidate.marketKey,
         selectionKey: candidateSelectionKey,
+        ...(gradingTerms ? { gradingTerms } : {}),
         offeredOdds: {
           partitionKey: offeredSnapshot.partitionKey,
           sortKey: offeredSnapshot.sortKey,

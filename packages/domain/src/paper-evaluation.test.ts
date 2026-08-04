@@ -54,6 +54,48 @@ export const manifest = (
 });
 
 describe("paper evaluation domain", () => {
+  it("binds participant order, event version, market structure and scope into identity", () => {
+    const terms = {
+      schemaVersion: "1" as const,
+      canonicalEventVersion: 1,
+      participants: ["away", "home"] as const,
+      market: {
+        kind: "moneyline" as const,
+        outcomeCount: 2 as const,
+        resultScope: "full-event" as const,
+      },
+    };
+    const first = normalizeEvaluationManifest(
+      manifest({ gradingTerms: terms }),
+    );
+    const changed = normalizeEvaluationManifest(
+      manifest({ gradingTerms: { ...terms, participants: ["home", "away"] } }),
+    );
+    expect(first.inputHash).not.toBe(changed.inputHash);
+    expect(first.gradingTerms).toEqual(terms);
+    expect(() =>
+      normalizeEvaluationManifest(
+        manifest({
+          gradingTerms: { ...terms, participants: ["home", "home"] },
+        }),
+      ),
+    ).toThrow("grading-participants-invalid");
+    expect(() =>
+      normalizeEvaluationManifest(
+        manifest({
+          gradingTerms: {
+            ...terms,
+            market: {
+              kind: "spread",
+              selectedParticipantId: "home",
+              point: -1.5,
+              resultScope: "full-event",
+            },
+          },
+        }),
+      ),
+    ).toThrow("grading-market-binding-invalid");
+  });
   it("makes shadow Play auditable without representing a paper bet", () => {
     const pair = createPaperEvaluation({
       manifest: {

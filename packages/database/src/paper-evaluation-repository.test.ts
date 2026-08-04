@@ -95,4 +95,31 @@ describe("MemoryPaperEvaluationRepository", () => {
     expect(copy).not.toBe(one.pair.evaluation);
     expect(copy?.manifest).not.toBe(one.pair.evaluation.manifest);
   });
+  it("indexes only Play paper bets by event with stable bounded pagination", async () => {
+    const repository = new MemoryPaperEvaluationRepository();
+    const play = await repository.persist(paperInput());
+    const noBet = paperInput("no-bet");
+    await repository.persist({
+      ...noBet,
+      manifest: {
+        ...noBet.manifest,
+        thresholds: {
+          ...noBet.manifest.thresholds,
+          minimumExpectedValue: 0.04,
+        },
+      },
+    });
+    expect(
+      await repository.listPaperBetsByEvent({ eventId: "event-1", limit: 1 }),
+    ).toEqual({
+      items: [play.pair.paperBet],
+    });
+    await expect(
+      repository.listPaperBetsByEvent({
+        eventId: "event-1",
+        limit: 1,
+        cursor: `paper-bet:${"0".repeat(64)}`,
+      }),
+    ).rejects.toThrow("paper-bet-event-cursor-invalid");
+  });
 });

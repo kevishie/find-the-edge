@@ -225,6 +225,7 @@ export interface ProviderHealth {
   freshnessSeconds?: number;
   message?: string;
 }
+export * from "./paper-grade.js";
 
 /** Immutable, provider-neutral public betting evidence. Missing values stay missing. */
 export interface BettingSplitObservation {

@@ -42,6 +42,18 @@ describe("DynamoPaperEvaluationRepository", () => {
             "attribute_not_exists(pk) AND attribute_not_exists(sk)",
         },
       },
+      {
+        Put: {
+          TableName: "paper-table",
+          Item: {
+            pk: `PAPER_BETS_BY_EVENT#${intended.evaluation.manifest.eventId}`,
+            sk: intended.paperBet!.paperBetId,
+            value: intended.paperBet,
+          },
+          ConditionExpression:
+            "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        },
+      },
     ]);
   });
 
@@ -51,6 +63,7 @@ describe("DynamoPaperEvaluationRepository", () => {
       .fn()
       .mockRejectedValueOnce(conditionalCancellation())
       .mockResolvedValueOnce({ Item: { value: pair.evaluation } })
+      .mockResolvedValueOnce({ Item: { value: pair.paperBet } })
       .mockResolvedValueOnce({ Item: { value: pair.paperBet } });
     const repository = new DynamoPaperEvaluationRepository(
       { send } as never,
@@ -62,7 +75,7 @@ describe("DynamoPaperEvaluationRepository", () => {
     });
     expect(result.outcome).toBe("duplicate");
     expect(result.pair.evaluation.createdAt).toBe("2026-08-03T21:00:00.000Z");
-    expect(send).toHaveBeenCalledTimes(3);
+    expect(send).toHaveBeenCalledTimes(4);
     for (const call of send.mock.calls.slice(1))
       expect(
         (call[0] as { input: { ConsistentRead: boolean } }).input
@@ -159,5 +172,46 @@ describe("DynamoPaperEvaluationRepository", () => {
     await expect(
       repository.getPaperBet(pair.evaluation.evaluationId),
     ).rejects.toThrow("paper-bet-id-invalid");
+  });
+
+  it("queries a validated event index without Scan and rejects corrupt rows", async () => {
+    const pair = createPaperEvaluation(paperInput());
+    const send = vi.fn().mockResolvedValueOnce({
+      Items: [
+        {
+          pk: "PAPER_BETS_BY_EVENT#event-1",
+          sk: pair.paperBet!.paperBetId,
+          value: pair.paperBet,
+        },
+      ],
+    });
+    const repository = new DynamoPaperEvaluationRepository(
+      { send } as never,
+      "table",
+    );
+    await expect(
+      repository.listPaperBetsByEvent({ eventId: "event-1", limit: 10 }),
+    ).resolves.toEqual({ items: [pair.paperBet] });
+    const query = send.mock.calls[0]![0] as { readonly input: unknown };
+    expect(query.input).toMatchObject({
+      KeyConditionExpression: "pk = :pk",
+    });
+    expect(JSON.stringify(query)).not.toContain("Scan");
+
+    const corrupt = vi.fn().mockResolvedValueOnce({
+      Items: [
+        {
+          pk: "PAPER_BETS_BY_EVENT#event-1",
+          sk: `paper-bet:${"0".repeat(64)}`,
+          value: pair.paperBet,
+        },
+      ],
+    });
+    await expect(
+      new DynamoPaperEvaluationRepository(
+        { send: corrupt } as never,
+        "table",
+      ).listPaperBetsByEvent({ eventId: "event-1", limit: 10 }),
+    ).rejects.toThrow("paper-bet-event-index-corrupt");
   });
 });

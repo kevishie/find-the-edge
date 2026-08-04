@@ -319,6 +319,10 @@ export interface ResultRepository {
   current(
     canonicalEventId: string,
   ): Promise<CompletedEventResultObservation | null>;
+  exact(
+    canonicalEventId: string,
+    resultObservationId: string,
+  ): Promise<CompletedEventResultObservation | null>;
   historyPage(
     canonicalEventId: string,
     limit: number,
@@ -446,6 +450,14 @@ export class MemoryResultRepository implements ResultRepository {
   current(eventId: string) {
     const v = this.#current.get(eventId);
     return Promise.resolve(v ? structuredClone(v) : null);
+  }
+  exact(eventId: string, resultObservationId: string) {
+    if (!/^result:[a-f0-9]{64}$/.test(resultObservationId))
+      return Promise.reject(new ResultValidationError("result-id-invalid"));
+    const value = this.#history.get(resultObservationId);
+    return Promise.resolve(
+      value?.canonicalEventId === eventId ? structuredClone(value) : null,
+    );
   }
   async historyPage(eventId: string, limit: number, cursor?: string) {
     await Promise.resolve();

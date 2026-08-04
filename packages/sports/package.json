@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@find-the-edge/domain": "workspace:*"
+    "@find-the-edge/domain": "workspace:*",
+    "@find-the-edge/odds": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^4.0.18"

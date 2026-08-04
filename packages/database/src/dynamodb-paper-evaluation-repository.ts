@@ -1,5 +1,6 @@
 import {
   GetCommand,
+  QueryCommand,
   TransactWriteCommand,
   type DynamoDBDocumentClient,
 } from "@aws-sdk/lib-dynamodb";
@@ -10,11 +11,13 @@ import {
   assertPaperBetId,
   normalizePaperBetRecord,
   normalizePaperEvaluationRecord,
+  stablePaperEvaluationValue,
   type PaperBetRecord,
   type PaperEvaluationInput,
   type PaperEvaluationRecord,
 } from "@find-the-edge/domain";
 import {
+  PaperEvaluationReplayConflictError,
   verifyPaperEvaluationReplay,
   type PaperEvaluationRepository,
   type PaperEvaluationPersistResult,
@@ -71,6 +74,18 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
                   "attribute_not_exists(pk) AND attribute_not_exists(sk)",
               },
             },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: {
+                  pk: `PAPER_BETS_BY_EVENT#${intended.evaluation.manifest.eventId}`,
+                  sk: intended.paperBet.paperBetId,
+                  value: intended.paperBet,
+                },
+                ConditionExpression:
+                  "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
           ]
         : []),
     ];
@@ -84,6 +99,28 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
         this.getPaperBet(`paper-bet:${intended.evaluation.inputHash}`),
       ]);
       const pair = verifyPaperEvaluationReplay(intended, evaluation, paperBet);
+      if (pair.paperBet) {
+        const indexed = await this.client.send(
+          new GetCommand({
+            TableName: this.tableName,
+            Key: {
+              pk: `PAPER_BETS_BY_EVENT#${pair.evaluation.manifest.eventId}`,
+              sk: pair.paperBet.paperBetId,
+            },
+            ConsistentRead: true,
+          }),
+        );
+        const indexedItem = indexed.Item as Record<string, unknown> | undefined;
+        const value = indexedItem?.["value"];
+        if (
+          !value ||
+          stablePaperEvaluationValue(normalizePaperBetRecord(value)) !==
+            stablePaperEvaluationValue(pair.paperBet)
+        )
+          throw new PaperEvaluationReplayConflictError(
+            "paper-bet-event-index-conflict",
+          );
+      }
       return { outcome: "duplicate", pair };
     }
   }
@@ -116,5 +153,73 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
     const value = response.Item?.["value"] as
       PaperEvaluationRecord | PaperBetRecord | undefined;
     return value ?? null;
+  }
+  async listPaperBetsByEvent(input: {
+    readonly eventId: string;
+    readonly limit: number;
+    readonly cursor?: string;
+  }) {
+    if (
+      !input.eventId ||
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > 100
+    )
+      throw new Error("paper-bet-event-query-invalid");
+    if (input.cursor !== undefined) assertPaperBetId(input.cursor);
+    const pk = `PAPER_BETS_BY_EVENT#${input.eventId}`;
+    if (input.cursor !== undefined) {
+      const cursorItem = await this.client.send(
+        new GetCommand({
+          TableName: this.tableName,
+          Key: { pk, sk: input.cursor },
+          ConsistentRead: true,
+        }),
+      );
+      const cursorRecord = cursorItem.Item as
+        Record<string, unknown> | undefined;
+      const cursorValue = cursorRecord?.["value"];
+      if (
+        cursorRecord?.["sk"] !== undefined &&
+        cursorRecord["sk"] !== input.cursor
+      )
+        throw new Error("paper-bet-event-cursor-invalid");
+      if (
+        cursorValue === undefined ||
+        normalizePaperBetRecord(cursorValue).paperBetId !== input.cursor
+      )
+        throw new Error("paper-bet-event-cursor-invalid");
+    }
+    const response = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: "pk = :pk",
+        ExpressionAttributeValues: {
+          ":pk": pk,
+        },
+        Limit: input.limit,
+        ConsistentRead: true,
+        ...(input.cursor
+          ? {
+              ExclusiveStartKey: {
+                pk,
+                sk: input.cursor,
+              },
+            }
+          : {}),
+      }),
+    );
+    const items = (response.Items ?? []).map((item) => {
+      const value = normalizePaperBetRecord(item["value"]);
+      if (item["pk"] !== pk || item["sk"] !== value.paperBetId)
+        throw new Error("paper-bet-event-index-corrupt");
+      return value;
+    });
+    return {
+      items,
+      ...(response.LastEvaluatedKey?.["sk"]
+        ? { nextCursor: String(response.LastEvaluatedKey["sk"]) }
+        : {}),
+    };
   }
 }

@@ -22,6 +22,14 @@ export interface PaperEvaluationRepository {
   persist(input: PaperEvaluationInput): Promise<PaperEvaluationPersistResult>;
   getEvaluation(evaluationId: string): Promise<PaperEvaluationRecord | null>;
   getPaperBet(paperBetId: string): Promise<PaperBetRecord | null>;
+  listPaperBetsByEvent(input: {
+    readonly eventId: string;
+    readonly limit: number;
+    readonly cursor?: string;
+  }): Promise<{
+    readonly items: readonly PaperBetRecord[];
+    readonly nextCursor?: string;
+  }>;
 }
 
 const retryValue = (value: PaperEvaluationRecord | PaperBetRecord) => {
@@ -64,6 +72,7 @@ export const verifyPaperEvaluationReplay = (
 export class MemoryPaperEvaluationRepository implements PaperEvaluationRepository {
   private readonly evaluations = new Map<string, PaperEvaluationRecord>();
   private readonly paperBets = new Map<string, PaperBetRecord>();
+  private readonly eventPaperBets = new Map<string, Set<string>>();
 
   persist(input: PaperEvaluationInput): Promise<PaperEvaluationPersistResult> {
     try {
@@ -86,6 +95,12 @@ export class MemoryPaperEvaluationRepository implements PaperEvaluationRepositor
       const stored = clonePaperEvaluationValue(intended);
       this.evaluations.set(key, stored.evaluation);
       if (stored.paperBet) this.paperBets.set(paperBetKey, stored.paperBet);
+      if (stored.paperBet) {
+        const eventId = stored.evaluation.manifest.eventId;
+        const ids = this.eventPaperBets.get(eventId) ?? new Set<string>();
+        ids.add(stored.paperBet.paperBetId);
+        this.eventPaperBets.set(eventId, ids);
+      }
       return Promise.resolve({
         outcome: "created",
         pair: clonePaperEvaluationValue(stored),
@@ -127,5 +142,36 @@ export class MemoryPaperEvaluationRepository implements PaperEvaluationRepositor
         error instanceof Error ? error : new Error("paper-bet-read-failed"),
       );
     }
+  }
+  async listPaperBetsByEvent(input: {
+    readonly eventId: string;
+    readonly limit: number;
+    readonly cursor?: string;
+  }) {
+    await Promise.resolve();
+    if (
+      !input.eventId ||
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > 100
+    )
+      throw new Error("paper-bet-event-query-invalid");
+    const ids = [...(this.eventPaperBets.get(input.eventId) ?? [])].sort();
+    const start =
+      input.cursor === undefined
+        ? 0
+        : ids.findIndex((id) => id === input.cursor) + 1;
+    if (input.cursor !== undefined && start === 0)
+      throw new Error("paper-bet-event-cursor-invalid");
+    const page = ids.slice(start, start + input.limit);
+    const items = page.map((paperBetId) =>
+      clonePaperEvaluationValue(this.paperBets.get(paperBetId)!),
+    );
+    return {
+      items,
+      ...(start + page.length < ids.length
+        ? { nextCursor: page[page.length - 1]! }
+        : {}),
+    };
   }
 }

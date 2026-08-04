@@ -132,6 +132,12 @@ export class CompletedResultOrchestrator {
     readonly events: Pick<EventIngestionStore, "resolveExactCanonicalBinding">,
     readonly results: ResultRepository,
     readonly participants: ExactResultParticipantResolver,
+    readonly paperGrading?: {
+      gradeCurrentResult(
+        eventId: string,
+        resultObservationId: string,
+      ): Promise<{ readonly failed: number }>;
+    },
   ) {}
   async execute(rawCommand: unknown): Promise<CompletedResultRun> {
     const counters: CompletedResultCounters = {
@@ -418,6 +424,17 @@ export class CompletedResultOrchestrator {
             retrievedAt: page.retrievedAt,
             sourceProvenance: `${providerId}:results`,
           });
+          if (
+            this.paperGrading &&
+            (await this.results.current(binding.id))?.id ===
+              outcome.observation.id
+          ) {
+            const grading = await this.paperGrading.gradeCurrentResult(
+              binding.id,
+              outcome.observation.id,
+            );
+            if (grading.failed > 0) throw new Error("paper-grading-failed");
+          }
           if (outcome.history === "duplicate") addCounter("duplicate");
           if (outcome.history === "duplicate" && outcome.current === "stale")
             continue;

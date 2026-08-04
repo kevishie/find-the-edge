@@ -50,6 +50,8 @@ export interface EvaluationManifestInput {
   readonly eventId: string;
   readonly marketKey: string;
   readonly selectionKey: string;
+  /** Versioned settlement terms captured at decision time. Absent only on legacy records. */
+  readonly gradingTerms?: PaperGradingTerms;
   readonly offeredOdds: ImmutableOddsEvidenceRef;
   readonly comparisonEvidence: readonly ImmutableOddsEvidenceRef[];
   readonly comparisonOutcomeEvidence?: readonly ImmutableOddsEvidenceRef[];
@@ -75,6 +77,23 @@ export interface EvaluationManifestInput {
     readonly manifestSchema: PaperVersionRef;
   };
   readonly provenanceReferences: readonly string[];
+}
+export interface PaperGradingTerms {
+  readonly schemaVersion: "1";
+  readonly canonicalEventVersion: number;
+  readonly participants: readonly [string, string];
+  readonly market:
+    | {
+        readonly kind: "moneyline";
+        readonly outcomeCount: 2 | 3;
+        readonly resultScope: "full-event" | "regulation";
+      }
+    | {
+        readonly kind: "spread";
+        readonly selectedParticipantId: string;
+        readonly point: number;
+        readonly resultScope: "full-event" | "regulation";
+      };
 }
 export interface NormalizedEvaluationManifest extends EvaluationManifestInput {
   readonly inputHash: string;
@@ -335,11 +354,16 @@ export function normalizeEvaluationManifest(
   const expectedManifestKeys = hasConsensus
     ? [...manifestKeys, "comparisonOutcomeEvidence", "consensusProvenance"]
     : manifestKeys;
+  const withGrading = Object.hasOwn(record, "gradingTerms");
   exact(
     record,
     Object.hasOwn(record, "execution")
-      ? [...expectedManifestKeys, "execution"]
-      : expectedManifestKeys,
+      ? [
+          ...expectedManifestKeys,
+          "execution",
+          ...(withGrading ? ["gradingTerms"] : []),
+        ]
+      : [...expectedManifestKeys, ...(withGrading ? ["gradingTerms"] : [])],
     "manifest",
   );
   if (record.mode !== "decision-time" && record.mode !== "backtest")
@@ -513,6 +537,75 @@ export function normalizeEvaluationManifest(
   const completeness = record.evidenceCompleteness;
   if (!["complete", "partial", "insufficient"].includes(String(completeness)))
     throw new PaperEvaluationInputError("evidence-completeness-invalid");
+  let gradingTerms: PaperGradingTerms | undefined;
+  if (withGrading) {
+    const terms = own(record.gradingTerms, "grading-terms");
+    exact(
+      terms,
+      ["schemaVersion", "canonicalEventVersion", "participants", "market"],
+      "grading-terms",
+    );
+    if (
+      terms.schemaVersion !== "1" ||
+      !Number.isSafeInteger(terms.canonicalEventVersion) ||
+      Number(terms.canonicalEventVersion) < 1
+    )
+      throw new PaperEvaluationInputError("grading-terms-version-invalid");
+    if (!Array.isArray(terms.participants) || terms.participants.length !== 2)
+      throw new PaperEvaluationInputError("grading-participants-invalid");
+    const participants = terms.participants.map((participant, index) =>
+      id(participant, `grading-participant-${index}`),
+    ) as [string, string];
+    if (participants[0] === participants[1])
+      throw new PaperEvaluationInputError("grading-participants-invalid");
+    const market = own(terms.market, "grading-market");
+    if (market.kind === "moneyline") {
+      exact(market, ["kind", "outcomeCount", "resultScope"], "grading-market");
+      if (
+        ![2, 3].includes(Number(market.outcomeCount)) ||
+        !["full-event", "regulation"].includes(String(market.resultScope))
+      )
+        throw new PaperEvaluationInputError("grading-market-invalid");
+      gradingTerms = {
+        schemaVersion: "1",
+        canonicalEventVersion: Number(terms.canonicalEventVersion),
+        participants,
+        market: {
+          kind: "moneyline",
+          outcomeCount: market.outcomeCount as 2 | 3,
+          resultScope: market.resultScope as "full-event" | "regulation",
+        },
+      };
+    } else if (market.kind === "spread") {
+      exact(
+        market,
+        ["kind", "selectedParticipantId", "point", "resultScope"],
+        "grading-market",
+      );
+      const selectedParticipantId = id(
+        market.selectedParticipantId,
+        "grading-selected-participant",
+      );
+      if (
+        !participants.includes(selectedParticipantId) ||
+        !["full-event", "regulation"].includes(String(market.resultScope))
+      )
+        throw new PaperEvaluationInputError("grading-market-invalid");
+      gradingTerms = {
+        schemaVersion: "1",
+        canonicalEventVersion: Number(terms.canonicalEventVersion),
+        participants,
+        market: {
+          kind: "spread",
+          selectedParticipantId,
+          point: finite(market.point, "grading-spread-point", -1000, 1000),
+          resultScope: market.resultScope as "full-event" | "regulation",
+        },
+      };
+    } else throw new PaperEvaluationInputError("grading-market-invalid");
+    if (gradingTerms.market.kind !== record.marketKey)
+      throw new PaperEvaluationInputError("grading-market-binding-invalid");
+  }
   const normalizedBase: EvaluationManifestInput = {
     mode: record.mode,
     ...(execution ? { execution } : {}),
@@ -521,6 +614,7 @@ export function normalizeEvaluationManifest(
     eventId: id(record.eventId, "event-id"),
     marketKey: id(record.marketKey, "market-key"),
     selectionKey: id(record.selectionKey, "selection-key"),
+    ...(gradingTerms ? { gradingTerms } : {}),
     offeredOdds: evidence(record.offeredOdds, "offered-odds"),
     comparisonEvidence: uniqueComparisons,
     ...(hasConsensus

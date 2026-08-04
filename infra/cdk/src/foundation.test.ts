@@ -90,6 +90,9 @@ describe("foundation CDK app", () => {
     expect(resultPolicyText).not.toContain("dynamodb:Scan");
     expect(resultPolicyText).not.toContain("secretsmanager");
     expect(rendered).toContain("dynamodb:TransactWriteItems");
+    expect(rendered).toContain("PaperGradingFailuresAlarm");
+    expect(rendered).toContain("PaperGradingUnresolvedAlarm");
+    expect(rendered).toContain("PaperGradingRegradesAlarm");
     expect(rendered).not.toContain("dynamodb:Scan");
   });
 
@@ -457,7 +460,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 20);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 23);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });
