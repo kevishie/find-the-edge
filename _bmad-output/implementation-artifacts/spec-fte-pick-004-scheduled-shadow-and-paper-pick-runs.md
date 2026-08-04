@@ -2,10 +2,11 @@
 title: 'FTE-PICK-004 Scheduled Shadow and Paper-Pick Runs'
 type: 'feature'
 created: '2026-08-04'
-status: 'in-review'
+status: 'done'
 baseline_revision: '75448e3'
+final_revision: 'd305789'
 review_loop_iteration: 1
-followup_review_recommended: false
+followup_review_recommended: true
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-0B-context.md'
   - '{project-root}/_bmad-output/implementation-artifacts/spec-fte-pick-003-ai-analysis-and-deterministic-ev-gate.md'
@@ -104,3 +105,30 @@ The first deployed configuration remains disabled and uses the production-disabl
 - Focused/full suites passed: config 28, domain 41, database 162, workers 123, infrastructure 8.
 - `pnpm check` passed the repository formatting, lint, boundaries, typecheck, test, and build gates; it is rerun after every final review correction before handoff.
 - Infrastructure synthesis proves the EventBridge rule and production model capability are disabled, the workflow is Standard with retry/catch, and worker/DLQ/IAM/alarm resources contain no `dynamodb:Scan` permission or public trigger.
+
+## Auto Run Result
+
+### Summary
+
+Implemented a disabled-by-default scheduled shadow/paper evaluation system with exact allowlists, deterministic run/item identities, durable candidate manifests, generation-wide limits, retry-safe PICK-003 execution, and AWS orchestration that cannot initiate paid work without a separate approved configuration release.
+
+### Review Findings
+
+- Patched 14 adversarial findings, including generation-global budgets/events, usage reconciliation, direct claims, expired-lease transfer, final policy rereads, paginated Dynamo access, real runtime composition, replayable failure commands, cadence binding, transition guards, and alarm telemetry.
+- Deferred: 0.
+- Rejected: 0.
+- Follow-up review recommended: true because fixes materially changed concurrency, budget, persistence, and AWS failure behavior.
+
+### Verification
+
+- Config: 28 tests passed.
+- Domain: 41 tests passed.
+- Database: 162 tests passed.
+- Workers: 123 tests passed.
+- Infrastructure: 8 tests passed.
+- `pnpm check`: passed.
+- `git diff --check`: passed.
+
+### Residual Risks
+
+- Production model capability, non-empty allowlist, and schedule enablement remain deliberately unavailable until a separately approved configuration and credential release.
