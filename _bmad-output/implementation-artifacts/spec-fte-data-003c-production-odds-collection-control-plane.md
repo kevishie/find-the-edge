@@ -2,8 +2,9 @@
 title: 'FTE-DATA-003C Production Odds Collection Control Plane'
 type: 'feature'
 created: '2026-08-03T20:30:00-04:00'
-status: 'in-review'
+status: 'done'
 baseline_revision: '845a1c8'
+final_revision: '227a8c8'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
