@@ -66,7 +66,7 @@ const providerPolicy = (
   markets:
     leagueKey === "mlb"
       ? ["moneyline", "spread", "total"]
-      : ["three_way_moneyline", "spread", "total"],
+      : ["moneyline", "spread", "total"],
   providers: [
     {
       providerId: "sharpapi",
@@ -157,15 +157,16 @@ export const defaultFeedCoveragePolicies: readonly FeedCoverageRegistration[] =
   deepFreeze([
     ...enabledLeague("mlb" as SportKey, "mlb", "Major League Baseball", [
       "moneyline",
-      "run_line",
+      "spread",
     ]),
     ...enabledLeague("soccer" as SportKey, "mls", "Major League Soccer", [
-      "three_way_moneyline",
+      "moneyline",
+      "spread",
     ]),
     ...plannedLeague("tennis" as SportKey, "atp", "ATP Tour"),
     ...plannedLeague("nfl" as SportKey, "nfl", "National Football League"),
     ...plannedLeague(
-      "basketball" as SportKey,
+      "nba" as SportKey,
       "nba",
       "National Basketball Association",
     ),

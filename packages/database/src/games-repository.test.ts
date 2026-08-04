@@ -49,7 +49,7 @@ const current = (
   source: EventDisplayDto,
   selectionKey: string,
   selectionLabel: string,
-  marketKey = source.sportKey === "mlb" ? "moneyline" : "three_way_moneyline",
+  marketKey = "moneyline",
   sportsbookId = "draftkings",
   observedAt = "2026-08-01T12:00:00.000Z",
   point?: number,

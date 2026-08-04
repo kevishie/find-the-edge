@@ -229,8 +229,7 @@ const validGame = (
     !odds["selections"].every(validSelection)
   )
     return false;
-  const expectedMarket =
-    filter.sport === "mlb" ? "moneyline" : "three_way_moneyline";
+  const expectedMarket = "moneyline";
   const expectedSelections =
     filter.sport === "mlb"
       ? ([

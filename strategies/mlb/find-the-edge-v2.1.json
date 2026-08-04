@@ -3,7 +3,7 @@
   "sport": "mlb",
   "version": "2.1.0",
   "approvedMarkets": ["moneyline", "pitcher_strikeouts"],
-  "prohibitedMarkets": ["run_line", "alternate_run_line"],
+  "prohibitedMarkets": ["spread", "alternate_spread"],
   "minimumEv": 0.02,
   "minimumComparisonBooks": 3,
   "maximumPriceAgeMinutes": 15,

@@ -1,7 +1,12 @@
 import type { SportKey } from "@find-the-edge/domain";
 
 import { mlbModule } from "./mlb/definition";
-import { ncaafModule, nflModule, tennisModule } from "./planned/definitions";
+import {
+  nbaModule,
+  ncaafModule,
+  nflModule,
+  tennisModule,
+} from "./planned/definitions";
 import type { SportModule } from "./shared/contracts";
 import { soccerModule } from "./soccer/definition";
 
@@ -32,6 +37,7 @@ for (const module of [
   soccerModule,
   tennisModule,
   nflModule,
+  nbaModule,
   ncaafModule,
 ]) {
   sportRegistry.register(module);

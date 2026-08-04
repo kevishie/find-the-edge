@@ -36,7 +36,7 @@ export interface SharpApiLeague {
   readonly sportKey: SportKey;
   readonly leagueKey: "mlb" | "mls";
   readonly providerLeague: "MLB" | "MLS";
-  readonly moneylineMarket: "moneyline" | "three_way_moneyline";
+  readonly moneylineMarket: "moneyline";
 }
 
 export const sharpApiLeagues: readonly SharpApiLeague[] = [
@@ -50,7 +50,7 @@ export const sharpApiLeagues: readonly SharpApiLeague[] = [
     sportKey: "soccer" as SportKey,
     leagueKey: "mls",
     providerLeague: "MLS",
-    moneylineMarket: "three_way_moneyline",
+    moneylineMarket: "moneyline",
   },
 ];
 
@@ -64,7 +64,7 @@ export interface SharpApiAccount {
 
 export interface SharpApiPrice {
   readonly providerPriceId: string;
-  readonly marketKey: "moneyline" | "three_way_moneyline" | "spread" | "total";
+  readonly marketKey: "moneyline" | "spread" | "total";
   readonly providerMarketType: string;
   readonly providerMarketId: string;
   readonly selectionKey: "away" | "draw" | "home" | "over" | "under";
@@ -508,6 +508,18 @@ export function parseSharpApiSchedulePage(
   const events: SharpApiScheduleEvent[] = [];
   const ids = new Set<string>();
   for (const value of input["data"]) {
+    // Sharp includes futures/binary propositions in this catalogue. Those
+    // records intentionally have a missing participant and are not games.
+    if (
+      record(value) &&
+      (value["away_team"] === "" ||
+        value["home_team"] === "" ||
+        value["away_team"] === null ||
+        value["home_team"] === null ||
+        value["away_team"] === undefined ||
+        value["home_team"] === undefined)
+    )
+      continue;
     if (
       !record(value) ||
       !canonical(value["id"]) ||

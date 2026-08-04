@@ -106,19 +106,19 @@ describe("games client", () => {
             selections: [
               {
                 ...payload.items[0]!.odds.selections[0],
-                marketKey: "three_way_moneyline",
+                marketKey: "moneyline",
                 selectionLabel: "Miami",
               },
               {
                 ...payload.items[0]!.odds.selections[0],
-                marketKey: "three_way_moneyline",
+                marketKey: "moneyline",
                 selectionKey: "draw",
                 selectionLabel: "Draw",
                 americanOdds: 220,
               },
               {
                 ...payload.items[0]!.odds.selections[0],
-                marketKey: "three_way_moneyline",
+                marketKey: "moneyline",
                 selectionKey: "home",
                 selectionLabel: "Atlanta",
                 americanOdds: 175,

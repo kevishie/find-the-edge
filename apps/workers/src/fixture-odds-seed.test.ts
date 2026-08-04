@@ -199,7 +199,7 @@ describe("fixture odds seed", () => {
           state: "available",
           selections: [
             {
-              marketKey: "three_way_moneyline",
+              marketKey: "moneyline",
               selectionKey: "away",
               selectionLabel: "Miami",
               sportsbookId: "fixture-book",
@@ -209,7 +209,7 @@ describe("fixture odds seed", () => {
               retrievedAt: "2026-08-01T12:02:00.000Z",
             },
             {
-              marketKey: "three_way_moneyline",
+              marketKey: "moneyline",
               selectionKey: "draw",
               selectionLabel: "Draw",
               sportsbookId: "fixture-book",
@@ -219,7 +219,7 @@ describe("fixture odds seed", () => {
               retrievedAt: "2026-08-01T12:02:00.000Z",
             },
             {
-              marketKey: "three_way_moneyline",
+              marketKey: "moneyline",
               selectionKey: "home",
               selectionLabel: "Atlanta",
               sportsbookId: "fixture-book",

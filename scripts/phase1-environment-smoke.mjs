@@ -198,7 +198,7 @@ export function assertLiveGame(game, sport) {
   if (!Array.isArray(selections)) throw new Error("live game odds are invalid");
   const expected =
     sport === "mlb" ? ["away", "home"] : ["away", "draw", "home"];
-  const market = sport === "mlb" ? "moneyline" : "three_way_moneyline";
+  const market = "moneyline";
   const groups = new Map();
   for (const selection of selections) {
     const group = groups.get(selection.marketKey) ?? [];

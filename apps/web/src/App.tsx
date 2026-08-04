@@ -566,8 +566,7 @@ function GamesExplorer() {
                   selection.marketKey === marketKey &&
                   selection.selectionKey === selectionKey,
               );
-            const moneylineMarket =
-              game.sportKey === "soccer" ? "three_way_moneyline" : "moneyline";
+            const moneylineMarket = "moneyline";
             const book = selections[0];
             const title = game.participants
               .map(({ label }) => label)
@@ -658,7 +657,7 @@ function GamesExplorer() {
                     </tbody>
                   </table>
                 </div>
-                {moneylineMarket === "three_way_moneyline" &&
+                {game.sportKey === "soccer" &&
                   find(moneylineMarket, "draw") && (
                     <div className="draw-price">
                       Draw{" "}
@@ -826,13 +825,10 @@ function SplitsExplorer() {
     market: "spread" | "total" | "moneyline",
     selectionKey: "away" | "home" | "over" | "under" | "draw",
   ) => {
-    const marketKeys =
-      market === "moneyline" ? ["moneyline", "three_way_moneyline"] : [market];
     return [...splits]
       .filter(
         (split) =>
-          marketKeys.includes(split.marketKey) &&
-          split.selectionKey === selectionKey,
+          split.marketKey === market && split.selectionKey === selectionKey,
       )
       .sort(
         (left, right) =>

@@ -335,7 +335,27 @@ function validateRequest(input: unknown): FeedCoverageRequest {
       "Non-odds requests cannot include market filters",
     );
   }
-  return input as FeedCoverageRequest;
+  const sportKey = request["sportKey"] as SportKey;
+  const canonicalMarkets = markets
+    ? [
+        ...new Set(
+          markets.map((market) =>
+            sportKey === ("mlb" as SportKey) && market === "run_line"
+              ? "spread"
+              : sportKey === ("soccer" as SportKey) &&
+                  market === "three_way_moneyline"
+                ? "moneyline"
+                : market,
+          ),
+        ),
+      ]
+    : undefined;
+  return {
+    sportKey,
+    leagueKey: request["leagueKey"] as string,
+    capability,
+    ...(canonicalMarkets ? { marketKeys: canonicalMarkets } : {}),
+  };
 }
 
 function clonePolicy(
@@ -600,13 +620,13 @@ export const fixtureDevelopmentProvider: ProviderDescriptor = deepFreeze({
         sportKey: "mlb" as SportKey,
         leagueKey: "mlb",
         capabilities: ["schedule", "odds", "results"],
-        marketKeys: ["moneyline", "run_line"],
+        marketKeys: ["moneyline", "spread"],
       },
       {
         sportKey: "soccer" as SportKey,
         leagueKey: "mls",
         capabilities: ["schedule", "odds", "results"],
-        marketKeys: ["three_way_moneyline"],
+        marketKeys: ["moneyline", "spread"],
       },
     ],
   },

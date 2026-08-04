@@ -52,7 +52,7 @@ const marketSpecifications = (sportKey: string) => {
   if (sportKey === "soccer")
     return [
       {
-        marketKey: "three_way_moneyline",
+        marketKey: "moneyline",
         selectionKeys: ["away", "draw", "home"] as const,
         required: true,
       },

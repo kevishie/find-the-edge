@@ -9,6 +9,8 @@ import type {
   SportKey,
 } from "@find-the-edge/domain";
 
+import type { SportAnalysisPolicy } from "./analysis";
+
 export interface ValidationResult<T = unknown> {
   valid: boolean;
   value?: T;
@@ -112,6 +114,7 @@ export interface SportModule {
   promptTemplateId: string;
   outputSchemaId: string;
   validationSchemaId: string;
+  analysisPolicy: SportAnalysisPolicy;
   ui: UiTerminology;
   validateInput(input: unknown): ValidationResult;
   normalizeEvent(raw: unknown): ValidationResult<Event>;
@@ -119,7 +122,8 @@ export interface SportModule {
   calculateFairPrice(context: EventContext): FairPriceResult[];
   evaluateMarkets(context: EventContext): MarketEvaluation[];
   buildScoutInput(context: EventContext): StructuredScoutInput;
-  validateScoutOutput(output: unknown): ValidationResult<ScoutReport>;
+  /** Legacy non-analysis report validation. Executable analysis uses @find-the-edge/scouting. */
+  validateLegacyScoutReport(output: unknown): ValidationResult<ScoutReport>;
   gradePick(pick: WagerPick, result: EventResult): PickGrade;
 }
 

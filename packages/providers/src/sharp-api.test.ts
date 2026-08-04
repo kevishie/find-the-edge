@@ -90,6 +90,75 @@ describe("SharpAPI activation boundary", () => {
       ),
     ).toThrow("invalid-response");
   });
+  it("ignores futures without discarding valid scheduled matches", () => {
+    const page = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "future-1",
+            league: "mlb",
+            away_team: "",
+            home_team: "World Series Winner",
+            start_time: "2026-10-01T00:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+          {
+            id: "future-2",
+            league: "mlb",
+            away_team: null,
+            home_team: "American League Winner",
+            start_time: "2026-10-01T00:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+          {
+            id: "future-3",
+            league: "mlb",
+            home_team: "National League Winner",
+            start_time: "2026-10-01T00:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+          {
+            id: "game-1",
+            league: "mlb",
+            away_team: "Away",
+            home_team: "Home",
+            start_time: "2026-08-04T20:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagues[0]!,
+      "2026-08-04T12:00:00.000Z" as never,
+    );
+    expect(page.events.map(({ providerEventId }) => providerEventId)).toEqual([
+      "game-1",
+    ]);
+    expect(() =>
+      parseSharpApiSchedulePage(
+        {
+          data: [
+            {
+              id: "malformed-game",
+              league: "mlb",
+              away_team: "Away",
+              home_team: "Home",
+              start_time: "not-an-instant",
+              status: "upcoming",
+              is_live: false,
+            },
+          ],
+          pagination: { has_more: false, next_offset: null },
+        },
+        sharpApiLeagues[0]!,
+        "2026-08-04T12:00:00.000Z" as never,
+      ),
+    ).toThrow("invalid-response");
+  });
   it("keeps unverified coverage explicitly disabled", () => {
     expect(validateSharpApiActivation(disabled).coverage[1]?.reason).toBe(
       "not-entitled",

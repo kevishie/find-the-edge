@@ -86,7 +86,7 @@ describe("FeedCoverageRegistry", () => {
     for (const league of [
       ["tennis", "atp"],
       ["nfl", "nfl"],
-      ["basketball", "nba"],
+      ["nba", "nba"],
       ["soccer", "international"],
     ] as const) {
       for (const capability of ["schedule", "odds", "results"] as const) {
@@ -99,6 +99,46 @@ describe("FeedCoverageRegistry", () => {
         ).toMatchObject({ supported: false, reason: "league-planned" });
       }
     }
+  });
+
+  it("declares canonical spread coverage for MLB and MLS", () => {
+    for (const [sportKey, leagueKey] of [
+      ["mlb", "mlb"],
+      ["soccer", "mls"],
+    ] as const) {
+      expect(
+        defaultFeedCoverageRegistry.resolve({
+          sportKey: sport(sportKey),
+          leagueKey,
+          capability: "odds",
+          marketKeys: ["spread"],
+        }),
+      ).toMatchObject({ supported: true });
+    }
+    const legacy = defaultFeedCoverageRegistry.resolve({
+      sportKey: sport("mlb"),
+      leagueKey: "mlb",
+      capability: "odds",
+      marketKeys: ["run_line"],
+    });
+    expect(legacy.supported).toBe(true);
+    if (!legacy.supported)
+      throw new Error("expected canonical legacy coverage");
+    expect(legacy.supportedMarketKeys).toContain("spread");
+    expect(legacy.supportedMarketKeys).not.toContain("run_line");
+    const legacySoccer = defaultFeedCoverageRegistry.resolve({
+      sportKey: sport("soccer"),
+      leagueKey: "mls",
+      capability: "odds",
+      marketKeys: ["three_way_moneyline"],
+    });
+    expect(legacySoccer.supported).toBe(true);
+    if (!legacySoccer.supported)
+      throw new Error("expected canonical legacy soccer coverage");
+    expect(legacySoccer.supportedMarketKeys).toContain("moneyline");
+    expect(legacySoccer.supportedMarketKeys).not.toContain(
+      "three_way_moneyline",
+    );
   });
 
   it("supports synthetic enabled and disabled leagues with complete policy sets", () => {

@@ -171,6 +171,7 @@ const loadSplits = async (
 
 const completeMainPrices = (
   prices: readonly SharpApiOddsPage["events"][number]["bookmakers"][number]["prices"][number][],
+  leagueKey: SharpApiLeague["leagueKey"],
 ) => {
   const groups = new Map<string, typeof prices>();
   for (const price of prices) {
@@ -187,7 +188,7 @@ const completeMainPrices = (
     const expected =
       marketKey === "total"
         ? ["over", "under"]
-        : marketKey === "three_way_moneyline"
+        : marketKey === "moneyline" && leagueKey === "mls"
           ? ["away", "draw", "home"]
           : ["away", "home"];
     const actual = new Set(group.map((price) => price.selectionKey));
@@ -259,6 +260,7 @@ export async function persistSharpApiOddsPage(
             !price.isPlayerProp &&
             !price.isStalePregamePrice,
         ),
+        league.leagueKey,
       );
       for (const price of main) {
         const canonicalSelectionLabel =

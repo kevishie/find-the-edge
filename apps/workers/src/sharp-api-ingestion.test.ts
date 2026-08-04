@@ -120,7 +120,7 @@ describe("SharpAPI primary ingestion", () => {
                     isStalePregamePrice: false,
                     observedAt: "2026-08-03T23:00:00.000Z" as IsoTimestamp,
                   },
-                  ...(league.moneylineMarket === "three_way_moneyline"
+                  ...(league.leagueKey === "mls"
                     ? [
                         {
                           providerPriceId: `${eventId}-price-draw`,

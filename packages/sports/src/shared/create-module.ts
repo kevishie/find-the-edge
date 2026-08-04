@@ -20,7 +20,7 @@ type ModuleDefinition = Omit<
   | "calculateFairPrice"
   | "evaluateMarkets"
   | "buildScoutInput"
-  | "validateScoutOutput"
+  | "validateLegacyScoutReport"
   | "gradePick"
 >;
 
@@ -66,7 +66,7 @@ export function createDeclarativeSportModule(
         evidence: [],
       };
     },
-    validateScoutOutput(output: unknown): ValidationResult<ScoutReport> {
+    validateLegacyScoutReport(output: unknown): ValidationResult<ScoutReport> {
       if (typeof output !== "object" || output === null) {
         return { valid: false, errors: ["Scout output must be an object"] };
       }

@@ -18,6 +18,7 @@ describe("sport registry", () => {
       ["soccer", "experimental"],
       ["tennis", "planned"],
       ["nfl", "planned"],
+      ["nba", "planned"],
       ["ncaaf", "planned"],
     ]);
   });
@@ -48,7 +49,7 @@ describe("strategy validation", () => {
         sportKey: mlbModule.key,
         version: "1.0.0",
         approvedMarketKeys: ["moneyline"],
-        prohibitedMarketKeys: ["run_line"],
+        prohibitedMarketKeys: ["spread"],
         minimumEv: 0.02,
         minimumComparisonBooks: 3,
         maximumPriceAgeMinutes: 15,

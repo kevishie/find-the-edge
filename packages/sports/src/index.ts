@@ -3,6 +3,7 @@ export * from "./mlb/result";
 export * from "./planned/definitions";
 export * from "./registry";
 export * from "./shared/contracts";
+export * from "./shared/analysis";
 export * from "./shared/strategy";
 export * from "./soccer/definition";
 export * from "./soccer/result";

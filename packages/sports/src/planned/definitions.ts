@@ -1,6 +1,7 @@
 import type { SportKey } from "@find-the-edge/domain";
 
 import { createDeclarativeSportModule } from "../shared/create-module";
+import { createPlannedAnalysisPolicy } from "../shared/analysis";
 
 function planned(
   keyValue: string,
@@ -49,6 +50,7 @@ function planned(
     promptTemplateId: `sports/${keyValue}@0`,
     outputSchemaId: `scout/${keyValue}@0`,
     validationSchemaId: `sport-input/${keyValue}@0`,
+    analysisPolicy: createPlannedAnalysisPolicy(keyValue, leagues),
     ui: {
       event: keyValue === "tennis" ? "Match" : "Game",
       events: keyValue === "tennis" ? "Matches" : "Games",
@@ -89,6 +91,20 @@ export const nflModule = planned(
     "red-zone",
     "injuries-rest-travel",
     "weather-coaching",
+    "market-movement",
+  ],
+);
+
+export const nbaModule = planned(
+  "nba",
+  "NBA",
+  ["nba"],
+  ["moneyline", "spread", "total", "player_props"],
+  [
+    "player-availability",
+    "rest-travel",
+    "pace-efficiency",
+    "lineup-matchups",
     "market-movement",
   ],
 );

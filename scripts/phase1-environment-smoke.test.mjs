@@ -204,6 +204,34 @@ test("live game proof accepts complete real sportsbook markets and rejects fixtu
     },
   };
   assert.doesNotThrow(() => assertLiveGame(game, "mlb"));
+  const soccer = {
+    ...game,
+    id: "event:soccer:provider-event",
+    odds: {
+      ...game.odds,
+      selections: ["away", "draw", "home"].map((selectionKey) => ({
+        ...game.odds.selections[0],
+        marketKey: "moneyline",
+        selectionKey,
+      })),
+    },
+  };
+  assert.doesNotThrow(() => assertLiveGame(soccer, "soccer"));
+  assert.throws(() =>
+    assertLiveGame(
+      {
+        ...soccer,
+        odds: {
+          ...soccer.odds,
+          selections: soccer.odds.selections.map((selection) => ({
+            ...selection,
+            marketKey: "three_way_moneyline",
+          })),
+        },
+      },
+      "soccer",
+    ),
+  );
   assert.throws(() => assertLiveGame({ ...game, id: "fixture-game" }, "mlb"));
   assert.throws(() =>
     assertLiveGame(

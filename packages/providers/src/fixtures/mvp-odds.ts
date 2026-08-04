@@ -62,27 +62,9 @@ export const mvpFixtureOdds: readonly FixtureOddsSeedEvent[] = [
     sportKey: "soccer" as SportKey,
     leagueKey: "mls",
     prices: [
-      price(
-        "three_way_moneyline",
-        "away",
-        "Miami",
-        145,
-        "2026-08-01T12:02:00.000Z",
-      ),
-      price(
-        "three_way_moneyline",
-        "draw",
-        "Draw",
-        220,
-        "2026-08-01T12:02:00.000Z",
-      ),
-      price(
-        "three_way_moneyline",
-        "home",
-        "Atlanta",
-        175,
-        "2026-08-01T12:02:00.000Z",
-      ),
+      price("moneyline", "away", "Miami", 145, "2026-08-01T12:02:00.000Z"),
+      price("moneyline", "draw", "Draw", 220, "2026-08-01T12:02:00.000Z"),
+      price("moneyline", "home", "Atlanta", 175, "2026-08-01T12:02:00.000Z"),
     ],
   },
 ] as const;

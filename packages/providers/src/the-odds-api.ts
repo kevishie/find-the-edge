@@ -18,7 +18,7 @@ export const theOddsApiDescriptor: ProviderDescriptor = {
         sportKey: "soccer" as SportKey,
         leagueKey: "mls",
         capabilities: ["schedule", "odds", "results"],
-        marketKeys: ["three_way_moneyline", "spread", "total"],
+        marketKeys: ["moneyline", "spread", "total"],
       },
     ],
   },
@@ -30,7 +30,7 @@ export interface TheOddsApiLeague {
   readonly sportKey: SportKey;
   readonly leagueKey: "mlb" | "mls";
   readonly providerSportKey: "baseball_mlb" | "soccer_usa_mls";
-  readonly marketKey: "moneyline" | "three_way_moneyline";
+  readonly marketKey: "moneyline";
 }
 export const theOddsApiLeagues: readonly TheOddsApiLeague[] = [
   {
@@ -43,7 +43,7 @@ export const theOddsApiLeagues: readonly TheOddsApiLeague[] = [
     sportKey: "soccer" as SportKey,
     leagueKey: "mls",
     providerSportKey: "soccer_usa_mls",
-    marketKey: "three_way_moneyline",
+    marketKey: "moneyline",
   },
 ];
 
@@ -52,8 +52,7 @@ export interface TheOddsApiBookmaker {
   readonly label: string;
   readonly updatedAt: IsoTimestamp;
   readonly prices: readonly {
-    readonly marketKey:
-      "moneyline" | "three_way_moneyline" | "spread" | "total";
+    readonly marketKey: "moneyline" | "spread" | "total";
     readonly selectionKey: "away" | "draw" | "home" | "over" | "under";
     readonly selectionLabel: string;
     readonly point?: number;

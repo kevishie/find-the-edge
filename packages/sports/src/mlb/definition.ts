@@ -3,6 +3,95 @@ import type { SportKey } from "@find-the-edge/domain";
 import { createDeclarativeSportModule } from "../shared/create-module";
 import type { StrategyDefinition } from "../shared/contracts";
 
+export const mlbAnalysisPolicy = {
+  enabled: true,
+  sportKey: "mlb",
+  leagueKeys: ["mlb"],
+  markets: [
+    {
+      marketKey: "moneyline",
+      displayName: "Moneyline",
+      outcomeStructure: "two-way",
+      selectionKinds: ["participant"],
+      requiresPoint: false,
+      legacyMarketAliases: [],
+    },
+    {
+      marketKey: "spread",
+      displayName: "Run Line",
+      outcomeStructure: "two-way",
+      selectionKinds: ["participant"],
+      requiresPoint: true,
+      pointPolicy: { minimum: -20, maximum: 20, increment: 0.5, precision: 1 },
+      legacyMarketAliases: ["run_line"],
+    },
+  ],
+  evidenceRequirements: [
+    { category: "starting-pitching", level: "hard", maximumAgeMinutes: 120 },
+    {
+      category: "offense-vs-handedness",
+      level: "hard",
+      maximumAgeMinutes: 1440,
+    },
+    { category: "pitch-arsenal", level: "hard", maximumAgeMinutes: 1440 },
+    { category: "bullpen", level: "hard", maximumAgeMinutes: 360 },
+    { category: "defense-baserunning", level: "hard", maximumAgeMinutes: 1440 },
+    { category: "park-weather", level: "hard", maximumAgeMinutes: 120 },
+    {
+      category: "lineup",
+      level: "conditional",
+      enforceWithinMinutes: 60,
+      maximumAgeMinutes: 120,
+    },
+    { category: "market-intelligence", level: "hard", maximumAgeMinutes: 15 },
+    { category: "travel-rest", level: "hard", maximumAgeMinutes: 1440 },
+    { category: "public-betting", level: "optional", maximumAgeMinutes: 30 },
+    { category: "event-identity", level: "optional", maximumAgeMinutes: 1440 },
+  ],
+  probability: {
+    minimum: 0.05,
+    maximum: 0.95,
+    maximumRangeWidth: 0.18,
+    maximumUncertainty: 0.18,
+  },
+  contraindications: [
+    {
+      code: "contraindication:unknown-starting-pitcher",
+      evidenceCategory: "starting-pitching",
+      statuses: ["unavailable", "conflicting"],
+    },
+    {
+      code: "contraindication:conflicting-event-identity",
+      evidenceCategory: "event-identity",
+      statuses: ["conflicting"],
+    },
+    {
+      code: "contraindication:stale-offered-price",
+      evidenceCategory: "market-intelligence",
+      statuses: ["stale"],
+    },
+  ],
+  prohibitedClaims: ["lock", "guarantee", "risk-free", "sharp action proof"],
+  citationRequired: true,
+  versions: {
+    contractVersion: "mlb-ml-spread@1.0.0",
+    promptBundleId: "mlb-analysis",
+    promptBundleVersion: "1",
+    promptSections: {
+      shared: { id: "evidence-safety", version: "1" },
+      sport: { id: "mlb", version: "2" },
+      strategy: { id: "find-the-edge", version: "2.1.0" },
+      analysis: { id: "moneyline-spread", version: "1" },
+    },
+    inputSchemaId: "analysis-input/mlb",
+    inputSchemaVersion: "1",
+    outputSchemaId: "analysis-output/mlb",
+    outputSchemaVersion: "1",
+    modelId: "mlb-v2.1",
+    modelVersion: "2.1.0",
+  },
+} as const;
+
 const key = "mlb" as SportKey;
 
 export const mlbModule = createDeclarativeSportModule({
@@ -38,7 +127,7 @@ export const mlbModule = createDeclarativeSportModule({
       participantScope: "player",
     },
     {
-      key: "run_line",
+      key: "spread",
       displayName: "Run Line",
       outcomeStructure: "two-way",
       liveSupported: false,
@@ -101,9 +190,10 @@ export const mlbModule = createDeclarativeSportModule({
     "ML grades from final winner",
     "Pitcher K props follow sportsbook rules",
   ],
-  promptTemplateId: "sports/mlb@1",
+  promptTemplateId: "sports/mlb@2",
   outputSchemaId: "scout/mlb@1",
   validationSchemaId: "sport-input/mlb@1",
+  analysisPolicy: mlbAnalysisPolicy,
   ui: {
     event: "Game",
     events: "Games",
@@ -119,7 +209,7 @@ export const mlbFindTheEdgeStrategy: StrategyDefinition = {
   sportKey: key,
   version: "2.1.0",
   approvedMarketKeys: ["moneyline", "pitcher_strikeouts"],
-  prohibitedMarketKeys: ["run_line"],
+  prohibitedMarketKeys: ["spread"],
   minimumEv: 0.02,
   minimumComparisonBooks: 3,
   maximumPriceAgeMinutes: 15,

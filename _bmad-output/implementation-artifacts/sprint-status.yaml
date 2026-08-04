@@ -339,7 +339,7 @@ stories:
     league: enabled
     module: analysis-contracts
     priority: P0
-    status: backlog
+    status: review
     dependencies: [FTE-SPORT-004, FTE-DATA-001]
     risk: High
     approvalRequiredBeforeMerge: false
