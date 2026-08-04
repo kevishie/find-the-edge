@@ -101,6 +101,32 @@ describe("odds collection control plane", () => {
     expect(fetchPage).not.toHaveBeenCalled();
     expect([...store.runs.values()][0]?.skipReason).toBe("cadence-not-due");
   });
+  it("honors an operator force refresh even when cadence is not due", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    await store.putCheckpoint({
+      leagueKey: "mlb",
+      providerId: "sharpapi",
+      completedAt: now.toISOString(),
+      nextDueAt: "2026-08-03T13:00:00.000Z",
+      runId: "old",
+    });
+    const fetchPage = vi.fn().mockResolvedValue({
+      items: [{ id: 1 }],
+      gaps: [],
+      quotaCost: 1,
+      digest: "forced",
+    });
+    const result = await runOddsLeague({
+      policy,
+      store,
+      providers: new Map([["sharpapi", provider("sharpapi", fetchPage)]]),
+      committer: { commit: vi.fn().mockResolvedValue(true) },
+      now,
+      forceRefresh: true,
+    });
+    expect(result.status).toBe("completed");
+    expect(fetchPage).toHaveBeenCalledOnce();
+  });
   it("starts a newly claimed lease from the live clock, not invocation time", async () => {
     const store = new MemoryOddsControlPlaneStore();
     const liveClaimTime = new Date("2026-08-03T13:00:00.000Z");

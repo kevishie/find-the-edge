@@ -272,6 +272,7 @@ export async function runOddsLeague(input: {
   readonly providers: ReadonlyMap<string, ControlPlaneProvider>;
   readonly committer: OddsPageCommitter;
   readonly now: Date;
+  readonly forceRefresh?: boolean;
   readonly clock?: () => Date;
   readonly heartbeatIntervalMs?: number;
   readonly nextStart?: string;
@@ -338,6 +339,7 @@ export async function runOddsLeague(input: {
       { league: policy.leagueKey },
     );
   if (
+    !input.forceRefresh &&
     !continuation &&
     checkpoint &&
     Date.parse(checkpoint.nextDueAt) > now.getTime()

@@ -306,6 +306,7 @@ export async function runProductionOddsControlPlane(input: {
   readonly sharpApiKey: string;
   readonly theOddsApiKey: string;
   readonly now?: Date;
+  readonly forceRefresh?: boolean;
   readonly clock?: () => Date;
   readonly metrics?: OddsControlPlaneMetrics;
   readonly fetchSharpSchedule?: typeof fetchSharpApiSchedulePage;
@@ -389,6 +390,7 @@ export async function runProductionOddsControlPlane(input: {
         throw new Error("provider-request-ambiguous");
       scheduleQuotaCost = existingContinuation?.quotaCost ?? 0;
       if (
+        !input.forceRefresh &&
         !existingContinuation &&
         checkpoint &&
         Date.parse(checkpoint.nextDueAt) > now.getTime()
@@ -722,6 +724,7 @@ export async function runProductionOddsControlPlane(input: {
         throw new Error("provider-request-ambiguous");
       scheduleQuotaCost = existingContinuation?.quotaCost ?? 0;
       if (
+        !input.forceRefresh &&
         !existingContinuation &&
         checkpoint &&
         Date.parse(checkpoint.nextDueAt) > now.getTime()
@@ -1181,6 +1184,7 @@ export async function runProductionOddsControlPlane(input: {
           },
         },
         now,
+        ...(input.forceRefresh ? { forceRefresh: true } : {}),
         clock: liveNow,
         ...(providers.size > 0
           ? {}
@@ -1196,6 +1200,7 @@ export async function runProductionOddsControlPlane(input: {
     await input.control.getContinuation(splitCheckpointKey);
   if (splitContinuation?.ambiguousUntil) return results;
   const splitsDue =
+    input.forceRefresh === true ||
     splitContinuation !== null ||
     splitCheckpoint === null ||
     Date.parse(splitCheckpoint.nextDueAt) <= now.getTime();

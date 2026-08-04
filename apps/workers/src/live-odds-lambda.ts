@@ -124,6 +124,7 @@ export const handler = async (event?: unknown) => {
       control: new DynamoOddsControlPlaneStore(client, tableName),
       sharpApiKey,
       theOddsApiKey,
+      ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
       metrics: embeddedOddsControlPlaneMetrics,
     });
     provider = "odds-control-plane";
