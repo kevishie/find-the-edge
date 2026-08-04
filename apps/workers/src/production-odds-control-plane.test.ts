@@ -280,18 +280,78 @@ describe("production odds control-plane composition", () => {
     expect(
       capabilityFailure(new Error("schedule-conflict-metric-pending")),
     ).toBe("conflict-metric-pending");
+    for (const [reason, expected] of [
+      ["run-owned", "provider-recovering"],
+      ["schedule-attempt-reservation-conflict", "transition-conflict"],
+      ["schedule-stored-event-conflict", "stored-event-conflict"],
+      ["schedule-conflict-metric-pending", "conflict-metric-pending"],
+    ] as const)
+      expect(
+        scheduleCapabilityFailure(new Error(reason), "event-reconcile"),
+      ).toBe(expected);
+    for (const reason of [
+      "provider-unavailable",
+      "rate-limited",
+      "unauthorized",
+      "not-entitled",
+      "invalid-response",
+      "quota-reserve",
+      "provider-request-ambiguous",
+      "mapping-quarantine",
+      "pagination-invalid",
+      "transition-conflict",
+    ])
+      expect(
+        scheduleCapabilityFailure(new Error(reason), "schedule-fetch"),
+      ).toBe(reason);
+    for (const reason of [
+      "invalid-event-reconciliation-lock",
+      "event-reconciliation-lock-timeout",
+      "event-reconciliation-ownership-lost",
+      "identity-snapshot-unstable",
+      "dangling-identity-aggregate",
+      "stale-identity-aggregate",
+      "mapping-canonical-missing",
+      "mapping-canonical-scope-mismatch",
+      "event-projection-pointer-missing",
+      "event-projection-pointer-corrupt",
+      "event-projection-active-missing",
+      "event-projection-active-corrupt",
+      "bootstrap-stale",
+      "identity-register-conflict",
+      "identity-snapshot-mismatch",
+      "canonical-revision-provider-limit",
+    ])
+      expect(
+        scheduleCapabilityFailure(new Error(reason), "event-reconcile"),
+      ).toBe(`provider-error-${reason}`);
+    for (const reason of [
+      "invalid-event-reconciliation-lock",
+      "event-reconciliation-lock-timeout",
+      "event-reconciliation-ownership-lost",
+      "mapping-canonical-missing",
+      "event-projection-active-corrupt",
+    ])
+      expect(
+        scheduleCapabilityFailure(new Error(reason), "schedule-fetch"),
+      ).toBe("provider-error-schedule-fetch");
+    for (const error of [
+      new Error("secret provider detail"),
+      new Error("secret mapping detail"),
+      new Error("secret pagination detail"),
+      Object.assign(new Error("secret provider detail"), {
+        name: "SensitiveProviderException",
+      }),
+      "mapping-canonical-missing",
+      { message: "event-reconciliation-lock-timeout" },
+      null,
+    ])
+      expect(scheduleCapabilityFailure(error, "event-reconcile")).toBe(
+        "provider-error-event-reconcile",
+      );
     expect(
-      scheduleCapabilityFailure(
-        new Error("event-reconciliation-lock-timeout"),
-        "event-reconcile",
-      ),
-    ).toBe("provider-error-event-reconciliation-lock-timeout");
-    expect(
-      scheduleCapabilityFailure(
-        new Error("secret provider detail"),
-        "event-reconcile",
-      ),
-    ).toBe("provider-error-event-reconcile");
+      scheduleCapabilityFailure(new Error("unknown"), "raw-secret" as never),
+    ).toBe("provider-error-initialize");
   });
   it("creates per-book market gaps and preserves provider source states", () => {
     const states = [
@@ -1202,9 +1262,27 @@ describe("production odds control-plane composition", () => {
     }
 
     const systemic = await runCase("event-reconciliation-lock-timeout");
-    expect(systemic.results[0]).toMatchObject({ status: "failed" });
-    expect(systemic.results[0]).not.toMatchObject({
-      reason: "schedule-stored-event-conflict",
+    expect(systemic.results[0]).toMatchObject({
+      status: "failed",
+      reason: "schedule-provider-error-event-reconciliation-lock-timeout",
+    });
+    expect(
+      systemic.fetchSharpOdds.mock.calls.some(
+        ([league]) => (league as SharpApiLeague).leagueKey === "mlb",
+      ),
+    ).toBe(false);
+    expect(
+      await systemic.control.getHealth("sharpapi:mlb:schedule"),
+    ).toMatchObject({
+      healthy: false,
+    });
+    expect(
+      [...systemic.control.runs.values()].find(
+        ({ leagueKey }) => leagueKey === "mlb",
+      ),
+    ).toMatchObject({
+      status: "failed",
+      failureReason: "provider-error-event-reconciliation-lock-timeout",
     });
     expect(
       [...systemic.control.gaps.values()].filter(({ reason }) =>

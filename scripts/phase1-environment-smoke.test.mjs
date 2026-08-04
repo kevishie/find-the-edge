@@ -8,6 +8,7 @@ import {
   assertLiveIngestionResourceBinding,
   assertWrongOriginDenied,
   boundedLiveIngestionDiagnostic,
+  isSafeLiveIngestionResult,
   isTransientLiveIngestionSummary,
   liveIngestionRecoveryAction,
   liveOddsInvocationArguments,
@@ -304,6 +305,77 @@ test("live ingestion proof accepts production control-plane summaries", () => {
       ]),
     /mls=completed/,
   );
+});
+
+test("live ingestion proof accepts only the closed reconciliation diagnostic set", () => {
+  const reconciliationReasons = [
+    "invalid-event-reconciliation-lock",
+    "event-reconciliation-lock-timeout",
+    "event-reconciliation-ownership-lost",
+    "identity-snapshot-unstable",
+    "dangling-identity-aggregate",
+    "stale-identity-aggregate",
+    "mapping-canonical-missing",
+    "mapping-canonical-scope-mismatch",
+    "event-projection-pointer-missing",
+    "event-projection-pointer-corrupt",
+    "event-projection-active-missing",
+    "event-projection-active-corrupt",
+    "bootstrap-stale",
+    "identity-register-conflict",
+    "identity-snapshot-mismatch",
+    "canonical-revision-provider-limit",
+  ];
+  const result = (reason, leagueKey = "mlb") => ({
+    leagueKey,
+    status: "failed",
+    reason,
+    pages: 0,
+    quotaCost: 0,
+  });
+  for (const reason of reconciliationReasons)
+    assert.equal(
+      isSafeLiveIngestionResult(result(`schedule-provider-error-${reason}`)),
+      true,
+    );
+  for (const reason of [
+    "schedule-stored-event-conflict",
+    "schedule-conflict-metric-pending",
+  ])
+    assert.equal(isSafeLiveIngestionResult(result(reason)), true);
+
+  const mixed = [
+    { leagueKey: "mlb", status: "completed", pages: 1, quotaCost: 1 },
+    result("schedule-provider-error-event-reconciliation-lock-timeout", "mls"),
+    result("schedule-stored-event-conflict", "epl"),
+    result("schedule-conflict-metric-pending", "liga-mx"),
+    {
+      leagueKey: "uefa-champions-league",
+      status: "skipped",
+      reason: "cadence-not-due",
+      pages: 0,
+      quotaCost: 0,
+    },
+  ];
+  assert.deepEqual(mixed.map(isSafeLiveIngestionResult), [
+    true,
+    true,
+    true,
+    true,
+    true,
+  ]);
+  assert.throws(
+    () => assertLiveIngestionSummary(mixed),
+    /mls=failed:schedule-provider-error-event-reconciliation-lock-timeout/,
+  );
+  for (const reason of [
+    "schedule-provider-error-mapping-canonical-missing-secret",
+    "schedule-provider-error-event-reconciliation-lock-timeout-secret",
+    "schedule-provider-error-SensitiveProviderException",
+    "schedule-stored-event-conflict-secret",
+    "schedule-conflict-metric-pending-secret",
+  ])
+    assert.equal(isSafeLiveIngestionResult(result(reason)), false);
 });
 
 test("live ingestion retries bounded schedule and provider recovery", () => {

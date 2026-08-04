@@ -191,12 +191,49 @@ export function assertLiveIngestionResourceBinding(resources, environment) {
     throw new Error("Live ingestion is not the intended stack Lambda");
 }
 
+export function isSafeLiveIngestionResult(result) {
+  return (
+    result &&
+    typeof result === "object" &&
+    RELEASE_REFRESH_LEAGUES.has(result.leagueKey) &&
+    ["completed", "skipped", "failed"].includes(result.status) &&
+    (result.reason === undefined ||
+      [
+        "provider-error",
+        "provider-unavailable",
+        "rate-limited",
+        "not-entitled",
+        "coverage-missing",
+        "provider-request-ambiguous",
+        "provider-response-unsealed",
+        "quota-reserve",
+        "provider-cooldown",
+        "provider-recovering",
+        "schedule-dependency-failed",
+        "mapping-quarantine",
+        "pagination-invalid",
+        "transition-conflict",
+        "internal-failure",
+        "cadence-not-due",
+      ].includes(result.reason) ||
+      /^schedule-(stored-event-conflict|conflict-metric-pending|provider-error(?:-(?:initialize|health-read|checkpoint-read|ownership-claim|run-start|schedule-fetch|event-reconcile|schedule-page-commit|conflict-page-seal|conflict-page-commit|schedule-metrics|conflict-metrics|conflict-checkpoint|checkpoint-write|health-write|ownership-clear|invalid-event-reconciliation-lock|event-reconciliation-lock-timeout|event-reconciliation-ownership-lost|identity-snapshot-unstable|dangling-identity-aggregate|stale-identity-aggregate|mapping-canonical-missing|mapping-canonical-scope-mismatch|event-projection-pointer-missing|event-projection-pointer-corrupt|event-projection-active-missing|event-projection-active-corrupt|bootstrap-stale|identity-register-conflict|identity-snapshot-mismatch|canonical-revision-provider-limit))?|provider-unavailable|rate-limited|unauthorized|not-entitled|invalid-response|coverage-missing|provider-request-ambiguous|provider-response-unsealed|quota-reserve|provider-cooldown|provider-recovering|schedule-dependency-failed|mapping-quarantine|pagination-invalid|transition-conflict|internal-failure)$/.test(
+        result.reason,
+      )) &&
+    (isOwnershipOverlapResult(result) ||
+      (Number.isSafeInteger(result.pages) && result.pages >= 0)) &&
+    (isOwnershipOverlapResult(result) ||
+      (Number.isSafeInteger(result.quotaCost) && result.quotaCost >= 0))
+  );
+}
+
+const isOwnershipOverlapResult = (result) =>
+  result?.status === "failed" &&
+  result?.reason === "schedule-provider-recovering";
+
 export function assertLiveIngestionSummary(summary) {
   if (Array.isArray(summary)) {
     const expectedLeagues = RELEASE_REFRESH_LEAGUES;
-    const isOwnershipOverlap = (result) =>
-      result?.status === "failed" &&
-      result?.reason === "schedule-provider-recovering";
+    const isOwnershipOverlap = isOwnershipOverlapResult;
     const ownershipOverlapLeagues = summary.map((result) => result?.leagueKey);
     if (
       summary.length === expectedLeagues.size &&
@@ -207,37 +244,7 @@ export function assertLiveIngestionSummary(summary) {
       summary.every(isOwnershipOverlap)
     )
       return;
-    const safeResult = (result) =>
-      result &&
-      typeof result === "object" &&
-      RELEASE_REFRESH_LEAGUES.has(result.leagueKey) &&
-      ["completed", "skipped", "failed"].includes(result.status) &&
-      (result.reason === undefined ||
-        [
-          "provider-error",
-          "provider-unavailable",
-          "rate-limited",
-          "not-entitled",
-          "coverage-missing",
-          "provider-request-ambiguous",
-          "provider-response-unsealed",
-          "quota-reserve",
-          "provider-cooldown",
-          "provider-recovering",
-          "schedule-dependency-failed",
-          "mapping-quarantine",
-          "pagination-invalid",
-          "transition-conflict",
-          "internal-failure",
-          "cadence-not-due",
-        ].includes(result.reason) ||
-        /^schedule-(provider-error(?:-(?:initialize|health-read|checkpoint-read|ownership-claim|run-start|schedule-fetch|event-reconcile|schedule-page-commit|conflict-page-seal|conflict-page-commit|schedule-metrics|conflict-metrics|conflict-checkpoint|checkpoint-write|health-write|ownership-clear|invalid-event-reconciliation-lock|event-reconciliation-lock-timeout|event-reconciliation-ownership-lost|identity-snapshot-unstable|dangling-identity-aggregate|stale-identity-aggregate|mapping-canonical-missing|mapping-canonical-scope-mismatch|event-projection-pointer-missing|event-projection-pointer-corrupt|event-projection-active-missing|event-projection-active-corrupt|bootstrap-stale|identity-register-conflict|identity-snapshot-mismatch|canonical-revision-provider-limit))?|provider-unavailable|rate-limited|unauthorized|not-entitled|invalid-response|coverage-missing|provider-request-ambiguous|provider-response-unsealed|quota-reserve|provider-cooldown|provider-recovering|schedule-dependency-failed|mapping-quarantine|pagination-invalid|transition-conflict|internal-failure)$/.test(
-          result.reason,
-        )) &&
-      (isOwnershipOverlap(result) ||
-        (Number.isSafeInteger(result.pages) && result.pages >= 0)) &&
-      (isOwnershipOverlap(result) ||
-        (Number.isSafeInteger(result.quotaCost) && result.quotaCost >= 0));
+    const safeResult = isSafeLiveIngestionResult;
     const leagues = summary.map((result) => result?.leagueKey);
     if (
       summary.length !== expectedLeagues.size ||

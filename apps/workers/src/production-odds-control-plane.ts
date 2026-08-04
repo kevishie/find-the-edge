@@ -257,12 +257,62 @@ const boundedScheduleInternalFailures = new Set([
   "canonical-revision-provider-limit",
 ]);
 
-export const scheduleCapabilityFailure = (error: unknown, stage: string) => {
-  const classified = capabilityFailure(error);
-  if (classified !== "provider-error") return classified;
+const scheduleFailureStages = [
+  "initialize",
+  "health-read",
+  "checkpoint-read",
+  "ownership-claim",
+  "run-start",
+  "schedule-fetch",
+  "event-reconcile",
+  "schedule-page-commit",
+  "conflict-page-seal",
+  "conflict-page-commit",
+  "schedule-metrics",
+  "conflict-metrics",
+  "conflict-checkpoint",
+  "checkpoint-write",
+  "health-write",
+  "ownership-clear",
+] as const;
+type ScheduleFailureStage = (typeof scheduleFailureStages)[number];
+const boundedScheduleFailureStages = new Set<string>(scheduleFailureStages);
+
+const boundedScheduleCapabilityAliases = new Map<string, string>([
+  ["run-owned", "provider-recovering"],
+  ["schedule-attempt-reservation-conflict", "transition-conflict"],
+  ["schedule-stored-event-conflict", "stored-event-conflict"],
+  ["schedule-conflict-metric-pending", "conflict-metric-pending"],
+]);
+
+const boundedScheduleCapabilityFailures = new Set([
+  "provider-unavailable",
+  "rate-limited",
+  "unauthorized",
+  "not-entitled",
+  "invalid-response",
+  "quota-reserve",
+  "provider-request-ambiguous",
+  "mapping-quarantine",
+  "pagination-invalid",
+  "transition-conflict",
+]);
+
+export const scheduleCapabilityFailure = (
+  error: unknown,
+  stage: ScheduleFailureStage,
+) => {
   const message = error instanceof Error ? error.message : "";
+  if (
+    stage === "event-reconcile" &&
+    boundedScheduleInternalFailures.has(message)
+  )
+    return `provider-error-${message}`;
+  const alias = boundedScheduleCapabilityAliases.get(message);
+  if (alias) return alias;
+  if (boundedScheduleCapabilityFailures.has(message)) return message;
   return `provider-error-${
-    boundedScheduleInternalFailures.has(message) ? message : stage
+    boundedScheduleFailureStages.has(stage) ? stage : "initialize"
   }`;
 };
 
@@ -901,7 +951,7 @@ export async function runProductionOddsControlPlane(input: {
   const storedScheduleReady = new Set<string>();
   const scheduleFailures = new Map<string, string>();
   for (const sharpLeague of sharpApiLeagues) {
-    let scheduleStage = "initialize";
+    let scheduleStage: ScheduleFailureStage = "initialize";
     let activeScheduleRunId: string | undefined;
     let scheduleQuotaCost = 0;
     let acceptedFutureScheduleEvents = 0;
