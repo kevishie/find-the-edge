@@ -1,7 +1,10 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { AwsDynamoGateway } from "./aws-dynamo-gateway";
-import { DynamoConditionalConflict } from "./dynamodb-event-ingestion";
+import {
+  DynamoConditionalConflict,
+  DynamoTransactionConflict,
+} from "./dynamodb-event-ingestion";
 describe("Dynamo gateway", () => {
   it("paginates strongly consistent primary queries", async () => {
     const send = vi
@@ -23,7 +26,7 @@ describe("Dynamo gateway", () => {
     expect(first.input.ConsistentRead).toBe(true);
   });
 
-  it("distinguishes conditional cancellation from service throttling", async () => {
+  it("distinguishes conditional, transaction-conflict, and service cancellations", async () => {
     const conditional = Object.assign(new Error("cancelled"), {
       name: "TransactionCanceledException",
       CancellationReasons: [{ Code: "ConditionalCheckFailed" }],
@@ -32,9 +35,22 @@ describe("Dynamo gateway", () => {
       name: "TransactionCanceledException",
       CancellationReasons: [{ Code: "ThrottlingError" }],
     });
+    const conflicted = Object.assign(new Error("conflicted"), {
+      name: "TransactionCanceledException",
+      CancellationReasons: [{ Code: "TransactionConflict" }],
+    });
+    const mixedOwnership = Object.assign(new Error("mixed"), {
+      name: "TransactionCanceledException",
+      CancellationReasons: [
+        { Code: "ConditionalCheckFailed" },
+        { Code: "TransactionConflict" },
+      ],
+    });
     const send = vi
       .fn()
       .mockRejectedValueOnce(conditional)
+      .mockRejectedValueOnce(mixedOwnership)
+      .mockRejectedValueOnce(conflicted)
       .mockRejectedValueOnce(throttled);
     const gateway = new AwsDynamoGateway(
       { send } as unknown as DynamoDBDocumentClient,
@@ -48,6 +64,26 @@ describe("Dynamo gateway", () => {
         },
       ]),
     ).rejects.toBeInstanceOf(DynamoConditionalConflict);
+    await expect(
+      gateway.transact([
+        {
+          kind: "insert",
+          item: { pk: "mixed-1", sk: "CURRENT", value: {} },
+        },
+        {
+          kind: "insert",
+          item: { pk: "mixed-2", sk: "CURRENT", value: {} },
+        },
+      ]),
+    ).rejects.toBeInstanceOf(DynamoConditionalConflict);
+    await expect(
+      gateway.transact([
+        {
+          kind: "insert",
+          item: { pk: "pk", sk: "sk", value: {} },
+        },
+      ]),
+    ).rejects.toBeInstanceOf(DynamoTransactionConflict);
     await expect(
       gateway.transact([
         {

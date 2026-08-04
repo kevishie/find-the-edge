@@ -14,7 +14,10 @@ import type {
   DynamoItem,
   DynamoWrite,
 } from "./dynamodb-event-ingestion";
-import { DynamoConditionalConflict } from "./dynamodb-event-ingestion";
+import {
+  DynamoConditionalConflict,
+  DynamoTransactionConflict,
+} from "./dynamodb-event-ingestion";
 export class AwsDynamoGateway implements DynamoGateway {
   constructor(
     readonly client: DynamoDBDocumentClient,
@@ -222,13 +225,16 @@ export class AwsDynamoGateway implements DynamoGateway {
                           Put: {
                             TableName: this.tableName,
                             Item: write.item,
-                            ConditionExpression: "#value.#eventId=:token",
+                            ConditionExpression:
+                              "#value.#eventId=:token AND #value.#leaseUntil>:leaseAfter",
                             ExpressionAttributeNames: {
                               "#value": "value",
                               "#eventId": "eventId",
+                              "#leaseUntil": "leaseUntil",
                             },
                             ExpressionAttributeValues: {
                               ":token": write.expectedToken,
+                              ":leaseAfter": write.leaseAfter,
                             },
                           },
                         }
@@ -375,6 +381,8 @@ export class AwsDynamoGateway implements DynamoGateway {
           isConditionalTransactionCancellation(error))
       )
         throw new DynamoConditionalConflict();
+      if (error instanceof Error && isTransactionConflict(error))
+        throw new DynamoTransactionConflict();
       throw error;
     }
   }
@@ -503,13 +511,16 @@ export class AwsDynamoGateway implements DynamoGateway {
                             Put: {
                               TableName: this.tableName,
                               Item: write.item,
-                              ConditionExpression: "#value.#eventId=:token",
+                              ConditionExpression:
+                                "#value.#eventId=:token AND #value.#leaseUntil>:leaseAfter",
                               ExpressionAttributeNames: {
                                 "#value": "value",
                                 "#eventId": "eventId",
+                                "#leaseUntil": "leaseUntil",
                               },
                               ExpressionAttributeValues: {
                                 ":token": write.expectedToken,
+                                ":leaseAfter": write.leaseAfter,
                               },
                             },
                           }
@@ -691,7 +702,27 @@ function isConditionalTransactionCancellation(error: Error): boolean {
       (reason) =>
         !reason.Code ||
         reason.Code === "None" ||
-        reason.Code === "ConditionalCheckFailed",
+        reason.Code === "ConditionalCheckFailed" ||
+        reason.Code === "TransactionConflict",
+    )
+  );
+}
+
+function isTransactionConflict(error: Error): boolean {
+  if (error.name === "TransactionConflictException") return true;
+  if (error.name !== "TransactionCanceledException") return false;
+  const reasons = (
+    error as Error & {
+      CancellationReasons?: readonly { Code?: string }[];
+    }
+  ).CancellationReasons;
+  return (
+    !!reasons?.some((reason) => reason.Code === "TransactionConflict") &&
+    reasons.every(
+      (reason) =>
+        !reason.Code ||
+        reason.Code === "None" ||
+        reason.Code === "TransactionConflict",
     )
   );
 }

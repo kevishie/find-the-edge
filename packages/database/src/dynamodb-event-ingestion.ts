@@ -142,6 +142,7 @@ export type DynamoWrite =
       readonly kind: "renew-reconciliation-lock";
       readonly item: DynamoItem;
       readonly expectedToken: string;
+      readonly leaseAfter: string;
     }
   | {
       readonly kind: "delete";
@@ -155,6 +156,12 @@ export class DynamoConditionalConflict extends Error {
   constructor() {
     super("dynamo-conditional-conflict");
     this.name = "DynamoConditionalConflict";
+  }
+}
+export class DynamoTransactionConflict extends Error {
+  constructor() {
+    super("dynamo-transaction-conflict");
+    this.name = "DynamoTransactionConflict";
   }
 }
 class IdentitySnapshotRetry extends Error {}
@@ -240,6 +247,11 @@ const validatePersistedProviderRevision = (
   return value as ProviderRevision & { readonly version: number };
 };
 export class DynamoEventIngestionStore implements EventIngestionStore {
+  private readonly reconciliationOperations = new Map<string, Promise<void>>();
+  private readonly reconciliationLeases = new Map<
+    string,
+    { readonly pk: string; readonly leaseMs: number; leaseUntil: number }
+  >();
   constructor(
     readonly gateway: DynamoGateway,
     readonly reconciliationOptions: {
@@ -263,6 +275,26 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
   private reconciliationNow() {
     return this.reconciliationOptions.clock?.() ?? new Date();
   }
+  private async withReconciliationOperation<T>(
+    token: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const prior = this.reconciliationOperations.get(token) ?? Promise.resolve();
+    let release!: () => void;
+    const slot = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prior.then(() => slot);
+    this.reconciliationOperations.set(token, tail);
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.reconciliationOperations.get(token) === tail)
+        this.reconciliationOperations.delete(token);
+    }
+  }
   private reconciliationFenceWrite(
     fence: EventIngestionInput["reconciliationFence"],
   ): Extract<DynamoWrite, { kind: "check-reconciliation-lock" }> | undefined {
@@ -275,6 +307,30 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
           leaseAfter: this.reconciliationNow().toISOString() as IsoTimestamp,
         }
       : undefined;
+  }
+  private async transactReconciled(
+    fence: EventIngestionInput["reconciliationFence"],
+    writes: readonly DynamoWrite[],
+  ) {
+    if (!fence) return this.gateway.transact(writes);
+    return this.withReconciliationOperation(fence.token, async () => {
+      const lease = this.reconciliationLeases.get(fence.token);
+      const now = this.reconciliationNow().getTime();
+      if (
+        !lease ||
+        lease.pk !== fence.pk ||
+        lease.leaseUntil - now <= lease.leaseMs / 2
+      )
+        throw new Error("event-reconciliation-ownership-lost");
+      await this.gateway.transact([
+        // The token check is the commit-time fence: either these writes commit
+        // before a replacement lock, or the whole transaction is rejected.
+        // Wall-clock expiry after a successful commit does not make the writes
+        // unsafe and must not turn that success into a reported failure.
+        this.reconciliationFenceWrite(fence)!,
+        ...writes,
+      ]);
+    });
   }
   async getProviderEventFence(
     checkpointKey: string,
@@ -412,12 +468,8 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     writes: readonly DynamoWrite[],
   ): Promise<void> {
     const fence = this.providerEventFenceWrite(input);
-    const reconciliationFence = this.reconciliationFenceWrite(
-      input.reconciliationFence,
-    );
     try {
-      await this.gateway.transact([
-        ...(reconciliationFence ? [reconciliationFence] : []),
+      await this.transactReconciled(input.reconciliationFence, [
         ...(fence ? [fence] : []),
         ...writes,
       ]);
@@ -695,6 +747,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     const heartbeatMs =
       this.reconciliationOptions.heartbeatMs ?? Math.max(10, leaseMs / 3);
     let acquired = false;
+    let ownedLeaseUntil = 0;
     for (let attempt = 0; attempt < 400; attempt += 1) {
       const now = this.reconciliationNow().getTime();
       const value = {
@@ -711,6 +764,12 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         })) === "inserted"
       ) {
         acquired = true;
+        ownedLeaseUntil = now + leaseMs;
+        this.reconciliationLeases.set(token, {
+          pk,
+          leaseMs,
+          leaseUntil: ownedLeaseUntil,
+        });
         break;
       }
       const persisted = await this.gateway.get(pk, "CURRENT");
@@ -745,31 +804,73 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     }
     if (!acquired) throw new Error("event-reconciliation-lock-timeout");
     let ownershipLost: Error | undefined;
+    let renewalFailure: Error | undefined;
     let renewal = Promise.resolve();
     const renew = () => {
       renewal = renewal.then(async () => {
-        if (ownershipLost) return;
-        const now = this.reconciliationNow().getTime();
-        try {
-          await this.gateway.transact([
-            {
-              kind: "renew-reconciliation-lock",
-              item: {
-                pk,
-                sk: "CURRENT",
-                value: {
-                  eventId: token,
-                  leaseUntil: new Date(now + leaseMs).toISOString(),
-                  version: 1,
+        if (ownershipLost || renewalFailure) return;
+        for (let attempt = 0; attempt < 6; attempt += 1)
+          try {
+            const now = this.reconciliationNow().getTime();
+            if (now >= ownedLeaseUntil) {
+              ownershipLost = new Error("event-reconciliation-ownership-lost");
+              return;
+            }
+            const nextLeaseUntil = now + leaseMs;
+            await this.withReconciliationOperation(token, () =>
+              this.gateway.transact([
+                {
+                  kind: "renew-reconciliation-lock",
+                  item: {
+                    pk,
+                    sk: "CURRENT",
+                    value: {
+                      eventId: token,
+                      leaseUntil: new Date(nextLeaseUntil).toISOString(),
+                      version: 1,
+                    },
+                    expiresAt: Math.ceil(nextLeaseUntil / 1_000),
+                  },
+                  expectedToken: token,
+                  leaseAfter: new Date(now).toISOString(),
                 },
-                expiresAt: Math.ceil((now + leaseMs) / 1_000),
-              },
-              expectedToken: token,
-            },
-          ]);
-        } catch {
-          ownershipLost = new Error("event-reconciliation-ownership-lost");
-        }
+              ]),
+            );
+            if (this.reconciliationNow().getTime() >= ownedLeaseUntil) {
+              ownershipLost = new Error("event-reconciliation-ownership-lost");
+              return;
+            }
+            ownedLeaseUntil = nextLeaseUntil;
+            const lease = this.reconciliationLeases.get(token);
+            if (lease) lease.leaseUntil = nextLeaseUntil;
+            return;
+          } catch (error) {
+            if (error instanceof DynamoConditionalConflict) {
+              ownershipLost = new Error("event-reconciliation-ownership-lost");
+              return;
+            }
+            if (error instanceof DynamoTransactionConflict && attempt < 5) {
+              const delayMs = 5 * 2 ** attempt;
+              if (
+                this.reconciliationNow().getTime() + delayMs >=
+                ownedLeaseUntil
+              ) {
+                ownershipLost = new Error(
+                  "event-reconciliation-ownership-lost",
+                );
+                return;
+              }
+              await new Promise<void>((resolve) => {
+                setTimeout(resolve, delayMs);
+              });
+              continue;
+            }
+            renewalFailure =
+              error instanceof Error
+                ? error
+                : new Error("event-reconciliation-renewal-failed");
+            return;
+          }
       });
     };
     const heartbeat = setInterval(renew, heartbeatMs);
@@ -788,6 +889,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     clearInterval(heartbeat);
     await renewal;
     if (ownershipLost) reconciliationFailure = ownershipLost;
+    else if (renewalFailure) reconciliationFailure = renewalFailure;
     try {
       await this.gateway.transact([
         {
@@ -798,9 +900,11 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         },
       ]);
     } catch (error) {
+      this.reconciliationLeases.delete(token);
       void error;
       throw new Error("event-reconciliation-ownership-lost");
     }
+    this.reconciliationLeases.delete(token);
     if (reconciliationFailure !== undefined)
       throw reconciliationFailure instanceof Error
         ? reconciliationFailure
@@ -1188,10 +1292,8 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     observedAt: IsoTimestamp,
     reconciliationFence?: EventIngestionInput["reconciliationFence"],
   ) {
-    const transact = (writes: readonly DynamoWrite[]) => {
-      const fence = this.reconciliationFenceWrite(reconciliationFence);
-      return this.gateway.transact(fence ? [fence, ...writes] : writes);
-    };
+    const transact = (writes: readonly DynamoWrite[]) =>
+      this.transactReconciled(reconciliationFence, writes);
     const identityResolution = await this.resolveIdentity(
       input.sportKey,
       input.leagueKey,

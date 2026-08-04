@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   DynamoConditionalConflict,
   DynamoEventIngestionStore,
+  DynamoTransactionConflict,
   type DynamoGateway,
   type DynamoItem,
 } from "./dynamodb-event-ingestion";
@@ -1370,6 +1371,150 @@ const reconciliationInput = (providerEventId: string) => {
 };
 
 describe("dynamo reconciliation ownership fencing", () => {
+  it("serializes bootstrap writes with heartbeat renewal for the same lease", async () => {
+    class SerializedGateway extends ContractGateway {
+      activeLockTransactions = 0;
+      overlap = false;
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        const lockRelated = writes.some(
+          ({ kind }) =>
+            kind === "check-reconciliation-lock" ||
+            kind === "renew-reconciliation-lock",
+        );
+        if (lockRelated) {
+          this.activeLockTransactions += 1;
+          this.overlap ||= this.activeLockTransactions > 1;
+          await new Promise((resolve) => setTimeout(resolve, 12));
+        }
+        try {
+          return await super.transact(writes);
+        } finally {
+          if (lockRelated) this.activeLockTransactions -= 1;
+        }
+      }
+    }
+    const gateway = new SerializedGateway();
+    const store = new DynamoEventIngestionStore(gateway, {
+      leaseMs: 100,
+      heartbeatMs: 5,
+    });
+    const result = await store.reconcileScheduledEvent(
+      reconciliationInput("serialized"),
+    );
+    expect(typeof result.kind).toBe("string");
+    expect(gateway.overlap).toBe(false);
+  });
+
+  it("retries transient renewal transaction conflicts without losing ownership", async () => {
+    class ConflictingRenewalGateway extends ContractGateway {
+      renewalAttempts = 0;
+      override async queryAll(pk: string) {
+        await new Promise((resolve) => setTimeout(resolve, 45));
+        return super.queryAll(pk);
+      }
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        if (writes.some(({ kind }) => kind === "renew-reconciliation-lock")) {
+          this.renewalAttempts += 1;
+          if (this.renewalAttempts <= 2) throw new DynamoTransactionConflict();
+        }
+        return super.transact(writes);
+      }
+    }
+    const gateway = new ConflictingRenewalGateway();
+    const store = new DynamoEventIngestionStore(gateway, {
+      leaseMs: 100,
+      heartbeatMs: 5,
+    });
+    const result = await store.reconcileScheduledEvent(
+      reconciliationInput("renewal-conflict"),
+    );
+    expect(typeof result.kind).toBe("string");
+    expect(gateway.renewalAttempts).toBeGreaterThan(2);
+  });
+
+  it("does not renew or resurrect a lease after its deadline", async () => {
+    class ExpiringRenewalGateway extends ContractGateway {
+      renewalAttempts = 0;
+      override async queryAll(pk: string) {
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        return super.queryAll(pk);
+      }
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        if (writes.some(({ kind }) => kind === "renew-reconciliation-lock")) {
+          this.renewalAttempts += 1;
+          throw new DynamoTransactionConflict();
+        }
+        return super.transact(writes);
+      }
+    }
+    const gateway = new ExpiringRenewalGateway();
+    const store = new DynamoEventIngestionStore(gateway, {
+      leaseMs: 20,
+      heartbeatMs: 5,
+    });
+    await expect(
+      store.reconcileScheduledEvent(reconciliationInput("expired-renewal")),
+    ).rejects.toThrow("event-reconciliation-ownership-lost");
+    expect(gateway.renewalAttempts).toBeLessThanOrEqual(3);
+  });
+
+  it("rejects a renewal response that arrives after the prior lease expired", async () => {
+    class LateRenewalGateway extends ContractGateway {
+      override async queryAll(pk: string) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return super.queryAll(pk);
+      }
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        if (writes.some(({ kind }) => kind === "renew-reconciliation-lock"))
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        return super.transact(writes);
+      }
+    }
+    const store = new DynamoEventIngestionStore(new LateRenewalGateway(), {
+      leaseMs: 20,
+      heartbeatMs: 5,
+    });
+    await expect(
+      store.reconcileScheduledEvent(reconciliationInput("late-renewal")),
+    ).rejects.toThrow("event-reconciliation-ownership-lost");
+  });
+
+  it("stops queued renewals after a terminal renewal failure", async () => {
+    class FailedRenewalGateway extends ContractGateway {
+      renewalAttempts = 0;
+      override async queryAll(pk: string) {
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        return super.queryAll(pk);
+      }
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        if (writes.some(({ kind }) => kind === "renew-reconciliation-lock")) {
+          this.renewalAttempts += 1;
+          throw new Error("renewal-service-failure");
+        }
+        return super.transact(writes);
+      }
+    }
+    const gateway = new FailedRenewalGateway();
+    const store = new DynamoEventIngestionStore(gateway, {
+      leaseMs: 100,
+      heartbeatMs: 5,
+    });
+    await expect(
+      store.reconcileScheduledEvent(reconciliationInput("renewal-failure")),
+    ).rejects.toThrow("renewal-service-failure");
+    expect(gateway.renewalAttempts).toBe(1);
+  });
+
   it("renews a lease during a long-running candidate read", async () => {
     class SlowGateway extends ContractGateway {
       renewals = 0;
