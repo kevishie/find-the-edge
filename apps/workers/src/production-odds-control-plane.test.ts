@@ -12,6 +12,7 @@ import {
 } from "@find-the-edge/providers";
 import {
   capabilityFailure,
+  scheduleCapabilityFailure,
   evidenceGaps,
   runFocusedSharpOddsIngestion,
   runProductionOddsControlPlane,
@@ -279,6 +280,18 @@ describe("production odds control-plane composition", () => {
     expect(
       capabilityFailure(new Error("schedule-conflict-metric-pending")),
     ).toBe("conflict-metric-pending");
+    expect(
+      scheduleCapabilityFailure(
+        new Error("event-reconciliation-lock-timeout"),
+        "event-reconcile",
+      ),
+    ).toBe("provider-error-event-reconciliation-lock-timeout");
+    expect(
+      scheduleCapabilityFailure(
+        new Error("secret provider detail"),
+        "event-reconcile",
+      ),
+    ).toBe("provider-error-event-reconcile");
   });
   it("creates per-book market gaps and preserves provider source states", () => {
     const states = [

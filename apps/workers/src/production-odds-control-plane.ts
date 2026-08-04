@@ -238,6 +238,34 @@ export const capabilityFailure = (error: unknown) => {
   return "provider-error";
 };
 
+const boundedScheduleInternalFailures = new Set([
+  "invalid-event-reconciliation-lock",
+  "event-reconciliation-lock-timeout",
+  "event-reconciliation-ownership-lost",
+  "identity-snapshot-unstable",
+  "dangling-identity-aggregate",
+  "stale-identity-aggregate",
+  "mapping-canonical-missing",
+  "mapping-canonical-scope-mismatch",
+  "event-projection-pointer-missing",
+  "event-projection-pointer-corrupt",
+  "event-projection-active-missing",
+  "event-projection-active-corrupt",
+  "bootstrap-stale",
+  "identity-register-conflict",
+  "identity-snapshot-mismatch",
+  "canonical-revision-provider-limit",
+]);
+
+export const scheduleCapabilityFailure = (error: unknown, stage: string) => {
+  const classified = capabilityFailure(error);
+  if (classified !== "provider-error") return classified;
+  const message = error instanceof Error ? error.message : "";
+  return `provider-error-${
+    boundedScheduleInternalFailures.has(message) ? message : stage
+  }`;
+};
+
 /** Closed classifier for deterministic content conflicts scoped to one
  * provider event. Storage, lease, ownership, pagination, and unknown failures
  * deliberately remain fatal to the league run. */
@@ -1417,11 +1445,7 @@ export async function runProductionOddsControlPlane(input: {
       scheduleStage = "ownership-clear";
       await clearOwned(checkpointKey, runId);
     } catch (error) {
-      const classifiedReason = capabilityFailure(error);
-      const reason =
-        classifiedReason === "provider-error"
-          ? `provider-error-${scheduleStage}`
-          : classifiedReason;
+      const reason = scheduleCapabilityFailure(error, scheduleStage);
       const scheduleHealthKey = `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`;
       await input.control.putHealth(
         unhealthyOddsProviderState(
