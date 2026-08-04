@@ -357,10 +357,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
             if (!(error instanceof DynamoTransactionConflict) || attempt >= 5)
               throw error;
             const delayMs = 5 * 2 ** attempt;
-            if (
-              this.reconciliationNow().getTime() + delayMs >=
-              priorLeaseUntil
-            )
+            if (this.reconciliationNow().getTime() + delayMs >= priorLeaseUntil)
               throw new Error("event-reconciliation-ownership-lost");
             await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
           }
@@ -858,8 +855,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     }
     if (!acquired) throw new Error("event-reconciliation-lock-timeout");
     const ownedLease = this.reconciliationLeases.get(token);
-    if (!ownedLease)
-      throw new Error("event-reconciliation-ownership-lost");
+    if (!ownedLease) throw new Error("event-reconciliation-ownership-lost");
     let ownershipLost: Error | undefined;
     let renewalFailure: Error | undefined;
     let renewal = Promise.resolve();
