@@ -2,8 +2,9 @@
 title: 'FTE-LEARN-004 Walk-Forward Experiment and Strategy Promotion Gates'
 type: 'feature'
 created: '2026-08-04'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'a02dd54d546e28c0a03df8a7efefc8f43b64a843'
+final_revision: '7d80654'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
