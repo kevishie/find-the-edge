@@ -2,8 +2,9 @@
 title: 'FTE-017 Event Status and Data Freshness Indicators'
 type: 'feature'
 created: '2026-08-04'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'c362792f1d738ac410ecef06d1bb93c1464efa52'
+implementation_revision: 'e7c1a20'
 review_loop_iteration: 1
 followup_review_recommended: true
 context:
@@ -111,3 +112,7 @@ Completed successfully on 2026-08-04: every focused package test, `pnpm check`, 
 - `pnpm check`
 - `pnpm test:e2e`
 - `git diff --check`
+
+## Auto Run Result
+
+Completed after one adversarial review loop. Seven in-scope findings were repaired and three findings were rejected because they belong to FTE-018's lifecycle explorer. Full quality gates, six browser checks, and the credential-free Phase 1 deployment preflight pass. Implementation revision: `e7c1a20`.
