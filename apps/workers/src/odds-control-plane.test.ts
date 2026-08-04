@@ -142,6 +142,36 @@ describe("odds collection control plane", () => {
     expect(result.status).toBe("completed");
     expect(fetchPage).toHaveBeenCalledOnce();
   });
+  it("safely skips when another invocation owns the league before evidence", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    await store.claimContinuation({
+      leagueKey: policy.leagueKey,
+      runId: "active-run",
+      providerId: "sharpapi",
+      updatedAt: now.toISOString(),
+      startedAt: now.toISOString(),
+      capability: "odds",
+      evidenceCommitted: false,
+      quotaCost: 0,
+      ownerId: "other-owner",
+      leaseUntil: "2026-08-03T12:05:00.000Z",
+    });
+    const fetchPage = vi.fn();
+    const result = await runOddsLeague({
+      policy,
+      store,
+      providers: new Map([["sharpapi", provider("sharpapi", fetchPage)]]),
+      committer: { commit: vi.fn() },
+      now,
+      forceRefresh: true,
+    });
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "provider-recovering",
+      pages: 0,
+    });
+    expect(fetchPage).not.toHaveBeenCalled();
+  });
   it("starts a newly claimed lease from the live clock, not invocation time", async () => {
     const store = new MemoryOddsControlPlaneStore();
     const liveClaimTime = new Date("2026-08-03T13:00:00.000Z");

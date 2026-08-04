@@ -604,10 +604,10 @@ export async function runOddsLeague(input: {
     if (owner.providerId !== candidate.providerId || owner.ownerId !== ownerId)
       return {
         leagueKey: policy.leagueKey,
-        status: "failed",
+        status: owner.ambiguousUntil ? "failed" : "skipped",
         reason: owner.ambiguousUntil
           ? "provider-request-ambiguous"
-          : "run-owned",
+          : "provider-recovering",
         pages: 0,
         quotaCost: owner.quotaCost ?? 0,
       };
@@ -947,22 +947,21 @@ export async function runOddsLeague(input: {
     } catch (error) {
       const reason = classifyOddsControlPlaneFailure(error);
       lastReason = reason;
+      const safelySkipped =
+        !evidenceCommitted &&
+        ["quota-reserve", "provider-recovering"].includes(reason);
       await store.putRun({
         ...run,
         ...((await store.getRun(runId)) ?? {}),
-        status:
-          reason === "quota-reserve" && !evidenceCommitted
-            ? "skipped"
-            : "failed",
+        status: safelySkipped ? "skipped" : "failed",
         updatedAt: iso(now),
-        ...(reason === "quota-reserve" && !evidenceCommitted
-          ? { skipReason: reason }
-          : { failureReason: reason }),
+        ...(safelySkipped ? { skipReason: reason } : { failureReason: reason }),
         evidenceCommitted,
         quotaCost,
       });
-      if (reason === "quota-reserve" && !evidenceCommitted) {
-        await clearOwnedContinuation(store, policy.leagueKey, runId, ownerId);
+      if (safelySkipped) {
+        if (reason === "quota-reserve")
+          await clearOwnedContinuation(store, policy.leagueKey, runId, ownerId);
         return {
           leagueKey: policy.leagueKey,
           status: "skipped",
