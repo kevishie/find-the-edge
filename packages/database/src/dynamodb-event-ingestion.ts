@@ -11,6 +11,7 @@ import type {
   SportKey,
   UnresolvedEventMapping,
 } from "@find-the-edge/domain";
+import { randomUUID } from "node:crypto";
 import {
   bootstrapMarkerId,
   canonicalContinuationCommand,
@@ -23,6 +24,9 @@ import {
   mappingId,
   maxAuthority,
   repairAuthorityPointer,
+  reconciliationScope,
+  reconcileScheduledEventUnderLease,
+  NEAR_CANONICAL_START_TOLERANCE_SECONDS,
   nextIdentityVersion,
   nextBoundedVersion,
   providerEventFenceId,
@@ -48,6 +52,8 @@ import {
 } from "./event-ingestion";
 import {
   closeProjection,
+  easternDay,
+  leaguePartition,
   projectionItems,
   validateProjection,
   type EventDetailPointer,
@@ -124,11 +130,24 @@ export type DynamoWrite =
       readonly sk: string;
     }
   | {
+      readonly kind: "check-reconciliation-lock";
+      readonly pk: string;
+      readonly sk: "CURRENT";
+      readonly expectedToken: string;
+      readonly leaseAfter: IsoTimestamp;
+    }
+  | {
+      readonly kind: "renew-reconciliation-lock";
+      readonly item: DynamoItem;
+      readonly expectedToken: string;
+    }
+  | {
       readonly kind: "delete";
       readonly pk: string;
       readonly sk: string;
       readonly expectedVersion?: number;
       readonly expectedEventId?: string;
+      readonly expectedLeaseUntil?: string;
     };
 export class DynamoConditionalConflict extends Error {
   constructor() {
@@ -219,7 +238,42 @@ const validatePersistedProviderRevision = (
   return value as ProviderRevision & { readonly version: number };
 };
 export class DynamoEventIngestionStore implements EventIngestionStore {
-  constructor(readonly gateway: DynamoGateway) {}
+  constructor(
+    readonly gateway: DynamoGateway,
+    readonly reconciliationOptions: {
+      readonly clock?: () => Date;
+      readonly leaseMs?: number;
+      readonly heartbeatMs?: number;
+    } = {},
+  ) {
+    const leaseMs = reconciliationOptions.leaseMs ?? 10_000;
+    const heartbeatMs =
+      reconciliationOptions.heartbeatMs ?? Math.max(10, leaseMs / 3);
+    if (
+      !Number.isFinite(leaseMs) ||
+      leaseMs <= 0 ||
+      !Number.isFinite(heartbeatMs) ||
+      heartbeatMs <= 0 ||
+      heartbeatMs >= leaseMs
+    )
+      throw new Error("invalid-reconciliation-lease-options");
+  }
+  private reconciliationNow() {
+    return this.reconciliationOptions.clock?.() ?? new Date();
+  }
+  private reconciliationFenceWrite(
+    fence: EventIngestionInput["reconciliationFence"],
+  ): Extract<DynamoWrite, { kind: "check-reconciliation-lock" }> | undefined {
+    return fence
+      ? {
+          kind: "check-reconciliation-lock",
+          pk: fence.pk,
+          sk: "CURRENT",
+          expectedToken: fence.token,
+          leaseAfter: this.reconciliationNow().toISOString() as IsoTimestamp,
+        }
+      : undefined;
+  }
   async getProviderEventFence(
     checkpointKey: string,
     providerEventId: string,
@@ -356,8 +410,15 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     writes: readonly DynamoWrite[],
   ): Promise<void> {
     const fence = this.providerEventFenceWrite(input);
+    const reconciliationFence = this.reconciliationFenceWrite(
+      input.reconciliationFence,
+    );
     try {
-      await this.gateway.transact(fence ? [fence, ...writes] : writes);
+      await this.gateway.transact([
+        ...(reconciliationFence ? [reconciliationFence] : []),
+        ...(fence ? [fence] : []),
+        ...writes,
+      ]);
     } catch (error) {
       if (!(error instanceof DynamoConditionalConflict) || !fence) throw error;
       const persisted = await this.gateway.get(fence.item.pk, fence.item.sk);
@@ -523,7 +584,10 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
       canonical.leagueKey !== input.leagueKey
     )
       throw new Error("mapping-canonical-scope-mismatch");
-    return { canonicalEventId: mapping.canonicalEventId };
+    return {
+      canonicalEventId: mapping.canonicalEventId,
+      bindingKind: mapping.bindingKind,
+    };
   }
   async resolveExactCanonicalBinding(
     input: Pick<
@@ -546,6 +610,246 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     )
       throw new Error("mapping-canonical-scope-mismatch");
     return event;
+  }
+  async findNearCanonicalCandidates(
+    input: Parameters<EventIngestionStore["findNearCanonicalCandidates"]>[0],
+  ) {
+    if (input.status !== "scheduled" || !input.participantLabels) return [];
+    const normalize = (value: string) =>
+      value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+    const expected = input.participantLabels.map(normalize);
+    const target = Date.parse(input.startsAt);
+    const toleranceMs = NEAR_CANONICAL_START_TOLERANCE_SECONDS * 1_000;
+    const days = new Set(
+      [-toleranceMs, 0, toleranceMs].map((offset) =>
+        easternDay(new Date(target + offset).toISOString()),
+      ),
+    );
+    const rows = (
+      await Promise.all(
+        [...days].map((day) =>
+          this.gateway.queryAll(
+            leaguePartition(input.sportKey, input.leagueKey, "scheduled", day),
+          ),
+        ),
+      )
+    ).flat();
+    const projections = new Map<
+      string,
+      ReturnType<typeof validateProjection>[]
+    >();
+    for (const row of rows) {
+      const projection = validateProjection(row, "league", input.startsAt);
+      if (
+        projection.visibleUntil === null &&
+        projection.participantLabels.length === expected.length &&
+        projection.participantLabels.every(
+          (label, index) => normalize(label) === expected[index],
+        ) &&
+        Math.abs(Date.parse(projection.startsAt) - target) <= toleranceMs
+      )
+        projections.set(projection.eventId, [
+          ...(projections.get(projection.eventId) ?? []),
+          projection,
+        ]);
+    }
+    const candidates: CanonicalEvent[] = [];
+    for (const id of [...projections.keys()].sort()) {
+      const item = await this.gateway.get(eventKey(id), "CURRENT");
+      if (!item) continue;
+      const candidate = validateCanonicalEvent(item.value);
+      const currentProjections = projections
+        .get(id)!
+        .filter(
+          (projection) =>
+            projection.materialVersion === candidate.version &&
+            projection.visibleUntil === null,
+        );
+      if (currentProjections.length === 0) continue;
+      if (currentProjections.length > 1)
+        throw new Error("multiple-current-event-projections");
+      if (
+        candidate.id !== id ||
+        candidate.sportKey !== input.sportKey ||
+        candidate.leagueKey !== input.leagueKey ||
+        candidate.status !== "scheduled" ||
+        !candidate.participantLabels ||
+        candidate.participantLabels.length !== expected.length ||
+        !candidate.participantLabels.every(
+          (label, index) => normalize(label) === expected[index],
+        ) ||
+        Math.abs(Date.parse(candidate.startsAt) - target) > toleranceMs
+      )
+        throw new Error("near-canonical-projection-stale");
+      candidates.push(candidate);
+    }
+    return candidates;
+  }
+  async reconcileScheduledEvent(
+    input: Parameters<EventIngestionStore["reconcileScheduledEvent"]>[0],
+  ) {
+    const scope = reconciliationScope(input.event);
+    const pk = `EVENT_RECONCILIATION#${scope}`;
+    const token = randomUUID();
+    const leaseMs = this.reconciliationOptions.leaseMs ?? 10_000;
+    const heartbeatMs =
+      this.reconciliationOptions.heartbeatMs ?? Math.max(10, leaseMs / 3);
+    let acquired = false;
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const now = this.reconciliationNow().getTime();
+      const value = {
+        eventId: token,
+        leaseUntil: new Date(now + leaseMs).toISOString(),
+        version: 1,
+      };
+      if (
+        (await this.gateway.insert({
+          pk,
+          sk: "CURRENT",
+          value,
+          expiresAt: Math.ceil((now + leaseMs) / 1_000),
+        })) === "inserted"
+      ) {
+        acquired = true;
+        break;
+      }
+      const persisted = await this.gateway.get(pk, "CURRENT");
+      if (!persisted) continue;
+      const lock = persisted.value as Partial<typeof value>;
+      if (
+        !lock ||
+        typeof lock !== "object" ||
+        typeof lock.eventId !== "string" ||
+        typeof lock.leaseUntil !== "string" ||
+        !Number.isFinite(Date.parse(lock.leaseUntil)) ||
+        lock.version !== 1
+      )
+        throw new Error("invalid-event-reconciliation-lock");
+      if (Date.parse(lock.leaseUntil) <= now)
+        try {
+          await this.gateway.transact([
+            {
+              kind: "delete",
+              pk,
+              sk: "CURRENT",
+              expectedEventId: lock.eventId,
+              expectedLeaseUntil: lock.leaseUntil,
+            },
+          ]);
+        } catch (error) {
+          if (!(error instanceof DynamoConditionalConflict)) throw error;
+        }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, Math.min(25, attempt + 1));
+      });
+    }
+    if (!acquired) throw new Error("event-reconciliation-lock-timeout");
+    let ownershipLost: Error | undefined;
+    let renewal = Promise.resolve();
+    const renew = () => {
+      renewal = renewal.then(async () => {
+        if (ownershipLost) return;
+        const now = this.reconciliationNow().getTime();
+        try {
+          await this.gateway.transact([
+            {
+              kind: "renew-reconciliation-lock",
+              item: {
+                pk,
+                sk: "CURRENT",
+                value: {
+                  eventId: token,
+                  leaseUntil: new Date(now + leaseMs).toISOString(),
+                  version: 1,
+                },
+                expiresAt: Math.ceil((now + leaseMs) / 1_000),
+              },
+              expectedToken: token,
+            },
+          ]);
+        } catch {
+          ownershipLost = new Error("event-reconciliation-ownership-lost");
+        }
+      });
+    };
+    const heartbeat = setInterval(renew, heartbeatMs);
+    let outcome:
+      | Awaited<ReturnType<EventIngestionStore["reconcileScheduledEvent"]>>
+      | undefined;
+    let reconciliationFailure: unknown;
+    try {
+      outcome = await reconcileScheduledEventUnderLease(this, input, {
+        pk,
+        token,
+      });
+    } catch (error) {
+      reconciliationFailure = error;
+    }
+    clearInterval(heartbeat);
+    await renewal;
+    if (ownershipLost) reconciliationFailure = ownershipLost;
+    try {
+      await this.gateway.transact([
+        {
+          kind: "delete",
+          pk,
+          sk: "CURRENT",
+          expectedEventId: token,
+        },
+      ]);
+    } catch (error) {
+      void error;
+      throw new Error("event-reconciliation-ownership-lost");
+    }
+    if (reconciliationFailure !== undefined)
+      throw reconciliationFailure instanceof Error
+        ? reconciliationFailure
+        : new Error("event-reconciliation-failed");
+    return outcome!;
+  }
+  async recordReconciliationAmbiguity(
+    input: EventIngestionInput,
+    candidateEventIds: readonly string[],
+  ) {
+    const candidates = [...new Set(candidateEventIds)].sort().slice(0, 2);
+    if (candidates.length < 2) throw new Error("ambiguous-candidates-required");
+    const mid = mappingId(input);
+    const id = stableDigest(JSON.stringify([mid, input.normalizedIdentity]));
+    const pk = `UNRESOLVED#${id}`;
+    const existing = await this.gateway.get(pk, "CURRENT");
+    const current = existing
+      ? validateUnresolvedEventMapping(existing.value)
+      : undefined;
+    const observation = {
+      observedAt: input.observedAt,
+      reason: "ambiguous-candidates" as const,
+      candidateEventIds: candidates as EntityId[],
+    };
+    const next: UnresolvedEventMapping = {
+      id,
+      providerId: input.providerId,
+      providerEventId: input.providerEventId,
+      sportKey: input.sportKey,
+      leagueKey: input.leagueKey,
+      normalizedIdentity: input.normalizedIdentity,
+      reason: observation.reason,
+      candidateEventIds: observation.candidateEventIds,
+      observations: [...(current?.observations ?? []).slice(-19), observation],
+      version: nextBoundedVersion(current?.version ?? 0),
+    };
+    validateUnresolvedEventMapping(next);
+    await this.transactIngestion(input, [
+      current
+        ? {
+            kind: "replace",
+            item: { pk, sk: "CURRENT", value: next },
+            expectedVersion: current.version,
+          }
+        : {
+            kind: "insert",
+            item: { pk, sk: "CURRENT", value: next },
+          },
+    ]);
   }
   async getCanonicalByIdentity(
     sportKey: SportKey,
@@ -882,7 +1186,12 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
   async bootstrapCanonicalEvent(
     input: CanonicalEventBootstrap,
     observedAt: IsoTimestamp,
+    reconciliationFence?: EventIngestionInput["reconciliationFence"],
   ) {
+    const transact = (writes: readonly DynamoWrite[]) => {
+      const fence = this.reconciliationFenceWrite(reconciliationFence);
+      return this.gateway.transact(fence ? [fence, ...writes] : writes);
+    };
     const identityResolution = await this.resolveIdentity(
       input.sportKey,
       input.leagueKey,
@@ -915,7 +1224,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     validateCanonicalEvent(event);
     const projections = projectionItems(event, observedAt);
     try {
-      await this.gateway.transact([
+      await transact([
         {
           kind: "insert",
           item: { pk: eventKey(event.id), sk: "CURRENT", value: event },
@@ -1048,7 +1357,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
             value.startsAt === input.startsAt &&
             value.status === input.status
           ) {
-            await this.gateway.transact([
+            await transact([
               {
                 kind: "check-event",
                 pk: eventKey(value.id),
@@ -1071,7 +1380,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
             value.startsAt !== input.startsAt ||
             value.status !== input.status
           )
-            await this.gateway.transact([
+            await transact([
               {
                 kind: "replace",
                 item: {
@@ -1160,7 +1469,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
               input.normalizedIdentity,
             ).candidateEventIds.length === 0
           )
-            await this.gateway.transact([
+            await transact([
               {
                 kind: "check-event",
                 pk: eventKey(value.id),
@@ -1228,7 +1537,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
           previousIdentityResolution.candidateIds[0] !== event.id
         )
           throw new Error("bootstrap-identity-snapshot-mismatch");
-        await this.gateway.transact([
+        await transact([
           {
             kind: "replace",
             item: {
@@ -1595,7 +1904,10 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
       sportKey: input.sportKey,
       leagueKey: input.leagueKey,
       createdAt: input.observedAt,
+      bindingKind: input.mappingKind ?? "source",
     };
+    if (mapped && input.mappingKind && mapped.bindingKind !== input.mappingKind)
+      throw new Error("mapping-provenance-conflict");
     const providerPrior = [
       persistedRevision,
       current.revisions[input.providerId],
@@ -1690,7 +2002,11 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
           },
           ...legacyBackfill,
         ]);
-      else if (input.providerEventFence || legacyBackfill.length)
+      else if (
+        input.providerEventFence ||
+        input.reconciliationFence ||
+        legacyBackfill.length
+      )
         await this.transactIngestion(input, [
           ...(legacyBackfill.length
             ? [

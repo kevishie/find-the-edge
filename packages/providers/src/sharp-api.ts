@@ -120,6 +120,36 @@ export interface SharpApiSchedulePage {
   readonly retrievedAt: IsoTimestamp;
 }
 
+const derivativeLabelKind = (value: string) => {
+  const label = value.normalize("NFKC").trim().replace(/\s+/g, " ");
+  if (/(?:\s-\s|:\s*)player props?$/i.test(label)) return "player-props";
+  if (
+    /(?:\s-\s|:\s*)(?:first|last|extra|(?:\d+(?:st|nd|rd|th)))(?:\s+(?:one|two|three|four|five|six|seven|eight|nine|\d+))?\s+innings?$/i.test(
+      label,
+    )
+  )
+    return "period";
+  if (/\b(?:team )?total (?:runs?|goals?|points?)$/i.test(label))
+    return "team-total";
+  if (
+    /^(?:american|national|eastern|western|world)?\s*(?:league|conference|division|series|championship)\s+(?:winner|champion)$/i.test(
+      label,
+    )
+  )
+    return "award";
+  return null;
+};
+
+/** Only paired, recognizable catalogue labels are excluded. A single unusual
+ * but legitimate team name is never enough to classify a matchup. */
+export const isSharpDerivativeMatchup = (
+  awayTeam: string,
+  homeTeam: string,
+) => {
+  const awayKind = derivativeLabelKind(awayTeam);
+  return awayKind !== null && derivativeLabelKind(homeTeam) !== null;
+};
+
 /** Cursor identity is carried separately so durable orchestration never guesses page progress. */
 export interface SharpApiControlPlanePage extends SharpApiOddsPage {
   readonly pageToken: string;
@@ -508,33 +538,44 @@ export function parseSharpApiSchedulePage(
   const events: SharpApiScheduleEvent[] = [];
   const ids = new Set<string>();
   for (const value of input["data"]) {
-    // Sharp includes futures/binary propositions in this catalogue. Those
-    // records intentionally have a missing participant and are not games.
-    if (
-      record(value) &&
-      (value["away_team"] === "" ||
-        value["home_team"] === "" ||
-        value["away_team"] === null ||
-        value["home_team"] === null ||
-        value["away_team"] === undefined ||
-        value["home_team"] === undefined)
-    )
-      continue;
     if (
       !record(value) ||
       !canonical(value["id"]) ||
       !canonical(value["league"], 64) ||
       value["league"].toLowerCase() !== league.leagueKey ||
-      !canonical(value["away_team"]) ||
-      !canonical(value["home_team"]) ||
-      value["away_team"] === value["home_team"] ||
       !instant(value["start_time"]) ||
       value["status"] !== "upcoming" ||
       value["is_live"] !== false ||
-      ids.has(value["id"])
+      (value["away_team"] !== null &&
+        !["string", "undefined"].includes(typeof value["away_team"])) ||
+      (value["home_team"] !== null &&
+        !["string", "undefined"].includes(typeof value["home_team"])) ||
+      (typeof value["away_team"] === "string" &&
+        value["away_team"].length > 512) ||
+      (typeof value["home_team"] === "string" &&
+        value["home_team"].length > 512)
     )
       throw new SharpApiError("invalid-response");
+    const awayTeam = value["away_team"];
+    const homeTeam = value["home_team"];
+    if (ids.has(value["id"])) throw new SharpApiError("invalid-response");
     ids.add(value["id"]);
+    // Sharp includes futures/binary propositions in this catalogue. Those
+    // records intentionally have a missing participant and are not games.
+    if (
+      typeof awayTeam !== "string" ||
+      awayTeam.length === 0 ||
+      typeof homeTeam !== "string" ||
+      homeTeam.length === 0 ||
+      isSharpDerivativeMatchup(awayTeam, homeTeam)
+    )
+      continue;
+    if (
+      !canonical(value["away_team"]) ||
+      !canonical(value["home_team"]) ||
+      value["away_team"] === value["home_team"]
+    )
+      throw new SharpApiError("invalid-response");
     events.push({
       providerEventId: value["id"],
       awayTeam: value["away_team"],

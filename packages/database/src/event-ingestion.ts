@@ -25,11 +25,17 @@ export interface EventIngestionInput {
   readonly participantLabels?: readonly string[];
   readonly revision: ProviderRevision;
   readonly observedAt: IsoTimestamp;
+  readonly mappingKind?: "source" | "alias";
+  readonly reconciliationFence?: ReconciliationFence;
   readonly providerEventFence?: {
     readonly checkpointKey: string;
     readonly pagePosition: IngestionCheckpoint["position"];
     readonly windowEnd: IsoTimestamp;
   };
+}
+export interface ReconciliationFence {
+  readonly pk: string;
+  readonly token: string;
 }
 export type EventIngestionOutcome =
   | { readonly kind: "updated" | "skipped"; readonly eventId: string }
@@ -37,6 +43,15 @@ export type EventIngestionOutcome =
       readonly kind: "unresolved";
       readonly reason: "no-candidate" | "ambiguous-candidates";
     };
+export const NEAR_CANONICAL_START_TOLERANCE_SECONDS = 120;
+export type NearCanonicalLookup = Pick<
+  EventIngestionInput,
+  "sportKey" | "leagueKey" | "startsAt" | "status" | "participantLabels"
+>;
+export interface ScheduledEventReconciliationInput {
+  readonly event: EventIngestionInput;
+  readonly bootstrap: CanonicalEventBootstrap;
+}
 export interface EventIngestionStore {
   resolveExactCanonicalBinding(
     input: Pick<
@@ -49,15 +64,29 @@ export interface EventIngestionStore {
       EventIngestionInput,
       "providerId" | "providerEventId" | "sportKey" | "leagueKey"
     >,
-  ): Promise<{ readonly canonicalEventId: string } | null>;
+  ): Promise<{
+    readonly canonicalEventId: string;
+    readonly bindingKind: "source" | "alias";
+  } | null>;
   getCanonicalByIdentity(
     sportKey: SportKey,
     leagueKey: string,
     identity: string,
   ): Promise<"missing" | "present" | "ambiguous">;
+  findNearCanonicalCandidates(
+    input: NearCanonicalLookup,
+  ): Promise<readonly CanonicalEvent[]>;
+  reconcileScheduledEvent(
+    input: ScheduledEventReconciliationInput,
+  ): Promise<EventIngestionOutcome>;
+  recordReconciliationAmbiguity(
+    input: EventIngestionInput,
+    candidateEventIds: readonly string[],
+  ): Promise<void>;
   bootstrapCanonicalEvent(
     input: CanonicalEventBootstrap,
     observedAt: IsoTimestamp,
+    reconciliationFence?: ReconciliationFence,
   ): Promise<"created" | "existing" | "repaired">;
   recordBootstrapPageMarkers(
     checkpointKey: string,
@@ -132,6 +161,141 @@ export interface EventIngestionStore {
   ): Promise<void>;
   putRun(run: LeagueIngestionRun): Promise<void>;
 }
+
+const sameCandidateSnapshot = (left: CanonicalEvent, right: CanonicalEvent) =>
+  left.id === right.id &&
+  left.version === right.version &&
+  left.startsAt === right.startsAt &&
+  left.status === right.status &&
+  left.candidateIdentity === right.candidateIdentity &&
+  JSON.stringify(left.participantLabels) ===
+    JSON.stringify(right.participantLabels);
+
+/** Called only while the store owns the matchup reconciliation lease. */
+export async function reconcileScheduledEventUnderLease(
+  store: EventIngestionStore,
+  input: ScheduledEventReconciliationInput,
+  reconciliationFence?: ReconciliationFence,
+): Promise<EventIngestionOutcome> {
+  const { event, bootstrap } = input;
+  if (
+    event.status !== "scheduled" ||
+    bootstrap.status !== "scheduled" ||
+    event.sportKey !== bootstrap.sportKey ||
+    event.leagueKey !== bootstrap.leagueKey ||
+    event.startsAt !== bootstrap.startsAt ||
+    event.normalizedIdentity !== bootstrap.normalizedIdentity ||
+    JSON.stringify(event.participantLabels) !==
+      JSON.stringify(bootstrap.participantLabels)
+  )
+    throw new Error("invalid-scheduled-reconciliation");
+
+  const exactMapping = await store.getExactMapping(event);
+  const exact = exactMapping
+    ? await store.resolveExactCanonicalBinding(event)
+    : null;
+  if (exactMapping && exact) {
+    // The canonical source may legitimately correct its own schedule. A raw
+    // alias may not move the winning canonical schedule on replay.
+    if (exactMapping.bindingKind === "source")
+      return store.ingestEvent({
+        ...event,
+        mappingKind: "source",
+        ...(reconciliationFence ? { reconciliationFence } : {}),
+      });
+    if (!exact.participantLabels)
+      throw new Error("mapped-canonical-participants-missing");
+    return store.ingestEvent({
+      ...event,
+      startsAt: exact.startsAt,
+      status: exact.status,
+      participantLabels: exact.participantLabels,
+      normalizedIdentity: exact.candidateIdentity,
+      mappingKind: "alias",
+      ...(reconciliationFence ? { reconciliationFence } : {}),
+    });
+  }
+
+  const exactIdentity = await store.ingestEvent({
+    ...event,
+    mappingKind: "alias",
+    ...(reconciliationFence ? { reconciliationFence } : {}),
+  });
+  if (
+    exactIdentity.kind !== "unresolved" ||
+    exactIdentity.reason !== "no-candidate"
+  )
+    return exactIdentity;
+
+  const candidates = await store.findNearCanonicalCandidates(event);
+  if (candidates.length > 1) {
+    await store.recordReconciliationAmbiguity(
+      {
+        ...event,
+        ...(reconciliationFence ? { reconciliationFence } : {}),
+      },
+      candidates.map(({ id }) => id),
+    );
+    return { kind: "unresolved", reason: "ambiguous-candidates" };
+  }
+  const candidate = candidates[0];
+  if (candidate) {
+    const revalidated = await store.findNearCanonicalCandidates(event);
+    if (
+      revalidated.length !== 1 ||
+      !sameCandidateSnapshot(candidate, revalidated[0]!)
+    ) {
+      const ids = [
+        ...new Set([candidate.id, ...revalidated.map(({ id }) => id)]),
+      ];
+      if (ids.length > 1)
+        await store.recordReconciliationAmbiguity(
+          {
+            ...event,
+            ...(reconciliationFence ? { reconciliationFence } : {}),
+          },
+          ids,
+        );
+      return { kind: "unresolved", reason: "ambiguous-candidates" };
+    }
+    if (!candidate.participantLabels)
+      throw new Error("near-canonical-participants-missing");
+    return store.ingestEvent({
+      ...event,
+      startsAt: candidate.startsAt,
+      status: candidate.status,
+      participantLabels: candidate.participantLabels,
+      normalizedIdentity: candidate.candidateIdentity,
+      mappingKind: "alias",
+      ...(reconciliationFence ? { reconciliationFence } : {}),
+    });
+  }
+
+  await store.bootstrapCanonicalEvent(
+    bootstrap,
+    event.observedAt,
+    reconciliationFence,
+  );
+  return store.ingestEvent({
+    ...event,
+    mappingKind: "source",
+    ...(reconciliationFence ? { reconciliationFence } : {}),
+  });
+}
+
+export const reconciliationScope = (input: NearCanonicalLookup) => {
+  if (!input.participantLabels || input.participantLabels.length < 2)
+    throw new Error("reconciliation-participants-required");
+  const normalize = (value: string) =>
+    value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+  return stableDigest(
+    JSON.stringify([
+      input.sportKey,
+      normalize(input.leagueKey),
+      input.participantLabels.map(normalize),
+    ]),
+  );
+};
 export interface ContinuationOutbox {
   readonly id: string;
   readonly checkpointKey: string;
@@ -506,7 +670,7 @@ export function validateProviderEventMapping(
     throw new Error("invalid-provider-event-mapping");
   const item = value as Record<string, unknown>;
   if (
-    Object.keys(item).length !== 7 ||
+    ![7, 8].includes(Object.keys(item).length) ||
     !Object.keys(item).every((key) =>
       [
         "id",
@@ -516,8 +680,11 @@ export function validateProviderEventMapping(
         "sportKey",
         "leagueKey",
         "createdAt",
+        "bindingKind",
       ].includes(key),
     ) ||
+    (item["bindingKind"] !== undefined &&
+      !["source", "alias"].includes(item["bindingKind"] as string)) ||
     typeof item["id"] !== "string" ||
     !/^[a-f0-9]{64}$/.test(item["id"]) ||
     ![
@@ -545,7 +712,12 @@ export function validateProviderEventMapping(
       })
   )
     throw new Error("invalid-provider-event-mapping");
-  return value as ProviderEventMapping;
+  return {
+    ...(value as Omit<ProviderEventMapping, "bindingKind">),
+    bindingKind:
+      (item["bindingKind"] as
+        ProviderEventMapping["bindingKind"] | undefined) ?? "source",
+  };
 }
 export function validateProviderRevision(value: unknown): ProviderRevision {
   if (!value || typeof value !== "object" || Array.isArray(value))

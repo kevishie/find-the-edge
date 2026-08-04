@@ -22,6 +22,9 @@ import {
   mappingId,
   maxAuthority,
   repairAuthorityPointer,
+  reconciliationScope,
+  reconcileScheduledEventUnderLease,
+  NEAR_CANONICAL_START_TOLERANCE_SECONDS,
   nextIdentityVersion,
   nextBoundedVersion,
   providerEventFenceId,
@@ -51,6 +54,7 @@ import {
   type EventDetailPointer,
 } from "./event-read-projection";
 export class MemoryEventIngestionStore implements EventIngestionStore {
+  private readonly reconciliationLocks = new Map<string, Promise<void>>();
   readonly eventReadItems = new Map<
     string,
     import("./dynamodb-event-ingestion").DynamoItem
@@ -267,7 +271,10 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
       validated.leagueKey !== input.leagueKey
     )
       throw new Error("mapping-canonical-scope-mismatch");
-    return { canonicalEventId: mapping.canonicalEventId };
+    return {
+      canonicalEventId: mapping.canonicalEventId,
+      bindingKind: mapping.bindingKind,
+    };
   }
   async resolveExactCanonicalBinding(
     input: Pick<
@@ -280,6 +287,85 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
     const event = this.events.get(mapping.canonicalEventId);
     if (!event) throw new Error("mapping-canonical-missing");
     return validateCanonicalEvent(event);
+  }
+  async findNearCanonicalCandidates(
+    input: Parameters<EventIngestionStore["findNearCanonicalCandidates"]>[0],
+  ) {
+    await Promise.resolve();
+    if (input.status !== "scheduled" || !input.participantLabels) return [];
+    const normalize = (value: string) =>
+      value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+    const expected = input.participantLabels.map(normalize);
+    const startsAt = Date.parse(input.startsAt);
+    return [...this.events.values()]
+      .map(validateCanonicalEvent)
+      .filter(
+        (candidate) =>
+          candidate.sportKey === input.sportKey &&
+          candidate.leagueKey === input.leagueKey &&
+          candidate.status === "scheduled" &&
+          candidate.participantLabels?.length === expected.length &&
+          candidate.participantLabels.every(
+            (label, index) => normalize(label) === expected[index],
+          ) &&
+          Math.abs(Date.parse(candidate.startsAt) - startsAt) <=
+            NEAR_CANONICAL_START_TOLERANCE_SECONDS * 1_000,
+      )
+      .sort((left, right) => left.id.localeCompare(right.id));
+  }
+  async reconcileScheduledEvent(
+    input: Parameters<EventIngestionStore["reconcileScheduledEvent"]>[0],
+  ) {
+    const scope = reconciliationScope(input.event);
+    const predecessor = this.reconciliationLocks.get(scope);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chain = predecessor ? predecessor.then(() => current) : current;
+    this.reconciliationLocks.set(scope, chain);
+    if (predecessor) await predecessor;
+    try {
+      return await reconcileScheduledEventUnderLease(this, input);
+    } finally {
+      release();
+      if (this.reconciliationLocks.get(scope) === chain)
+        this.reconciliationLocks.delete(scope);
+    }
+  }
+  async recordReconciliationAmbiguity(
+    input: EventIngestionInput,
+    candidateEventIds: readonly string[],
+  ) {
+    await Promise.resolve();
+    const candidates = [...new Set(candidateEventIds)].sort().slice(0, 2);
+    if (candidates.length < 2) throw new Error("ambiguous-candidates-required");
+    const mid = mappingId(input);
+    const id = stableDigest(JSON.stringify([mid, input.normalizedIdentity]));
+    const observation = {
+      observedAt: input.observedAt,
+      reason: "ambiguous-candidates" as const,
+      candidateEventIds: candidates as EntityId[],
+    };
+    const current = this.unresolved.get(id);
+    const next: UnresolvedEventMapping = {
+      id,
+      providerId: input.providerId,
+      providerEventId: input.providerEventId,
+      sportKey: input.sportKey,
+      leagueKey: input.leagueKey,
+      normalizedIdentity: input.normalizedIdentity,
+      reason: observation.reason,
+      candidateEventIds: observation.candidateEventIds,
+      observations: [...(current?.observations ?? []).slice(-19), observation],
+      version: nextBoundedVersion(current?.version ?? 0),
+    };
+    validateUnresolvedEventMapping(next);
+    this.unresolved.set(id, next);
+    this.unresolvedObservations.set(
+      stableDigest(JSON.stringify([id, observation])),
+      observation,
+    );
   }
   async getProviderEventFence(
     checkpointKey: string,
@@ -743,7 +829,10 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
       sportKey: input.sportKey,
       leagueKey: input.leagueKey,
       createdAt: input.observedAt,
+      bindingKind: input.mappingKind ?? "source",
     };
+    if (mapped && input.mappingKind && mapped.bindingKind !== input.mappingKind)
+      throw new Error("mapping-provenance-conflict");
     if (
       providerComparison === 0 &&
       (persistedIsProviderPrior &&

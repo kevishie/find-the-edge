@@ -91,7 +91,8 @@ class ContractGateway implements DynamoGateway {
         write.kind === "replace" ||
         write.kind === "put-projection" ||
         write.kind === "put-provider-event-fence" ||
-        write.kind === "put-bootstrap-marker"
+        write.kind === "put-bootstrap-marker" ||
+        write.kind === "renew-reconciliation-lock"
           ? this.key(write.item.pk, write.item.sk)
           : this.key(write.pk, write.sk);
       if (targets.has(target)) throw new Error("duplicate-transaction-target");
@@ -158,6 +159,26 @@ class ContractGateway implements DynamoGateway {
         )
           throw new Error("identity-owner-conflict");
         snapshot.delete(this.key(write.pk, write.sk));
+        continue;
+      }
+      if (write.kind === "check-reconciliation-lock") {
+        const current = snapshot.get(this.key(write.pk, write.sk))?.value as
+          { eventId?: string; leaseUntil?: string } | undefined;
+        if (
+          current?.eventId !== write.expectedToken ||
+          !current.leaseUntil ||
+          current.leaseUntil <= write.leaseAfter
+        )
+          throw new Error("reconciliation-ownership-lost");
+        continue;
+      }
+      if (write.kind === "renew-reconciliation-lock") {
+        const key = this.key(write.item.pk, write.item.sk);
+        const current = snapshot.get(key)?.value as
+          { eventId?: string } | undefined;
+        if (current?.eventId !== write.expectedToken)
+          throw new Error("reconciliation-ownership-lost");
+        snapshot.set(key, write.item);
         continue;
       }
       const key = this.key(write.item.pk, write.item.sk);
@@ -318,6 +339,159 @@ function pendingOutbox(
 
 function contract(name: string, create: () => EventIngestionStore) {
   describe(`${name} event-ingestion contract`, () => {
+    it("serializes concurrent same-matchup reconciliation", async () => {
+      const store = create();
+      const reconciliation = (id: string, startsAt: string) => {
+        const candidate = {
+          ...bootstrap,
+          id: `canonical-${id}` as EntityId,
+          canonicalKey: id,
+          startsAt: startsAt as IsoTimestamp,
+          normalizedIdentity: `identity-${id}`,
+          revision: {
+            ...bootstrap.revision,
+            providerId: "sharpapi",
+            token: id,
+          },
+        };
+        return {
+          bootstrap: candidate,
+          event: {
+            providerId: "sharpapi",
+            providerEventId: id,
+            sportKey: candidate.sportKey,
+            leagueKey: candidate.leagueKey,
+            normalizedIdentity: candidate.normalizedIdentity,
+            startsAt: candidate.startsAt,
+            status: candidate.status,
+            participantLabels: candidate.participantLabels,
+            revision: candidate.revision,
+            observedAt,
+          },
+        };
+      };
+      const outcomes = await Promise.all([
+        store.reconcileScheduledEvent(
+          reconciliation("book-1", "2026-08-01T00:00:00.000Z"),
+        ),
+        store.reconcileScheduledEvent(
+          reconciliation("book-2", "2026-08-01T00:01:00.000Z"),
+        ),
+      ]);
+      expect(outcomes.every(({ kind }) => kind !== "unresolved")).toBe(true);
+      const bindings = await Promise.all(
+        ["book-1", "book-2"].map((providerEventId) =>
+          store.resolveExactCanonicalBinding({
+            providerId: "sharpapi",
+            providerEventId,
+            sportKey: bootstrap.sportKey,
+            leagueKey: bootstrap.leagueKey,
+          }),
+        ),
+      );
+      expect(bindings[0]?.id).toBe(bindings[1]?.id);
+    });
+
+    it("crosses Eastern midnight and ignores closed projections", async () => {
+      const store = create();
+      const beforeMidnight = {
+        ...bootstrap,
+        id: "midnight" as EntityId,
+        startsAt: "2026-08-04T03:59:30.000Z" as IsoTimestamp,
+        normalizedIdentity: "midnight-before",
+      };
+      await store.bootstrapCanonicalEvent(beforeMidnight, observedAt);
+      await expect(
+        store.findNearCanonicalCandidates({
+          sportKey: bootstrap.sportKey,
+          leagueKey: bootstrap.leagueKey,
+          startsAt: "2026-08-04T04:00:30.000Z" as IsoTimestamp,
+          status: "scheduled",
+          participantLabels: bootstrap.participantLabels,
+        }),
+      ).resolves.toEqual([expect.objectContaining({ id: "midnight" })]);
+
+      await store.bootstrapCanonicalEvent(
+        {
+          ...beforeMidnight,
+          startsAt: "2026-08-04T05:00:00.000Z" as IsoTimestamp,
+          normalizedIdentity: "midnight-corrected",
+          revision: {
+            ...beforeMidnight.revision,
+            sequence: 2,
+            token: "midnight-corrected",
+          },
+        },
+        "2026-07-30T00:01:00.000Z" as IsoTimestamp,
+      );
+      await expect(
+        store.findNearCanonicalCandidates({
+          sportKey: bootstrap.sportKey,
+          leagueKey: bootstrap.leagueKey,
+          startsAt: "2026-08-04T03:59:30.000Z" as IsoTimestamp,
+          status: "scheduled",
+          participantLabels: bootstrap.participantLabels,
+        }),
+      ).resolves.toEqual([]);
+    });
+    it("finds only ordered scheduled candidates inside the inclusive near window", async () => {
+      const store = create();
+      const candidates = [
+        { id: "near-zero", seconds: 0 },
+        { id: "near-edge", seconds: 120 },
+        { id: "outside", seconds: 121 },
+      ] as const;
+      for (const candidate of candidates)
+        await store.bootstrapCanonicalEvent(
+          {
+            ...bootstrap,
+            id: candidate.id as EntityId,
+            canonicalKey: candidate.id,
+            startsAt: new Date(
+              Date.parse(bootstrap.startsAt) + candidate.seconds * 1_000,
+            ).toISOString() as IsoTimestamp,
+            normalizedIdentity: `identity-${candidate.id}`,
+            revision: {
+              ...bootstrap.revision,
+              sequence: candidate.seconds + 1,
+              token: candidate.id,
+            },
+          },
+          observedAt,
+        );
+      await expect(
+        store.findNearCanonicalCandidates({
+          sportKey: bootstrap.sportKey,
+          leagueKey: bootstrap.leagueKey,
+          startsAt: bootstrap.startsAt,
+          status: "scheduled",
+          participantLabels: [" a ", "B"],
+        }),
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "near-zero" }),
+          expect.objectContaining({ id: "near-edge" }),
+        ]),
+      );
+      const found = await store.findNearCanonicalCandidates({
+        sportKey: bootstrap.sportKey,
+        leagueKey: bootstrap.leagueKey,
+        startsAt: bootstrap.startsAt,
+        status: "scheduled",
+        participantLabels: ["A", "B"],
+      });
+      expect(found.map(({ id }) => id)).toEqual(["near-edge", "near-zero"]);
+      expect(found.some(({ id }) => id === "outside")).toBe(false);
+      await expect(
+        store.findNearCanonicalCandidates({
+          sportKey: bootstrap.sportKey,
+          leagueKey: bootstrap.leagueKey,
+          startsAt: bootstrap.startsAt,
+          status: "scheduled",
+          participantLabels: ["B", "A"],
+        }),
+      ).resolves.toEqual([]);
+    });
     it("rejects bootstrap IDs and identities replayed at another page position", async () => {
       const store = create();
       const event = {
@@ -1104,6 +1278,128 @@ describe("projection temporal fences", () => {
 
 contract("memory", () => new MemoryEventIngestionStore());
 contract("dynamo", () => new DynamoEventIngestionStore(new ContractGateway()));
+
+const reconciliationInput = (providerEventId: string) => {
+  const candidate = {
+    ...bootstrap,
+    id: `canonical-${providerEventId}` as EntityId,
+    canonicalKey: providerEventId,
+    normalizedIdentity: `identity-${providerEventId}`,
+    revision: {
+      ...bootstrap.revision,
+      providerId: "sharpapi",
+      token: providerEventId,
+    },
+  };
+  return {
+    bootstrap: candidate,
+    event: {
+      providerId: "sharpapi",
+      providerEventId,
+      sportKey: candidate.sportKey,
+      leagueKey: candidate.leagueKey,
+      normalizedIdentity: candidate.normalizedIdentity,
+      startsAt: candidate.startsAt,
+      status: candidate.status,
+      participantLabels: candidate.participantLabels,
+      revision: candidate.revision,
+      observedAt,
+    },
+  };
+};
+
+describe("dynamo reconciliation ownership fencing", () => {
+  it("renews a lease during a long-running candidate read", async () => {
+    class SlowGateway extends ContractGateway {
+      renewals = 0;
+      override async queryAll(pk: string) {
+        await new Promise((resolve) => setTimeout(resolve, 45));
+        return super.queryAll(pk);
+      }
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        this.renewals += writes.filter(
+          ({ kind }) => kind === "renew-reconciliation-lock",
+        ).length;
+        return super.transact(writes);
+      }
+    }
+    const gateway = new SlowGateway();
+    const store = new DynamoEventIngestionStore(gateway, {
+      leaseMs: 30,
+      heartbeatMs: 5,
+    });
+    const outcome = await store.reconcileScheduledEvent(
+      reconciliationInput("slow-source"),
+    );
+    expect(["updated", "skipped"]).toContain(outcome.kind);
+    expect(gateway.renewals).toBeGreaterThan(0);
+  });
+
+  it("rejects the final write after lease takeover", async () => {
+    class TakeoverGateway extends ContractGateway {
+      override async queryAll(pk: string) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return super.queryAll(pk);
+      }
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        if (writes.some(({ kind }) => kind === "renew-reconciliation-lock")) {
+          const lock = [...this.items.values()].find((item) =>
+            item.pk.startsWith("EVENT_RECONCILIATION#"),
+          );
+          if (lock)
+            this.items.set(this.key(lock.pk, lock.sk), {
+              ...lock,
+              value: {
+                ...(lock.value as object),
+                eventId: "takeover-token",
+              },
+            });
+        }
+        return super.transact(writes);
+      }
+    }
+    const store = new DynamoEventIngestionStore(new TakeoverGateway(), {
+      leaseMs: 20,
+      heartbeatMs: 5,
+    });
+    await expect(
+      store.reconcileScheduledEvent(reconciliationInput("taken-over")),
+    ).rejects.toThrow("event-reconciliation-ownership-lost");
+  });
+
+  it("surfaces token loss during cleanup", async () => {
+    class CleanupConflictGateway extends ContractGateway {
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        const cleanup = writes.find(
+          (
+            write,
+          ): write is Extract<(typeof writes)[number], { kind: "delete" }> =>
+            write.kind === "delete" &&
+            write.pk.startsWith("EVENT_RECONCILIATION#"),
+        );
+        if (cleanup) {
+          const lock = this.items.get(this.key(cleanup.pk, cleanup.sk));
+          if (lock)
+            this.items.set(this.key(cleanup.pk, cleanup.sk), {
+              ...lock,
+              value: { ...(lock.value as object), eventId: "new-owner" },
+            });
+        }
+        return super.transact(writes);
+      }
+    }
+    const store = new DynamoEventIngestionStore(new CleanupConflictGateway());
+    await expect(
+      store.reconcileScheduledEvent(reconciliationInput("cleanup-conflict")),
+    ).rejects.toThrow("event-reconciliation-ownership-lost");
+  });
+});
 
 describe("dynamo identity-claim reads", () => {
   it("repairs an equal bootstrap replay through a versioned tombstone replace", async () => {

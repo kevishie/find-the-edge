@@ -8,6 +8,7 @@ import type {
 } from "@find-the-edge/database";
 import { randomUUID } from "node:crypto";
 import type { LiveOddsPersister } from "./live-odds-ingestion";
+import { reconcileScheduledProviderEvent } from "./schedule-reconciliation";
 
 const putContinuationCas = async (
   store: OddsControlPlaneStore,
@@ -117,8 +118,6 @@ import {
   fetchSharpApiSplitsPage,
   fetchTheOddsApi,
   fetchTheOddsApiEvents,
-  fixtureBootstrap,
-  normalizedUpcomingEventIdentity,
   sharpApiLeagues,
   theOddsApiLeagues,
   type SharpApiOddsPage,
@@ -280,20 +279,12 @@ async function bindScheduleEvent(
   observedAt: IsoTimestamp,
 ) {
   const event = scheduleEvent(providerId, league, raw, observedAt);
-  const command = {
-    ...event,
+  const result = await reconcileScheduledProviderEvent(
+    store,
     providerId,
-    normalizedIdentity: normalizedUpcomingEventIdentity(event),
+    event,
     observedAt,
-  };
-  let result = await store.ingestEvent(command);
-  if (result.kind === "unresolved" && result.reason === "no-candidate") {
-    await store.bootstrapCanonicalEvent(
-      fixtureBootstrap(event, raw.providerEventId),
-      observedAt,
-    );
-    result = await store.ingestEvent(command);
-  }
+  );
   if (result.kind === "unresolved")
     throw new Error("schedule-mapping-unresolved");
 }

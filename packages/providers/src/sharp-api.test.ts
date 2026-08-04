@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SportKey } from "@find-the-edge/domain";
 import {
+  isSharpDerivativeMatchup,
   parseSharpApiOddsPage,
   parseSharpApiSchedulePage,
   parseSharpApiSplitPage,
@@ -147,6 +148,79 @@ describe("SharpAPI activation boundary", () => {
               league: "mlb",
               away_team: "Away",
               home_team: "Home",
+              start_time: "not-an-instant",
+              status: "upcoming",
+              is_live: false,
+            },
+          ],
+          pagination: { has_more: false, next_offset: null },
+        },
+        sharpApiLeagues[0]!,
+        "2026-08-04T12:00:00.000Z" as never,
+      ),
+    ).toThrow("invalid-response");
+  });
+  it("excludes recognizable derivative catalogue rows", () => {
+    const page = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "team-total",
+            league: "mlb",
+            away_team: "Away Total Runs",
+            home_team: "Home Total Runs",
+            start_time: "2026-08-04T20:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+          {
+            id: "innings",
+            league: "mlb",
+            away_team: "Away: First 5 Innings",
+            home_team: "Home: First 5 Innings",
+            start_time: "2026-08-04T20:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+          {
+            id: "game",
+            league: "mlb",
+            away_team: "Away",
+            home_team: "Home",
+            start_time: "2026-08-04T20:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagues[0]!,
+      "2026-08-04T12:00:00.000Z" as never,
+    );
+    expect(page.events.map((event) => event.providerEventId)).toEqual(["game"]);
+    expect(
+      isSharpDerivativeMatchup("Away - Player Props", "Home - Player Props"),
+    ).toBe(true);
+    expect(isSharpDerivativeMatchup("Away Total Runs", "Home Club")).toBe(
+      false,
+    );
+    expect(isSharpDerivativeMatchup("Total Runs Baseball Club", "Home")).toBe(
+      false,
+    );
+    expect(isSharpDerivativeMatchup("Innings United", "Cy Young Academy")).toBe(
+      false,
+    );
+  });
+  it("validates malformed derivative-shaped rows before excluding them", () => {
+    expect(() =>
+      parseSharpApiSchedulePage(
+        {
+          data: [
+            {
+              id: "malformed-team-total",
+              league: "mlb",
+              away_team: "Away Total Runs",
+              home_team: "Home Total Runs",
               start_time: "not-an-instant",
               status: "upcoming",
               is_live: false,

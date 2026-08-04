@@ -433,6 +433,7 @@ export interface ProviderEventMapping {
   readonly sportKey: SportKey;
   readonly leagueKey: string;
   readonly createdAt: IsoTimestamp;
+  readonly bindingKind: "source" | "alias";
 }
 export interface EventHistoryEntry {
   readonly id: string;

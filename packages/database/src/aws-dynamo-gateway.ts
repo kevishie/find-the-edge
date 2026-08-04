@@ -199,118 +199,172 @@ export class AwsDynamoGateway implements DynamoGateway {
                         ConditionExpression: "attribute_not_exists(pk)",
                       },
                     }
-                  : write.kind === "check-event"
+                  : write.kind === "check-reconciliation-lock"
                     ? {
                         ConditionCheck: {
                           TableName: this.tableName,
                           Key: { pk: write.pk, sk: write.sk },
                           ConditionExpression:
-                            "#value.#version=:version AND #value.#identity=:identity" +
-                            (write.expectedSnapshot
-                              ? " AND #value=:snapshot"
-                              : ""),
+                            "#value.#eventId=:token AND #value.#leaseUntil>:leaseAfter",
                           ExpressionAttributeNames: {
                             "#value": "value",
-                            "#version": "version",
-                            "#identity": "candidateIdentity",
+                            "#eventId": "eventId",
+                            "#leaseUntil": "leaseUntil",
                           },
                           ExpressionAttributeValues: {
-                            ":version": write.expectedVersion,
-                            ":identity": write.expectedIdentity,
-                            ...(write.expectedSnapshot
-                              ? { ":snapshot": write.expectedSnapshot }
-                              : {}),
+                            ":token": write.expectedToken,
+                            ":leaseAfter": write.leaseAfter,
                           },
                         },
                       }
-                    : write.kind === "delete"
+                    : write.kind === "renew-reconciliation-lock"
                       ? {
-                          Delete: {
+                          Put: {
                             TableName: this.tableName,
-                            Key: { pk: write.pk, sk: write.sk },
-                            ...(write.expectedVersion !== undefined ||
-                            write.expectedEventId !== undefined
-                              ? {
-                                  ConditionExpression: [
-                                    ...(write.expectedVersion !== undefined
-                                      ? ["#value.#version=:version"]
-                                      : []),
-                                    ...(write.expectedEventId !== undefined
-                                      ? [
-                                          "(#value.#eventId=:eventId OR #value=:eventId)",
-                                        ]
-                                      : []),
-                                  ].join(" AND "),
-                                  ExpressionAttributeNames: {
-                                    "#value": "value",
-                                    ...(write.expectedVersion !== undefined
-                                      ? { "#version": "version" }
-                                      : {}),
-                                    ...(write.expectedEventId !== undefined
-                                      ? { "#eventId": "eventId" }
-                                      : {}),
-                                  },
-                                  ExpressionAttributeValues: {
-                                    ...(write.expectedVersion !== undefined
-                                      ? { ":version": write.expectedVersion }
-                                      : {}),
-                                    ...(write.expectedEventId !== undefined
-                                      ? { ":eventId": write.expectedEventId }
-                                      : {}),
-                                  },
-                                }
-                              : {}),
+                            Item: write.item,
+                            ConditionExpression: "#value.#eventId=:token",
+                            ExpressionAttributeNames: {
+                              "#value": "value",
+                              "#eventId": "eventId",
+                            },
+                            ExpressionAttributeValues: {
+                              ":token": write.expectedToken,
+                            },
                           },
                         }
-                      : write.kind === "put-projection"
+                      : write.kind === "check-event"
                         ? {
-                            Put: {
+                            ConditionCheck: {
                               TableName: this.tableName,
-                              Item: write.item,
-                              ...(write.expectedValue !== undefined
-                                ? {
-                                    ConditionExpression:
-                                      "#value = :projectionExpected",
-                                    ExpressionAttributeNames: {
-                                      "#value": "value",
-                                    },
-                                    ExpressionAttributeValues: {
-                                      ":projectionExpected":
-                                        write.expectedValue,
-                                    },
-                                  }
-                                : write.requireAbsent
-                                  ? {
-                                      ConditionExpression:
-                                        "attribute_not_exists(pk)",
-                                    }
+                              Key: { pk: write.pk, sk: write.sk },
+                              ConditionExpression:
+                                "#value.#version=:version AND #value.#identity=:identity" +
+                                (write.expectedSnapshot
+                                  ? " AND #value=:snapshot"
+                                  : ""),
+                              ExpressionAttributeNames: {
+                                "#value": "value",
+                                "#version": "version",
+                                "#identity": "candidateIdentity",
+                              },
+                              ExpressionAttributeValues: {
+                                ":version": write.expectedVersion,
+                                ":identity": write.expectedIdentity,
+                                ...(write.expectedSnapshot
+                                  ? { ":snapshot": write.expectedSnapshot }
                                   : {}),
+                              },
                             },
                           }
-                        : write.kind === "insert" ||
-                            write.kind === "claim-identity"
+                        : write.kind === "delete"
                           ? {
-                              Put: {
+                              Delete: {
                                 TableName: this.tableName,
-                                Item: write.item,
-                                ConditionExpression: "attribute_not_exists(pk)",
+                                Key: { pk: write.pk, sk: write.sk },
+                                ...(write.expectedVersion !== undefined ||
+                                write.expectedEventId !== undefined ||
+                                write.expectedLeaseUntil !== undefined
+                                  ? {
+                                      ConditionExpression: [
+                                        ...(write.expectedVersion !== undefined
+                                          ? ["#value.#version=:version"]
+                                          : []),
+                                        ...(write.expectedEventId !== undefined
+                                          ? [
+                                              "(#value.#eventId=:eventId OR #value=:eventId)",
+                                            ]
+                                          : []),
+                                        ...(write.expectedLeaseUntil !==
+                                        undefined
+                                          ? ["#value.#leaseUntil=:leaseUntil"]
+                                          : []),
+                                      ].join(" AND "),
+                                      ExpressionAttributeNames: {
+                                        "#value": "value",
+                                        ...(write.expectedVersion !== undefined
+                                          ? { "#version": "version" }
+                                          : {}),
+                                        ...(write.expectedEventId !== undefined
+                                          ? { "#eventId": "eventId" }
+                                          : {}),
+                                        ...(write.expectedLeaseUntil !==
+                                        undefined
+                                          ? { "#leaseUntil": "leaseUntil" }
+                                          : {}),
+                                      },
+                                      ExpressionAttributeValues: {
+                                        ...(write.expectedVersion !== undefined
+                                          ? {
+                                              ":version": write.expectedVersion,
+                                            }
+                                          : {}),
+                                        ...(write.expectedEventId !== undefined
+                                          ? {
+                                              ":eventId": write.expectedEventId,
+                                            }
+                                          : {}),
+                                        ...(write.expectedLeaseUntil !==
+                                        undefined
+                                          ? {
+                                              ":leaseUntil":
+                                                write.expectedLeaseUntil,
+                                            }
+                                          : {}),
+                                      },
+                                    }
+                                  : {}),
                               },
                             }
-                          : {
-                              Put: {
-                                TableName: this.tableName,
-                                Item: write.item,
-                                ConditionExpression:
-                                  "#value.#version = :expected",
-                                ExpressionAttributeNames: {
-                                  "#value": "value",
-                                  "#version": "version",
+                          : write.kind === "put-projection"
+                            ? {
+                                Put: {
+                                  TableName: this.tableName,
+                                  Item: write.item,
+                                  ...(write.expectedValue !== undefined
+                                    ? {
+                                        ConditionExpression:
+                                          "#value = :projectionExpected",
+                                        ExpressionAttributeNames: {
+                                          "#value": "value",
+                                        },
+                                        ExpressionAttributeValues: {
+                                          ":projectionExpected":
+                                            write.expectedValue,
+                                        },
+                                      }
+                                    : write.requireAbsent
+                                      ? {
+                                          ConditionExpression:
+                                            "attribute_not_exists(pk)",
+                                        }
+                                      : {}),
                                 },
-                                ExpressionAttributeValues: {
-                                  ":expected": write.expectedVersion,
+                              }
+                            : write.kind === "insert" ||
+                                write.kind === "claim-identity"
+                              ? {
+                                  Put: {
+                                    TableName: this.tableName,
+                                    Item: write.item,
+                                    ConditionExpression:
+                                      "attribute_not_exists(pk)",
+                                  },
+                                }
+                              : {
+                                  Put: {
+                                    TableName: this.tableName,
+                                    Item: write.item,
+                                    ConditionExpression:
+                                      "#value.#version = :expected",
+                                    ExpressionAttributeNames: {
+                                      "#value": "value",
+                                      "#version": "version",
+                                    },
+                                    ExpressionAttributeValues: {
+                                      ":expected": write.expectedVersion,
+                                    },
+                                  },
                                 },
-                              },
-                            },
           ),
         }),
       );
@@ -426,122 +480,182 @@ export class AwsDynamoGateway implements DynamoGateway {
                           ConditionExpression: "attribute_not_exists(pk)",
                         },
                       }
-                    : write.kind === "check-event"
+                    : write.kind === "check-reconciliation-lock"
                       ? {
                           ConditionCheck: {
                             TableName: this.tableName,
                             Key: { pk: write.pk, sk: write.sk },
                             ConditionExpression:
-                              "#value.#version=:version AND #value.#identity=:identity" +
-                              (write.expectedSnapshot
-                                ? " AND #value=:snapshot"
-                                : ""),
+                              "#value.#eventId=:token AND #value.#leaseUntil>:leaseAfter",
                             ExpressionAttributeNames: {
                               "#value": "value",
-                              "#version": "version",
-                              "#identity": "candidateIdentity",
+                              "#eventId": "eventId",
+                              "#leaseUntil": "leaseUntil",
                             },
                             ExpressionAttributeValues: {
-                              ":version": write.expectedVersion,
-                              ":identity": write.expectedIdentity,
-                              ...(write.expectedSnapshot
-                                ? { ":snapshot": write.expectedSnapshot }
-                                : {}),
+                              ":token": write.expectedToken,
+                              ":leaseAfter": write.leaseAfter,
                             },
                           },
                         }
-                      : write.kind === "insert" ||
-                          write.kind === "claim-identity"
+                      : write.kind === "renew-reconciliation-lock"
                         ? {
                             Put: {
                               TableName: this.tableName,
                               Item: write.item,
-                              ConditionExpression: "attribute_not_exists(pk)",
+                              ConditionExpression: "#value.#eventId=:token",
+                              ExpressionAttributeNames: {
+                                "#value": "value",
+                                "#eventId": "eventId",
+                              },
+                              ExpressionAttributeValues: {
+                                ":token": write.expectedToken,
+                              },
                             },
                           }
-                        : write.kind === "delete"
+                        : write.kind === "check-event"
                           ? {
-                              Delete: {
+                              ConditionCheck: {
                                 TableName: this.tableName,
                                 Key: { pk: write.pk, sk: write.sk },
-                                ...(write.expectedVersion !== undefined ||
-                                write.expectedEventId !== undefined
-                                  ? {
-                                      ConditionExpression: [
-                                        ...(write.expectedVersion !== undefined
-                                          ? ["#value.#version=:version"]
-                                          : []),
-                                        ...(write.expectedEventId !== undefined
-                                          ? [
-                                              "(#value.#eventId=:eventId OR #value=:eventId)",
-                                            ]
-                                          : []),
-                                      ].join(" AND "),
-                                      ExpressionAttributeNames: {
-                                        "#value": "value",
-                                        ...(write.expectedVersion !== undefined
-                                          ? { "#version": "version" }
-                                          : {}),
-                                        ...(write.expectedEventId !== undefined
-                                          ? { "#eventId": "eventId" }
-                                          : {}),
-                                      },
-                                      ExpressionAttributeValues: {
-                                        ...(write.expectedVersion !== undefined
-                                          ? {
-                                              ":version": write.expectedVersion,
-                                            }
-                                          : {}),
-                                        ...(write.expectedEventId !== undefined
-                                          ? {
-                                              ":eventId": write.expectedEventId,
-                                            }
-                                          : {}),
-                                      },
-                                    }
-                                  : {}),
+                                ConditionExpression:
+                                  "#value.#version=:version AND #value.#identity=:identity" +
+                                  (write.expectedSnapshot
+                                    ? " AND #value=:snapshot"
+                                    : ""),
+                                ExpressionAttributeNames: {
+                                  "#value": "value",
+                                  "#version": "version",
+                                  "#identity": "candidateIdentity",
+                                },
+                                ExpressionAttributeValues: {
+                                  ":version": write.expectedVersion,
+                                  ":identity": write.expectedIdentity,
+                                  ...(write.expectedSnapshot
+                                    ? { ":snapshot": write.expectedSnapshot }
+                                    : {}),
+                                },
                               },
                             }
-                          : write.kind === "put-projection"
+                          : write.kind === "insert" ||
+                              write.kind === "claim-identity"
                             ? {
                                 Put: {
                                   TableName: this.tableName,
                                   Item: write.item,
-                                  ...(write.expectedValue !== undefined
-                                    ? {
-                                        ConditionExpression:
-                                          "#value = :projectionExpected",
-                                        ExpressionAttributeNames: {
-                                          "#value": "value",
-                                        },
-                                        ExpressionAttributeValues: {
-                                          ":projectionExpected":
-                                            write.expectedValue,
-                                        },
-                                      }
-                                    : write.requireAbsent
-                                      ? {
-                                          ConditionExpression:
-                                            "attribute_not_exists(pk)",
-                                        }
-                                      : {}),
+                                  ConditionExpression:
+                                    "attribute_not_exists(pk)",
                                 },
                               }
-                            : {
-                                Put: {
-                                  TableName: this.tableName,
-                                  Item: write.item,
-                                  ConditionExpression:
-                                    "#value.#version=:version",
-                                  ExpressionAttributeNames: {
-                                    "#value": "value",
-                                    "#version": "version",
+                            : write.kind === "delete"
+                              ? {
+                                  Delete: {
+                                    TableName: this.tableName,
+                                    Key: { pk: write.pk, sk: write.sk },
+                                    ...(write.expectedVersion !== undefined ||
+                                    write.expectedEventId !== undefined ||
+                                    write.expectedLeaseUntil !== undefined
+                                      ? {
+                                          ConditionExpression: [
+                                            ...(write.expectedVersion !==
+                                            undefined
+                                              ? ["#value.#version=:version"]
+                                              : []),
+                                            ...(write.expectedEventId !==
+                                            undefined
+                                              ? [
+                                                  "(#value.#eventId=:eventId OR #value=:eventId)",
+                                                ]
+                                              : []),
+                                            ...(write.expectedLeaseUntil !==
+                                            undefined
+                                              ? [
+                                                  "#value.#leaseUntil=:leaseUntil",
+                                                ]
+                                              : []),
+                                          ].join(" AND "),
+                                          ExpressionAttributeNames: {
+                                            "#value": "value",
+                                            ...(write.expectedVersion !==
+                                            undefined
+                                              ? { "#version": "version" }
+                                              : {}),
+                                            ...(write.expectedEventId !==
+                                            undefined
+                                              ? { "#eventId": "eventId" }
+                                              : {}),
+                                            ...(write.expectedLeaseUntil !==
+                                            undefined
+                                              ? { "#leaseUntil": "leaseUntil" }
+                                              : {}),
+                                          },
+                                          ExpressionAttributeValues: {
+                                            ...(write.expectedVersion !==
+                                            undefined
+                                              ? {
+                                                  ":version":
+                                                    write.expectedVersion,
+                                                }
+                                              : {}),
+                                            ...(write.expectedEventId !==
+                                            undefined
+                                              ? {
+                                                  ":eventId":
+                                                    write.expectedEventId,
+                                                }
+                                              : {}),
+                                            ...(write.expectedLeaseUntil !==
+                                            undefined
+                                              ? {
+                                                  ":leaseUntil":
+                                                    write.expectedLeaseUntil,
+                                                }
+                                              : {}),
+                                          },
+                                        }
+                                      : {}),
                                   },
-                                  ExpressionAttributeValues: {
-                                    ":version": write.expectedVersion,
+                                }
+                              : write.kind === "put-projection"
+                                ? {
+                                    Put: {
+                                      TableName: this.tableName,
+                                      Item: write.item,
+                                      ...(write.expectedValue !== undefined
+                                        ? {
+                                            ConditionExpression:
+                                              "#value = :projectionExpected",
+                                            ExpressionAttributeNames: {
+                                              "#value": "value",
+                                            },
+                                            ExpressionAttributeValues: {
+                                              ":projectionExpected":
+                                                write.expectedValue,
+                                            },
+                                          }
+                                        : write.requireAbsent
+                                          ? {
+                                              ConditionExpression:
+                                                "attribute_not_exists(pk)",
+                                            }
+                                          : {}),
+                                    },
+                                  }
+                                : {
+                                    Put: {
+                                      TableName: this.tableName,
+                                      Item: write.item,
+                                      ConditionExpression:
+                                        "#value.#version=:version",
+                                      ExpressionAttributeNames: {
+                                        "#value": "value",
+                                        "#version": "version",
+                                      },
+                                      ExpressionAttributeValues: {
+                                        ":version": write.expectedVersion,
+                                      },
+                                    },
                                   },
-                                },
-                              },
             ),
           ],
         }),

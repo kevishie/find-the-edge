@@ -12,8 +12,8 @@ import {
   fetchSharpApiOddsPage,
   fetchSharpApiSchedulePage,
   fetchSharpApiSplitsPage,
-  fixtureBootstrap,
   normalizedUpcomingEventIdentity,
+  isSharpDerivativeMatchup,
   sharpApiLeagues,
   type SharpApiAccount,
   type SharpApiLeague,
@@ -21,6 +21,7 @@ import {
   type SharpApiSchedulePage,
   type SharpApiSplitPage,
 } from "@find-the-edge/providers";
+import { reconcileScheduledProviderEvent } from "./schedule-reconciliation";
 
 export interface SharpApiOddsPersister {
   persist(input: FixtureOddsIngestInput): Promise<FixtureOddsPersistResult>;
@@ -55,13 +56,6 @@ const providerEvent = (
     token: updatedAt,
   },
 });
-
-const isDerivativeEvent = (event: SharpApiOddsPage["events"][number]) =>
-  [event.awayTeam, event.homeTeam].some((team) =>
-    /(?:\s-\splayer props|:\s*(?:extra innings|first\s+\d+\s+innings?))$/i.test(
-      team,
-    ),
-  );
 
 const providerEventDay = (providerEventId: string) =>
   providerEventId.match(/(?:^|_)(\d{4}-\d{2}-\d{2})(?:_|$)/)?.[1];
@@ -230,7 +224,7 @@ export async function persistSharpApiOddsPage(
   let events = 0;
   let observations = 0;
   for (const raw of page.events) {
-    if (isDerivativeEvent(raw)) continue;
+    if (isSharpDerivativeMatchup(raw.awayTeam, raw.homeTeam)) continue;
     const event = providerEvent(league, raw, page.retrievedAt);
     const ingested = await store.ingestEvent({
       ...event,
@@ -434,23 +428,12 @@ export async function ingestSharpApi(
         },
         scheduleResult.retrievedAt,
       );
-      const command = {
-        ...event,
-        providerId: SHARP_API_PROVIDER_ID,
-        normalizedIdentity: normalizedUpcomingEventIdentity(event),
-        observedAt: scheduleResult.retrievedAt,
-      };
-      let ingested = await store.ingestEvent(command);
-      if (
-        ingested.kind === "unresolved" &&
-        ingested.reason === "no-candidate"
-      ) {
-        await store.bootstrapCanonicalEvent(
-          fixtureBootstrap(event, raw.providerEventId),
-          scheduleResult.retrievedAt,
-        );
-        ingested = await store.ingestEvent(command);
-      }
+      const ingested = await reconcileScheduledProviderEvent(
+        store,
+        SHARP_API_PROVIDER_ID,
+        event,
+        scheduleResult.retrievedAt,
+      );
       if (ingested.kind === "unresolved")
         throw new Error(`sharpapi-schedule-mapping-${ingested.reason}`);
     }

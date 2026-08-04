@@ -47,6 +47,14 @@ describe("SharpAPI primary ingestion", () => {
       resolveExactCanonicalBinding,
       bootstrapCanonicalEvent,
       ingestEvent,
+      findNearCanonicalCandidates: vi.fn(() => Promise.resolve([])),
+      reconcileScheduledEvent: vi.fn(
+        ({
+          event,
+          bootstrap,
+        }: Parameters<EventIngestionStore["reconcileScheduledEvent"]>[0]) =>
+          bootstrapCanonicalEvent(bootstrap).then(() => ingestEvent(event)),
+      ),
     } as unknown as EventIngestionStore;
     const oddsPersist = vi.fn(
       (input: Parameters<SharpApiOddsPersister["persist"]>[0]) => {
@@ -150,7 +158,7 @@ describe("SharpAPI primary ingestion", () => {
           {
             providerEventId: `${league.leagueKey}-props_2026-08-03_b3`,
             providerEventUuid: `${league.leagueKey}-props-uuid`,
-            awayTeam: "Away Club",
+            awayTeam: "Away Club - Player Props",
             homeTeam: "Home Club - Player Props",
             startsAt: "2026-08-04T00:00:00.000Z" as IsoTimestamp,
             bookmakers: [],
