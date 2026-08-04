@@ -18,8 +18,8 @@ const payload = {
       leagueKey: "mlb",
       competition: { key: "mlb", state: "provisional" },
       participants: [
-        { id: "participant:mlb:boston", label: "Boston" },
-        { id: "participant:mlb:new-york", label: "New York" },
+        { id: "participant:mlb:boston", label: "Boston Red Sox" },
+        { id: "participant:mlb:new-york", label: "New York Yankees" },
       ],
       startsAt: "2026-08-01T23:05:00.000Z",
       eastern: {
@@ -40,7 +40,7 @@ const payload = {
           {
             marketKey: "moneyline",
             selectionKey: "away",
-            selectionLabel: "Boston",
+            selectionLabel: "Boston Red Sox",
             sportsbookId: "fixture-book",
             sportsbookLabel: "Fixture Book",
             americanOdds: 120,
@@ -50,7 +50,7 @@ const payload = {
           {
             marketKey: "moneyline",
             selectionKey: "home",
-            selectionLabel: "New York",
+            selectionLabel: "New York Yankees",
             sportsbookId: "fixture-book",
             sportsbookLabel: "Fixture Book",
             americanOdds: -135,
@@ -663,7 +663,7 @@ describe("games client", () => {
         ...base,
         marketKey: "spread",
         selectionKey: "home",
-        selectionLabel: "New York",
+        selectionLabel: "New York Yankees",
         point: -1.5,
         americanOdds: -110,
       },
@@ -1152,7 +1152,7 @@ describe("games client", () => {
               selections: [
                 {
                   ...payload.items[0]!.odds.selections[0],
-                  selectionLabel: "New York",
+                  selectionLabel: "New York Yankees",
                 },
               ],
             },

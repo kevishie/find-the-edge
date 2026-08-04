@@ -392,6 +392,58 @@ function contract(name: string, create: () => EventIngestionStore) {
       expect(bindings[0]?.id).toBe(bindings[1]?.id);
     });
 
+    it("migrates stable MLB club identity onto a pre-deployment canonical event", async () => {
+      const store = create();
+      const legacy = {
+        ...bootstrap,
+        id: "legacy-mlb" as EntityId,
+        participantIds: ["legacy-boston", "legacy-new-york"] as [
+          EntityId,
+          EntityId,
+        ],
+        participantLabels: ["Boston Red Sox", "New York Yankees"] as [
+          string,
+          string,
+        ],
+        normalizedIdentity: "legacy-full-label-identity",
+      };
+      await store.bootstrapCanonicalEvent(legacy, observedAt);
+      const result = await store.reconcileScheduledEvent({
+        event: {
+          providerId: "sharpapi",
+          providerEventId: "sharp-stable",
+          sportKey: "mlb" as SportKey,
+          leagueKey: "mlb",
+          participantLabels: ["Red Sox", "Yankees"],
+          participantIdentityIds: [
+            "stable-redsox",
+            "stable-yankees",
+          ] as EntityId[],
+          normalizedIdentity: "stable-club-identity",
+          startsAt: legacy.startsAt,
+          status: "scheduled",
+          revision: {
+            ...legacy.revision,
+            providerId: "sharpapi",
+            token: "stable",
+          },
+          observedAt,
+        },
+        bootstrap: {
+          ...legacy,
+          id: "new-duplicate-must-not-be-created" as EntityId,
+          participantIds: ["stable-redsox", "stable-yankees"] as [
+            EntityId,
+            EntityId,
+          ],
+          participantLabels: ["Red Sox", "Yankees"],
+          normalizedIdentity: "stable-club-identity",
+          canonicalKey: "sharp-stable",
+        },
+      });
+      expect(result).toMatchObject({ kind: "updated", eventId: "legacy-mlb" });
+    });
+
     it("crosses Eastern midnight and ignores closed projections", async () => {
       const store = create();
       const beforeMidnight = {

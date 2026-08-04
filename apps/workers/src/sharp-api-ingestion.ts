@@ -62,6 +62,14 @@ const providerEvent = (
   sportKey: league.sportKey,
   leagueKey: league.leagueKey,
   participantLabels: [event.awayTeam, event.homeTeam] as [string, string],
+  ...(event.awayClubKey && event.homeClubKey
+    ? {
+        participantIdentityKeys: [event.awayClubKey, event.homeClubKey] as [
+          string,
+          string,
+        ],
+      }
+    : {}),
   startsAt: event.startsAt,
   status: "scheduled" as const,
   revision: {

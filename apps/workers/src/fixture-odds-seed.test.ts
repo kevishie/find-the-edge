@@ -126,16 +126,23 @@ describe("fixture odds seed", () => {
         id: "event:mlb%3Amlb:2026-regular-boston-new-york-001",
         version: 1,
         participants: [
-          { id: "participant:mlb%3Amlb:boston", label: "Boston" },
-          { id: "participant:mlb%3Amlb:new%20york", label: "New York" },
+          {
+            id: "participant:mlb%3Amlb:boston%20red%20sox",
+            label: "Boston Red Sox",
+          },
+          {
+            id: "participant:mlb%3Amlb:new%20york%20yankees",
+            label: "New York Yankees",
+          },
         ],
         odds: {
           state: "available",
           selections: [
             {
               marketKey: "moneyline",
-              selectionKey: "participant:participant%3Amlb%253Amlb%3Aboston",
-              selectionLabel: "Boston",
+              selectionKey:
+                "participant:participant%3Amlb%253Amlb%3Aboston%2520red%2520sox",
+              selectionLabel: "Boston Red Sox",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",
               americanOdds: 120,
@@ -145,8 +152,8 @@ describe("fixture odds seed", () => {
             {
               marketKey: "moneyline",
               selectionKey:
-                "participant:participant%3Amlb%253Amlb%3Anew%2520york",
-              selectionLabel: "New York",
+                "participant:participant%3Amlb%253Amlb%3Anew%2520york%2520yankees",
+              selectionLabel: "New York Yankees",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",
               americanOdds: -135,
@@ -160,16 +167,23 @@ describe("fixture odds seed", () => {
         id: "event:mlb%3Amlb:2026-regular-chicago-detroit-001",
         version: 1,
         participants: [
-          { id: "participant:mlb%3Amlb:chicago", label: "Chicago" },
-          { id: "participant:mlb%3Amlb:detroit", label: "Detroit" },
+          {
+            id: "participant:mlb%3Amlb:chicago%20cubs",
+            label: "Chicago Cubs",
+          },
+          {
+            id: "participant:mlb%3Amlb:detroit%20tigers",
+            label: "Detroit Tigers",
+          },
         ],
         odds: {
           state: "available",
           selections: [
             {
               marketKey: "moneyline",
-              selectionKey: "participant:participant%3Amlb%253Amlb%3Achicago",
-              selectionLabel: "Chicago",
+              selectionKey:
+                "participant:participant%3Amlb%253Amlb%3Achicago%2520cubs",
+              selectionLabel: "Chicago Cubs",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",
               americanOdds: -105,
@@ -178,8 +192,9 @@ describe("fixture odds seed", () => {
             },
             {
               marketKey: "moneyline",
-              selectionKey: "participant:participant%3Amlb%253Amlb%3Adetroit",
-              selectionLabel: "Detroit",
+              selectionKey:
+                "participant:participant%3Amlb%253Amlb%3Adetroit%2520tigers",
+              selectionLabel: "Detroit Tigers",
               sportsbookId: "fixture-book",
               sportsbookLabel: "Fixture Book",
               americanOdds: -105,

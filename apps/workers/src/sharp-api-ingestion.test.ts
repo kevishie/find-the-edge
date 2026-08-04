@@ -27,8 +27,9 @@ describe("SharpAPI primary ingestion", () => {
       participantIds: ["away-id", "home-id"],
       participantLabels: ["Away", "Home"],
     } as unknown as CanonicalEvent;
+    const ingestEvent = vi.fn().mockResolvedValue({ kind: "updated" });
     const store = {
-      ingestEvent: vi.fn().mockResolvedValue({ kind: "updated" }),
+      ingestEvent,
       resolveExactCanonicalBinding: vi.fn().mockResolvedValue(canonical),
     } as unknown as EventIngestionStore;
     const persist = vi
@@ -65,6 +66,8 @@ describe("SharpAPI primary ingestion", () => {
               providerEventUuid: "event-uuid-1",
               awayTeam: "Away",
               homeTeam: "Home",
+              awayClubKey: "redsox",
+              homeClubKey: "yankees",
               startsAt: canonical.startsAt,
               bookmakers: [
                 {
@@ -116,6 +119,12 @@ describe("SharpAPI primary ingestion", () => {
       observedAt: "2026-08-03T23:00:02.000Z",
     });
     expect(outcomes).toEqual([{ snapshot: "created", current: "advanced" }]);
+    const ingested = ingestEvent.mock.calls[0]?.[0] as unknown as {
+      readonly participantIdentityKeys: readonly string[];
+      readonly normalizedIdentity: string;
+    };
+    expect(ingested.participantIdentityKeys).toEqual(["redsox", "yankees"]);
+    expect(ingested.normalizedIdentity).toContain("redsox");
   });
 
   it("binds suffixless consensus splits to the exact suffixed MLB event", async () => {

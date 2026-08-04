@@ -379,7 +379,11 @@ const normalizationGaps = (
     const bookRole = rejection.sportsbookId
       ? books[rejection.sportsbookId]
       : undefined;
-    if (!rejection.providerEventId || !rejection.sportsbookId || !bookRole)
+    const boundaryReason = rejection.participantBoundaryReason;
+    if (
+      !rejection.providerEventId ||
+      (!boundaryReason && (!rejection.sportsbookId || !bookRole))
+    )
       return [];
     return [
       {
@@ -387,21 +391,23 @@ const normalizationGaps = (
           runId,
           rejection.providerEventId,
           rejection.sportsbookId,
-          rejection.reason,
+          boundaryReason ?? rejection.reason,
           rejection.auditId,
         ]),
         runId,
         leagueKey,
         providerId: SHARP_API_PROVIDER_ID,
         providerEventId: rejection.providerEventId,
-        sportsbookId: rejection.sportsbookId,
+        ...(rejection.sportsbookId
+          ? { sportsbookId: rejection.sportsbookId }
+          : {}),
         policyVersion: oddsCollectionPolicyVersion,
-        bookRole,
+        bookRole: bookRole ?? "comparison",
         sourceState:
           rejection.reason === "missing-provider-timestamp"
             ? "missing"
             : "unsupported",
-        reason: rejection.reason,
+        reason: boundaryReason ?? rejection.reason,
         observedAt: page.retrievedAt,
       },
     ];
@@ -413,6 +419,8 @@ const scheduleEvent = (
     readonly providerEventId: string;
     readonly awayTeam: string;
     readonly homeTeam: string;
+    readonly awayClubKey?: string;
+    readonly homeClubKey?: string;
     readonly startsAt: IsoTimestamp;
   },
   observedAt: IsoTimestamp,
@@ -421,6 +429,14 @@ const scheduleEvent = (
   sportKey: league.sportKey as never,
   leagueKey: league.leagueKey,
   participantLabels: [raw.awayTeam, raw.homeTeam] as [string, string],
+  ...(raw.awayClubKey && raw.homeClubKey
+    ? {
+        participantIdentityKeys: [raw.awayClubKey, raw.homeClubKey] as [
+          string,
+          string,
+        ],
+      }
+    : {}),
   startsAt: raw.startsAt,
   status: "scheduled" as const,
   revision: {
@@ -431,6 +447,29 @@ const scheduleEvent = (
     token: observedAt,
   },
 });
+
+const scheduleExclusionGaps = (
+  runId: string,
+  leagueKey: string,
+  page: SharpApiSchedulePage,
+): OddsEvidenceGap[] =>
+  (page.exclusions ?? []).map((exclusion) => ({
+    gapId: digest([
+      runId,
+      exclusion.providerEventId,
+      exclusion.reason,
+      exclusion.auditId,
+    ]),
+    runId,
+    leagueKey,
+    providerId: SHARP_API_PROVIDER_ID,
+    providerEventId: exclusion.providerEventId,
+    policyVersion: oddsCollectionPolicyVersion,
+    bookRole: "comparison",
+    sourceState: "unsupported",
+    reason: exclusion.reason,
+    observedAt: page.retrievedAt,
+  }));
 
 async function bindScheduleEvent(
   store: EventIngestionStore,
@@ -732,6 +771,7 @@ export async function runProductionOddsControlPlane(input: {
   };
   const starts = new Map<string, string[]>();
   const expectedProviderEvents = new Map<string, string[]>();
+  const seenScheduleEvents = new Set<string>();
   const sharpScheduleHealthy = new Set<string>();
   const scheduleReady = new Set<string>();
   const storedScheduleReady = new Set<string>();
@@ -912,7 +952,7 @@ export async function runProductionOddsControlPlane(input: {
               : {}),
             responseDigest: digest(fetched),
             normalizedItems: [fetched],
-            gaps: [],
+            gaps: scheduleExclusionGaps(runId, sharpLeague.leagueKey, fetched),
             quotaCost: schedulePolicy.requestCost,
             sealedAt: now.toISOString(),
           };
@@ -946,6 +986,9 @@ export async function runProductionOddsControlPlane(input: {
         }
         const page = sealed.normalizedItems[0] as SharpApiSchedulePage;
         for (const event of page.events) {
+          const scheduleIdentity = `${sharpLeague.leagueKey}:${event.providerEventId}`;
+          if (seenScheduleEvents.has(scheduleIdentity)) continue;
+          seenScheduleEvents.add(scheduleIdentity);
           await bindScheduleEvent(
             input.events,
             SHARP_API_PROVIDER_ID,
@@ -974,12 +1017,36 @@ export async function runProductionOddsControlPlane(input: {
           ownerId,
           liveNow,
         );
-        if (!sealed.committedAt)
+        if (!sealed.committedAt) {
+          for (const gap of sealed.gaps) await input.control.putGap(gap);
           await input.control.commitEvidencePage(
             runId,
             pageToken,
             now.toISOString(),
           );
+        }
+        const committedPage = await input.control.getPage(runId, pageToken);
+        if (!committedPage?.metricDeliveredAt) {
+          for (const reason of [
+            "participant-out-of-scope",
+            "same-club-matchup",
+          ] as const) {
+            const count =
+              page.exclusions?.filter((item) => item.reason === reason)
+                .length ?? 0;
+            if (count > 0)
+              input.metrics?.emit("OddsScheduleExcluded", count, {
+                provider: SHARP_API_PROVIDER_ID,
+                league: sharpLeague.leagueKey,
+                reason,
+              });
+          }
+          await input.control.markPageMetricDelivered(
+            runId,
+            pageToken,
+            now.toISOString(),
+          );
+        }
         await putContinuationCas(input.control, {
           leagueKey: checkpointKey,
           runId,

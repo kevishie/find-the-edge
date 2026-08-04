@@ -17,8 +17,8 @@ const event: EventDisplayDto = {
   leagueKey: "mlb",
   competition: { key: "mlb", state: "provisional" },
   participants: [
-    { id: "bos", label: "Boston" },
-    { id: "nyy", label: "New York" },
+    { id: "bos", label: "Boston Red Sox" },
+    { id: "nyy", label: "New York Yankees" },
   ],
   startsAt: "2026-08-01T17:00:00.000Z",
   eastern: {
@@ -38,13 +38,14 @@ const participantKey = (id: string) => participantSelectionKey(id as EntityId);
 const events = (
   items: readonly EventDisplayDto[] = [event],
   seen: { cursor: string | undefined } = { cursor: undefined },
+  nextCursor: string | null = "next",
 ): EventRepository => ({
   list: async (_filter, _limit, cursor) => {
     await Promise.resolve();
     seen.cursor = cursor;
     return {
       items,
-      nextCursor: "next",
+      nextCursor,
       projectionState: "ready",
       evaluationState: "complete",
       hasMoreUnknown: false,
@@ -102,8 +103,8 @@ describe("joined games repository", () => {
       cursor: string | undefined;
       keys?: readonly unknown[];
     } = { cursor: undefined };
-    const away = current(event, "away", "Boston");
-    const home = current(event, "home", "New York");
+    const away = current(event, "away", "Boston Red Sox");
+    const home = current(event, "home", "New York Yankees");
     const page = await new JoinedGamesRepository(events([event], seen), {
       batchGet: (keys) => {
         seen.keys = keys;
@@ -166,13 +167,21 @@ describe("joined games repository", () => {
 
   it("returns coherent spread and total markets beside moneyline", async () => {
     const selections = [
-      current(event, "away", "Boston"),
-      current(event, "home", "New York"),
-      current(event, "away", "Boston", "spread", "draftkings", undefined, 1.5),
+      current(event, "away", "Boston Red Sox"),
+      current(event, "home", "New York Yankees"),
+      current(
+        event,
+        "away",
+        "Boston Red Sox",
+        "spread",
+        "draftkings",
+        undefined,
+        1.5,
+      ),
       current(
         event,
         "home",
-        "New York",
+        "New York Yankees",
         "spread",
         "draftkings",
         undefined,
@@ -213,8 +222,20 @@ describe("joined games repository", () => {
   });
 
   it("falls back to the next complete sportsbook market", async () => {
-    const away = current(event, "away", "Boston", "moneyline", "fanduel");
-    const home = current(event, "home", "New York", "moneyline", "fanduel");
+    const away = current(
+      event,
+      "away",
+      "Boston Red Sox",
+      "moneyline",
+      "fanduel",
+    );
+    const home = current(
+      event,
+      "home",
+      "New York Yankees",
+      "moneyline",
+      "fanduel",
+    );
     const page = await new JoinedGamesRepository(events(), {
       batchGet: () => Promise.resolve([row(home), row(away)]),
     }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
@@ -228,8 +249,8 @@ describe("joined games repository", () => {
   });
 
   it("fails closed for partial, malformed, mismatched, duplicate, and unexpected rows", async () => {
-    const away = current(event, "away", "Boston");
-    const home = current(event, "home", "New York");
+    const away = current(event, "away", "Boston Red Sox");
+    const home = current(event, "home", "New York Yankees");
     const cases: readonly (readonly unknown[])[] = [
       [
         {
@@ -253,7 +274,7 @@ describe("joined games repository", () => {
   });
 
   it("hides partial and mixed-timestamp markets during ingestion", async () => {
-    const away = current(event, "away", "Boston");
+    const away = current(event, "away", "Boston Red Sox");
     for (const rows of [
       [row(away)],
       [
@@ -262,7 +283,7 @@ describe("joined games repository", () => {
           current(
             event,
             "home",
-            "New York",
+            "New York Yankees",
             "moneyline",
             "draftkings",
             "2026-08-01T12:01:00.000Z",
@@ -285,7 +306,7 @@ describe("joined games repository", () => {
       leagueKey: "mls",
     })) as EventDisplayDto[];
     let requested = 0;
-    await new JoinedGamesRepository(events(soccerEvents), {
+    await new JoinedGamesRepository(events(soccerEvents, undefined, null), {
       batchGet: (keys) => {
         requested = keys.length;
         return Promise.resolve([]);
@@ -326,7 +347,7 @@ describe("joined games repository", () => {
     ];
 
     const page = await new JoinedGamesRepository(
-      events([legacyAlias, canonical, doubleheader]),
+      events([legacyAlias, canonical, doubleheader], undefined, null),
       { batchGet: () => Promise.resolve(selections.map(row)) },
     ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 50);
 
@@ -335,5 +356,118 @@ describe("joined games repository", () => {
       "event-doubleheader",
     ]);
     expect(page.items[0]?.odds.state).toBe("available");
+  });
+
+  it("backfills a contaminated MLB page with the next valid game", async () => {
+    const foreign = {
+      ...event,
+      id: "foreign",
+      participants: [
+        { id: "y", label: "Yomiuri Giants" },
+        { id: "h", label: "Hanshin Tigers" },
+      ],
+    } as EventDisplayDto;
+    const repository = events([foreign]);
+    repository.list = (_filter, _limit, cursor) =>
+      Promise.resolve({
+        items: cursor ? [event] : [foreign],
+        nextCursor: cursor ? null : "valid",
+        projectionState: "ready",
+        evaluationState: "complete",
+        hasMoreUnknown: false,
+        snapshotAt: event.freshness,
+        freshness: event.freshness,
+        unavailableReason: null,
+      });
+    const page = await new JoinedGamesRepository(repository, {
+      batchGet: () => Promise.resolve([]),
+    }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+    expect(page.items.map(({ id }) => id)).toEqual(["event-1"]);
+  });
+
+  it("fails loudly on a backfill cursor cycle", async () => {
+    const foreign = {
+      ...event,
+      participants: [
+        { id: "y", label: "Yomiuri Giants" },
+        { id: "h", label: "Hanshin Tigers" },
+      ],
+    } as EventDisplayDto;
+    await expect(
+      new JoinedGamesRepository(events([foreign]), {
+        batchGet: () => Promise.resolve([]),
+      }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1),
+    ).rejects.toThrow("games-cursor-cycle");
+  });
+
+  it("bounds an all-contaminated backfill", async () => {
+    const foreign = {
+      ...event,
+      participants: [
+        { id: "y", label: "Yomiuri Giants" },
+        { id: "h", label: "Hanshin Tigers" },
+      ],
+    } as EventDisplayDto;
+    let calls = 0;
+    const repository = events([foreign]);
+    repository.list = () => {
+      calls += 1;
+      return Promise.resolve({
+        items: [foreign],
+        nextCursor: `cursor-${calls}`,
+        projectionState: "ready",
+        evaluationState: "complete",
+        hasMoreUnknown: false,
+        snapshotAt: event.freshness,
+        freshness: event.freshness,
+        unavailableReason: null,
+      });
+    };
+    await expect(
+      new JoinedGamesRepository(repository, {
+        batchGet: () => Promise.resolve([]),
+      }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1),
+    ).rejects.toThrow("games-backfill-limit");
+    expect(calls).toBe(50);
+  });
+
+  it("continues backfill after collapsing a legacy duplicate", async () => {
+    const alias = {
+      ...event,
+      id: "alias",
+      participants: [
+        { id: "bos-2", label: "Red Sox" },
+        { id: "nyy-2", label: "Yankees" },
+      ],
+      startsAt: "2026-08-01T17:01:00.000Z",
+    } as EventDisplayDto;
+    const later = {
+      ...event,
+      id: "later",
+      participants: [
+        { id: "lad", label: "Los Angeles Dodgers" },
+        { id: "sf", label: "San Francisco Giants" },
+      ],
+    } as EventDisplayDto;
+    const repository = events([event, alias]);
+    repository.list = (_filter, _limit, cursor) =>
+      Promise.resolve({
+        items: cursor ? [later] : [event, alias],
+        nextCursor: cursor ? null : "later",
+        projectionState: "ready",
+        evaluationState: "complete",
+        hasMoreUnknown: false,
+        snapshotAt: event.freshness,
+        freshness: event.freshness,
+        unavailableReason: null,
+      });
+    const page = await new JoinedGamesRepository(repository, {
+      batchGet: () => Promise.resolve([]),
+    }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 2);
+    expect(page.items).toHaveLength(2);
+    expect(page.items.map(({ id }) => id)).toContain("later");
+    expect(
+      page.items.filter(({ id }) => id === "event-1" || id === "alias"),
+    ).toHaveLength(1);
   });
 });

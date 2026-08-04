@@ -51,6 +51,7 @@ export interface SealedOddsPage {
   readonly sealedAt: string;
   readonly committedAt?: string;
   readonly evidenceIntentAt?: string;
+  readonly metricDeliveredAt?: string;
 }
 export interface OddsLeagueCheckpoint {
   readonly version?: number;
@@ -142,6 +143,11 @@ export interface OddsControlPlaneStore {
     runId: string,
     token: string,
     committedAt: string,
+  ): Promise<void>;
+  markPageMetricDelivered(
+    runId: string,
+    token: string,
+    deliveredAt: string,
   ): Promise<void>;
   getCheckpoint(leagueKey: string): Promise<OddsLeagueCheckpoint | null>;
   putCheckpoint(value: OddsLeagueCheckpoint): Promise<void>;
@@ -364,6 +370,13 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
       evidenceCommitted: true,
       updatedAt: a,
     });
+  }
+  async markPageMetricDelivered(r: string, t: string, a: string) {
+    const k = `${r}#${t}`;
+    const page = this.pages.get(k);
+    if (!page?.committedAt) throw new Error("metric-transition-conflict");
+    if (page.metricDeliveredAt) return;
+    this.pages.set(k, { ...page, metricDeliveredAt: a });
   }
   async getCheckpoint(k: string) {
     return clone(this.checkpoints.get(k) ?? null);
@@ -953,6 +966,26 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       )
         throw new Error("evidence-transition-conflict");
       throw error;
+    }
+  }
+  async markPageMetricDelivered(r: string, t: string, a: string) {
+    try {
+      await this.client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: key("PAGE", `${r}#${t}`),
+          UpdateExpression: "SET #v.#m = if_not_exists(#v.#m, :a)",
+          ConditionExpression: "attribute_exists(#v.#c)",
+          ExpressionAttributeNames: {
+            "#v": "value",
+            "#m": "metricDeliveredAt",
+            "#c": "committedAt",
+          },
+          ExpressionAttributeValues: { ":a": a },
+        }),
+      );
+    } catch (error) {
+      throw new Error("metric-transition-conflict", { cause: error });
     }
   }
   getCheckpoint(k: string) {

@@ -14,6 +14,7 @@ export interface ScheduledProviderEvent {
   readonly sportKey: SportKey;
   readonly leagueKey: string;
   readonly participantLabels: readonly [string, string];
+  readonly participantIdentityKeys?: readonly [string, string];
   readonly startsAt: IsoTimestamp;
   readonly status: "scheduled";
   readonly revision: ProviderRevision;
@@ -27,14 +28,16 @@ export async function reconcileScheduledProviderEvent(
   event: ScheduledProviderEvent,
   observedAt: IsoTimestamp,
 ) {
+  const bootstrap = fixtureBootstrap(event, event.providerEventId);
   const original = {
     ...event,
     providerId,
     normalizedIdentity: normalizedUpcomingEventIdentity(event),
+    participantIdentityIds: bootstrap.participantIds,
     observedAt,
   };
   return store.reconcileScheduledEvent({
     event: original,
-    bootstrap: fixtureBootstrap(event, event.providerEventId),
+    bootstrap,
   });
 }

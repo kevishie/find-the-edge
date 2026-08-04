@@ -455,61 +455,134 @@ export interface GameDisplayDto extends EventDisplayDto {
     | { readonly state: "unavailable" };
 }
 
-const MLB_PARTICIPANT_KEYS = [
-  "angels",
-  "astros",
-  "athletics",
-  "bluejays",
-  "braves",
-  "brewers",
-  "cardinals",
-  "cubs",
-  "diamondbacks",
-  "dodgers",
-  "giants",
-  "guardians",
-  "mariners",
-  "marlins",
-  "mets",
-  "nationals",
-  "orioles",
-  "padres",
-  "phillies",
-  "pirates",
-  "rangers",
-  "rays",
-  "redsox",
-  "reds",
-  "rockies",
-  "royals",
-  "tigers",
-  "twins",
-  "whitesox",
-  "yankees",
+const normalizedParticipantAlias = (label: string) =>
+  label
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("en-US")
+    .replace(/[ø]/g, "o")
+    .replace(/[ł]/g, "l")
+    .replace(/[^a-z0-9]/g, "");
+
+/**
+ * Exact MLB membership catalogue. Nicknames are deliberate product aliases;
+ * lookup is exact after cosmetic Unicode/case/punctuation normalization.
+ */
+export const MLB_PARTICIPANT_CATALOGUE = [
+  ["angels", ["Los Angeles Angels", "Angels"]],
+  ["astros", ["Houston Astros", "Astros"]],
+  [
+    "athletics",
+    ["Athletics", "A's", "Oakland A's", "Sacramento A's", "Oakland Athletics"],
+  ],
+  ["bluejays", ["Toronto Blue Jays", "Blue Jays"]],
+  ["braves", ["Atlanta Braves", "Braves"]],
+  ["brewers", ["Milwaukee Brewers", "Brewers"]],
+  ["cardinals", ["St. Louis Cardinals", "Cardinals"]],
+  ["cubs", ["Chicago Cubs", "Cubs"]],
+  [
+    "diamondbacks",
+    ["Arizona Diamondbacks", "Diamondbacks", "D-backs", "Arizona D-backs"],
+  ],
+  ["dodgers", ["Los Angeles Dodgers", "Dodgers"]],
+  ["giants", ["San Francisco Giants", "Giants"]],
+  ["guardians", ["Cleveland Guardians", "Guardians"]],
+  ["mariners", ["Seattle Mariners", "Mariners"]],
+  ["marlins", ["Miami Marlins", "Marlins"]],
+  ["mets", ["New York Mets", "Mets"]],
+  ["nationals", ["Washington Nationals", "Nationals"]],
+  ["orioles", ["Baltimore Orioles", "Orioles"]],
+  ["padres", ["San Diego Padres", "Padres"]],
+  ["phillies", ["Philadelphia Phillies", "Phillies"]],
+  ["pirates", ["Pittsburgh Pirates", "Pirates"]],
+  ["rangers", ["Texas Rangers", "Rangers"]],
+  ["rays", ["Tampa Bay Rays", "Rays"]],
+  ["redsox", ["Boston Red Sox", "Red Sox"]],
+  ["reds", ["Cincinnati Reds", "Reds"]],
+  ["rockies", ["Colorado Rockies", "Rockies"]],
+  ["royals", ["Kansas City Royals", "Royals"]],
+  ["tigers", ["Detroit Tigers", "Tigers"]],
+  ["twins", ["Minnesota Twins", "Twins"]],
+  [
+    "whitesox",
+    ["Chicago White Sox", "White Sox", "Chicago WS", "Chi White Sox", "CWS"],
+  ],
+  ["yankees", ["New York Yankees", "Yankees"]],
 ] as const;
+
+export type MlbParticipantKey = (typeof MLB_PARTICIPANT_CATALOGUE)[number][0];
+
+export function buildExactParticipantAliasMap<K extends string>(
+  entries: readonly (readonly [K, readonly string[]])[],
+): ReadonlyMap<string, K> {
+  const aliases = new Map<string, K>();
+  for (const [key, labels] of entries)
+    for (const label of labels) {
+      const normalized = normalizedParticipantAlias(label);
+      const existing = aliases.get(normalized);
+      if (existing !== undefined && existing !== key)
+        throw new Error("participant-alias-collision");
+      aliases.set(normalized, key);
+    }
+  return aliases;
+}
+
+const MLB_PARTICIPANT_ALIASES = buildExactParticipantAliasMap(
+  MLB_PARTICIPANT_CATALOGUE,
+);
+const MLB_PARTICIPANT_LABELS = new Map<MlbParticipantKey, string>(
+  MLB_PARTICIPANT_CATALOGUE.map(([key, aliases]) => [key, aliases[0]]),
+);
+
+export function resolveMlbParticipantKey(
+  label: string,
+): MlbParticipantKey | null {
+  return MLB_PARTICIPANT_ALIASES.get(normalizedParticipantAlias(label)) ?? null;
+}
+
+export function resolveMlbMatchup(
+  awayLabel: string,
+  homeLabel: string,
+): {
+  readonly awayKey: MlbParticipantKey;
+  readonly homeKey: MlbParticipantKey;
+} | null {
+  const awayKey = resolveMlbParticipantKey(awayLabel);
+  const homeKey = resolveMlbParticipantKey(homeLabel);
+  return awayKey && homeKey && awayKey !== homeKey
+    ? { awayKey, homeKey }
+    : null;
+}
+
+export function canonicalMlbParticipantLabel(key: MlbParticipantKey): string {
+  return MLB_PARTICIPANT_LABELS.get(key)!;
+}
+
+export function gamePassesMlbParticipantBoundary(input: {
+  readonly leagueKey: string;
+  readonly participants: readonly { readonly label: string }[];
+}): boolean {
+  return (
+    input.leagueKey !== "mlb" ||
+    (input.participants.length === 2 &&
+      resolveMlbMatchup(
+        input.participants[0]!.label,
+        input.participants[1]!.label,
+      ) !== null)
+  );
+}
 
 export function canonicalDisplayParticipantKey(
   sportKey: string,
   label: string,
 ): string {
-  let compact = label
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("en-US")
-    .replace(/[^a-z0-9]/g, "");
+  let compact = normalizedParticipantAlias(label);
   if (sportKey === "soccer") {
     compact = compact.replace(/(?:footballclub|futbolclub|fc|cf|sc)$/u, "");
     return compact;
   }
   if (sportKey !== "mlb") return compact;
-  if (["as", "oaklandas", "sacramentoas", "oaklandathletics"].includes(compact))
-    return "athletics";
-  if (["chicagows", "chiwhitesox", "cws"].includes(compact)) return "whitesox";
-  if (["dbacks", "arizonadbacks"].includes(compact)) return "diamondbacks";
-  return (
-    MLB_PARTICIPANT_KEYS.find((nickname) => compact.endsWith(nickname)) ??
-    compact
-  );
+  return resolveMlbParticipantKey(label) ?? compact;
 }
 
 const displayDuplicateKey = (game: GameDisplayDto) =>
@@ -564,11 +637,13 @@ const preferredDisplayDuplicate = (
 export function collapseNearDuplicateGames(
   games: readonly GameDisplayDto[],
 ): readonly GameDisplayDto[] {
-  const sorted = [...games].sort(
-    (left, right) =>
-      left.startsAt.localeCompare(right.startsAt) ||
-      left.id.localeCompare(right.id),
-  );
+  const sorted = games
+    .filter(gamePassesMlbParticipantBoundary)
+    .sort(
+      (left, right) =>
+        left.startsAt.localeCompare(right.startsAt) ||
+        left.id.localeCompare(right.id),
+    );
   const clusters = new Map<
     string,
     { anchor: number; winner: GameDisplayDto }[]

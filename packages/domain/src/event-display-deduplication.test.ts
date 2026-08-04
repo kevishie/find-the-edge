@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   assessEventMetadata,
+  buildExactParticipantAliasMap,
+  MLB_PARTICIPANT_CATALOGUE,
+  canonicalDisplayParticipantKey,
   collapseNearDuplicateGames,
+  resolveMlbMatchup,
+  resolveMlbParticipantKey,
   type EventStatus,
   type GameDisplayDto,
 } from "./index";
@@ -64,6 +69,104 @@ const game = (input: {
 };
 
 describe("event display duplicate invariant", () => {
+  it("resolves every declared approved alias to its declared club", () => {
+    for (const [key, aliases] of MLB_PARTICIPANT_CATALOGUE)
+      for (const alias of aliases)
+        expect(resolveMlbParticipantKey(alias)).toBe(key);
+  });
+
+  it("resolves the exact 30-club MLB catalogue and approved aliases", () => {
+    const officialNames = [
+      "Arizona Diamondbacks",
+      "Athletics",
+      "Atlanta Braves",
+      "Baltimore Orioles",
+      "Boston Red Sox",
+      "Chicago Cubs",
+      "Chicago White Sox",
+      "Cincinnati Reds",
+      "Cleveland Guardians",
+      "Colorado Rockies",
+      "Detroit Tigers",
+      "Houston Astros",
+      "Kansas City Royals",
+      "Los Angeles Angels",
+      "Los Angeles Dodgers",
+      "Miami Marlins",
+      "Milwaukee Brewers",
+      "Minnesota Twins",
+      "New York Mets",
+      "New York Yankees",
+      "Philadelphia Phillies",
+      "Pittsburgh Pirates",
+      "San Diego Padres",
+      "San Francisco Giants",
+      "Seattle Mariners",
+      "St. Louis Cardinals",
+      "Tampa Bay Rays",
+      "Texas Rangers",
+      "Toronto Blue Jays",
+      "Washington Nationals",
+    ];
+    const keys = officialNames.map(resolveMlbParticipantKey);
+    expect(keys.every((key) => key !== null)).toBe(true);
+    expect(new Set(keys).size).toBe(30);
+    expect(resolveMlbParticipantKey("  ST LOUIS   CÁRDINALS ")).toBe(
+      "cardinals",
+    );
+    expect(resolveMlbParticipantKey("A’s")).toBe("athletics");
+    expect(resolveMlbParticipantKey("d—backs")).toBe("diamondbacks");
+    expect(resolveMlbParticipantKey("C.W.S.")).toBe("whitesox");
+    expect(resolveMlbParticipantKey("Bøstøn Red Søx")).toBe("redsox");
+    expect(resolveMlbParticipantKey("Łos Angeles Dodgers")).toBe("dodgers");
+    expect(resolveMlbParticipantKey("Pølish Giants")).toBeNull();
+    expect(() =>
+      buildExactParticipantAliasMap([
+        ["first", ["Bøstøn"]],
+        ["second", ["Boston"]],
+      ]),
+    ).toThrow("participant-alias-collision");
+  });
+
+  it("rejects unknown, suffix-collision, and same-club MLB matchups", () => {
+    expect(resolveMlbParticipantKey("Yomiuri Giants")).toBeNull();
+    expect(resolveMlbParticipantKey("Hanshin Tigers")).toBeNull();
+    expect(resolveMlbParticipantKey("New York")).toBeNull();
+    expect(resolveMlbMatchup("Giants", "San Francisco Giants")).toBeNull();
+    expect(resolveMlbMatchup("Dodgers", "San Francisco Giants")).toEqual({
+      awayKey: "dodgers",
+      homeKey: "giants",
+    });
+    expect(canonicalDisplayParticipantKey("mlb", "Yomiuri Giants")).toBe(
+      "yomiurigiants",
+    );
+  });
+
+  it("suppresses previously stored contaminated MLB games from list reads", () => {
+    const contaminated = game({
+      id: "foreign",
+      startsAt: "2026-08-04T20:00:00.000Z",
+      away: "Yomiuri Giants",
+      home: "Hanshin Tigers",
+      odds: true,
+      version: 50,
+    });
+    const legitimate = game({
+      id: "mlb",
+      startsAt: "2026-08-04T21:00:00.000Z",
+    });
+    expect(
+      collapseNearDuplicateGames([contaminated, legitimate]).map(
+        ({ id }) => id,
+      ),
+    ).toEqual(["mlb"]);
+    expect(
+      collapseNearDuplicateGames([
+        { ...contaminated, sportKey: "soccer", leagueKey: "mlb" },
+      ]),
+    ).toEqual([]);
+  });
+
   it("prefers the authoritative version across status and stale-odds differences", () => {
     const sharp = game({
       id: "sharp",

@@ -4,7 +4,11 @@ import {
   MemoryOddsControlPlaneStore,
 } from "@find-the-edge/database";
 import type { IsoTimestamp } from "@find-the-edge/domain";
-import { SharpApiError, type SharpApiLeague } from "@find-the-edge/providers";
+import {
+  parseSharpApiSchedulePage,
+  SharpApiError,
+  type SharpApiLeague,
+} from "@find-the-edge/providers";
 import {
   capabilityFailure,
   evidenceGaps,
@@ -621,6 +625,113 @@ describe("production odds control-plane composition", () => {
         (run) => run.leagueKey === "account" && run.status === "failed",
       ),
     ).toBe(true);
+  });
+
+  it("keeps contaminated MLB participants out of reconciliation and schedule state", async () => {
+    const events = new MemoryEventIngestionStore();
+    const control = new MemoryOddsControlPlaneStore();
+    const metrics = { emit: vi.fn() };
+    const fetchSharpSchedule = vi.fn((league: SharpApiLeague) => {
+      if (league.leagueKey === "mlb")
+        return Promise.resolve(
+          parseSharpApiSchedulePage(
+            {
+              data: [
+                {
+                  id: "mlb-valid",
+                  league: "mlb",
+                  away_team: "Boston Red Sox",
+                  home_team: "New York Yankees",
+                  start_time: "2026-08-03T20:00:00.000Z",
+                  status: "upcoming",
+                  is_live: false,
+                },
+                {
+                  id: "mlb-foreign",
+                  league: "mlb",
+                  away_team: "Yomiuri Giants",
+                  home_team: "Hanshin Tigers",
+                  start_time: "2026-08-03T21:00:00.000Z",
+                  status: "upcoming",
+                  is_live: false,
+                },
+              ],
+              pagination: { has_more: false, next_offset: null },
+            },
+            league,
+            at,
+          ),
+        );
+      return Promise.resolve({
+        events: [
+          {
+            providerEventId: `${league.leagueKey}-event`,
+            awayTeam: `${league.leagueKey} Away`,
+            homeTeam: `${league.leagueKey} Home`,
+            startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+            status: "scheduled" as const,
+          },
+        ],
+        hasMore: false,
+        retrievedAt: at,
+      });
+    });
+    const result = await runProductionOddsControlPlane({
+      events,
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      metrics,
+      fetchSharpSchedule,
+      fetchSharpOdds: vi.fn((league: SharpApiLeague) =>
+        Promise.resolve({
+          events: [],
+          hasMore: false,
+          retrievedAt: at,
+          ...(league.leagueKey === "mlb" ? { rejections: [] } : {}),
+        }),
+      ),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 15,
+        streamingEnabled: false,
+      }),
+    });
+    expect(result.every(({ status }) => status === "completed")).toBe(true);
+    expect(
+      [...events.mappings.values()].map(
+        ({ providerEventId }) => providerEventId,
+      ),
+    ).toContain("mlb-valid");
+    expect(
+      [...events.mappings.values()].map(
+        ({ providerEventId }) => providerEventId,
+      ),
+    ).not.toContain("mlb-foreign");
+    expect(await control.getCheckpoint("schedule:sharpapi:mlb")).toMatchObject({
+      upcomingStarts: ["2026-08-03T20:00:00.000Z"],
+      expectedProviderEventIds: ["mlb-valid"],
+      expectedProviderEvents: [
+        {
+          providerEventId: "mlb-valid",
+          startsAt: "2026-08-03T20:00:00.000Z",
+        },
+      ],
+    });
+    expect(metrics.emit).toHaveBeenCalledWith("OddsScheduleExcluded", 1, {
+      provider: "sharpapi",
+      league: "mlb",
+      reason: "participant-out-of-scope",
+    });
   });
 
   it("uses a valid stored schedule when a forced discovery refresh is unavailable", async () => {

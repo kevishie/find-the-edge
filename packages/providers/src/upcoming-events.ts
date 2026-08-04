@@ -21,6 +21,7 @@ export interface ProviderUpcomingEvent {
   readonly sportKey: SportKey;
   readonly leagueKey: string;
   readonly participantLabels: readonly [string, string, ...string[]];
+  readonly participantIdentityKeys?: readonly [string, string, ...string[]];
   readonly startsAt: IsoTimestamp;
   readonly status: EventStatus;
   readonly revision: ProviderRevision;
@@ -64,11 +65,12 @@ export function semanticId(scope: readonly string[]): string {
 export function normalizedUpcomingEventIdentity(input: {
   leagueKey: string;
   participantLabels: readonly string[];
+  participantIdentityKeys?: readonly string[];
   startsAt: string;
 }): string {
   return JSON.stringify([
     normalize(input.leagueKey),
-    input.participantLabels.map(normalize),
+    (input.participantIdentityKeys ?? input.participantLabels).map(normalize),
     new Date(input.startsAt).toISOString(),
   ]);
 }
@@ -323,11 +325,9 @@ export function fixtureBootstrap(
   input: ProviderUpcomingEvent,
   canonicalKey: string,
 ): CanonicalEventBootstrap {
-  const labels = input.participantLabels.map(normalize) as [
-    string,
-    string,
-    ...string[],
-  ];
+  const labels = (input.participantIdentityKeys ?? input.participantLabels).map(
+    normalize,
+  ) as [string, string, ...string[]];
   const leagueScope = semanticId([input.sportKey, input.leagueKey]);
   return {
     id: semanticId(["event", leagueScope, canonicalKey]) as EntityId,

@@ -12,6 +12,7 @@ import type {
   UpcomingEventIngestionCommand,
   UnresolvedEventMapping,
 } from "@find-the-edge/domain";
+import { resolveMlbParticipantKey } from "@find-the-edge/domain";
 import { createHash } from "node:crypto";
 const MAX_CONTINUATION_LEASE_MS = 5 * 60 * 1000;
 export interface EventIngestionInput {
@@ -23,6 +24,7 @@ export interface EventIngestionInput {
   readonly startsAt: IsoTimestamp;
   readonly status: EventStatus;
   readonly participantLabels?: readonly string[];
+  readonly participantIdentityIds?: readonly EntityId[];
   readonly revision: ProviderRevision;
   readonly observedAt: IsoTimestamp;
   readonly mappingKind?: "source" | "alias";
@@ -46,8 +48,47 @@ export type EventIngestionOutcome =
 export const NEAR_CANONICAL_START_TOLERANCE_SECONDS = 120;
 export type NearCanonicalLookup = Pick<
   EventIngestionInput,
-  "sportKey" | "leagueKey" | "startsAt" | "status" | "participantLabels"
+  | "sportKey"
+  | "leagueKey"
+  | "startsAt"
+  | "status"
+  | "participantLabels"
+  | "participantIdentityIds"
 >;
+export const participantIdentityMatches = (
+  input: NearCanonicalLookup,
+  candidate: Pick<CanonicalEvent, "participantIds" | "participantLabels">,
+) => {
+  const normalize = (value: string) =>
+    value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+  if (!input.participantIdentityIds)
+    return (
+      !!input.participantLabels &&
+      !!candidate.participantLabels &&
+      input.participantLabels.length === candidate.participantLabels.length &&
+      input.participantLabels.every(
+        (label, index) =>
+          normalize(label) === normalize(candidate.participantLabels![index]!),
+      )
+    );
+  if (
+    candidate.participantIds.length === input.participantIdentityIds.length &&
+    candidate.participantIds.every(
+      (id, index) => id === input.participantIdentityIds![index],
+    )
+  )
+    return true;
+  if (
+    input.leagueKey !== "mlb" ||
+    !input.participantLabels ||
+    !candidate.participantLabels ||
+    input.participantLabels.length !== candidate.participantLabels.length
+  )
+    return false;
+  const expected = input.participantLabels.map(resolveMlbParticipantKey);
+  const actual = candidate.participantLabels.map(resolveMlbParticipantKey);
+  return expected.every((key, index) => key !== null && key === actual[index]);
+};
 export interface ScheduledEventReconciliationInput {
   readonly event: EventIngestionInput;
   readonly bootstrap: CanonicalEventBootstrap;

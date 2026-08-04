@@ -42,8 +42,20 @@ export const mvpFixtureOdds: readonly FixtureOddsSeedEvent[] = [
     sportKey: "mlb" as SportKey,
     leagueKey: "mlb",
     prices: [
-      price("moneyline", "away", "Boston", 120, "2026-08-01T12:00:00.000Z"),
-      price("moneyline", "home", "New York", -135, "2026-08-01T12:00:00.000Z"),
+      price(
+        "moneyline",
+        "away",
+        "Boston Red Sox",
+        120,
+        "2026-08-01T12:00:00.000Z",
+      ),
+      price(
+        "moneyline",
+        "home",
+        "New York Yankees",
+        -135,
+        "2026-08-01T12:00:00.000Z",
+      ),
     ],
   },
   {
@@ -52,8 +64,20 @@ export const mvpFixtureOdds: readonly FixtureOddsSeedEvent[] = [
     sportKey: "mlb" as SportKey,
     leagueKey: "mlb",
     prices: [
-      price("moneyline", "away", "Chicago", -105, "2026-08-01T12:01:00.000Z"),
-      price("moneyline", "home", "Detroit", -105, "2026-08-01T12:01:00.000Z"),
+      price(
+        "moneyline",
+        "away",
+        "Chicago Cubs",
+        -105,
+        "2026-08-01T12:01:00.000Z",
+      ),
+      price(
+        "moneyline",
+        "home",
+        "Detroit Tigers",
+        -105,
+        "2026-08-01T12:01:00.000Z",
+      ),
     ],
   },
   {

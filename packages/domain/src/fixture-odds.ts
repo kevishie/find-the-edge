@@ -21,7 +21,9 @@ export type OddsEvidenceGapReason =
   | "unsupported-selection"
   | "incomplete-market"
   | "missing-provider-timestamp"
-  | "participant-unavailable";
+  | "participant-unavailable"
+  | "participant-out-of-scope"
+  | "same-club-matchup";
 export interface OddsEvidenceProvenance {
   readonly providerId: string;
   readonly policyVersion: string;

@@ -353,8 +353,8 @@ describe("SharpAPI activation boundary", () => {
             {
               id: "mlb-event-1",
               league: "mlb",
-              away_team: "Away",
-              home_team: "Home",
+              away_team: "Boston Red Sox",
+              home_team: "New York Yankees",
               start_time: "2026-08-03T19:00:00Z",
               status: "upcoming",
               is_live: false,
@@ -368,8 +368,10 @@ describe("SharpAPI activation boundary", () => {
     ).toEqual([
       {
         providerEventId: "mlb-event-1",
-        awayTeam: "Away",
-        homeTeam: "Home",
+        awayTeam: "Boston Red Sox",
+        homeTeam: "New York Yankees",
+        awayClubKey: "redsox",
+        homeClubKey: "yankees",
         startsAt: "2026-08-03T19:00:00.000Z",
         status: "scheduled",
       },
@@ -381,8 +383,8 @@ describe("SharpAPI activation boundary", () => {
             {
               id: "mlb-event-1",
               league: "mlb",
-              away_team: "Away",
-              home_team: "Home",
+              away_team: "Boston Red Sox",
+              home_team: "New York Yankees",
               start_time: "2026-08-03T19:00:00Z",
               status: "live",
               is_live: true,
@@ -394,6 +396,113 @@ describe("SharpAPI activation boundary", () => {
         retrievedAt,
       ),
     ).toThrow("invalid-response");
+  });
+  it("filters MLB catalogue contamination while retaining valid siblings", () => {
+    const row = (
+      id: string,
+      awayTeam: string,
+      homeTeam: string,
+      league = "mlb",
+    ) => ({
+      id,
+      league,
+      away_team: awayTeam,
+      home_team: homeTeam,
+      start_time: "2026-08-04T20:00:00Z",
+      status: "upcoming",
+      is_live: false,
+    });
+    const mlb = parseSharpApiSchedulePage(
+      {
+        data: [
+          row("valid", "Dodgers", "San Francisco Giants"),
+          row("foreign", "Yomiuri Giants", "Hanshin Tigers"),
+          row("half-known", "Detroit Tigers", "Hanshin Tigers"),
+          row("same-club", "Giants", "San Francisco Giants"),
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagueByKey("mlb"),
+      "2026-08-04T12:00:00.000Z" as never,
+    );
+    expect(mlb.events).toEqual([
+      expect.objectContaining({
+        providerEventId: "valid",
+        awayTeam: "Los Angeles Dodgers",
+        homeTeam: "San Francisco Giants",
+      }),
+    ]);
+    expect(mlb.exclusions).toHaveLength(3);
+    expect(
+      mlb.exclusions?.map(({ providerEventId }) => providerEventId),
+    ).toEqual(["foreign", "half-known", "same-club"]);
+
+    const soccer = parseSharpApiSchedulePage(
+      {
+        data: [row("soccer", "Away Club", "Home Club", "mls")],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagueByKey("mls"),
+      "2026-08-04T12:00:00.000Z" as never,
+    );
+    expect(soccer.events).toHaveLength(1);
+  });
+
+  it("defensively excludes contaminated MLB odds identities", () => {
+    const mlbRow = (
+      id: string,
+      eventId: string,
+      awayTeam: string,
+      homeTeam: string,
+    ) =>
+      oddsRow({
+        id,
+        event_id: eventId,
+        event_uuid: `${eventId}-uuid`,
+        league: "mlb",
+        away_team: awayTeam,
+        home_team: homeTeam,
+        market_type: "moneyline",
+        market_id: `${eventId}-market`,
+        selection_type: "away",
+        selection: awayTeam,
+        selection_id: `${eventId}-away`,
+      });
+    const page = parseSharpApiOddsPage(
+      {
+        data: [
+          mlbRow("valid-price", "valid-event", "Boston Red Sox", "Yankees"),
+          mlbRow(
+            "foreign-price",
+            "foreign-event",
+            "Yomiuri Giants",
+            "Hanshin Tigers",
+          ),
+          mlbRow(
+            "half-known-price",
+            "half-known-event",
+            "Detroit Tigers",
+            "Hanshin Tigers",
+          ),
+          mlbRow("same-price", "same-event", "Giants", "San Francisco Giants"),
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagueByKey("mlb"),
+      "2026-08-04T20:00:01.000Z" as never,
+    );
+    expect(page.events.map(({ providerEventId }) => providerEventId)).toEqual([
+      "valid-event",
+    ]);
+    expect(page.events[0]).toMatchObject({
+      awayTeam: "Boston Red Sox",
+      homeTeam: "New York Yankees",
+    });
+    expect(
+      page.rejections?.filter(
+        ({ reason }) => reason === "participant-unavailable",
+      ),
+    ).toHaveLength(3);
   });
   it("ignores futures without discarding valid scheduled matches", () => {
     const page = parseSharpApiSchedulePage(
@@ -428,8 +537,8 @@ describe("SharpAPI activation boundary", () => {
           {
             id: "game-1",
             league: "mlb",
-            away_team: "Away",
-            home_team: "Home",
+            away_team: "Boston Red Sox",
+            home_team: "New York Yankees",
             start_time: "2026-08-04T20:00:00Z",
             status: "upcoming",
             is_live: false,
@@ -450,8 +559,8 @@ describe("SharpAPI activation boundary", () => {
             {
               id: "malformed-game",
               league: "mlb",
-              away_team: "Away",
-              home_team: "Home",
+              away_team: "Boston Red Sox",
+              home_team: "New York Yankees",
               start_time: "not-an-instant",
               status: "upcoming",
               is_live: false,
@@ -477,8 +586,8 @@ describe("SharpAPI activation boundary", () => {
           {
             id: "game-1",
             league: "mlb",
-            away_team: "Away",
-            home_team: "Home",
+            away_team: "Boston Red Sox",
+            home_team: "New York Yankees",
             start_time: "2026-08-04T20:00:00Z",
             status: "upcoming",
             is_live: false,
@@ -518,8 +627,8 @@ describe("SharpAPI activation boundary", () => {
           {
             id: "game",
             league: "mlb",
-            away_team: "Away",
-            home_team: "Home",
+            away_team: "Boston Red Sox",
+            home_team: "New York Yankees",
             start_time: "2026-08-04T20:00:00Z",
             status: "upcoming",
             is_live: false,
@@ -611,8 +720,8 @@ describe("SharpAPI activation boundary", () => {
       id: "price-1",
       event_id: "mlb-away-home-2026-08-03",
       event_uuid: "event-uuid-1",
-      away_team: "Away Club",
-      home_team: "Home Club",
+      away_team: "Boston Red Sox",
+      home_team: "New York Yankees",
       event_start_time: "2026-08-03T22:40:00.000Z",
       sportsbook: "draftkings",
       market_type: "total_runs",
@@ -673,8 +782,8 @@ describe("SharpAPI activation boundary", () => {
       id: "price-valid",
       event_id: "mlb-away-home-2026-08-03",
       event_uuid: "event-uuid-1",
-      away_team: "Away Club",
-      home_team: "Home Club",
+      away_team: "Boston Red Sox",
+      home_team: "New York Yankees",
       event_start_time: "2026-08-03T22:40:00.000Z",
       sportsbook: "draftkings",
       market_type: "moneyline",

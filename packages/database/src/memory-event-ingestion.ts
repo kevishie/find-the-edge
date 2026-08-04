@@ -29,6 +29,7 @@ import {
   nextBoundedVersion,
   providerEventFenceId,
   providerEventPagePositionDigest,
+  participantIdentityMatches,
   stableDigest,
   validateCheckpoint,
   validateCanonicalEvent,
@@ -293,9 +294,6 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
   ) {
     await Promise.resolve();
     if (input.status !== "scheduled" || !input.participantLabels) return [];
-    const normalize = (value: string) =>
-      value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
-    const expected = input.participantLabels.map(normalize);
     const startsAt = Date.parse(input.startsAt);
     return [...this.events.values()]
       .map(validateCanonicalEvent)
@@ -304,10 +302,7 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
           candidate.sportKey === input.sportKey &&
           candidate.leagueKey === input.leagueKey &&
           candidate.status === "scheduled" &&
-          candidate.participantLabels?.length === expected.length &&
-          candidate.participantLabels.every(
-            (label, index) => normalize(label) === expected[index],
-          ) &&
+          participantIdentityMatches(input, candidate) &&
           Math.abs(Date.parse(candidate.startsAt) - startsAt) <=
             NEAR_CANONICAL_START_TOLERANCE_SECONDS * 1_000,
       )

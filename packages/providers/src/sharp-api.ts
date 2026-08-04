@@ -1,5 +1,10 @@
-import type { IsoTimestamp, SportKey } from "@find-the-edge/domain";
-import type { OddsNormalizationReason } from "@find-the-edge/domain";
+import {
+  canonicalMlbParticipantLabel,
+  resolveMlbParticipantKey,
+  type IsoTimestamp,
+  type OddsNormalizationReason,
+  type SportKey,
+} from "@find-the-edge/domain";
 import { normalizeSportsbook } from "@find-the-edge/config";
 
 import type { ProviderCapability, ProviderDescriptor } from "./index";
@@ -194,6 +199,8 @@ export interface SharpApiEvent {
   readonly providerEventUuid: string;
   readonly awayTeam: string;
   readonly homeTeam: string;
+  readonly awayClubKey?: string;
+  readonly homeClubKey?: string;
   readonly startsAt: IsoTimestamp;
   readonly bookmakers: readonly SharpApiBookmaker[];
 }
@@ -213,21 +220,32 @@ export interface SharpApiNormalizationRejection {
   readonly auditId: string;
   readonly providerEventId?: string;
   readonly sportsbookId?: string;
+  readonly participantBoundaryReason?:
+    "participant-out-of-scope" | "same-club-matchup";
 }
 
 export interface SharpApiScheduleEvent {
   readonly providerEventId: string;
   readonly awayTeam: string;
   readonly homeTeam: string;
+  readonly awayClubKey?: string;
+  readonly homeClubKey?: string;
   readonly startsAt: IsoTimestamp;
   readonly status: "scheduled";
 }
 export interface SharpApiSchedulePage {
   readonly events: readonly SharpApiScheduleEvent[];
+  readonly exclusions?: readonly SharpApiScheduleExclusion[];
   readonly hasMore: boolean;
   readonly nextOffset?: number;
   readonly retrievedAt: IsoTimestamp;
   readonly responseMetadata?: SharpApiResponseMetadata;
+}
+
+export interface SharpApiScheduleExclusion {
+  readonly providerEventId: string;
+  readonly reason: "participant-out-of-scope" | "same-club-matchup";
+  readonly auditId: string;
 }
 
 const derivativeLabelKind = (value: string) => {
@@ -258,6 +276,34 @@ export const isSharpDerivativeMatchup = (
 ) => {
   const awayKind = derivativeLabelKind(awayTeam);
   return awayKind !== null && derivativeLabelKind(homeTeam) !== null;
+};
+
+const canonicalSharpParticipants = (
+  league: SharpApiLeague,
+  awayTeam: string,
+  homeTeam: string,
+) => {
+  if (league.leagueKey !== "mlb")
+    return { kind: "accepted" as const, awayTeam, homeTeam };
+  const awayClubKey = resolveMlbParticipantKey(awayTeam);
+  const homeClubKey = resolveMlbParticipantKey(homeTeam);
+  if (!awayClubKey || !homeClubKey)
+    return {
+      kind: "rejected" as const,
+      reason: "participant-out-of-scope" as const,
+    };
+  if (awayClubKey === homeClubKey)
+    return {
+      kind: "rejected" as const,
+      reason: "same-club-matchup" as const,
+    };
+  return {
+    kind: "accepted" as const,
+    awayTeam: canonicalMlbParticipantLabel(awayClubKey),
+    homeTeam: canonicalMlbParticipantLabel(homeClubKey),
+    awayClubKey,
+    homeClubKey,
+  };
 };
 
 /** Cursor identity is carried separately so durable orchestration never guesses page progress. */
@@ -679,11 +725,23 @@ export function parseSharpApiOddsPage(
       });
       continue;
     }
+    const participants = canonicalSharpParticipants(league, awayTeam, homeTeam);
+    if (participants.kind === "rejected") {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "participant-unavailable",
+        auditId: auditId(value["id"]),
+        providerEventId: value["event_id"],
+        sportsbookId: value["sportsbook"],
+        participantBoundaryReason: participants.reason,
+      });
+      continue;
+    }
     const signature = JSON.stringify([
       value["event_id"],
       value["event_uuid"],
-      awayTeam,
-      homeTeam,
+      participants.awayTeam,
+      participants.homeTeam,
       Date.parse(value["event_start_time"]),
       value["sportsbook"],
       value["market_type"],
@@ -750,13 +808,21 @@ export function parseSharpApiOddsPage(
       });
       continue;
     }
+    const participants = canonicalSharpParticipants(league, awayTeam, homeTeam);
+    if (participants.kind === "rejected") continue;
     const eventId = value["event_id"];
     const existing = identities.get(eventId);
-    let identity = {
+    let identity: Omit<SharpApiEvent, "bookmakers"> = {
       providerEventId: eventId,
       providerEventUuid: value["event_uuid"],
-      awayTeam,
-      homeTeam,
+      awayTeam: participants.awayTeam,
+      homeTeam: participants.homeTeam,
+      ...(participants.awayClubKey
+        ? {
+            awayClubKey: participants.awayClubKey,
+            homeClubKey: participants.homeClubKey,
+          }
+        : {}),
       startsAt: iso(value["event_start_time"]),
     };
     if (existing) {
@@ -889,6 +955,7 @@ export function parseSharpApiSchedulePage(
   )
     throw new SharpApiError("invalid-response");
   const events: SharpApiScheduleEvent[] = [];
+  const exclusions: SharpApiScheduleExclusion[] = [];
   const ids = new Set<string>();
   for (const value of input["data"]) {
     if (
@@ -930,20 +997,37 @@ export function parseSharpApiSchedulePage(
       typeof awayTeam !== "string" ||
       awayTeam.length === 0 ||
       typeof homeTeam !== "string" ||
-      homeTeam.length === 0 ||
+      homeTeam.length === 0
+    )
+      continue;
+    if (!canonical(awayTeam) || !canonical(homeTeam))
+      throw new SharpApiError("invalid-response");
+    const participants = canonicalSharpParticipants(league, awayTeam, homeTeam);
+    if (participants.kind === "rejected") {
+      exclusions.push({
+        providerEventId: value["id"],
+        reason: participants.reason,
+        auditId: auditId(value["id"]),
+      });
+      continue;
+    }
+    if (league.leagueKey !== "mlb" && value["away_team"] === value["home_team"])
+      throw new SharpApiError("invalid-response");
+    if (
+      league.leagueKey !== "mlb" &&
       isSharpDerivativeMatchup(awayTeam, homeTeam)
     )
       continue;
-    if (
-      !canonical(value["away_team"]) ||
-      !canonical(value["home_team"]) ||
-      value["away_team"] === value["home_team"]
-    )
-      throw new SharpApiError("invalid-response");
     events.push({
       providerEventId: value["id"],
-      awayTeam: value["away_team"],
-      homeTeam: value["home_team"],
+      awayTeam: participants.awayTeam,
+      homeTeam: participants.homeTeam,
+      ...(participants.awayClubKey
+        ? {
+            awayClubKey: participants.awayClubKey,
+            homeClubKey: participants.homeClubKey,
+          }
+        : {}),
       startsAt: iso(value["start_time"]),
       status: "scheduled",
     });
@@ -953,6 +1037,7 @@ export function parseSharpApiSchedulePage(
     throw new SharpApiError("invalid-response");
   return {
     events,
+    ...(exclusions.length > 0 ? { exclusions } : {}),
     hasMore: input["pagination"]["has_more"],
     ...(integer(next) ? { nextOffset: next } : {}),
     retrievedAt,

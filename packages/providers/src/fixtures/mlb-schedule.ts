@@ -15,7 +15,7 @@ const events: readonly ProviderUpcomingEvent[] = [
     providerEventId: "mlb-1",
     sportKey,
     leagueKey,
-    participantLabels: ["Boston", "New York"],
+    participantLabels: ["Boston Red Sox", "New York Yankees"],
     startsAt: "2026-08-01T23:05:00.000Z" as IsoTimestamp,
     status: "scheduled",
     revision: {
@@ -30,7 +30,7 @@ const events: readonly ProviderUpcomingEvent[] = [
     providerEventId: "mlb-2",
     sportKey,
     leagueKey,
-    participantLabels: ["Chicago", "Detroit"],
+    participantLabels: ["Chicago Cubs", "Detroit Tigers"],
     startsAt: "2026-08-02T17:10:00.000Z" as IsoTimestamp,
     status: "scheduled",
     revision: {

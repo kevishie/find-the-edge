@@ -31,6 +31,7 @@ import {
   nextBoundedVersion,
   providerEventFenceId,
   providerEventPagePositionDigest,
+  participantIdentityMatches,
   stableDigest,
   validateCheckpoint,
   validateCanonicalEvent,
@@ -642,10 +643,12 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
       const projection = validateProjection(row, "league", input.startsAt);
       if (
         projection.visibleUntil === null &&
-        projection.participantLabels.length === expected.length &&
-        projection.participantLabels.every(
-          (label, index) => normalize(label) === expected[index],
-        ) &&
+        (input.participantIdentityIds
+          ? true
+          : projection.participantLabels.length === expected.length &&
+            projection.participantLabels.every(
+              (label, index) => normalize(label) === expected[index],
+            )) &&
         Math.abs(Date.parse(projection.startsAt) - target) <= toleranceMs
       )
         projections.set(projection.eventId, [
@@ -673,11 +676,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         candidate.sportKey !== input.sportKey ||
         candidate.leagueKey !== input.leagueKey ||
         candidate.status !== "scheduled" ||
-        !candidate.participantLabels ||
-        candidate.participantLabels.length !== expected.length ||
-        !candidate.participantLabels.every(
-          (label, index) => normalize(label) === expected[index],
-        ) ||
+        !participantIdentityMatches(input, candidate) ||
         Math.abs(Date.parse(candidate.startsAt) - target) > toleranceMs
       )
         throw new Error("near-canonical-projection-stale");

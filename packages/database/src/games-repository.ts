@@ -1,5 +1,6 @@
 import {
   collapseNearDuplicateGames,
+  gamePassesMlbParticipantBoundary,
   fixtureOddsPartition,
   participantSelectionKey,
   type GameDisplayDto,
@@ -147,6 +148,18 @@ const validateCurrent = (
   };
 };
 
+const collapseEventRows = (events: EventPage["items"]) =>
+  collapseNearDuplicateGames(
+    events.map((event) => ({
+      ...event,
+      odds: { state: "unavailable" as const },
+    })),
+  ).map((game) => {
+    const { odds, ...event } = game;
+    void odds;
+    return event;
+  });
+
 export class JoinedGamesRepository implements GamesRepository {
   constructor(
     readonly events: EventRepository,
@@ -164,7 +177,39 @@ export class JoinedGamesRepository implements GamesRepository {
     limit: number,
     cursor?: string,
   ): Promise<GamesPage> {
-    const page = await this.events.list(filter, limit, cursor);
+    const first = await this.events.list(filter, limit, cursor);
+    const collected = [...first.items];
+    const visibleItems = () => {
+      const visible = collected.filter(gamePassesMlbParticipantBoundary);
+      return filter.sportKey === "mlb" ? collapseEventRows(visible) : visible;
+    };
+    let items = visibleItems();
+    let needsBackfill = items.length !== first.items.length;
+    let nextCursor = first.nextCursor;
+    const seen = new Set<string>();
+    if (cursor) seen.add(cursor);
+    let pages = 1;
+    const maxPages = 50;
+    const maxRows = Math.max(limit * maxPages, maxPages);
+    while (needsBackfill && items.length < limit && nextCursor) {
+      if (pages >= maxPages || collected.length >= maxRows)
+        throw new EventStorageError("games-backfill-limit");
+      if (seen.has(nextCursor))
+        throw new EventStorageError("games-cursor-cycle");
+      seen.add(nextCursor);
+      const following = await this.events.list(
+        filter,
+        Math.max(1, limit - items.length),
+        nextCursor,
+      );
+      pages += 1;
+      collected.push(...following.items);
+      items = visibleItems();
+      needsBackfill = items.length !== collected.length;
+      nextCursor = following.nextCursor;
+    }
+    items = items.slice(0, limit);
+    const page: EventPage = { ...first, items, nextCursor: nextCursor ?? null };
     if (!page.items.length) return { ...page, items: [] };
     const requestedByEvent = page.items.map((event) => {
       return this.sportsbookIds.map((sportsbookId) =>
