@@ -326,12 +326,26 @@ function validTemplate() {
           },
         },
       },
+      LiveQueue: {
+        Type: "AWS::SQS::Queue",
+        Properties: { FifoQueue: true },
+      },
+      LiveMapping: {
+        Type: "AWS::Lambda::EventSourceMapping",
+        Properties: {
+          BatchSize: 1,
+          EventSourceArn: { "Fn::GetAtt": ["LiveQueue", "Arn"] },
+          FunctionName: { Ref: "Seed" },
+        },
+      },
       LiveRule: {
         Type: "AWS::Events::Rule",
         Properties: {
           ScheduleExpression: "rate(15 minutes)",
           State: "ENABLED",
-          Targets: [{ Arn: { "Fn::GetAtt": ["Seed", "Arn"] }, Id: "Target0" }],
+          Targets: [
+            { Arn: { "Fn::GetAtt": ["LiveQueue", "Arn"] }, Id: "Target0" },
+          ],
         },
       },
       ApiPolicy: {
@@ -387,6 +401,7 @@ function validTemplate() {
                   "dynamodb:GetItem",
                   "dynamodb:Query",
                   "dynamodb:PutItem",
+                  "dynamodb:UpdateItem",
                   "dynamodb:TransactWriteItems",
                 ],
                 Resource: [{ "Fn::GetAtt": ["Table", "Arn"] }],

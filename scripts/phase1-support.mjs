@@ -540,16 +540,36 @@ export function validateTemplate(template, config) {
     throw new Error(
       "Live odds secret reference is missing or plaintext leaked",
     );
+  const liveQueueIds = new Set(
+    entriesOfType(template, "AWS::Lambda::EventSourceMapping")
+      .filter(
+        ([, value]) =>
+          isRef(value.Properties?.FunctionName, liveId) &&
+          value.Properties?.BatchSize === 1,
+      )
+      .map(([, value]) => value.Properties?.EventSourceArn?.["Fn::GetAtt"])
+      .filter(
+        (value) =>
+          Array.isArray(value) &&
+          value[1] === "Arn" &&
+          template.Resources?.[value[0]]?.Type === "AWS::SQS::Queue",
+      )
+      .map((value) => value[0]),
+  );
   const liveRules = entriesOfType(template, "AWS::Events::Rule").filter(
     ([, value]) =>
       value.Properties?.ScheduleExpression === "rate(15 minutes)" &&
       value.Properties?.State === "ENABLED" &&
       value.Properties?.Targets?.some((target) =>
-        isGetAtt(target.Arn, liveId, "Arn"),
+        [...liveQueueIds].some((queueId) =>
+          isGetAtt(target.Arn, queueId, "Arn"),
+        ),
       ),
   );
   if (liveRules.length !== 1)
-    throw new Error("Live odds ingestion must have one enabled 15-minute rule");
+    throw new Error(
+      "Live odds ingestion must have one enabled 15-minute rule feeding its control-plane queue",
+    );
   if (
     !Array.isArray(apiOutput?.["Fn::Join"]) ||
     apiOutput["Fn::Join"].length !== 2 ||
@@ -658,6 +678,7 @@ export function validateTemplate(template, config) {
       "dynamodb:GetItem",
       "dynamodb:Query",
       "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
       "dynamodb:TransactWriteItems",
     ],
     "Live ingestion DynamoDB IAM",
