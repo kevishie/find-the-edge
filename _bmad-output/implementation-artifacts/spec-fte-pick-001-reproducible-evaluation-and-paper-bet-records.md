@@ -2,8 +2,9 @@
 title: 'FTE-PICK-001 Reproducible Evaluation and Paper-Bet Records'
 type: 'feature'
 created: '2026-08-03T22:45:00-04:00'
-status: 'in-review'
+status: 'done'
 baseline_revision: '2e98bea'
+final_revision: '9926571'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
@@ -144,7 +145,7 @@ Hash identity covers normalized decision inputs, not `createdAt`; the first succ
 
 ## Status
 
-In Review
+Done
 
 ## Auto Run Result
 
