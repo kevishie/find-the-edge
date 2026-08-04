@@ -17,6 +17,13 @@ const REQUIRED = [
 ];
 const AUTHORIZED_ACCOUNT = "228246988391";
 const AUTHORIZED_REGION = "us-east-1";
+const RELEASE_REFRESH_LEAGUES = new Set([
+  "mlb",
+  "mls",
+  "epl",
+  "liga-mx",
+  "uefa-champions-league",
+]);
 
 export const liveOddsInvocationArguments = (
   functionName,
@@ -186,7 +193,7 @@ export function assertLiveIngestionResourceBinding(resources, environment) {
 
 export function assertLiveIngestionSummary(summary) {
   if (Array.isArray(summary)) {
-    const expectedLeagues = new Set(["mlb", "mls"]);
+    const expectedLeagues = RELEASE_REFRESH_LEAGUES;
     const isOwnershipOverlap = (result) =>
       result?.status === "failed" &&
       result?.reason === "schedule-provider-recovering";
@@ -203,7 +210,7 @@ export function assertLiveIngestionSummary(summary) {
     const safeResult = (result) =>
       result &&
       typeof result === "object" &&
-      ["mlb", "mls"].includes(result.leagueKey) &&
+      RELEASE_REFRESH_LEAGUES.has(result.leagueKey) &&
       ["completed", "skipped", "failed"].includes(result.status) &&
       (result.reason === undefined ||
         [
@@ -285,8 +292,12 @@ export function assertLiveIngestionSummary(summary) {
 }
 
 export function isTransientLiveIngestionSummary(summary) {
-  if (!Array.isArray(summary) || summary.length !== 2) return false;
-  const leagues = new Set(["mlb", "mls"]);
+  if (
+    !Array.isArray(summary) ||
+    summary.length !== RELEASE_REFRESH_LEAGUES.size
+  )
+    return false;
+  const leagues = new Set(RELEASE_REFRESH_LEAGUES);
   return summary.every(
     (result) =>
       result &&

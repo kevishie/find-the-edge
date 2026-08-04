@@ -206,6 +206,12 @@ test("live ingestion proof accepts production control-plane summaries", () => {
         pages: 0,
         quotaCost: 0,
       },
+      ...["epl", "liga-mx", "uefa-champions-league"].map((leagueKey) => ({
+        leagueKey,
+        status: "completed",
+        pages: 1,
+        quotaCost: 1,
+      })),
     ]),
   );
   assert.doesNotThrow(() =>
@@ -288,7 +294,13 @@ test("live ingestion proof accepts production control-plane summaries", () => {
 });
 
 test("live ingestion retries only bounded schedule ownership overlap", () => {
-  const recovering = ["mlb", "mls"].map((leagueKey) => ({
+  const recovering = [
+    "mlb",
+    "mls",
+    "epl",
+    "liga-mx",
+    "uefa-champions-league",
+  ].map((leagueKey) => ({
     leagueKey,
     status: "failed",
     reason: "schedule-provider-recovering",
@@ -314,6 +326,7 @@ test("live ingestion retries only bounded schedule ownership overlap", () => {
     isTransientLiveIngestionSummary([
       recovering[0],
       { ...recovering[1], pages: 2, quotaCost: 3 },
+      ...recovering.slice(2),
     ]),
     true,
   );
