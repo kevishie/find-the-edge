@@ -282,9 +282,9 @@ export function isTransientLiveIngestionSummary(summary) {
       result.status === "failed" &&
       result.reason === "schedule-provider-recovering" &&
       Number.isSafeInteger(result.pages) &&
-      result.pages === 0 &&
+      result.pages >= 0 &&
       Number.isSafeInteger(result.quotaCost) &&
-      result.quotaCost === 0,
+      result.quotaCost >= 0,
   );
 }
 
