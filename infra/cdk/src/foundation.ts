@@ -305,7 +305,9 @@ export class FoundationStack extends Stack {
       runtime: Runtime.NODEJS_24_X,
       timeout: Duration.minutes(5),
       memorySize: 512,
-      reservedConcurrentExecutions: 1,
+      // SQS event-source scaling has a minimum maximum-concurrency of two.
+      // FIFO message grouping still serializes cadence work for each group.
+      reservedConcurrentExecutions: 2,
       environment: {
         FTE_EVENT_TABLE: table.tableName,
         FTE_THE_ODDS_API_SECRET_ID: oddsSecret.secretName,
