@@ -743,6 +743,22 @@ export function validateTemplate(template, config) {
         const resources = Array.isArray(statement.Resource)
           ? statement.Resource
           : [statement.Resource];
+        const streamDiscoveryOnly =
+          actions.length === 1 &&
+          actions[0] === "dynamodb:ListStreams" &&
+          resources.length === 1 &&
+          resources[0] === "*";
+        const streamReadOnly =
+          actions.length > 0 &&
+          actions.every((action) =>
+            [
+              "dynamodb:DescribeStream",
+              "dynamodb:GetRecords",
+              "dynamodb:GetShardIterator",
+            ].includes(action),
+          ) &&
+          resources.length === 1 &&
+          isGetAtt(resources[0], tableId, "StreamArn");
         const exactTableOrIndexes = (value) => {
           if (isGetAtt(value, tableId, "Arn")) return true;
           const parts = value?.["Fn::Join"];
@@ -755,14 +771,14 @@ export function validateTemplate(template, config) {
             parts[1][1] === "/index/*"
           );
         };
-        if (
-          resources.length < 1 ||
-          resources.length > 2 ||
-          !resources.every(exactTableOrIndexes) ||
-          !resources.some((value) => isGetAtt(value, tableId, "Arn"))
-        )
+        const exactTableAccess =
+          resources.length >= 1 &&
+          resources.length <= 2 &&
+          resources.every(exactTableOrIndexes) &&
+          resources.some((value) => isGetAtt(value, tableId, "Arn"));
+        if (!streamDiscoveryOnly && !streamReadOnly && !exactTableAccess)
           throw new Error(
-            "DynamoDB IAM must reference only the exact event table and its indexes",
+            "DynamoDB IAM must reference only the exact event table, its indexes, or its read-only stream",
           );
       }
     }
