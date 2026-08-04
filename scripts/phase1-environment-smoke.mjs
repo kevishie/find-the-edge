@@ -237,7 +237,18 @@ export function assertLiveIngestionSummary(summary) {
                 `${result.leagueKey}=${result.status}${result.reason ? `:${result.reason}` : ""}`,
             )
             .sort()
-            .join(",") || "invalid-shape"
+            .join(",") ||
+          `invalid-shape:${summary.length}:${summary
+            .slice(0, 4)
+            .map((result) =>
+              result && typeof result === "object"
+                ? Object.entries(result)
+                    .map(([key, value]) => `${key}:${typeof value}`)
+                    .sort()
+                    .join("|")
+                : typeof result,
+            )
+            .join(",")}`
         }`,
       );
     return;
