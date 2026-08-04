@@ -222,4 +222,76 @@ describe("production odds control-plane composition", () => {
       ),
     ).toBe(true);
   });
+
+  it("uses a valid stored schedule when a forced discovery refresh is unavailable", async () => {
+    const events = new MemoryEventIngestionStore();
+    const control = new MemoryOddsControlPlaneStore();
+    const scheduleEvent = (leagueKey: string) => ({
+      providerEventId: `${leagueKey}-event`,
+      awayTeam: "Away",
+      homeTeam: "Home",
+      startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+      status: "scheduled" as const,
+    });
+    const fetchSharpSchedule = vi.fn((league: SharpApiLeague) =>
+      Promise.resolve({
+        events: [scheduleEvent(league.leagueKey)],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+    );
+    const fetchSharpOdds = vi.fn((league: SharpApiLeague) =>
+      Promise.resolve({
+        events: [
+          {
+            ...scheduleEvent(league.leagueKey),
+            providerEventUuid: `${league.leagueKey}-uuid`,
+            bookmakers: [],
+          },
+        ],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+    );
+    const options = {
+      events,
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      theOddsApiKey: "fallback-key",
+      now,
+      fetchSharpSchedule,
+      fetchSharpOdds,
+      fetchFallbackSchedule: vi.fn(),
+      fetchFallbackOdds: vi.fn(),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 15,
+        streamingEnabled: false,
+      }),
+    };
+    await runProductionOddsControlPlane(options);
+    fetchSharpSchedule.mockRejectedValue(new Error("provider-unavailable"));
+    const forced = await runProductionOddsControlPlane({
+      ...options,
+      now: new Date("2026-08-03T12:15:00.000Z"),
+      forceRefresh: true,
+    });
+    expect(
+      forced.map(({ providerId, status }) => [providerId, status]),
+    ).toEqual([
+      ["sharpapi", "completed"],
+      ["sharpapi", "completed"],
+    ]);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(4);
+    expect(options.fetchFallbackSchedule).not.toHaveBeenCalled();
+  });
 });

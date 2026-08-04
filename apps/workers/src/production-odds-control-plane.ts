@@ -344,6 +344,7 @@ export async function runProductionOddsControlPlane(input: {
   const expectedProviderEvents = new Map<string, string[]>();
   const sharpScheduleHealthy = new Set<string>();
   const scheduleReady = new Set<string>();
+  const storedScheduleReady = new Set<string>();
   for (const sharpLeague of sharpApiLeagues) {
     let activeScheduleRunId: string | undefined;
     let scheduleQuotaCost = 0;
@@ -361,6 +362,14 @@ export async function runProductionOddsControlPlane(input: {
         throw new Error("quota-reserve");
       const checkpointKey = `schedule:${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`;
       const checkpoint = await input.control.getCheckpoint(checkpointKey);
+      if (
+        checkpoint?.expectedProviderEvents?.some(
+          ({ startsAt }) => Date.parse(startsAt) > now.getTime(),
+        )
+      )
+        storedScheduleReady.add(
+          `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
+        );
       if (checkpoint?.upcomingStarts)
         starts.set(
           sharpLeague.leagueKey,
@@ -675,6 +684,14 @@ export async function runProductionOddsControlPlane(input: {
         provider: SHARP_API_PROVIDER_ID,
         reason,
       });
+      if (
+        storedScheduleReady.has(
+          `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
+        )
+      ) {
+        sharpScheduleHealthy.add(sharpLeague.leagueKey);
+        scheduleReady.add(`${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`);
+      }
     }
   }
   for (const fallbackLeague of theOddsApiLeagues) {
@@ -695,6 +712,14 @@ export async function runProductionOddsControlPlane(input: {
         throw new Error("quota-reserve");
       const checkpointKey = `schedule:${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`;
       const checkpoint = await input.control.getCheckpoint(checkpointKey);
+      if (
+        checkpoint?.expectedProviderEvents?.some(
+          ({ startsAt }) => Date.parse(startsAt) > now.getTime(),
+        )
+      )
+        storedScheduleReady.add(
+          `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
+        );
       if (checkpoint?.upcomingStarts)
         starts.set(
           fallbackLeague.leagueKey,
@@ -977,6 +1002,14 @@ export async function runProductionOddsControlPlane(input: {
         provider: THE_ODDS_API_PROVIDER_ID,
         reason,
       });
+      if (
+        storedScheduleReady.has(
+          `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
+        )
+      )
+        scheduleReady.add(
+          `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}`,
+        );
     }
   }
 
