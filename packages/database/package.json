@@ -20,6 +20,9 @@
     "@find-the-edge/domain": "workspace:*"
   },
   "devDependencies": {
+    "@find-the-edge/odds": "workspace:*",
+    "@find-the-edge/scouting": "workspace:*",
+    "@find-the-edge/sports": "workspace:*",
     "vitest": "^4.0.18"
   }
 }
