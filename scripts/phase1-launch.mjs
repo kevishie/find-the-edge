@@ -655,23 +655,28 @@ export function requireInvalidationId(response) {
   return id;
 }
 
+export function releaseSnapshotArguments(bucket) {
+  return [
+    "s3api",
+    "list-object-versions",
+    "--bucket",
+    bucket,
+    "--region",
+    LAUNCH_REGION,
+    "--query",
+    "{Versions:Versions[?IsLatest==`true`].{Key:Key,VersionId:VersionId,IsLatest:IsLatest},DeleteMarkers:DeleteMarkers[?IsLatest==`true`].{Key:Key,VersionId:VersionId,IsLatest:IsLatest}}",
+    "--output",
+    "json",
+  ];
+}
+
 function releaseSnapshot(bucket, environment) {
   verifyIdentity(environment);
   return JSON.parse(
-    run(
-      "aws",
-      [
-        "s3api",
-        "list-object-versions",
-        "--bucket",
-        bucket,
-        "--region",
-        LAUNCH_REGION,
-        "--output",
-        "json",
-      ],
-      { capture: true, env: environment },
-    ),
+    run("aws", releaseSnapshotArguments(bucket), {
+      capture: true,
+      env: environment,
+    }),
   );
 }
 

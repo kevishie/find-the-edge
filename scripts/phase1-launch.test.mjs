@@ -10,6 +10,7 @@ import {
   classifyReleaseVerificationFailure,
   cleanupTemporaryLaunch,
   requireInvalidationId,
+  releaseSnapshotArguments,
   resolveExistingStackSummary,
   planReleaseRollback,
   validateStackOutputs,
@@ -40,6 +41,21 @@ test("launch requires explicit opt-in and exact account/region", () => {
     () => validateLaunchEnvironment({ ...valid, AWS_REGION: "us-west-2" }),
     /restricted/,
   );
+});
+test("release snapshots request only latest rollback material", () => {
+  const arguments_ = releaseSnapshotArguments("safe-versioned-bucket");
+  assert.deepEqual(arguments_.slice(0, 6), [
+    "s3api",
+    "list-object-versions",
+    "--bucket",
+    "safe-versioned-bucket",
+    "--region",
+    "us-east-1",
+  ]);
+  const query = arguments_[arguments_.indexOf("--query") + 1];
+  assert.match(query, /Versions\[\?IsLatest==`true`\]/);
+  assert.match(query, /DeleteMarkers\[\?IsLatest==`true`\]/);
+  assert.doesNotMatch(query, /LastModified|ETag|Size|StorageClass|Owner/);
 });
 test("launch blocks modified, deleted, unknown, or incomplete drift", () => {
   assert.doesNotThrow(() =>
