@@ -2,8 +2,9 @@
 title: 'FTE-PICK-002 Sport-Rule Analysis Contracts for ML and Spread'
 type: 'feature'
 created: '2026-08-03T23:10:00-04:00'
-status: 'in-review'
+status: 'done'
 baseline_revision: '3d158fe'
+final_revision: 'fda0ca4'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
@@ -196,7 +197,7 @@ Sports own analysis policy; scouting owns generic validation and framing. Canoni
 
 ## Status
 
-In Review
+Done
 
 ## Auto Run Result
 
