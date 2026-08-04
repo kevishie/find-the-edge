@@ -7,7 +7,155 @@ import {
   type GamesClient,
   type GamesPageDto,
   type SplitsPageDto,
+  type RetrospectiveDto,
 } from "./api";
+
+const hex = (value: string) => value.repeat(64);
+const retrospective: RetrospectiveDto = {
+  retrospectiveId: `retrospective:${hex("a")}`,
+  versionId: `retrospective-version:${hex("b")}`,
+  version: 1,
+  predecessorVersionId: null,
+  cohortId: `cohort:${hex("c")}`,
+  reportId: `performance-report:${hex("d")}`,
+  reportRevision: 1,
+  createdAt: "2026-08-04T00:00:00.000Z",
+  state: "draft",
+  stateVersion: 1,
+  memberCount: 1,
+  caution: "single-member",
+  falseNegativeEvaluation: "not-evaluable",
+  taxonomyVersion: "retrospective-taxonomy-v1",
+  evidence: {
+    evaluationCutoff: "2026-08-03T00:00:00.000Z",
+    decisionTime: [
+      {
+        id: "evaluation",
+        kind: "evaluation",
+        layer: "decision-time",
+        decisionCutoff: "2026-08-02T12:00:00.000Z",
+        observedAt: "2026-08-02T00:00:00.000Z",
+        digest: hex("2"),
+      },
+    ],
+    postDecision: [
+      {
+        id: "grade",
+        kind: "grade",
+        layer: "post-decision",
+        decisionCutoff: "2026-08-02T12:00:00.000Z",
+        observedAt: "2026-08-03T00:00:00.000Z",
+        digest: hex("3"),
+      },
+    ],
+    decisionTimeDigest: hex("e"),
+    postDecisionDigest: hex("f"),
+    manifestDigest: hex("1"),
+  },
+  slices: [
+    {
+      dimension: "outcome",
+      value: "all",
+      memberCount: 1,
+      wins: 0,
+      losses: 1,
+      pushes: 0,
+      voids: 0,
+      unresolved: 0,
+      units: -1,
+      roi: -1,
+    },
+  ],
+  observations: [
+    {
+      id: "review",
+      taxonomyCode: "false-positive",
+      layer: "post-decision",
+      summary:
+        "One qualified loss merits review; outcome alone does not establish error.",
+      evidenceRefIds: ["grade"],
+      memberIds: ["member"],
+      confidence: "review-only",
+    },
+  ],
+  candidates: [],
+  contentDigest: hex("4"),
+};
+
+it("renders retrospective evidence layers and honest read-only controls", async () => {
+  const client = {
+    ok: true as const,
+    value: {
+      list: vi.fn(),
+      listRetrospectives: vi.fn(() => Promise.resolve([retrospective])),
+      getRetrospective: vi.fn(() => Promise.resolve(retrospective)),
+    },
+  };
+  render(<App initialPath="/retrospectives" gamesClient={client} />);
+  expect(await screen.findByText("1 reviewed decision")).toBeVisible();
+  fireEvent.click(screen.getByText("1 reviewed decision"));
+  expect(await screen.findByText("What was knowable then")).toBeVisible();
+  expect(screen.getByText("What became known later")).toBeVisible();
+  expect(screen.getByText("READ ONLY")).toBeVisible();
+  expect(screen.getByText(/False-negative review: unavailable/)).toBeVisible();
+});
+
+it("requires an explicit confirmed reviewer action and refreshes the audit state", async () => {
+  const reviewed = {
+    ...retrospective,
+    state: "approved" as const,
+    stateVersion: 2,
+  };
+  const historical = {
+    ...retrospective,
+    versionId: `retrospective-version:${hex("9")}`,
+    version: 2,
+    predecessorVersionId: retrospective.versionId,
+  };
+  const reviewRetrospective = vi.fn(() => Promise.resolve(reviewed));
+  const client = {
+    ok: true as const,
+    value: {
+      list: vi.fn(),
+      getRetrospective: vi.fn(() => Promise.resolve(retrospective)),
+      listRetrospectiveVersions: vi.fn(() =>
+        Promise.resolve([historical, retrospective]),
+      ),
+      canReviewRetrospectives: vi.fn(() => Promise.resolve(true)),
+      reviewRetrospective,
+    },
+  };
+  render(
+    <App
+      initialPath={`/retrospectives/${retrospective.versionId}`}
+      gamesClient={client}
+    />,
+  );
+  const save = await screen.findByRole("button", { name: "Save human review" });
+  expect(
+    screen.getByRole("link", { name: "Open immutable version" }),
+  ).toHaveAttribute(
+    "href",
+    `/retrospectives/${encodeURIComponent(historical.versionId)}`,
+  );
+  expect(save).toBeDisabled();
+  fireEvent.click(screen.getByRole("radio", { name: "approve" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Reviewer note" }), {
+    target: { value: "Evidence checked." },
+  });
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(save).toBeEnabled();
+  fireEvent.click(save);
+  expect(await screen.findByText(/Review saved/)).toBeVisible();
+  expect(reviewRetrospective).toHaveBeenCalledWith(
+    retrospective,
+    expect.objectContaining({
+      reasonCode: "approve",
+      note: "Evidence checked.",
+    }),
+    expect.any(AbortSignal),
+  );
+});
 
 it("shows an honest empty performance state before a frozen report exists", async () => {
   render(<App initialPath="/performance" />);

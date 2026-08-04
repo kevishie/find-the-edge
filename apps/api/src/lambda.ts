@@ -7,6 +7,7 @@ import {
   DynamoBettingSplitRepository,
   DynamoEventRepository,
   DynamoCohortRepository,
+  DynamoRetrospectiveRepository,
   EventCursorCodec,
 } from "@find-the-edge/database";
 import { createEventHandler } from "./handler";
@@ -15,6 +16,8 @@ interface LambdaEvent {
   readonly routeKey?: string;
   readonly pathParameters?: { readonly eventId?: string };
   readonly queryStringParameters?: Record<string, string | undefined>;
+  readonly headers?: Record<string, string | undefined>;
+  readonly body?: string;
   readonly requestContext?: {
     readonly authorizer?: {
       readonly jwt?: {
@@ -35,9 +38,10 @@ const gateway = new AwsDynamoGateway(
 const secrets = new SecretsManagerClient({});
 export const handler = async (event: LambdaEvent) => {
   const ring = await loadSecretRing(secrets, secretArn);
+  const cursorCodec = new EventCursorCodec(ring);
   const repository = new DynamoEventRepository(
     gateway,
-    new EventCursorCodec(ring),
+    cursorCodec,
     async () => {
       const item = await gateway.get("EVENT_PROJECTIONS", "READINESS");
       return (
@@ -50,26 +54,49 @@ export const handler = async (event: LambdaEvent) => {
   const games = new DynamoGamesRepository(repository, gateway);
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const claims = event.requestContext?.authorizer?.jwt?.claims;
-  const route = event.routeKey?.startsWith("GET /games")
-    ? "games"
-    : event.routeKey?.startsWith("GET /splits")
-      ? "splits"
-      : event.routeKey === "GET /performance/reports"
-        ? "performance-reports"
-        : event.routeKey?.startsWith("GET /performance/reports/")
-          ? "performance-detail"
-          : event.routeKey?.startsWith("GET /performance/cohorts/")
-            ? "performance-members"
-            : event.routeKey?.startsWith("GET /performance/cohorts")
-              ? "performance-list"
-              : event.routeKey?.includes("/{eventId}")
-                ? "detail"
-                : "list";
+  const route =
+    event.routeKey === "GET /retrospectives"
+      ? "retrospective-list"
+      : event.routeKey === "GET /retrospectives/{eventId}"
+        ? "retrospective-detail"
+        : event.routeKey === "GET /retrospectives/{eventId}/versions"
+          ? "retrospective-versions"
+          : event.routeKey === "POST /retrospectives/{eventId}/review"
+            ? "retrospective-review"
+            : event.routeKey?.startsWith("GET /games")
+              ? "games"
+              : event.routeKey?.startsWith("GET /splits")
+                ? "splits"
+                : event.routeKey === "GET /performance/reports"
+                  ? "performance-reports"
+                  : event.routeKey?.startsWith("GET /performance/reports/")
+                    ? "performance-detail"
+                    : event.routeKey?.startsWith("GET /performance/cohorts/")
+                      ? "performance-members"
+                      : event.routeKey?.startsWith("GET /performance/cohorts")
+                        ? "performance-list"
+                        : event.routeKey?.includes("/{eventId}")
+                          ? "detail"
+                          : "list";
   const eventId = event.pathParameters?.eventId;
   const subject =
     typeof claims?.["sub"] === "string" ? claims["sub"] : undefined;
-  const scopes = event.requestContext?.authorizer?.jwt?.scopes;
+  const authorizedScopes = event.requestContext?.authorizer?.jwt?.scopes;
+  const claimScope = claims?.["scope"];
+  const scopes =
+    authorizedScopes ??
+    (typeof claimScope === "string"
+      ? claimScope.split(" ").filter(Boolean)
+      : undefined);
+  const groups = claims?.["cognito:groups"];
+  const reviewerAuthorized =
+    (Array.isArray(groups) && groups.includes("fte-retrospective-reviewers")) ||
+    (typeof groups === "string" &&
+      groups.split(",").includes("fte-retrospective-reviewers"));
   const query = event.queryStringParameters;
+  const contentType = Object.entries(event.headers ?? {}).find(
+    ([key]) => key.toLowerCase() === "content-type",
+  )?.[1];
   return createEventHandler(
     repository,
     games,
@@ -79,11 +106,16 @@ export const handler = async (event: LambdaEvent) => {
       tableName,
     ),
     new DynamoCohortRepository(documentClient, tableName),
+    new DynamoRetrospectiveRepository(documentClient, tableName, cursorCodec),
   )({
     route,
     ...(subject ? { subject } : {}),
     ...(scopes ? { scopes } : {}),
+    reviewerAuthorized,
     ...(eventId ? { eventId } : {}),
     ...(query ? { query } : {}),
+    method: event.routeKey?.startsWith("POST ") ? "POST" : "GET",
+    ...(contentType ? { contentType } : {}),
+    ...(event.body ? { body: event.body } : {}),
   });
 };

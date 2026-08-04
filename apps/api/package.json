@@ -22,6 +22,7 @@
     "@find-the-edge/database": "workspace:*"
   },
   "devDependencies": {
+    "@find-the-edge/domain": "workspace:*",
     "@types/aws-lambda": "^8.10.159",
     "vitest": "^4.0.18"
   }

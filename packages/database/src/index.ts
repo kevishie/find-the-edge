@@ -35,6 +35,8 @@ export * from "./dynamodb-paper-pick-run-repository";
 export * from "./evaluation-candidate-repository";
 export * from "./cohort-repository";
 export * from "./dynamodb-cohort-repository";
+export * from "./retrospective-repository";
+export * from "./dynamodb-retrospective-repository";
 export * from "./closing-odds-repository";
 export * from "./performance-evidence-repository";
 export * from "./exact-odds-snapshot-repository";

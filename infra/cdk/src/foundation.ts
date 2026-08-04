@@ -30,6 +30,7 @@ import {
   UserPoolClient,
   UserPoolClientIdentityProvider,
   UserPoolDomain,
+  UserPoolGroup,
   UserPoolResourceServer,
   ResourceServerScope,
 } from "aws-cdk-lib/aws-cognito";
@@ -268,13 +269,17 @@ export class FoundationStack extends Stack {
       scopeName: "events:read",
       scopeDescription: "Read FIND THE EDGE events and odds",
     });
+    const retrospectiveApprovalScope = new ResourceServerScope({
+      scopeName: "retrospectives:approve",
+      scopeDescription: "Review non-executable retrospective candidates",
+    });
     const resourceServer = new UserPoolResourceServer(
       this,
       "EventsResourceServer",
       {
         identifier: "events",
         userPool,
-        scopes: [readScope],
+        scopes: [readScope, retrospectiveApprovalScope],
       },
     );
     const assets = new Bucket(this, "WebAssets", {
@@ -364,7 +369,7 @@ export class FoundationStack extends Stack {
     const webAssetOrigin = S3BucketOrigin.withOriginAccessControl(assets);
     const spaNavigation = new CloudFrontFunction(this, "WebSpaNavigation", {
       code: FunctionCode.fromInline(
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
       ),
     });
     const distribution = new Distribution(this, "WebDistribution", {
@@ -411,6 +416,28 @@ export class FoundationStack extends Stack {
           OAuthScope.OPENID,
           OAuthScope.EMAIL,
           OAuthScope.resourceServer(resourceServer, readScope),
+        ],
+        callbackUrls: [callbackUrl],
+        logoutUrls: [webOrigin],
+      },
+      preventUserExistenceErrors: true,
+    });
+    new UserPoolGroup(this, "RetrospectiveReviewers", {
+      userPool,
+      groupName: "fte-retrospective-reviewers",
+      description: "Human reviewers allowed to approve retrospective drafts",
+    });
+    const reviewerClient = new UserPoolClient(this, "ReviewerWebClient", {
+      userPool,
+      generateSecret: false,
+      supportedIdentityProviders: [UserPoolClientIdentityProvider.COGNITO],
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [
+          OAuthScope.OPENID,
+          OAuthScope.EMAIL,
+          OAuthScope.resourceServer(resourceServer, readScope),
+          OAuthScope.resourceServer(resourceServer, retrospectiveApprovalScope),
         ],
         callbackUrls: [callbackUrl],
         logoutUrls: [webOrigin],
@@ -672,7 +699,9 @@ export class FoundationStack extends Stack {
           "dynamodb:GetItem",
           "dynamodb:BatchGetItem",
           "dynamodb:Query",
+          "dynamodb:PutItem",
           "dynamodb:TransactGetItems",
+          "dynamodb:TransactWriteItems",
         ],
         resources: [table.tableArn],
       }),
@@ -701,7 +730,12 @@ export class FoundationStack extends Stack {
     const authorizer = new HttpJwtAuthorizer(
       "EventsJwt",
       userPool.userPoolProviderUrl,
-      { jwtAudience: [userPoolClient.userPoolClientId] },
+      {
+        jwtAudience: [
+          userPoolClient.userPoolClientId,
+          reviewerClient.userPoolClientId,
+        ],
+      },
     );
     api.addRoutes({
       path: "/events",
@@ -730,12 +764,22 @@ export class FoundationStack extends Stack {
       "/performance/cohorts/{eventId}",
       "/performance/reports",
       "/performance/reports/{eventId}",
+      "/retrospectives",
+      "/retrospectives/{eventId}",
+      "/retrospectives/{eventId}/versions",
     ])
       api.addRoutes({
         path,
         methods: [HttpMethod.GET],
         integration,
       });
+    api.addRoutes({
+      path: "/retrospectives/{eventId}/review",
+      methods: [HttpMethod.POST],
+      integration,
+      authorizer,
+      authorizationScopes: ["events/retrospectives:approve"],
+    });
     const configureCorsCall = {
       service: "ApiGatewayV2",
       action: "updateApi",
@@ -744,7 +788,7 @@ export class FoundationStack extends Stack {
         CorsConfiguration: {
           AllowOrigins: [webOrigin],
           AllowHeaders: ["authorization", "content-type"],
-          AllowMethods: ["GET", "OPTIONS"],
+          AllowMethods: ["GET", "POST", "OPTIONS"],
         },
       },
       physicalResourceId: PhysicalResourceId.of(
@@ -810,6 +854,9 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "CognitoUserPoolId", { value: userPool.userPoolId });
     new CfnOutput(this, "CognitoClientId", {
       value: userPoolClient.userPoolClientId,
+    });
+    new CfnOutput(this, "ReviewerCognitoClientId", {
+      value: reviewerClient.userPoolClientId,
     });
     new CfnOutput(this, "CognitoDomain", { value: domain.baseUrl() });
     new CfnOutput(this, "CognitoScope", { value: "events/events:read" });
@@ -982,6 +1029,10 @@ export class FoundationStack extends Stack {
           "performance-reports",
           "performance-detail",
           "performance-members",
+          "retrospective-list",
+          "retrospective-detail",
+          "retrospective-versions",
+          "retrospective-review",
         ] as const
       ).map(
         (route) =>
@@ -997,7 +1048,14 @@ export class FoundationStack extends Stack {
             evaluationPeriods: 1,
           }),
       ),
-      ...(["CohortBuildFailures", "PerformanceReportFailures"] as const).map(
+      ...(
+        [
+          "CohortBuildFailures",
+          "PerformanceReportFailures",
+          "RetrospectiveFailures",
+          "RetrospectiveValidationFailures",
+        ] as const
+      ).map(
         (metricName) =>
           new Alarm(this, `${metricName}Alarm`, {
             metric: new Metric({
@@ -1007,6 +1065,22 @@ export class FoundationStack extends Stack {
               period: Duration.minutes(5),
             }),
             threshold: 1,
+            evaluationPeriods: 1,
+          }),
+      ),
+      ...(
+        ["RetrospectiveReviewConflict", "RetrospectiveReviewForbidden"] as const
+      ).map(
+        (metricName) =>
+          new Alarm(this, `${metricName}Alarm`, {
+            metric: new Metric({
+              namespace: "FindTheEdge/EventApi",
+              metricName,
+              dimensionsMap: { Route: "retrospective-review" },
+              statistic: "Sum",
+              period: Duration.minutes(5),
+            }),
+            threshold: 5,
             evaluationPeriods: 1,
           }),
       ),

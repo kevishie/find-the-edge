@@ -68,6 +68,132 @@ const bootstrap = (): RuntimeBootstrap => ({
 });
 
 describe("games client", () => {
+  it("exhausts retrospective audit pages without dropping decisions", async () => {
+    const versionId = `retrospective-version:${"b".repeat(64)}`;
+    const base = {
+      retrospectiveId: `retrospective:${"a".repeat(64)}`,
+      versionId,
+      version: 1,
+      predecessorVersionId: null,
+      cohortId: `cohort:${"c".repeat(64)}`,
+      reportId: `performance-report:${"d".repeat(64)}`,
+      reportRevision: 1,
+      createdAt: "2026-08-04T00:00:00.000Z",
+      state: "approved",
+      stateVersion: 2,
+      taxonomyVersion: "retrospective-taxonomy-v1",
+      evidence: {
+        evaluationCutoff: "2026-08-03T00:00:00.000Z",
+        decisionTime: [],
+        postDecision: [],
+        decisionTimeDigest: "e".repeat(64),
+        postDecisionDigest: "f".repeat(64),
+        manifestDigest: "1".repeat(64),
+      },
+      slices: [],
+      observations: [],
+      candidates: [],
+      memberCount: 1,
+      caution: "single-member",
+      falseNegativeEvaluation: "not-evaluable",
+      contentDigest: "2".repeat(64),
+    };
+    const decision = (id: string, at: string) => ({
+      decisionId: `retrospective-decision:${id.repeat(64)}`,
+      versionId,
+      fromState: "draft",
+      toState: "approved",
+      reasonCode: "approve",
+      decidedAt: at,
+    });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ...base,
+            audit: {
+              items: [decision("3", "2026-08-04T01:00:00.000Z")],
+              nextCursor: "next",
+            },
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ...base,
+            audit: { items: [decision("4", "2026-08-04T02:00:00.000Z")] },
+          }),
+        ),
+      );
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const loaded = await result.value.getRetrospective?.(
+      versionId,
+      new AbortController().signal,
+    );
+    expect(loaded?.audit?.items).toHaveLength(2);
+    expect(
+      loaded?.audit?.items.every((item) =>
+        /^retrospective-decision:[a-f0-9]{64}$/.test(item.decisionId),
+      ),
+    ).toBe(true);
+    const secondRequest = fetcher.mock.calls[1]?.[0];
+    const secondUrl =
+      typeof secondRequest === "string"
+        ? secondRequest
+        : secondRequest instanceof URL
+          ? secondRequest.toString()
+          : secondRequest?.url;
+    expect(secondUrl).toContain("cursor=next");
+  });
+  it("enables review only for approval-scoped reviewer-group sessions and sends concurrency guards", async () => {
+    const token = `x.${btoa(JSON.stringify({ scope: "events/events:read events/retrospectives:approve", "cognito:groups": ["fte-retrospective-reviewers"] }))}.x`;
+    Object.defineProperty(globalThis, "session", {
+      configurable: true,
+      value: { getAccessToken: vi.fn(() => Promise.resolve(token)) },
+    });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("{}", { status: 409 }));
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    await expect(result.value.canReviewRetrospectives?.()).resolves.toBe(true);
+    const version = {
+      versionId: `retrospective-version:${"a".repeat(64)}`,
+      state: "draft",
+      stateVersion: 1,
+    } as never;
+    await expect(
+      result.value.reviewRetrospective?.(
+        version,
+        {
+          reasonCode: "approve",
+          note: "Reviewed evidence.",
+          idempotencyKey: "key-1",
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+    });
+    const requestBody = fetcher.mock.calls[0]?.[1]?.body;
+    expect(typeof requestBody).toBe("string");
+    expect(JSON.parse(requestBody as string)).toMatchObject({
+      expectedState: "draft",
+      expectedStateVersion: 1,
+      idempotencyKey: "key-1",
+    });
+    Reflect.deleteProperty(globalThis, "session");
+  });
   it("uses the runtime API base without an authorization header", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

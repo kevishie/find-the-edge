@@ -220,7 +220,7 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::CloudFront::Function", {
       AutoPublish: true,
       FunctionCode:
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance') {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
     });
     expect(rendered).not.toContain("CustomErrorResponses");
     template.hasResourceProperties("Custom::AWS", {
@@ -271,7 +271,9 @@ describe("foundation CDK app", () => {
               "dynamodb:GetItem",
               "dynamodb:BatchGetItem",
               "dynamodb:Query",
+              "dynamodb:PutItem",
               "dynamodb:TransactGetItems",
+              "dynamodb:TransactWriteItems",
             ],
             Effect: "Allow",
           }),
@@ -279,6 +281,9 @@ describe("foundation CDK app", () => {
       },
     });
     expect(rendered).toContain("Caught5xx");
+    expect(rendered).toContain("RetrospectiveValidationFailures");
+    expect(rendered).toContain("RetrospectiveReviewConflict");
+    expect(rendered).toContain("RetrospectiveReviewForbidden");
     expect(rendered).not.toContain("dynamodb:Scan");
     template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
       StageName: "test",
@@ -307,6 +312,15 @@ describe("foundation CDK app", () => {
       GenerateSecret: false,
       CallbackURLs: [Match.anyValue()],
       LogoutURLs: [Match.anyValue()],
+      AllowedOAuthScopes: ["openid", "email", Match.anyValue()],
+    });
+    template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
+      AllowedOAuthScopes: Match.anyValue(),
+    });
+    template.resourceCountIs("AWS::Cognito::UserPoolClient", 2);
+    expect(rendered).toContain("ReviewerWebClient");
+    template.hasResourceProperties("AWS::Cognito::UserPoolGroup", {
+      GroupName: "fte-retrospective-reviewers",
     });
     template.hasResourceProperties("AWS::Cognito::UserPoolResourceServer", {
       Identifier: "events",
@@ -314,6 +328,10 @@ describe("foundation CDK app", () => {
         {
           ScopeName: "events:read",
           ScopeDescription: "Read FIND THE EDGE events and odds",
+        },
+        {
+          ScopeName: "retrospectives:approve",
+          ScopeDescription: "Review non-executable retrospective candidates",
         },
       ],
     });
@@ -460,7 +478,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 29);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 37);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

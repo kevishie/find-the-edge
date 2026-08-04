@@ -6,6 +6,7 @@ import {
   DynamoExactOddsSnapshotRepository,
   DynamoPaperEvaluationRepository,
   DynamoPaperGradeRepository,
+  DynamoRetrospectiveRepository,
   PerformanceEvidenceRepository,
   ProductionPerformanceEvidenceStore,
 } from "@find-the-edge/database";
@@ -18,6 +19,10 @@ import {
 } from "./performance-report.js";
 import { createPerformanceScheduledHandler } from "./performance-scheduled-runtime.js";
 import { ProductionCohortMemberMaterializer } from "./production-cohort-member-materializer.js";
+import {
+  ExactRetrospectiveEvidenceAdapter,
+  RetrospectiveBuilder,
+} from "./retrospective-builder.js";
 
 const tableName = process.env["FTE_EVENT_TABLE_NAME"] ?? "";
 if (!tableName) throw new Error("missing-performance-configuration");
@@ -44,4 +49,9 @@ export const handler = createPerformanceScheduledHandler({
     metrics,
   ),
   repository: cohorts,
+  retrospectives: new RetrospectiveBuilder(
+    new ExactRetrospectiveEvidenceAdapter(evidence),
+    new DynamoRetrospectiveRepository(client, tableName),
+    metrics,
+  ),
 });

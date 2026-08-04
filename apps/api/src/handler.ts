@@ -5,6 +5,9 @@ import {
   type BettingSplitRepository,
   type CohortRepository,
   type EventRepository,
+  type RetrospectiveRepository,
+  RetrospectiveConflictError,
+  RetrospectiveNotFoundError,
 } from "@find-the-edge/database";
 export interface ApiRequest {
   readonly route:
@@ -15,11 +18,19 @@ export interface ApiRequest {
     | "performance-list"
     | "performance-detail"
     | "performance-members"
-    | "performance-reports";
+    | "performance-reports"
+    | "retrospective-list"
+    | "retrospective-detail"
+    | "retrospective-versions"
+    | "retrospective-review";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
   readonly query?: Readonly<Record<string, string | undefined>>;
+  readonly method?: "GET" | "POST";
+  readonly contentType?: string;
+  readonly body?: string;
+  readonly reviewerAuthorized?: boolean;
 }
 export interface ApiResponse {
   readonly statusCode: number;
@@ -39,6 +50,7 @@ export const createEventHandler =
     suppliedLog?: (entry: Readonly<Record<string, unknown>>) => void,
     splitsRepository?: BettingSplitRepository,
     cohortRepository?: CohortRepository,
+    retrospectiveRepository?: RetrospectiveRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -50,6 +62,132 @@ export const createEventHandler =
     const started = Date.now();
     let status = 200;
     try {
+      if (request.route.startsWith("retrospective-")) {
+        if (!retrospectiveRepository)
+          throw new Error("retrospective-repository-not-configured");
+        const limitText = request.query?.["limit"] ?? "20";
+        if (
+          !/^(?:[1-9]|[1-4][0-9]|50)$/.test(limitText) ||
+          Object.keys(request.query ?? {}).some(
+            (key) => !["limit", "cursor"].includes(key),
+          )
+        )
+          throw new EventInputError("invalid-retrospective-filter");
+        if (request.route === "retrospective-list")
+          return response(
+            200,
+            await retrospectiveRepository.list({
+              limit: Number(limitText),
+              ...(request.query?.["cursor"]
+                ? { cursor: request.query["cursor"] }
+                : {}),
+            }),
+          );
+        const id = request.eventId ?? "";
+        if (request.route === "retrospective-detail") {
+          if (!/^retrospective-version:[a-f0-9]{64}$/.test(id))
+            throw new EventInputError("retrospective-version-id-invalid");
+          const item = await retrospectiveRepository.getVersion(id);
+          if (!item) return response((status = 404), { error: "not-found" });
+          return response(200, {
+            ...item,
+            audit: await retrospectiveRepository.listAudit({
+              versionId: id,
+              limit: Number(limitText),
+              ...(request.query?.["cursor"]
+                ? { cursor: request.query["cursor"] }
+                : {}),
+            }),
+          });
+        }
+        if (request.route === "retrospective-versions") {
+          if (!/^retrospective:[a-f0-9]{64}$/.test(id))
+            throw new EventInputError("retrospective-id-invalid");
+          return response(
+            200,
+            await retrospectiveRepository.listVersions({
+              retrospectiveId: id,
+              limit: Number(limitText),
+              ...(request.query?.["cursor"]
+                ? { cursor: request.query["cursor"] }
+                : {}),
+            }),
+          );
+        }
+        if (
+          !/^retrospective-version:[a-f0-9]{64}$/.test(id) ||
+          Object.keys(request.query ?? {}).length
+        )
+          throw new EventInputError("retrospective-review-request-invalid");
+        if (!request.subject)
+          return response((status = 401), { error: "unauthorized" });
+        if (!request.scopes?.includes("retrospectives:approve"))
+          return response((status = 403), { error: "forbidden" });
+        if (!request.reviewerAuthorized)
+          return response((status = 403), { error: "forbidden" });
+        if (
+          request.method !== "POST" ||
+          request.contentType?.split(";")[0]?.trim().toLowerCase() !==
+            "application/json" ||
+          !request.body ||
+          Buffer.byteLength(request.body) > 4096
+        )
+          throw new EventInputError("retrospective-review-body-invalid");
+        let body: unknown;
+        try {
+          body = JSON.parse(request.body);
+        } catch {
+          throw new EventInputError("retrospective-review-json-invalid");
+        }
+        if (!body || typeof body !== "object" || Array.isArray(body))
+          throw new EventInputError("retrospective-review-body-invalid");
+        const value = body as Record<string, unknown>,
+          allowed = [
+            "reasonCode",
+            "note",
+            "idempotencyKey",
+            "expectedState",
+            "expectedStateVersion",
+          ];
+        if (
+          Object.keys(value).some((key) => !allowed.includes(key)) ||
+          !["approve", "reject", "request-changes"].includes(
+            String(value["reasonCode"]),
+          ) ||
+          typeof value["idempotencyKey"] !== "string" ||
+          value["idempotencyKey"].length < 1 ||
+          value["idempotencyKey"].length > 128 ||
+          value["expectedState"] !== "draft" ||
+          !Number.isSafeInteger(value["expectedStateVersion"]) ||
+          value["expectedStateVersion"] !== 1 ||
+          (value["note"] !== undefined &&
+            value["note"] !== null &&
+            (typeof value["note"] !== "string" || value["note"].length > 1000))
+        )
+          throw new EventInputError("retrospective-review-body-invalid");
+        const result = await retrospectiveRepository.review({
+          versionId: id,
+          reviewerId: request.subject,
+          reasonCode: value["reasonCode"] as
+            "approve" | "reject" | "request-changes",
+          ...(typeof value["note"] === "string" ? { note: value["note"] } : {}),
+          decidedAt: new Date().toISOString(),
+          idempotencyKey: value["idempotencyKey"],
+          expectedState: "draft",
+          expectedStateVersion: 1,
+        });
+        return response(200, {
+          version: result.version,
+          decision: {
+            decisionId: result.decision.decisionId,
+            versionId: result.decision.versionId,
+            fromState: result.decision.fromState,
+            toState: result.decision.toState,
+            reasonCode: result.decision.reasonCode,
+            decidedAt: result.decision.decidedAt,
+          },
+        });
+      }
       if (request.route.startsWith("performance-")) {
         if (!cohortRepository)
           throw new Error("cohort-repository-not-configured");
@@ -170,13 +308,31 @@ export const createEventHandler =
     } catch (error) {
       if (error instanceof EventInputError || error instanceof EventCursorError)
         return response((status = 400), { error: "invalid-request" });
+      if (error instanceof RetrospectiveNotFoundError)
+        return response((status = 404), { error: "not-found" });
+      if (error instanceof RetrospectiveConflictError)
+        return response((status = 409), { error: "conflict" });
       status = 500;
       return response(500, { error: "internal-error" });
     } finally {
+      const retrospectiveRoute = request.route.startsWith("retrospective-");
+      const reviewRoute = request.route === "retrospective-review";
       const metrics = [
         { Name: "Requests", Unit: "Count" },
         { Name: "Latency", Unit: "Milliseconds" },
         ...(status === 500 ? [{ Name: "Caught5xx", Unit: "Count" }] : []),
+        ...(retrospectiveRoute
+          ? [{ Name: "RetrospectiveLatency", Unit: "Milliseconds" }]
+          : []),
+        ...(reviewRoute && status === 200
+          ? [{ Name: "RetrospectiveReviewSuccess", Unit: "Count" }]
+          : []),
+        ...(reviewRoute && status === 409
+          ? [{ Name: "RetrospectiveReviewConflict", Unit: "Count" }]
+          : []),
+        ...(reviewRoute && status === 403
+          ? [{ Name: "RetrospectiveReviewForbidden", Unit: "Count" }]
+          : []),
       ];
       log({
         _aws: {
@@ -194,6 +350,18 @@ export const createEventHandler =
         Requests: 1,
         Latency: Date.now() - started,
         ...(status === 500 ? { Caught5xx: 1 } : {}),
+        ...(retrospectiveRoute
+          ? { RetrospectiveLatency: Date.now() - started }
+          : {}),
+        ...(reviewRoute && status === 200
+          ? { RetrospectiveReviewSuccess: 1 }
+          : {}),
+        ...(reviewRoute && status === 409
+          ? { RetrospectiveReviewConflict: 1 }
+          : {}),
+        ...(reviewRoute && status === 403
+          ? { RetrospectiveReviewForbidden: 1 }
+          : {}),
       });
     }
   };

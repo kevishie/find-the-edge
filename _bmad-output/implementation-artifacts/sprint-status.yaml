@@ -394,7 +394,7 @@ stories:
     league: enabled
     module: retrospectives
     priority: P1
-    status: backlog
+    status: done
     dependencies: [FTE-LEARN-002]
     risk: High
     approvalRequiredBeforeMerge: true

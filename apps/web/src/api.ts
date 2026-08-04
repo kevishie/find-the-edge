@@ -67,7 +67,367 @@ export interface GamesClient {
   list(filter: GamesFilter, signal: AbortSignal): Promise<GamesPageDto>;
   listSplits?(filter: GamesFilter, signal: AbortSignal): Promise<SplitsPageDto>;
   listPerformance?(signal: AbortSignal): Promise<PerformanceReportDto | null>;
+  listRetrospectives?(
+    signal: AbortSignal,
+  ): Promise<readonly RetrospectiveDto[]>;
+  getRetrospective?(
+    versionId: string,
+    signal: AbortSignal,
+  ): Promise<RetrospectiveDto>;
+  listRetrospectiveVersions?(
+    retrospectiveId: string,
+    signal: AbortSignal,
+  ): Promise<readonly RetrospectiveDto[]>;
+  canReviewRetrospectives?(): Promise<boolean>;
+  reviewRetrospective?(
+    version: RetrospectiveDto,
+    input: {
+      readonly reasonCode: "approve" | "reject" | "request-changes";
+      readonly note: string;
+      readonly idempotencyKey: string;
+    },
+    signal: AbortSignal,
+  ): Promise<RetrospectiveDto>;
 }
+export interface RetrospectiveDto {
+  readonly retrospectiveId: string;
+  readonly versionId: string;
+  readonly version: number;
+  readonly predecessorVersionId: string | null;
+  readonly cohortId: string;
+  readonly reportId: string;
+  readonly reportRevision: number;
+  readonly createdAt: string;
+  readonly state: "draft" | "changes-requested" | "approved" | "rejected";
+  readonly stateVersion: number;
+  readonly memberCount: number;
+  readonly caution: "single-member" | "small-sample" | "standard";
+  readonly falseNegativeEvaluation: "not-evaluable";
+  readonly taxonomyVersion: "retrospective-taxonomy-v1";
+  readonly evidence: {
+    readonly evaluationCutoff: string;
+    readonly decisionTime: readonly {
+      readonly id: string;
+      readonly kind: string;
+      readonly layer: "decision-time";
+      readonly decisionCutoff: string;
+      readonly observedAt: string;
+      readonly digest: string;
+    }[];
+    readonly postDecision: readonly {
+      readonly id: string;
+      readonly kind: string;
+      readonly layer: "post-decision";
+      readonly decisionCutoff: string;
+      readonly observedAt: string;
+      readonly digest: string;
+    }[];
+    readonly decisionTimeDigest: string;
+    readonly postDecisionDigest: string;
+    readonly manifestDigest: string;
+  };
+  readonly slices: readonly {
+    readonly dimension: "outcome" | "sport" | "league" | "market";
+    readonly value: string;
+    readonly memberCount: number;
+    readonly wins: number;
+    readonly losses: number;
+    readonly pushes: number;
+    readonly voids: number;
+    readonly unresolved: number;
+    readonly units: number | null;
+    readonly roi: number | null;
+  }[];
+  readonly observations: readonly {
+    readonly id: string;
+    readonly taxonomyCode: string;
+    readonly layer: "decision-time" | "post-decision";
+    readonly summary: string;
+    readonly evidenceRefIds: readonly string[];
+    readonly memberIds: readonly string[];
+    readonly confidence: "review-only" | "not-evaluable";
+  }[];
+  readonly candidates: readonly {
+    readonly candidateId: string;
+    readonly kind: string;
+    readonly summary: string;
+    readonly sourceObservationIds: readonly string[];
+    readonly predecessorCandidateId: string | null;
+    readonly executable: false;
+  }[];
+  readonly contentDigest: string;
+  readonly audit?: {
+    readonly items: readonly {
+      readonly decisionId: string;
+      readonly versionId: string;
+      readonly fromState: RetrospectiveDto["state"];
+      readonly toState: RetrospectiveDto["state"];
+      readonly reasonCode: "approve" | "reject" | "request-changes";
+      readonly decidedAt: string;
+    }[];
+    readonly nextCursor?: string;
+  };
+}
+const taxonomy = new Set([
+  "data",
+  "price",
+  "model",
+  "rule",
+  "execution",
+  "false-positive",
+  "false-negative",
+  "evidence-gap",
+]);
+const validRetrospective = (value: unknown): value is RetrospectiveDto => {
+  if (!plain(value)) return false;
+  const keys = [
+    "retrospectiveId",
+    "versionId",
+    "version",
+    "predecessorVersionId",
+    "cohortId",
+    "reportId",
+    "reportRevision",
+    "createdAt",
+    "state",
+    "stateVersion",
+    "taxonomyVersion",
+    "evidence",
+    "slices",
+    "observations",
+    "candidates",
+    "memberCount",
+    "caution",
+    "falseNegativeEvaluation",
+    "contentDigest",
+    ...(Object.hasOwn(value, "audit") ? ["audit"] : []),
+  ];
+  if (!exact(value, keys)) return false;
+  if (!(
+    /^retrospective:[a-f0-9]{64}$/.test(String(value["retrospectiveId"])) &&
+    /^retrospective-version:[a-f0-9]{64}$/.test(String(value["versionId"])) &&
+    /^cohort:[a-f0-9]{64}$/.test(String(value["cohortId"])) &&
+    /^performance-report:[a-f0-9]{64}$/.test(String(value["reportId"])) &&
+    Number.isSafeInteger(value["version"]) &&
+    Number(value["version"]) > 0 &&
+    ((value["version"] === 1 && value["predecessorVersionId"] === null) ||
+      (Number(value["version"]) > 1 &&
+        /^retrospective-version:[a-f0-9]{64}$/.test(
+          String(value["predecessorVersionId"]),
+        ))) &&
+    Number.isSafeInteger(value["reportRevision"]) &&
+    Number(value["reportRevision"]) > 0 &&
+    iso(value["createdAt"]) &&
+    ["draft", "changes-requested", "approved", "rejected"].includes(
+      String(value["state"]),
+    ) &&
+    Number.isSafeInteger(value["memberCount"]) &&
+    Number(value["memberCount"]) > 0 &&
+    Number.isSafeInteger(value["stateVersion"]) &&
+    Number(value["stateVersion"]) > 0 &&
+    ["single-member", "small-sample", "standard"].includes(
+      String(value["caution"]),
+    ) &&
+    value["falseNegativeEvaluation"] === "not-evaluable" &&
+    value["taxonomyVersion"] === "retrospective-taxonomy-v1" &&
+    /^[a-f0-9]{64}$/.test(String(value["contentDigest"])) &&
+    plain(value["evidence"]) &&
+    Array.isArray(value["slices"]) &&
+    Array.isArray(value["observations"]) &&
+    Array.isArray(value["candidates"]) &&
+    (value["candidates"] as unknown[]).every(
+      (candidate) => plain(candidate) && candidate["executable"] === false,
+    )
+  ))
+    return false;
+  const evidence = value["evidence"];
+  if (
+    !exact(evidence, [
+      "evaluationCutoff",
+      "decisionTime",
+      "postDecision",
+      "decisionTimeDigest",
+      "postDecisionDigest",
+      "manifestDigest",
+    ]) ||
+    !iso(evidence["evaluationCutoff"]) ||
+    !Array.isArray(evidence["decisionTime"]) ||
+    !Array.isArray(evidence["postDecision"]) ||
+    ![
+      evidence["decisionTimeDigest"],
+      evidence["postDecisionDigest"],
+      evidence["manifestDigest"],
+    ].every((item) => /^[a-f0-9]{64}$/.test(String(item)))
+  )
+    return false;
+  const decisionRefs = evidence["decisionTime"] as unknown[];
+  const postRefs = evidence["postDecision"] as unknown[];
+  const refs = [...decisionRefs, ...postRefs];
+  const refIds = new Set<string>();
+  if (
+    !refs.every((ref) => {
+      if (
+        !plain(ref) ||
+        !exact(ref, [
+          "id",
+          "kind",
+          "layer",
+          "decisionCutoff",
+          "observedAt",
+          "digest",
+        ]) ||
+        !boundedString(ref["id"]) ||
+        !boundedString(ref["kind"]) ||
+        !["decision-time", "post-decision"].includes(String(ref["layer"])) ||
+        !iso(ref["decisionCutoff"]) ||
+        !iso(ref["observedAt"]) ||
+        !/^[a-f0-9]{64}$/.test(String(ref["digest"])) ||
+        refIds.has(String(ref["id"]))
+      )
+        return false;
+      refIds.add(String(ref["id"]));
+      return true;
+    })
+  )
+    return false;
+  const observationIds = new Set<string>();
+  if (
+    !(value["observations"] as unknown[]).every((observation) => {
+      if (
+        !plain(observation) ||
+        !exact(observation, [
+          "id",
+          "taxonomyCode",
+          "layer",
+          "summary",
+          "evidenceRefIds",
+          "memberIds",
+          "confidence",
+        ]) ||
+        !boundedString(observation["id"]) ||
+        observationIds.has(String(observation["id"])) ||
+        !taxonomy.has(String(observation["taxonomyCode"])) ||
+        !["decision-time", "post-decision"].includes(
+          String(observation["layer"]),
+        ) ||
+        !boundedString(observation["summary"], 500) ||
+        !Array.isArray(observation["evidenceRefIds"]) ||
+        (observation["evidenceRefIds"].length === 0 &&
+          observation["taxonomyCode"] !== "false-negative") ||
+        observation["evidenceRefIds"].some(
+          (id) => typeof id !== "string" || !refIds.has(id),
+        ) ||
+        !Array.isArray(observation["memberIds"]) ||
+        observation["memberIds"].some((id) => !boundedString(id)) ||
+        !["review-only", "not-evaluable"].includes(
+          String(observation["confidence"]),
+        ) ||
+        (observation["taxonomyCode"] === "false-negative" &&
+          observation["confidence"] !== "not-evaluable")
+      )
+        return false;
+      observationIds.add(String(observation["id"]));
+      return true;
+    })
+  )
+    return false;
+  const candidateIds = new Set<string>();
+  if (
+    !(value["candidates"] as unknown[]).every(
+      (candidate) =>
+        plain(candidate) &&
+        exact(candidate, [
+          "candidateId",
+          "kind",
+          "summary",
+          "sourceObservationIds",
+          "predecessorCandidateId",
+          "executable",
+        ]) &&
+        /^retrospective-candidate:[a-f0-9]{64}$/.test(
+          String(candidate["candidateId"]),
+        ) &&
+        !candidateIds.has(String(candidate["candidateId"])) &&
+        ["data", "prompt", "strategy"].includes(String(candidate["kind"])) &&
+        boundedString(candidate["summary"], 500) &&
+        Array.isArray(candidate["sourceObservationIds"]) &&
+        candidate["sourceObservationIds"].every(
+          (id) => typeof id === "string" && observationIds.has(id),
+        ) &&
+        (candidate["predecessorCandidateId"] === null ||
+          (typeof candidate["predecessorCandidateId"] === "string" &&
+            /^retrospective-candidate:[a-f0-9]{64}$/.test(
+              candidate["predecessorCandidateId"],
+            ))) &&
+        candidate["executable"] === false &&
+        !!candidateIds.add(String(candidate["candidateId"])),
+    )
+  )
+    return false;
+  if (value["audit"] !== undefined) {
+    const audit = value["audit"];
+    if (
+      !plain(audit) ||
+      !exact(audit, [
+        "items",
+        ...(Object.hasOwn(audit, "nextCursor") ? ["nextCursor"] : []),
+      ]) ||
+      !Array.isArray(audit["items"]) ||
+      (audit["nextCursor"] !== undefined &&
+        !boundedString(audit["nextCursor"], 4096)) ||
+      !audit["items"].every(
+        (item) =>
+          plain(item) &&
+          exact(item, [
+            "decisionId",
+            "versionId",
+            "fromState",
+            "toState",
+            "reasonCode",
+            "decidedAt",
+          ]) &&
+          boundedString(item["decisionId"]) &&
+          item["versionId"] === value["versionId"] &&
+          ["draft", "changes-requested", "approved", "rejected"].includes(
+            String(item["fromState"]),
+          ) &&
+          ["draft", "changes-requested", "approved", "rejected"].includes(
+            String(item["toState"]),
+          ) &&
+          ["approve", "reject", "request-changes"].includes(
+            String(item["reasonCode"]),
+          ) &&
+          iso(item["decidedAt"]),
+      )
+    )
+      return false;
+  }
+  return (value["slices"] as unknown[]).every(
+    (slice) =>
+      plain(slice) &&
+      exact(slice, [
+        "dimension",
+        "value",
+        "memberCount",
+        "wins",
+        "losses",
+        "pushes",
+        "voids",
+        "unresolved",
+        "units",
+        "roi",
+      ]) &&
+      ["outcome", "sport", "league", "market"].includes(
+        String(slice["dimension"]),
+      ) &&
+      boundedString(slice["value"], 128) &&
+      ["memberCount", "wins", "losses", "pushes", "voids", "unresolved"].every(
+        (key) => Number.isSafeInteger(slice[key]) && Number(slice[key]) >= 0,
+      ) &&
+      nullableFinite(slice["units"]) &&
+      nullableFinite(slice["roi"]),
+  );
+};
 export interface PerformanceReportDto {
   readonly reportId: string;
   readonly cohortId: string;
@@ -335,6 +695,7 @@ export type GamesClientErrorCode =
   | "unauthorized"
   | "forbidden"
   | "request-failed"
+  | "conflict"
   | "invalid-response";
 
 export class GamesClientError extends Error {
@@ -882,6 +1243,35 @@ function bootstrapFailure(failure: RuntimeConfigError): GamesClientError {
   return new GamesClientError("configuration", failure.message);
 }
 
+const reviewerSession = async (providerKey: string | undefined) => {
+  if (!providerKey) return null;
+  const provider = (globalThis as Record<string, unknown>)[providerKey];
+  if (!plain(provider) || typeof provider["getAccessToken"] !== "function")
+    return null;
+  const token = await (provider["getAccessToken"] as () => Promise<unknown>)();
+  if (typeof token !== "string" || token.length < 10 || token.length > 16_384)
+    return null;
+  try {
+    const payload = JSON.parse(
+      atob(token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/")),
+    ) as unknown;
+    if (!plain(payload)) return null;
+    const scopes =
+      typeof payload["scope"] === "string" ? payload["scope"].split(" ") : [];
+    const groups = Array.isArray(payload["cognito:groups"])
+      ? payload["cognito:groups"].filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [];
+    return scopes.includes("events/retrospectives:approve") &&
+      groups.includes("fte-retrospective-reviewers")
+      ? { token }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 export function createGamesClient(
   bootstrap: Result<RuntimeBootstrap, RuntimeConfigError>,
   fetcher: typeof fetch = fetch,
@@ -956,6 +1346,333 @@ export function createGamesClient(
             "The performance response was invalid.",
           );
         return report;
+      },
+      async listRetrospectives(signal) {
+        const items: RetrospectiveDto[] = [],
+          seenCursors = new Set<string>(),
+          seenIds = new Set<string>();
+        let cursor: string | undefined;
+        for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+          let response: Response;
+          try {
+            const query = new URLSearchParams({ limit: "50" });
+            if (cursor) query.set("cursor", cursor);
+            response = await fetcher(
+              `${bootstrap.value.config.apiBase}/retrospectives?${query.toString()}`,
+              { signal },
+            );
+          } catch (error) {
+            if (signal.aborted) throw error;
+            throw new GamesClientError(
+              "request-failed",
+              "Retrospectives are temporarily unavailable.",
+            );
+          }
+          if (!response.ok)
+            throw new GamesClientError(
+              "request-failed",
+              "Retrospectives are temporarily unavailable.",
+            );
+          const body: unknown = await response.json();
+          if (
+            !plain(body) ||
+            !exact(body, [
+              "items",
+              ...(Object.hasOwn(body, "nextCursor") ? ["nextCursor"] : []),
+            ]) ||
+            !Array.isArray(body["items"]) ||
+            !(body["items"] as unknown[]).every(validRetrospective) ||
+            (body["nextCursor"] !== undefined &&
+              !boundedString(body["nextCursor"], 4096))
+          )
+            throw new GamesClientError(
+              "invalid-response",
+              "The retrospectives response was invalid.",
+            );
+          for (const item of body["items"] as RetrospectiveDto[]) {
+            if (seenIds.has(item.versionId))
+              throw new GamesClientError(
+                "invalid-response",
+                "The retrospectives response was invalid.",
+              );
+            seenIds.add(item.versionId);
+            items.push(item);
+          }
+          if (body["nextCursor"] === undefined) return items;
+          cursor = String(body["nextCursor"]);
+          if (seenCursors.has(cursor))
+            throw new GamesClientError(
+              "invalid-response",
+              "The retrospectives response was invalid.",
+            );
+          seenCursors.add(cursor);
+        }
+        throw new GamesClientError(
+          "invalid-response",
+          "The retrospectives response was invalid.",
+        );
+      },
+      async getRetrospective(versionId, signal) {
+        if (!/^retrospective-version:[a-f0-9]{64}$/.test(versionId))
+          throw new GamesClientError(
+            "invalid-response",
+            "The retrospective ID was invalid.",
+          );
+        let response: Response;
+        try {
+          response = await fetcher(
+            `${bootstrap.value.config.apiBase}/retrospectives/${encodeURIComponent(versionId)}`,
+            { signal },
+          );
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw new GamesClientError(
+            "request-failed",
+            "This retrospective is temporarily unavailable.",
+          );
+        }
+        if (!response.ok)
+          throw new GamesClientError(
+            "request-failed",
+            response.status === 404
+              ? "This retrospective was not found."
+              : "This retrospective is temporarily unavailable.",
+          );
+        const body: unknown = await response.json();
+        if (!validRetrospective(body))
+          throw new GamesClientError(
+            "invalid-response",
+            "The retrospective response was invalid.",
+          );
+        const auditItems = [...(body.audit?.items ?? [])];
+        const decisionIds = new Set(auditItems.map((item) => item.decisionId));
+        const seenCursors = new Set<string>();
+        let auditCursor = body.audit?.nextCursor;
+        for (
+          let pageNumber = 1;
+          auditCursor && pageNumber < 100;
+          pageNumber += 1
+        ) {
+          if (seenCursors.has(auditCursor))
+            throw new GamesClientError(
+              "invalid-response",
+              "The retrospective audit response was invalid.",
+            );
+          seenCursors.add(auditCursor);
+          const query = new URLSearchParams({
+            limit: "50",
+            cursor: auditCursor,
+          });
+          const nextResponse = await fetcher(
+            `${bootstrap.value.config.apiBase}/retrospectives/${encodeURIComponent(versionId)}?${query.toString()}`,
+            { signal },
+          );
+          if (!nextResponse.ok)
+            throw new GamesClientError(
+              "request-failed",
+              "The retrospective audit is temporarily unavailable.",
+            );
+          const nextBody: unknown = await nextResponse.json();
+          if (
+            !validRetrospective(nextBody) ||
+            nextBody.versionId !== body.versionId ||
+            nextBody.contentDigest !== body.contentDigest ||
+            nextBody.state !== body.state ||
+            nextBody.stateVersion !== body.stateVersion ||
+            !nextBody.audit
+          )
+            throw new GamesClientError(
+              "invalid-response",
+              "The retrospective audit response was invalid.",
+            );
+          for (const decision of nextBody.audit.items) {
+            if (decisionIds.has(decision.decisionId))
+              throw new GamesClientError(
+                "invalid-response",
+                "The retrospective audit response was invalid.",
+              );
+            decisionIds.add(decision.decisionId);
+            auditItems.push(decision);
+          }
+          auditCursor = nextBody.audit.nextCursor;
+        }
+        if (auditCursor)
+          throw new GamesClientError(
+            "invalid-response",
+            "The retrospective audit response was invalid.",
+          );
+        return body.audit ? { ...body, audit: { items: auditItems } } : body;
+      },
+      async listRetrospectiveVersions(retrospectiveId, signal) {
+        if (!/^retrospective:[a-f0-9]{64}$/.test(retrospectiveId))
+          throw new GamesClientError(
+            "invalid-response",
+            "The retrospective ID was invalid.",
+          );
+        const items: RetrospectiveDto[] = [],
+          seenCursors = new Set<string>(),
+          seenIds = new Set<string>();
+        let cursor: string | undefined;
+        for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+          const query = new URLSearchParams({ limit: "50" });
+          if (cursor) query.set("cursor", cursor);
+          let response: Response;
+          try {
+            response = await fetcher(
+              `${bootstrap.value.config.apiBase}/retrospectives/${encodeURIComponent(retrospectiveId)}/versions?${query.toString()}`,
+              { signal },
+            );
+          } catch (error) {
+            if (signal.aborted) throw error;
+            throw new GamesClientError(
+              "request-failed",
+              "Version history is temporarily unavailable.",
+            );
+          }
+          if (!response.ok)
+            throw new GamesClientError(
+              "request-failed",
+              "Version history is temporarily unavailable.",
+            );
+          const body: unknown = await response.json();
+          if (
+            !plain(body) ||
+            !exact(body, [
+              "items",
+              ...(Object.hasOwn(body, "nextCursor") ? ["nextCursor"] : []),
+            ]) ||
+            !Array.isArray(body["items"]) ||
+            !(body["items"] as unknown[]).every(validRetrospective) ||
+            (body["nextCursor"] !== undefined &&
+              !boundedString(body["nextCursor"], 4096))
+          )
+            throw new GamesClientError(
+              "invalid-response",
+              "The version history response was invalid.",
+            );
+          for (const item of body["items"] as RetrospectiveDto[]) {
+            if (
+              item.retrospectiveId !== retrospectiveId ||
+              seenIds.has(item.versionId)
+            )
+              throw new GamesClientError(
+                "invalid-response",
+                "The version history response was invalid.",
+              );
+            seenIds.add(item.versionId);
+            items.push(item);
+          }
+          if (body["nextCursor"] === undefined) return items;
+          cursor = String(body["nextCursor"]);
+          if (seenCursors.has(cursor))
+            throw new GamesClientError(
+              "invalid-response",
+              "The version history response was invalid.",
+            );
+          seenCursors.add(cursor);
+        }
+        throw new GamesClientError(
+          "invalid-response",
+          "The version history response was invalid.",
+        );
+      },
+      async canReviewRetrospectives() {
+        return (
+          (await reviewerSession(bootstrap.value.config.tokenProviderKey)) !==
+          null
+        );
+      },
+      async reviewRetrospective(version, input, signal) {
+        const session = await reviewerSession(
+          bootstrap.value.config.tokenProviderKey,
+        );
+        if (!session)
+          throw new GamesClientError(
+            "forbidden",
+            "Reviewer access is required.",
+          );
+        let response: Response;
+        try {
+          response = await fetcher(
+            `${bootstrap.value.config.apiBase}/retrospectives/${encodeURIComponent(version.versionId)}/review`,
+            {
+              method: "POST",
+              signal,
+              headers: {
+                authorization: `Bearer ${session.token}`,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({
+                reasonCode: input.reasonCode,
+                note: input.note || null,
+                idempotencyKey: input.idempotencyKey,
+                expectedState: version.state,
+                expectedStateVersion: version.stateVersion,
+              }),
+            },
+          );
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw new GamesClientError(
+            "request-failed",
+            "The review could not be saved.",
+          );
+        }
+        if (response.status === 409)
+          throw new GamesClientError(
+            "conflict",
+            "This retrospective changed while you were reviewing it.",
+          );
+        if (!response.ok)
+          throw new GamesClientError(
+            response.status === 403 ? "forbidden" : "request-failed",
+            "The review could not be saved.",
+          );
+        const body: unknown = await response.json();
+        if (
+          !plain(body) ||
+          !exact(body, ["version", "decision"]) ||
+          !validRetrospective(body["version"]) ||
+          !plain(body["decision"])
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The review response was invalid.",
+          );
+        const reviewed = body["version"],
+          decision = body["decision"];
+        const expectedState =
+          input.reasonCode === "approve"
+            ? "approved"
+            : input.reasonCode === "reject"
+              ? "rejected"
+              : "changes-requested";
+        if (
+          !exact(decision, [
+            "decisionId",
+            "versionId",
+            "fromState",
+            "toState",
+            "reasonCode",
+            "decidedAt",
+          ]) ||
+          !/^retrospective-decision:[a-f0-9]{64}$/.test(
+            String(decision["decisionId"]),
+          ) ||
+          decision["versionId"] !== version.versionId ||
+          decision["versionId"] !== reviewed.versionId ||
+          decision["fromState"] !== version.state ||
+          decision["toState"] !== expectedState ||
+          decision["toState"] !== reviewed.state ||
+          decision["reasonCode"] !== input.reasonCode ||
+          !iso(decision["decidedAt"]) ||
+          reviewed.stateVersion !== version.stateVersion + 1
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The review response was invalid.",
+          );
+        return reviewed;
       },
     },
   };
