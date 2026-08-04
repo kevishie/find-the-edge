@@ -1,6 +1,11 @@
 import type {
+  EventStatus,
   GameDisplayDto,
   GameOddsSelectionDto,
+} from "@find-the-edge/domain";
+import {
+  EVENT_LIFECYCLE_STATES,
+  validateEventMetadataAssessment,
 } from "@find-the-edge/domain";
 
 import type {
@@ -24,6 +29,7 @@ export interface GamesPageDto {
   readonly hasMoreUnknown: false;
   readonly snapshotAt: string | null;
   readonly freshness: string | null;
+  readonly unavailableReason: "projection-uninitialized" | null;
 }
 
 interface GamesPartialPageDto extends Omit<
@@ -760,6 +766,9 @@ const iso = (value: unknown): value is string =>
   Number.isFinite(Date.parse(value)) &&
   new Date(value).toISOString() === value;
 
+export const isCanonicalEventStatus = (value: unknown): value is EventStatus =>
+  EVENT_LIFECYCLE_STATES.some((state) => state === value);
+
 const easternDay = (value: string): string => {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/New_York",
@@ -823,6 +832,7 @@ const validGame = (
       "eastern",
       "status",
       "freshness",
+      "metadata",
       "odds",
     ]) ||
     !boundedString(value["id"], 512) ||
@@ -830,13 +840,44 @@ const validGame = (
     (value["version"] as number) < 1 ||
     value["sportKey"] !== filter.sport ||
     value["leagueKey"] !== (filter.sport === "mlb" ? "mlb" : "mls") ||
-    value["status"] !== "scheduled" ||
+    !isCanonicalEventStatus(value["status"]) ||
     !iso(value["startsAt"]) ||
     easternDay(value["startsAt"]) !== filter.day ||
     (value["freshness"] !== null && !iso(value["freshness"]))
   )
     return false;
   const competition = value["competition"];
+  const metadata = value["metadata"];
+  if (
+    !plain(metadata) ||
+    !exact(metadata, [
+      "policyVersion",
+      "evaluatedAt",
+      "lifecycle",
+      "availability",
+      "freshness",
+      "reasonCodes",
+    ]) ||
+    metadata["policyVersion"] !== 1 ||
+    !iso(metadata["evaluatedAt"]) ||
+    !plain(metadata["lifecycle"]) ||
+    !exact(metadata["lifecycle"], ["state", "known"]) ||
+    metadata["lifecycle"]["state"] !== value["status"] ||
+    typeof metadata["lifecycle"]["known"] !== "boolean" ||
+    !plain(metadata["freshness"]) ||
+    !Array.isArray(metadata["reasonCodes"])
+  )
+    return false;
+  try {
+    validateEventMetadataAssessment(
+      metadata,
+      value["status"],
+      value["freshness"],
+      metadata["evaluatedAt"],
+    );
+  } catch {
+    return false;
+  }
   if (
     !plain(competition) ||
     !exact(competition, ["key", "state"]) ||
@@ -987,6 +1028,7 @@ function parsePage(
       "hasMoreUnknown",
       "snapshotAt",
       "freshness",
+      "unavailableReason",
     ]) ||
     !Array.isArray(value["items"]) ||
     value["items"].length > 50 ||
@@ -1002,6 +1044,19 @@ function parsePage(
     ) ||
     (value["snapshotAt"] !== null && !iso(value["snapshotAt"])) ||
     (value["freshness"] !== null && !iso(value["freshness"])) ||
+    !(
+      (value["projectionState"] === "uninitialized" &&
+        value["unavailableReason"] === "projection-uninitialized" &&
+        value["nextCursor"] === null &&
+        value["evaluationState"] === "complete" &&
+        value["hasMoreUnknown"] === false &&
+        value["snapshotAt"] === null &&
+        value["freshness"] === null &&
+        value["items"].length === 0) ||
+      (value["projectionState"] === "ready" &&
+        value["unavailableReason"] === null &&
+        value["snapshotAt"] !== null)
+    ) ||
     !value["items"].every((game) => validGame(game, filter))
   )
     throw invalid();
@@ -1012,6 +1067,17 @@ function parsePage(
     items.some(
       (game, index) => index > 0 && game.startsAt < items[index - 1]!.startsAt,
     )
+  )
+    throw invalid();
+  if (items.some((game) => game.status !== "scheduled")) throw invalid();
+  const canonicalFreshness =
+    items
+      .flatMap((game) => (game.freshness === null ? [] : [game.freshness]))
+      .sort()[0] ?? null;
+  if (value["freshness"] !== canonicalFreshness) throw invalid();
+  if (
+    value["snapshotAt"] !== null &&
+    items.some((game) => game.metadata.evaluatedAt !== value["snapshotAt"])
   )
     throw invalid();
   return value as unknown as GamesResponsePageDto;
@@ -1175,6 +1241,7 @@ async function exhaustPages<T extends GameDisplayDto>(options: {
   let snapshotAt: string | null | undefined;
   let projectionState: GamesPageDto["projectionState"] | undefined;
   let freshness: string | null = null;
+  let unavailableReason: GamesPageDto["unavailableReason"] | undefined;
 
   for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber += 1) {
     const query = new URLSearchParams(baseQuery);
@@ -1230,6 +1297,13 @@ async function exhaustPages<T extends GameDisplayDto>(options: {
         "invalid-response",
         `The ${endpoint} response was invalid.`,
       );
+    if (unavailableReason === undefined)
+      unavailableReason = page.unavailableReason;
+    else if (page.unavailableReason !== unavailableReason)
+      throw new GamesClientError(
+        "invalid-response",
+        `The ${endpoint} response was invalid.`,
+      );
     for (const item of page.items) {
       if (
         ids.has(item.id) ||
@@ -1256,6 +1330,7 @@ async function exhaustPages<T extends GameDisplayDto>(options: {
         hasMoreUnknown: false,
         snapshotAt: snapshotAt ?? null,
         freshness,
+        unavailableReason: unavailableReason ?? page.unavailableReason,
       };
     const nextCursor = page.nextCursor;
     if (cursors.has(nextCursor))

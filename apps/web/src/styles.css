@@ -972,6 +972,40 @@ footer {
   text-transform: uppercase;
 }
 
+.event-metadata-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+}
+
+.event-metadata-badge {
+  padding: 4px 7px;
+  border: 1px solid #51495c;
+  border-radius: 999px;
+  color: #d8d1e2;
+}
+
+.event-metadata-badge.positive {
+  border-color: #2f765d;
+  color: #83d9b5;
+}
+.event-metadata-badge.caution {
+  border-color: #8b6732;
+  color: #e4b666;
+}
+.event-metadata-badge.danger {
+  border-color: #87454b;
+  color: #f19a9f;
+}
+.event-metadata-badges time {
+  color: #8f8799;
+}
+
 .event-card h2 {
   margin-top: 7px;
   font-size: 16px;

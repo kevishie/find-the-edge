@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GameOddsSelectionDto } from "@find-the-edge/domain";
+import { assessEventMetadata } from "@find-the-edge/domain";
 
-import { createGamesClient, GamesClientError } from "./api";
+import {
+  createGamesClient,
+  GamesClientError,
+  isCanonicalEventStatus,
+} from "./api";
 import type { RuntimeBootstrap } from "./runtime-config";
 
 const payload = {
@@ -24,6 +29,11 @@ const payload = {
       },
       status: "scheduled",
       freshness: "2026-08-01T12:30:00.000Z",
+      metadata: assessEventMetadata(
+        "scheduled",
+        "2026-08-01T12:30:00.000Z",
+        "2026-08-01T12:30:00.000Z",
+      ),
       odds: {
         state: "available",
         selections: [
@@ -57,6 +67,7 @@ const payload = {
   hasMoreUnknown: false,
   snapshotAt: "2026-08-01T12:30:00.000Z",
   freshness: "2026-08-01T12:30:00.000Z",
+  unavailableReason: null,
 };
 
 const bootstrap = (): RuntimeBootstrap => ({
@@ -68,6 +79,150 @@ const bootstrap = (): RuntimeBootstrap => ({
 });
 
 describe("games client", () => {
+  it.each([
+    "scheduled",
+    "postponed",
+    "cancelled",
+    "started",
+    "completed",
+    "unknown",
+  ])(
+    "recognizes canonical lifecycle %s for reusable event parsing",
+    (status) => {
+      expect(isCanonicalEventStatus(status)).toBe(true);
+    },
+  );
+
+  it("accepts structurally valid metadata with reordered object keys", async () => {
+    const metadata = payload.items[0]!.metadata;
+    const reordered = {
+      reasonCodes: metadata.reasonCodes,
+      freshness: {
+        missingReason: metadata.freshness.missingReason,
+        thresholdSeconds: metadata.freshness.thresholdSeconds,
+        ageSeconds: metadata.freshness.ageSeconds,
+        evidenceAt: metadata.freshness.evidenceAt,
+        state: metadata.freshness.state,
+      },
+      availability: metadata.availability,
+      lifecycle: {
+        known: metadata.lifecycle.known,
+        state: metadata.lifecycle.state,
+      },
+      evaluatedAt: metadata.evaluatedAt,
+      policyVersion: metadata.policyVersion,
+    };
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            ...payload,
+            items: [{ ...payload.items[0], metadata: reordered }],
+          }),
+        ),
+      ),
+    );
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.list(
+        { sport: "mlb", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ items: [{ id: payload.items[0]!.id }] });
+  });
+
+  it.each([
+    ["items", { items: [payload.items[0]] }],
+    ["cursor", { nextCursor: "forged" }],
+    ["evaluation", { evaluationState: "partial", hasMoreUnknown: true }],
+    ["snapshot", { snapshotAt: payload.snapshotAt }],
+    ["freshness", { freshness: payload.freshness }],
+    ["reason", { unavailableReason: null }],
+  ])(
+    "rejects contradictory uninitialized envelope %s",
+    async (_case, patch) => {
+      const body = {
+        ...payload,
+        items: [],
+        nextCursor: null,
+        projectionState: "uninitialized",
+        evaluationState: "complete",
+        hasMoreUnknown: false,
+        snapshotAt: null,
+        freshness: null,
+        unavailableReason: "projection-uninitialized",
+        ...patch,
+      };
+      const client = createGamesClient(
+        { ok: true, value: bootstrap() },
+        vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(new Response(JSON.stringify(body))),
+      );
+      if (!client.ok) throw client.error;
+      await expect(
+        client.value.list(
+          { sport: "mlb", day: "2026-08-01" },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: "invalid-response" });
+    },
+  );
+
+  it.each([null, "2026-08-01T12:29:59.000Z"])(
+    "rejects ready envelope freshness %s when it differs from item evidence",
+    async (freshness) => {
+      const client = createGamesClient(
+        { ok: true, value: bootstrap() },
+        vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(
+            new Response(JSON.stringify({ ...payload, freshness })),
+          ),
+      );
+      if (!client.ok) throw client.error;
+      await expect(
+        client.value.list(
+          { sport: "mlb", day: "2026-08-01" },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: "invalid-response" });
+    },
+  );
+  it.each([
+    ["missing", undefined],
+    [
+      "contradictory",
+      { ...payload.items[0]!.metadata, availability: "partial" },
+    ],
+    [
+      "forged",
+      {
+        ...payload.items[0]!.metadata,
+        evaluatedAt: "2026-08-01T12:29:59.000Z",
+      },
+    ],
+  ])("rejects %s event metadata", async (_label, metadata) => {
+    const item = { ...payload.items[0] } as Record<string, unknown>;
+    if (metadata === undefined) delete item["metadata"];
+    else item["metadata"] = metadata;
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ ...payload, items: [item] })),
+        ),
+    );
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.list(
+        { sport: "mlb", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
   it("exhausts retrospective audit pages without dropping decisions", async () => {
     const versionId = `retrospective-version:${"b".repeat(64)}`;
     const base = {
@@ -360,6 +515,12 @@ describe("games client", () => {
           ...payload.items[0]!.eastern,
           display: "Aug 1, 2026, 8:05 PM",
         },
+        freshness: "2026-08-01T12:00:00.000Z",
+        metadata: assessEventMetadata(
+          "scheduled",
+          "2026-08-01T12:00:00.000Z",
+          payload.snapshotAt,
+        ),
       };
       const withSplits = (item: (typeof payload.items)[0]) => ({
         ...item,
@@ -397,6 +558,7 @@ describe("games client", () => {
       const second = {
         ...payload,
         items: endpoint === "splits" ? [withSplits(secondGame)] : [secondGame],
+        freshness: secondGame.freshness,
       };
       const fetcher = vi
         .fn<typeof fetch>()
@@ -421,6 +583,7 @@ describe("games client", () => {
         nextCursor: null,
         evaluationState: "complete",
         hasMoreUnknown: false,
+        freshness: "2026-08-01T12:00:00.000Z",
       });
       if (endpoint === "splits") {
         const splitItem = page.items[0] as (typeof payload.items)[0] & {
@@ -629,6 +792,7 @@ describe("games client", () => {
     const partial = {
       ...payload,
       items: [],
+      freshness: null,
       evaluationState: "partial",
       hasMoreUnknown: true,
     };

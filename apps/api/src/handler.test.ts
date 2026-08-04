@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { assessEventMetadata } from "@find-the-edge/domain";
 import {
   EventStorageError,
   MemoryCohortRepository,
@@ -17,13 +18,164 @@ const repository: EventRepository = {
     hasMoreUnknown: false,
     snapshotAt: new Date().toISOString(),
     freshness: null,
+    unavailableReason: null,
   }),
   detail: async () => {
     await Promise.resolve();
-    return { projectionState: "ready", item: null };
+    return { projectionState: "ready", item: null, unavailableReason: null };
   },
 };
 describe("event API", () => {
+  it.each([
+    ["scheduled", "2026-08-01T13:00:00.000Z", "complete", "current"],
+    ["scheduled", "2026-08-01T10:00:00.000Z", "complete", "stale"],
+    ["unknown", "2026-08-01T13:00:00.000Z", "partial", "current"],
+    ["postponed", "2026-08-01T13:00:00.000Z", "complete", "current"],
+    ["cancelled", "2026-08-01T10:00:00.000Z", "complete", "stale"],
+    ["scheduled", null, "unavailable", "unavailable"],
+  ] as const)(
+    "serializes %s lifecycle with independent %s evidence",
+    async (eventStatus, evidenceAt, availability, freshnessState) => {
+      const evaluatedAt = "2026-08-01T14:00:00.000Z";
+      const item = {
+        id: "event:one",
+        version: 1,
+        sportKey: "mlb",
+        leagueKey: "mlb",
+        competition: { key: "mlb", state: "provisional" as const },
+        participants: [
+          { id: "away", label: "Away" },
+          { id: "home", label: "Home" },
+        ],
+        startsAt: "2026-08-01T20:00:00.000Z",
+        eastern: {
+          timeZone: "America/New_York" as const,
+          calendarDay: "2026-08-01",
+          display: "Aug 1",
+        },
+        status: eventStatus,
+        freshness: evidenceAt,
+        metadata: assessEventMetadata(eventStatus, evidenceAt, evaluatedAt),
+      };
+      const events: EventRepository = {
+        list: (filter, limit, cursor) => repository.list(filter, limit, cursor),
+        detail: () =>
+          Promise.resolve({
+            projectionState: "ready",
+            item,
+            unavailableReason: null,
+          }),
+      };
+      const result = await createEventHandler(
+        events,
+        () => undefined,
+      )({
+        route: "detail",
+        eventId: item.id,
+      });
+      expect(result.statusCode).toBe(200);
+      expect(JSON.parse(result.body)).toMatchObject({
+        item: {
+          status: eventStatus,
+          metadata: {
+            availability,
+            lifecycle: { state: eventStatus },
+            freshness: { state: freshnessState },
+          },
+        },
+      });
+    },
+  );
+
+  it("returns an explicit envelope reason while projections initialize", async () => {
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const events: EventRepository = {
+      list: (filter, limit, cursor) => repository.list(filter, limit, cursor),
+      detail: () =>
+        Promise.resolve({
+          projectionState: "uninitialized",
+          item: null,
+          unavailableReason: "projection-uninitialized",
+        }),
+    };
+    const result = await createEventHandler(events, (entry) =>
+      logs.push(entry),
+    )({
+      route: "detail",
+      eventId: "event:one",
+    });
+    expect(JSON.parse(result.body)).toEqual({
+      projectionState: "uninitialized",
+      item: null,
+      unavailableReason: "projection-uninitialized",
+    });
+    expect(logs.at(-1)).toMatchObject({ UnavailableEventMetadata: 1 });
+  });
+
+  it("emits only bounded aggregate metadata counts", async () => {
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const evaluatedAt = "2026-08-01T15:00:00.000Z";
+    const stale = assessEventMetadata(
+      "unknown",
+      "2026-08-01T12:00:00.000Z",
+      evaluatedAt,
+    );
+    const events: EventRepository = {
+      list: () =>
+        Promise.resolve({
+          items: [
+            {
+              id: "event:one",
+              version: 1,
+              sportKey: "mlb",
+              leagueKey: "mlb",
+              competition: { key: "mlb", state: "provisional" },
+              participants: [
+                { id: "away", label: "Away" },
+                { id: "home", label: "Home" },
+              ],
+              startsAt: "2026-08-01T20:00:00.000Z",
+              eastern: {
+                timeZone: "America/New_York",
+                calendarDay: "2026-08-01",
+                display: "Aug 1",
+              },
+              status: "unknown",
+              freshness: "2026-08-01T12:00:00.000Z",
+              metadata: stale,
+            },
+          ],
+          nextCursor: null,
+          projectionState: "ready",
+          evaluationState: "complete",
+          hasMoreUnknown: false,
+          snapshotAt: evaluatedAt,
+          freshness: "2026-08-01T12:00:00.000Z",
+          unavailableReason: null,
+        }),
+      detail: () =>
+        Promise.resolve({
+          projectionState: "ready",
+          item: null,
+          unavailableReason: null,
+        }),
+    };
+    const result = await createEventHandler(events, undefined, (entry) =>
+      logs.push(entry),
+    )({
+      route: "list",
+      subject: "user",
+      scopes: ["events/events:read"],
+      query: { sport: "mlb", status: "unknown", day: "2026-08-01" },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(logs.at(-1)).toMatchObject({
+      StaleEventMetadata: 1,
+      PartialEventMetadata: 1,
+      UnavailableEventMetadata: 0,
+    });
+    expect(JSON.stringify(logs.at(-1))).not.toContain("event:one");
+  });
   it("serves authenticated immutable performance cohorts", async () => {
     const cohorts = new MemoryCohortRepository();
     await cohorts.putCohort({
@@ -155,6 +307,11 @@ describe("event API", () => {
             },
             status: "scheduled",
             freshness: "2026-08-01T12:30:00.000Z",
+            metadata: assessEventMetadata(
+              "scheduled",
+              "2026-08-01T12:30:00.000Z",
+              "2026-08-01T13:00:00.000Z",
+            ),
             odds: { state: "unavailable" },
           },
         ],
@@ -164,6 +321,7 @@ describe("event API", () => {
         hasMoreUnknown: false,
         snapshotAt: null,
         freshness: null,
+        unavailableReason: null,
       }),
     };
     const result = await createEventHandler(
@@ -232,6 +390,7 @@ describe("event API", () => {
           hasMoreUnknown: false,
           snapshotAt: null,
           freshness: null,
+          unavailableReason: null,
         };
       },
     };

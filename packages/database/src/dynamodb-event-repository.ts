@@ -93,6 +93,7 @@ export class DynamoEventRepository implements EventRepository {
         hasMoreUnknown: false,
         snapshotAt: null,
         freshness: null,
+        unavailableReason: "projection-uninitialized",
       };
     const asOf = decoded?.asOf ?? this.now().toISOString(),
       accepted = [];
@@ -155,7 +156,7 @@ export class DynamoEventRepository implements EventRepository {
     }
     const capped = evaluated >= 200 && hasPhysicalMore;
     return {
-      items: accepted.map(toEventDisplayDto),
+      items: accepted.map((row) => toEventDisplayDto(row, asOf)),
       nextCursor:
         hasPhysicalMore && lastPhysicalSk
           ? this.cursor.encode(pk, lastPhysicalSk, asOf, this.now())
@@ -171,6 +172,7 @@ export class DynamoEventRepository implements EventRepository {
             accepted[0]!.canonicalFreshness,
           )
         : null,
+      unavailableReason: null,
     };
   }
   async detail(
@@ -179,11 +181,21 @@ export class DynamoEventRepository implements EventRepository {
     if (!isCanonicalEntityId(eventId))
       throw new EventInputError("invalid-event-id");
     if (!(await this.ready()))
-      return { projectionState: "uninitialized", item: null };
+      return {
+        projectionState: "uninitialized",
+        item: null,
+        unavailableReason: "projection-uninitialized",
+      };
+    const evaluatedAt = this.now().toISOString();
     const key = { pk: `EVENT_DETAIL#${eventId}`, sk: "CURRENT" };
     for (let attempt = 0; attempt < 3; attempt++) {
       const first = await this.gateway.transactGet([key]);
-      if (!first[0]) return { projectionState: "ready", item: null };
+      if (!first[0])
+        return {
+          projectionState: "ready",
+          item: null,
+          unavailableReason: null,
+        };
       const pointer = validatePointer(first[0], eventId),
         snapshot = await this.gateway.transactGet([
           key,
@@ -196,16 +208,8 @@ export class DynamoEventRepository implements EventRepository {
         JSON.stringify(pointer)
       )
         continue;
-      const sport = validateProjection(
-          snapshot[1],
-          "sport",
-          this.now().toISOString(),
-        ),
-        league = validateProjection(
-          snapshot[2],
-          "league",
-          this.now().toISOString(),
-        );
+      const sport = validateProjection(snapshot[1], "sport", evaluatedAt),
+        league = validateProjection(snapshot[2], "league", evaluatedAt);
       const material = (row: typeof sport) =>
         JSON.stringify({
           eventId: row.eventId,
@@ -226,8 +230,8 @@ export class DynamoEventRepository implements EventRepository {
         sport.materialVersion !== pointer.materialVersion ||
         sport.visibleUntil !== null ||
         league.visibleUntil !== null ||
-        sport.visibleFrom > this.now().toISOString() ||
-        league.visibleFrom > this.now().toISOString() ||
+        sport.visibleFrom > evaluatedAt ||
+        league.visibleFrom > evaluatedAt ||
         snapshot[1].pk !== pointer.sportPk ||
         snapshot[1].sk !== pointer.sportSk ||
         snapshot[2].pk !== pointer.leaguePk ||
@@ -237,7 +241,8 @@ export class DynamoEventRepository implements EventRepository {
         throw new EventStorageError("detail-material-mismatch");
       return {
         projectionState: "ready",
-        item: toEventDisplayDto(sport),
+        item: toEventDisplayDto(sport, evaluatedAt),
+        unavailableReason: null,
       };
     }
     throw new EventStorageError("event-detail-snapshot-unstable");

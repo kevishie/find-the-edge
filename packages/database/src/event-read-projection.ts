@@ -3,6 +3,7 @@ import type {
   EventDisplayDto,
   EventStatus,
 } from "@find-the-edge/domain";
+import { assessEventMetadata } from "@find-the-edge/domain";
 import type { DynamoItem } from "./dynamodb-event-ingestion";
 import { EventStorageError } from "./event-errors";
 export const EVENT_READ_SCHEMA = 1;
@@ -277,6 +278,7 @@ export const validateProjection = (
 };
 export const toEventDisplayDto = (
   value: EventProjectionValue,
+  evaluatedAt: string,
 ): EventDisplayDto => ({
   id: value.eventId,
   version: value.materialVersion,
@@ -299,4 +301,9 @@ export const toEventDisplayDto = (
   },
   status: value.status,
   freshness: value.canonicalFreshness,
+  metadata: assessEventMetadata(
+    value.status,
+    value.canonicalFreshness,
+    evaluatedAt,
+  ),
 });

@@ -84,6 +84,9 @@ importers:
       '@find-the-edge/sports':
         specifier: workspace:*
         version: link:../../packages/sports
+      '@find-the-edge/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@tanstack/react-router':
         specifier: ^1.170.18
         version: 1.170.18(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -286,6 +289,10 @@ importers:
         version: 4.1.10(@types/node@24.13.3)(@vitest/coverage-v8@4.1.10)(jsdom@28.1.0)(vite@7.3.6(@types/node@24.13.3))
 
   packages/ui:
+    dependencies:
+      '@find-the-edge/domain':
+        specifier: workspace:*
+        version: link:../domain
     devDependencies:
       vitest:
         specifier: ^4.0.18

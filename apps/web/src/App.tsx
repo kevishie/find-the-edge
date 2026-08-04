@@ -26,6 +26,11 @@ import {
 } from "@find-the-edge/odds";
 import { mlbFindTheEdgeStrategy, sportRegistry } from "@find-the-edge/sports";
 import {
+  eventFreshnessPresentation,
+  eventLifecyclePresentation,
+  eventMetadataReasonText,
+} from "@find-the-edge/ui";
+import {
   SportsbookLogo,
   sportsbookMetadata,
   sportsbookScopeKey,
@@ -33,6 +38,46 @@ import {
 import type { RetrospectiveDto } from "./api";
 
 const SPLITS_REFRESH_INTERVAL_MS = 30_000;
+
+function EventMetadataBadges({
+  game,
+}: {
+  readonly game: {
+    readonly metadata: import("@find-the-edge/domain").EventMetadataAssessment;
+  };
+}) {
+  const lifecycle = eventLifecyclePresentation(game.metadata.lifecycle.state);
+  const freshness = eventFreshnessPresentation(game.metadata.freshness.state);
+  const reasons = eventMetadataReasonText(game.metadata);
+  return (
+    <div
+      className="event-metadata-badges"
+      aria-label="Event status and metadata freshness"
+    >
+      {[lifecycle, freshness].map((badge) => (
+        <span
+          key={badge.ariaLabel}
+          className={`event-metadata-badge ${badge.tone}`}
+          aria-label={badge.ariaLabel}
+        >
+          <span aria-hidden="true">{badge.icon}</span> {badge.label}
+        </span>
+      ))}
+      {game.metadata.freshness.state !== "unavailable" &&
+        game.metadata.freshness.evidenceAt && (
+          <time dateTime={game.metadata.freshness.evidenceAt}>
+            Evidence {easternDisplay(game.metadata.freshness.evidenceAt)}{" "}
+            Eastern
+          </time>
+        )}
+      {reasons.map((reason) => (
+        <span className="event-metadata-reason" key={reason}>
+          {reason}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 const reasonLabels: Record<string, string> = {
   "positive-ev": "Qualified positive EV",
@@ -118,6 +163,8 @@ function NumberField({
 
 type GamesSport = "mlb" | "soccer";
 interface UiGamesPage {
+  readonly projectionState: "ready" | "uninitialized";
+  readonly unavailableReason: "projection-uninitialized" | null;
   readonly snapshotAt?: string | null;
   readonly freshness?: string | null;
   readonly items: readonly {
@@ -126,6 +173,7 @@ interface UiGamesPage {
     readonly startsAt: string;
     readonly participants: readonly { readonly label: string }[];
     readonly eastern: { readonly display: string };
+    readonly metadata: import("@find-the-edge/domain").EventMetadataAssessment;
     readonly odds:
       | {
           readonly state: "available";
@@ -676,7 +724,9 @@ function GamesExplorer() {
         {state.kind === "error" && <p role="alert">{state.message}</p>}
         {state.kind === "ready" && state.page.items.length === 0 && (
           <p role="status">
-            No {sportLabels[sport]} games are scheduled for this day.
+            {state.page.projectionState === "uninitialized"
+              ? "Game metadata is unavailable while event data initializes."
+              : `No ${sportLabels[sport]} games are scheduled for this day.`}
           </p>
         )}
       </div>
@@ -712,6 +762,7 @@ function GamesExplorer() {
                     {book?.sportsbookLabel ?? book?.sportsbookId ?? "scheduled"}
                   </span>
                 </div>
+                <EventMetadataBadges game={game} />
                 <h2>{title}</h2>
                 <div
                   className="market-scroll"
@@ -1337,6 +1388,7 @@ function GameDetail() {
           <p className="eyebrow">GAME DETAIL · SHARPAPI</p>
           <h1>{game.participants.map(({ label }) => label).join(" vs ")}</h1>
           <p className="lede">{easternDisplay(game.startsAt)} Eastern</p>
+          <EventMetadataBadges game={game} />
         </div>
         <Link className="detail-link" to="/games">
           Back to games

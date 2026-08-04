@@ -55,11 +55,12 @@ const events: EventRepository = {
       hasMoreUnknown: false,
       snapshotAt: null,
       freshness: null,
+      unavailableReason: null,
     };
   },
   detail: async () => {
     await Promise.resolve();
-    return { projectionState: "ready", item: null };
+    return { projectionState: "ready", item: null, unavailableReason: null };
   },
 };
 describe("retrospective API", () =>

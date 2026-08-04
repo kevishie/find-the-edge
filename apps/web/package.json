@@ -15,6 +15,7 @@
     "@find-the-edge/domain": "workspace:*",
     "@find-the-edge/odds": "workspace:*",
     "@find-the-edge/sports": "workspace:*",
+    "@find-the-edge/ui": "workspace:*",
     "@tanstack/react-router": "^1.170.18",
     "@vitejs/plugin-react": "^5.1.4",
     "react": "^19.2.4",

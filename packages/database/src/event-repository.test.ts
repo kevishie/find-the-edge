@@ -197,4 +197,60 @@ describe("event repository", () => {
       rotating.decode(token, "pk", new Date(now.valueOf() + 60_001)),
     ).toThrow("invalid-cursor");
   });
+
+  it("uses the original cursor snapshot for metadata assessment on every page", async () => {
+    const rows = [
+      projectionItems(event("game-1")).sport,
+      projectionItems(event("game-2")).sport,
+    ].sort((left, right) => left.sk.localeCompare(right.sk));
+    let clock = new Date("2026-07-31T21:59:00.000Z");
+    const repository = new DynamoEventRepository(
+      {
+        queryPage: (_pk, startSk, limit) => {
+          const remaining = rows.filter((row) => !startSk || row.sk > startSk);
+          const items = remaining.slice(0, limit);
+          return Promise.resolve({
+            items,
+            ...(remaining.length > items.length && items.length
+              ? { lastEvaluatedSk: items.at(-1)!.sk }
+              : {}),
+          });
+        },
+        transactGet: unusedGet,
+      },
+      new EventCursorCodec({ current }),
+      () => Promise.resolve(true),
+      () => clock,
+    );
+    const filter = {
+      sportKey: "mlb",
+      status: "scheduled" as const,
+      day: "2026-07-31",
+    };
+    const first = await repository.list(filter, 1);
+    expect(first.items[0]?.metadata.freshness.state).toBe("current");
+    clock = new Date("2026-07-31T22:10:00.000Z");
+    const second = await repository.list(filter, 1, first.nextCursor!);
+    expect(second.items[0]?.metadata.evaluatedAt).toBe(first.snapshotAt);
+    expect(second.items[0]?.metadata.freshness.state).toBe("current");
+  });
+
+  it("explains an uninitialized projection without manufacturing metadata", async () => {
+    const repository = new DynamoEventRepository(
+      { queryPage: unusedQuery, transactGet: unusedGet },
+      new EventCursorCodec({ current }),
+      () => Promise.resolve(false),
+    );
+    await expect(
+      repository.list(
+        { sportKey: "mlb", status: "scheduled", day: "2026-08-01" },
+        20,
+      ),
+    ).resolves.toMatchObject({
+      items: [],
+      projectionState: "uninitialized",
+      unavailableReason: "projection-uninitialized",
+      snapshotAt: null,
+    });
+  });
 });

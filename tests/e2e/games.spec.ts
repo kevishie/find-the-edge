@@ -37,6 +37,9 @@ test("shows unchanged seeded MLB and MLS identifiers without authentication", as
   await expect(page.getByText("+120")).toBeVisible();
   await expect(page.getByText("-135")).toBeVisible();
   await expect(page.getByText("Aug 1, 2026, 7:05 PM Eastern")).toBeVisible();
+  await expect(page.getByLabel("Lifecycle: scheduled")).toBeVisible();
+  await expect(page.getByLabel("Event metadata is current")).toBeVisible();
+  await expect(page.getByText(/Evidence .* Eastern/)).toBeVisible();
 
   await page.getByRole("button", { name: "MLS" }).click();
   await expect(

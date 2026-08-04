@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { assessEventMetadata } from "@find-the-edge/domain";
 
 import { App } from "./App";
 import {
@@ -183,6 +184,11 @@ const game = {
   },
   status: "scheduled",
   freshness: "2026-08-01T12:30:00.000Z",
+  metadata: assessEventMetadata(
+    "scheduled",
+    "2026-08-01T12:30:00.000Z",
+    "2026-08-01T12:30:00.000Z",
+  ),
   odds: {
     state: "available",
     selections: [
@@ -298,6 +304,135 @@ const page = (items: GamesPageDto["items"] = [game]): GamesPageDto => ({
   hasMoreUnknown: false,
   snapshotAt: "2026-08-01T12:30:00.000Z",
   freshness: "2026-08-01T12:30:00.000Z",
+  unavailableReason: null,
+});
+
+it("renders independent accessible lifecycle and freshness badges on games and detail", async () => {
+  const client = {
+    ok: true as const,
+    value: { list: vi.fn(() => Promise.resolve(page())) },
+  };
+  const { unmount } = render(<App initialPath="/games" gamesClient={client} />);
+  expect(
+    await screen.findByLabelText("Lifecycle: scheduled"),
+  ).toHaveTextContent("Scheduled");
+  expect(screen.getByLabelText("Event metadata is current")).toHaveTextContent(
+    "Metadata current",
+  );
+  expect(screen.getByText(/Evidence .* Eastern/)).toBeVisible();
+  unmount();
+
+  const listSplits = vi.fn(() =>
+    Promise.resolve({ ...page(), items: [{ ...game, splits: [] }] }),
+  );
+  render(
+    <App
+      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+    />,
+  );
+  expect(await screen.findByLabelText("Lifecycle: scheduled")).toBeVisible();
+  expect(screen.getByLabelText("Event metadata is current")).toBeVisible();
+});
+
+it.each([
+  [
+    "scheduled",
+    "2026-08-01T12:30:00.000Z",
+    "Lifecycle: scheduled",
+    "Event metadata is current",
+    "within the two-hour",
+  ],
+  [
+    "scheduled",
+    "2026-08-01T09:00:00.000Z",
+    "Lifecycle: scheduled",
+    "Event metadata is stale",
+    "older than the two-hour",
+  ],
+  [
+    "scheduled",
+    "2026-08-01T13:00:00.000Z",
+    "Lifecycle: scheduled",
+    "Event metadata freshness is unavailable",
+    "in the future",
+  ],
+  [
+    "unknown",
+    "2026-08-01T12:30:00.000Z",
+    "Lifecycle status unavailable",
+    "Event metadata is current",
+    "lifecycle status is unavailable",
+  ],
+  [
+    "postponed",
+    "2026-08-01T12:30:00.000Z",
+    "Lifecycle: postponed",
+    "Event metadata is current",
+    "within the two-hour",
+  ],
+  [
+    "cancelled",
+    "2026-08-01T09:00:00.000Z",
+    "Lifecycle: cancelled",
+    "Event metadata is stale",
+    "older than the two-hour",
+  ],
+] as const)(
+  "renders %s lifecycle and reasoned freshness accessibly",
+  async (status, evidenceAt, lifecycleLabel, freshnessLabel, reason) => {
+    const evaluatedAt = "2026-08-01T12:30:00.000Z";
+    const item = {
+      ...game,
+      status,
+      freshness: evidenceAt,
+      metadata: assessEventMetadata(status, evidenceAt, evaluatedAt),
+    };
+    const { unmount } = render(
+      <App
+        initialPath="/games"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(() => Promise.resolve(page([item]))) },
+        }}
+      />,
+    );
+    expect(await screen.findByLabelText(lifecycleLabel)).toBeVisible();
+    expect(screen.getByLabelText(freshnessLabel)).toBeVisible();
+    expect(screen.getByText(new RegExp(reason, "i"))).toBeVisible();
+    if (status === "scheduled" && evidenceAt > evaluatedAt) {
+      expect(
+        screen.queryByText(/Evidence Aug 1, 2026, 9:00 AM Eastern/),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(new RegExp(`Evidence .*${evidenceAt}`)),
+      ).not.toBeInTheDocument();
+    }
+    unmount();
+  },
+);
+
+it("explains an uninitialized game projection instead of claiming an empty schedule", async () => {
+  const unavailable = {
+    ...page([]),
+    projectionState: "uninitialized" as const,
+    unavailableReason: "projection-uninitialized" as const,
+    snapshotAt: null,
+    freshness: null,
+  };
+  render(
+    <App
+      initialPath="/games"
+      gamesClient={{
+        ok: true,
+        value: { list: vi.fn(() => Promise.resolve(unavailable)) },
+      }}
+    />,
+  );
+  expect(await screen.findByText(/event data initializes/)).toBeVisible();
+  expect(
+    screen.queryByText(/No MLB games are scheduled/),
+  ).not.toBeInTheDocument();
 });
 
 const splitGame: SplitsPageDto["items"][number] = {

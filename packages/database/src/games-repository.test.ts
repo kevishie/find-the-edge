@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeFixtureOddsObservation,
+  assessEventMetadata,
   type EventDisplayDto,
 } from "@find-the-edge/domain";
 import { EventStorageError } from "./event-errors";
@@ -25,6 +26,11 @@ const event: EventDisplayDto = {
   },
   status: "scheduled",
   freshness: "2026-08-01T12:00:00.000Z",
+  metadata: assessEventMetadata(
+    "scheduled",
+    "2026-08-01T12:00:00.000Z",
+    "2026-08-01T12:30:00.000Z",
+  ),
 };
 const events = (
   items: readonly EventDisplayDto[] = [event],
@@ -41,9 +47,15 @@ const events = (
       hasMoreUnknown: false,
       snapshotAt: "2026-08-01T12:00:00.000Z",
       freshness: event.freshness,
+      unavailableReason: null,
     };
   },
-  detail: () => Promise.resolve({ projectionState: "ready", item: null }),
+  detail: () =>
+    Promise.resolve({
+      projectionState: "ready",
+      item: null,
+      unavailableReason: null,
+    }),
 });
 const current = (
   source: EventDisplayDto,

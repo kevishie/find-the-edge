@@ -359,6 +359,8 @@ export interface FeedCoverageReport {
 
 export type EventStatus =
   "scheduled" | "postponed" | "cancelled" | "started" | "completed" | "unknown";
+export * from "./event-metadata";
+import type { EventMetadataAssessment } from "./event-metadata";
 export interface ProviderRevision {
   readonly providerId: string;
   readonly authorityRank: number;
@@ -395,6 +397,7 @@ export interface EventDisplayDto {
   };
   readonly status: EventStatus;
   readonly freshness: string | null;
+  readonly metadata: EventMetadataAssessment;
 }
 
 export interface GameOddsSelectionDto {

@@ -26,10 +26,12 @@ export interface EventPage {
   readonly hasMoreUnknown: boolean;
   readonly snapshotAt: string | null;
   readonly freshness: string | null;
+  readonly unavailableReason: "projection-uninitialized" | null;
 }
 export interface EventDetailResult {
   readonly projectionState: "ready" | "uninitialized";
   readonly item: EventDisplayDto | null;
+  readonly unavailableReason: "projection-uninitialized" | null;
 }
 export interface EventRepository {
   list(

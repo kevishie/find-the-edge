@@ -71,6 +71,11 @@ export const createEventHandler =
         : (suppliedLog ?? console.log);
     const started = Date.now();
     let status = 200;
+    let metadataCounts: {
+      stale: number;
+      partial: number;
+      unavailable: number;
+    } | null = null;
     try {
       if (request.route.startsWith("experiment-")) {
         if (!strategyExperimentRepository)
@@ -366,10 +371,18 @@ export const createEventHandler =
         return response((status = 403), { error: "forbidden" });
       if (request.route === "detail") {
         const result = await repository.detail(request.eventId ?? "");
-        if (result.projectionState === "uninitialized")
+        if (result.projectionState === "uninitialized") {
+          metadataCounts = { stale: 0, partial: 0, unavailable: 1 };
           return response(200, result);
+        }
         if (!result.item)
           return response((status = 404), { error: "not-found" });
+        metadataCounts = {
+          stale: result.item.metadata.freshness.state === "stale" ? 1 : 0,
+          partial: result.item.metadata.availability === "partial" ? 1 : 0,
+          unavailable:
+            result.item.metadata.availability === "unavailable" ? 1 : 0,
+        };
         return response(200, result);
       }
       const query = request.query ?? {};
@@ -408,6 +421,20 @@ export const createEventHandler =
         Number(rawLimit),
         query["cursor"],
       );
+      metadataCounts = page.items.reduce(
+        (counts, item) => ({
+          stale:
+            counts.stale + (item.metadata.freshness.state === "stale" ? 1 : 0),
+          partial:
+            counts.partial + (item.metadata.availability === "partial" ? 1 : 0),
+          unavailable:
+            counts.unavailable +
+            (item.metadata.availability === "unavailable" ? 1 : 0),
+        }),
+        { stale: 0, partial: 0, unavailable: 0 },
+      );
+      if (page.projectionState === "uninitialized")
+        metadataCounts.unavailable = 1;
       if (request.route !== "splits") return response(200, page);
       if (!splitsRepository)
         throw new Error("splits-repository-not-configured");
@@ -465,6 +492,13 @@ export const createEventHandler =
         ...(reviewRoute && status === 403
           ? [{ Name: "RetrospectiveReviewForbidden", Unit: "Count" }]
           : []),
+        ...(metadataCounts
+          ? [
+              { Name: "StaleEventMetadata", Unit: "Count" },
+              { Name: "PartialEventMetadata", Unit: "Count" },
+              { Name: "UnavailableEventMetadata", Unit: "Count" },
+            ]
+          : []),
       ];
       log({
         _aws: {
@@ -502,6 +536,13 @@ export const createEventHandler =
           : {}),
         ...(reviewRoute && status === 403
           ? { RetrospectiveReviewForbidden: 1 }
+          : {}),
+        ...(metadataCounts
+          ? {
+              StaleEventMetadata: metadataCounts.stale,
+              PartialEventMetadata: metadataCounts.partial,
+              UnavailableEventMetadata: metadataCounts.unavailable,
+            }
           : {}),
       });
     }

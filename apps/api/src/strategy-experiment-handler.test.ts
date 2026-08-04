@@ -16,11 +16,12 @@ const events: EventRepository = {
       hasMoreUnknown: false,
       snapshotAt: null,
       freshness: null,
+      unavailableReason: null,
     };
   },
   async detail() {
     await Promise.resolve();
-    return { projectionState: "ready", item: null };
+    return { projectionState: "ready", item: null, unavailableReason: null };
   },
 };
 describe("strategy experiment API mutation boundary", () => {

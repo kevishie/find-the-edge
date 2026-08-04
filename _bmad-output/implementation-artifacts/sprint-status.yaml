@@ -535,7 +535,7 @@ stories:
   - id: FTE-017
     title: Event Status and Data Freshness Indicators
     epic: Sports catalog and event ingestion
-    status: backlog
+    status: done
     dependencies: [FTE-016]
     risk: Medium
     approvalRequiredBeforeMerge: false

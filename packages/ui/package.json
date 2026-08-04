@@ -15,6 +15,9 @@
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@find-the-edge/domain": "workspace:*"
+  },
   "devDependencies": {
     "vitest": "^4.0.18"
   }
