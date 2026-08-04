@@ -4,10 +4,11 @@ import type {
   InactiveFeedPolicy,
   SportKey,
 } from "@find-the-edge/domain";
+import { defaultEvaluationPolicy } from "./evaluation-policy";
 
 export const feedCoverageCatalogVersion = "2026-08-04.v7";
 export const oddsCollectionPolicyVersion =
-  "2026-08-04.control-plane.sharpapi-only.v2";
+  "2026-08-04.control-plane.sharpapi-pro.v3";
 
 export type OddsBookRole = "offered" | "comparison" | "splits";
 export interface OddsProviderPolicy {
@@ -36,6 +37,17 @@ export interface ScheduleDiscoveryPolicy {
   readonly quotaReserve: number;
   readonly requestCost: number;
 }
+
+const productionOddsBooks: Readonly<Record<string, OddsBookRole>> =
+  Object.freeze({
+    [defaultEvaluationPolicy.targetSportsbookId]: "offered",
+    ...Object.fromEntries(
+      Object.keys(defaultEvaluationPolicy.comparisonWeights).map((book) => [
+        book,
+        "comparison" as const,
+      ]),
+    ),
+  });
 /** Schedule requests have an explicit budget independent from odds reserves. */
 export const productionScheduleDiscoveryPolicies: readonly ScheduleDiscoveryPolicy[] =
   deepFreeze([
@@ -69,7 +81,7 @@ const providerPolicy = (
       quotaReserve: 100,
       cooldownSeconds: 900,
       failbackSuccesses: 2,
-      books: { draftkings: "offered", circa: "comparison" },
+      books: productionOddsBooks,
     },
   ],
 });

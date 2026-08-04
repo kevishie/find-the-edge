@@ -435,6 +435,11 @@ export class PickEvaluationService {
             ]),
           ),
           outlierThreshold: input.evaluationPolicy.outlierThreshold,
+          disagreementWarningThreshold:
+            input.evaluationPolicy.disagreementWarningThreshold,
+          disagreementBlockThreshold:
+            input.evaluationPolicy.disagreementBlockThreshold,
+          marketDisagreement: qualification.marketDisagreement,
           conservativeProbability:
             input.evaluationPolicy.conservativeProbability,
         },
@@ -452,6 +457,10 @@ export class PickEvaluationService {
           maximumUncertainty: input.evaluationPolicy.maximumUncertainty,
           minimumEdge: input.evaluationPolicy.minimumEdge,
           outlierThreshold: input.evaluationPolicy.outlierThreshold,
+          disagreementWarningThreshold:
+            input.evaluationPolicy.disagreementWarningThreshold,
+          disagreementBlockThreshold:
+            input.evaluationPolicy.disagreementBlockThreshold,
           conservativeProbability:
             input.evaluationPolicy.conservativeProbability,
         },

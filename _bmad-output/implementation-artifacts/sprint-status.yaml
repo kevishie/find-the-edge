@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: null
+nextReadyStory: FTE-020
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -640,7 +640,7 @@ stories:
   - id: FTE-032
     title: Spike - Consensus and Qualification Defaults
     epic: Deterministic betting engine
-    status: backlog
+    status: done
     dependencies: [FTE-014, FTE-019]
     risk: High
     approvalRequiredBeforeMerge: true

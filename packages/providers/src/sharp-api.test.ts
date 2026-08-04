@@ -160,6 +160,35 @@ describe("SharpAPI activation boundary", () => {
       ),
     ).toThrow("invalid-response");
   });
+  it("ignores related provider sub-leagues returned by an exact filter", () => {
+    const page = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "american-league-future",
+            league: "mlb_american_league",
+            status: "completed",
+            is_live: true,
+          },
+          {
+            id: "game-1",
+            league: "mlb",
+            away_team: "Away",
+            home_team: "Home",
+            start_time: "2026-08-04T20:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagues[0]!,
+      "2026-08-04T12:00:00.000Z" as never,
+    );
+    expect(page.events.map(({ providerEventId }) => providerEventId)).toEqual([
+      "game-1",
+    ]);
+  });
   it("excludes recognizable derivative catalogue rows", () => {
     const page = parseSharpApiSchedulePage(
       {

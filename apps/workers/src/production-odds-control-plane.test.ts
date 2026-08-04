@@ -128,7 +128,7 @@ describe("production odds control-plane composition", () => {
     expect(fetchSharpOdds).toHaveBeenCalledTimes(2);
     expect(
       [...control.gaps.values()].filter((gap) => gap.reason === "missing"),
-    ).toHaveLength(12);
+    ).toHaveLength(30);
     expect(
       [...control.gaps.values()].filter((gap) => gap.reason === "unsupported"),
     ).toHaveLength(2);

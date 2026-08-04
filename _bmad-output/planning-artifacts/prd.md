@@ -998,14 +998,14 @@ DynamoDB is the persistence direction. Provider abstractions are required. The O
 | --- | --- | --- | --- | --- | --- |
 | OD-001 | Soccer enrichment provider | Determines fixtures, teams, venues, lineups, injuries, and statistics coverage. | Before enriched scouting implementation | Product/Engineering | Partially |
 | OD-002 | Initial soccer leagues and competitions | Controls event scope, provider cost, and testing fixtures. | Before event ingestion configuration | Product | Yes |
-| OD-003 | Comparison sportsbook set | Defines consensus quality and coverage. | Before +EV qualification tuning | Product | Yes |
-| OD-004 | Bookmaker weights | Affects No-Vig Consensus and Fair Odds. | Before production qualification | Product | Yes |
-| OD-005 | Minimum EV threshold | Determines what qualifies as an edge. | Before Dashboard launch | Product | Yes |
-| OD-006 | Odds freshness threshold | Prevents stale opportunity exposure. | Before odds qualification | Product/Engineering | Yes |
-| OD-007 | Minimum contributing books | Controls consensus reliability. | Before +EV qualification | Product | Yes |
-| OD-008 | Outlier handling rules | Prevents bad prices from distorting consensus. | Before +EV qualification | Product/Engineering | Yes |
-| OD-009 | CLV benchmark | Determines CLV interpretation. | Before Bet Tracker CLV release | Product | Partially |
-| OD-010 | Snapshot retention | Affects storage cost and audit history. | Before production data retention policy | Product/Engineering | Partially |
+| OD-003 | Comparison sportsbook set | Resolved by ADR 0003 with four Pro-entitled comparison books. | Revise on entitlement or coverage evidence | Product | No |
+| OD-004 | Bookmaker weights | Resolved by ADR 0003 with equal provisional weights. | Revise on walk-forward evidence | Product | No |
+| OD-005 | Minimum EV threshold | Resolved by ADR 0003 with versioned sport-specific hypotheses. | Revise on walk-forward evidence | Product | No |
+| OD-006 | Odds freshness threshold | Resolved by ADR 0003 with a 15-minute initial maximum. | Revise on cadence evidence | Product/Engineering | No |
+| OD-007 | Minimum contributing books | Resolved by ADR 0003 with a fail-closed minimum of three. | Revise only with a new policy version | Product | No |
+| OD-008 | Outlier handling rules | Resolved by ADR 0003 with an eight-point any-outcome median rule. | Revise with FTE-030 evidence | Product/Engineering | No |
+| OD-009 | CLV benchmark | Resolved by ADR 0003 as closing comparison consensus excluding the target. | Revise with benchmark evidence | Product | No |
+| OD-010 | Snapshot retention | Resolved by ADR 0003 as no immutable-snapshot TTL for MVP. | New ADR before destructive retention | Product/Engineering | No |
 | OD-011 | Authentication implementation details | Selects exact Cognito/session behavior and password policy. | Before auth implementation | Engineering | Yes |
 | OD-012 | Compliance and responsible-gaming language | Reduces risk in betting-related product copy. | Before user-facing launch copy | Product/Legal review if available | Partially |
 

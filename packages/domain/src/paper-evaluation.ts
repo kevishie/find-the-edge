@@ -32,6 +32,8 @@ export interface EvaluationThresholds {
   readonly maximumUncertainty?: number;
   readonly minimumEdge?: number;
   readonly outlierThreshold?: number;
+  readonly disagreementWarningThreshold?: number;
+  readonly disagreementBlockThreshold?: number;
   readonly conservativeProbability?: "interval-low";
 }
 export interface EvaluationManifestInput {
@@ -63,6 +65,9 @@ export interface EvaluationManifestInput {
     readonly includedSportsbookIds: readonly string[];
     readonly comparisonWeights: Readonly<Record<string, number>>;
     readonly outlierThreshold: number;
+    readonly disagreementWarningThreshold?: number;
+    readonly disagreementBlockThreshold?: number;
+    readonly marketDisagreement?: number;
     readonly conservativeProbability: "interval-low";
   };
   readonly probability: EvaluationProbability;
@@ -444,12 +449,19 @@ export function normalizeEvaluationManifest(
     "outlierThreshold",
     "conservativeProbability",
   ];
+  const versionedThresholdKeys = [
+    ...expandedThresholdKeys,
+    "disagreementWarningThreshold",
+    "disagreementBlockThreshold",
+  ];
   const actualThresholdKeys = Object.keys(thresholds);
   exact(
     thresholds,
     actualThresholdKeys.length === thresholdKeys.length
       ? thresholdKeys
-      : expandedThresholdKeys,
+      : actualThresholdKeys.length === expandedThresholdKeys.length
+        ? expandedThresholdKeys
+        : versionedThresholdKeys,
     "thresholds",
   );
   const versions = own(record.versions, "versions");
@@ -492,14 +504,23 @@ export function normalizeEvaluationManifest(
   let consensusProvenance: EvaluationManifestInput["consensusProvenance"];
   if (hasConsensus) {
     const consensus = own(record.consensusProvenance, "consensus-provenance");
+    const legacyConsensusKeys = [
+      "includedSportsbookIds",
+      "comparisonWeights",
+      "outlierThreshold",
+      "conservativeProbability",
+    ];
+    const versionedConsensusKeys = [
+      ...legacyConsensusKeys,
+      "disagreementWarningThreshold",
+      "disagreementBlockThreshold",
+      "marketDisagreement",
+    ];
     exact(
       consensus,
-      [
-        "includedSportsbookIds",
-        "comparisonWeights",
-        "outlierThreshold",
-        "conservativeProbability",
-      ],
+      Object.keys(consensus).length === legacyConsensusKeys.length
+        ? legacyConsensusKeys
+        : versionedConsensusKeys,
       "consensus-provenance",
     );
     const weights = own(
@@ -544,6 +565,28 @@ export function normalizeEvaluationManifest(
         0,
         1,
       ),
+      ...(consensus.disagreementWarningThreshold === undefined
+        ? {}
+        : {
+            disagreementWarningThreshold: finite(
+              consensus.disagreementWarningThreshold,
+              "consensus-disagreement-warning-threshold",
+              0,
+              1,
+            ),
+            disagreementBlockThreshold: finite(
+              consensus.disagreementBlockThreshold,
+              "consensus-disagreement-block-threshold",
+              0,
+              1,
+            ),
+            marketDisagreement: finite(
+              consensus.marketDisagreement,
+              "consensus-market-disagreement",
+              0,
+              1,
+            ),
+          }),
       conservativeProbability: "interval-low",
     };
   }
@@ -693,6 +736,22 @@ export function normalizeEvaluationManifest(
               0,
               1,
             ),
+            ...(thresholds.disagreementWarningThreshold === undefined
+              ? {}
+              : {
+                  disagreementWarningThreshold: finite(
+                    thresholds.disagreementWarningThreshold,
+                    "disagreement-warning-threshold",
+                    0,
+                    1,
+                  ),
+                  disagreementBlockThreshold: finite(
+                    thresholds.disagreementBlockThreshold,
+                    "disagreement-block-threshold",
+                    0,
+                    1,
+                  ),
+                }),
             conservativeProbability:
               thresholds.conservativeProbability === "interval-low"
                 ? ("interval-low" as const)

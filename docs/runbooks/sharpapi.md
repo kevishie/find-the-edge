@@ -2,8 +2,8 @@
 
 ## Current state
 
-SharpAPI is the primary production odds and public-betting provider. The Odds
-API remains an independent failover. The subscribed account was verified on
+SharpAPI is the sole enabled production schedule, odds, and public-betting
+provider. The Odds API is not called by production ingestion. The subscribed account was verified on
 2026-08-03 as Pro: 300 requests/minute, 15 selected sportsbooks, odds, schedule,
 +EV, arbitrage, middles, low hold, steam, closing line, and betting splits.
 Streaming and Live Game State add-ons are intentionally disabled for MVP.
@@ -27,6 +27,21 @@ freshness, not the exact time a line moved. Split `fetched_at` remains separate.
 The operator approved Pro activation. A plan upgrade or add-on remains a manual
 decision and is never performed by deployment automation.
 
+## Pro odds roster and consensus policy
+
+ADR 0003 defines Hard Rock (`hardrock`) as the offered sportsbook and
+DraftKings, FanDuel, BetMGM, and Caesars as equal-weight comparison books. Live
+account checks returned HTTP 200 with odds data for all five identifiers. The
+production collector requests that roster for MLB and MLS and excludes Hard
+Rock unconditionally from a Hard Rock consensus.
+
+Circa and Pinnacle odds require the Sharp tier and must not appear in the Pro
+production odds roster. The DraftKings/Circa splits feed is a separate
+entitlement and does not authorize Circa odds. If fewer than three configured
+comparison books remain eligible for a market, consensus and qualification are
+unavailable; operators must not weaken the gate or substitute an unapproved
+book.
+
 ## Expected degradation
 
 An unverified contract reports `contract-unverified`. A split entitlement denial
@@ -34,10 +49,10 @@ reports `not-entitled` only for `public-betting`; it must not mark entitled odds
 coverage unhealthy. Retain prior current odds or splits on an outage and report
 them stale using their independent freshness thresholds.
 
-For failover, configure provider priority, per-provider quota reserve, health
-thresholds, cooldown, and required recovery successes. Do not blend the same
-sportsbook from both aggregators. Fail back only after the configured consecutive
-success threshold to prevent flapping.
+Provider priority, quota reserve, health thresholds, and cooldown remain
+explicit even with one enabled production provider. A future fallback requires
+an approved policy change and must not blend the same sportsbook from multiple
+aggregators.
 
 ## Rotation and canary
 
@@ -45,4 +60,5 @@ Rotate the Secrets Manager value, then run one explicitly approved manual canary
 against an allowlisted league and market. Verify redacted telemetry for attempts,
 latency, quota, normalized counts, mapping gaps, and entitlement. Disable the
 SharpAPI immediately on malformed material or unexpected licensing constraints;
-the worker will fail over to The Odds API.
+production ingestion then remains unavailable until SharpAPI is re-enabled or a
+separately approved fallback policy is deployed.

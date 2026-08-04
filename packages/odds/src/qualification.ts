@@ -6,6 +6,8 @@ export interface QualificationPolicy {
   readonly minimumComparisonBooks: number;
   readonly maximumPriceAgeMinutes: number;
   readonly outlierThreshold: number;
+  readonly disagreementWarningThreshold: number;
+  readonly disagreementBlockThreshold: number;
   readonly maximumUncertainty: number;
   readonly minimumEdge: number;
   readonly minimumExpectedValue: number;
@@ -41,6 +43,7 @@ export interface QualificationResult {
   readonly decimalOdds: number;
   readonly expectedValue: number;
   readonly edge: number;
+  readonly marketDisagreement: number;
   readonly includedSportsbookIds: readonly string[];
   readonly includedWeights: Readonly<Record<string, number>>;
 }
@@ -72,17 +75,19 @@ export function qualifyEvaluation(
       book.ageMinutes <= input.policy.maximumPriceAgeMinutes && book.weight > 0,
   );
   const vectors = eligible.map((book) => removeVig(book.americanOdds));
-  const candidateValues = vectors.map(
-    (vector) => vector[input.candidateIndex]!,
-  );
-  const median = [...candidateValues].sort((a, b) => a - b)[
-    Math.floor(candidateValues.length / 2)
-  ];
-  const included = eligible.filter(
-    (_, index) =>
-      median === undefined ||
-      Math.abs(candidateValues[index]! - median) <=
-        input.policy.outlierThreshold,
+  const medians = Array.from({ length: input.outcomeCount }, (_, outcome) => {
+    const values = vectors
+      .map((vector) => vector[outcome]!)
+      .sort((a, b) => a - b);
+    return values[Math.floor(values.length / 2)];
+  });
+  const included = eligible.filter((_, index) =>
+    medians.every(
+      (median, outcome) =>
+        median === undefined ||
+        Math.abs(vectors[index]![outcome]! - median) <=
+          input.policy.outlierThreshold,
+    ),
   );
   const includedVectors = included.map((book) => removeVig(book.americanOdds));
   const totalWeight = included.reduce((sum, book) => sum + book.weight, 0);
@@ -93,6 +98,13 @@ export function qualifyEvaluation(
         0,
       ) / totalWeight
     : 0;
+  const marketDisagreement = Array.from(
+    { length: input.outcomeCount },
+    (_, outcome) => {
+      const values = includedVectors.map((vector) => vector[outcome]!);
+      return values.length < 2 ? 0 : Math.max(...values) - Math.min(...values);
+    },
+  ).reduce((maximum, value) => Math.max(maximum, value), 0);
   const conservativeProbability = input.modelProbability.low;
   const decimalOdds = americanToDecimal(input.offeredAmerican);
   const marketImpliedProbability = impliedProbability(input.offeredAmerican);
@@ -108,11 +120,17 @@ export function qualifyEvaluation(
     reasons.push("comparison-outlier-excluded");
   if (input.modelProbability.uncertainty > input.policy.maximumUncertainty)
     reasons.push("uncertainty-above-threshold");
+  if (marketDisagreement >= input.policy.disagreementBlockThreshold)
+    reasons.push("market-disagreement-blocked");
+  else if (marketDisagreement >= input.policy.disagreementWarningThreshold)
+    reasons.push("market-disagreement-warning");
   if (edge < input.policy.minimumEdge) reasons.push("edge-below-threshold");
   if (expectedValue < input.policy.minimumExpectedValue)
     reasons.push("ev-below-threshold");
   const hasBlockingReason = reasons.some(
-    (reason) => reason !== "comparison-outlier-excluded",
+    (reason) =>
+      reason !== "comparison-outlier-excluded" &&
+      reason !== "market-disagreement-warning",
   );
   if (!hasBlockingReason) reasons.push("positive-ev-qualified");
   return Object.freeze({
@@ -125,6 +143,7 @@ export function qualifyEvaluation(
     decimalOdds,
     expectedValue,
     edge,
+    marketDisagreement,
     includedSportsbookIds: Object.freeze(
       included.map((book) => book.sportsbookId).sort(),
     ),

@@ -30,6 +30,8 @@ const input = () => ({
     minimumComparisonBooks: 2,
     maximumPriceAgeMinutes: 15,
     outlierThreshold: 0.12,
+    disagreementWarningThreshold: 0.05,
+    disagreementBlockThreshold: 0.1,
     maximumUncertainty: 0.1,
     minimumEdge: 0.01,
     minimumExpectedValue: 0.02,
@@ -138,4 +140,74 @@ describe("deterministic qualification", () => {
     expect(result.reasons).toContain("comparison-outlier-excluded");
     expect(result.includedSportsbookIds).not.toContain("outlier");
   });
+  it("excludes a book that diverges on a non-candidate outcome", () => {
+    const result = qualifyEvaluation({
+      ...input(),
+      offeredAmerican: 250,
+      candidateIndex: 1,
+      outcomeCount: 3,
+      policy: {
+        ...input().policy,
+        minimumComparisonBooks: 2,
+        outlierThreshold: 0.08,
+      },
+      books: [
+        {
+          sportsbookId: "a",
+          weight: 1,
+          ageMinutes: 1,
+          americanOdds: [140, 250, 210],
+        },
+        {
+          sportsbookId: "b",
+          weight: 1,
+          ageMinutes: 1,
+          americanOdds: [145, 245, 205],
+        },
+        {
+          sportsbookId: "divergent-home",
+          weight: 1,
+          ageMinutes: 1,
+          americanOdds: [-400, 250, 210],
+        },
+      ],
+    });
+    expect(result.includedSportsbookIds).not.toContain("divergent-home");
+    expect(result.reasons).toContain("comparison-outlier-excluded");
+  });
+  it.each([
+    ["warns", [-127, 127], "play", "market-disagreement-warning"],
+    ["blocks", [-156, 156], "no-bet", "market-disagreement-blocked"],
+  ] as const)(
+    "%s on configured market disagreement",
+    (_, odds, decision, reason) => {
+      const result = qualifyEvaluation({
+        ...input(),
+        policy: {
+          ...input().policy,
+          outlierThreshold: 0.5,
+          disagreementWarningThreshold: 0.05,
+          disagreementBlockThreshold: 0.1,
+          minimumEdge: -1,
+          minimumExpectedValue: 0,
+        },
+        books: [
+          {
+            sportsbookId: "a",
+            weight: 1,
+            ageMinutes: 1,
+            americanOdds: [100, 100],
+          },
+          {
+            sportsbookId: "b",
+            weight: 1,
+            ageMinutes: 1,
+            americanOdds: odds,
+          },
+        ],
+      });
+      expect(result.decision).toBe(decision);
+      expect(result.reasons).toContain(reason);
+    },
+  );
 });

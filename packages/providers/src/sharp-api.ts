@@ -541,8 +541,14 @@ export function parseSharpApiSchedulePage(
     if (
       !record(value) ||
       !canonical(value["id"]) ||
-      !canonical(value["league"], 64) ||
-      value["league"].toLowerCase() !== league.leagueKey ||
+      !canonical(value["league"], 64)
+    )
+      throw new SharpApiError("invalid-response");
+    // The endpoint can include valid but differently shaped rows from related
+    // catalogues despite an exact filter. League identity is the only field we
+    // need in order to exclude those rows safely.
+    if (value["league"].toLowerCase() !== league.leagueKey) continue;
+    if (
       !instant(value["start_time"]) ||
       value["status"] !== "upcoming" ||
       value["is_live"] !== false ||

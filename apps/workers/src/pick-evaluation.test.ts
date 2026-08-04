@@ -102,25 +102,32 @@ const snapshot = (
     retrievedAt: "2026-08-03T23:59:00.000Z",
   });
 const offered = {
-  sportsbookId: "draftkings",
+  sportsbookId: "hardrock",
   snapshots: [
-    snapshot("draftkings", "away", -130),
-    snapshot("draftkings", "home", 120),
+    snapshot("hardrock", "away", -130),
+    snapshot("hardrock", "home", 120),
   ],
 };
 const comparisons = [
   {
-    sportsbookId: "circa",
+    sportsbookId: "draftkings",
     snapshots: [
-      snapshot("circa", "away", -120),
-      snapshot("circa", "home", 110),
+      snapshot("draftkings", "away", -120),
+      snapshot("draftkings", "home", 110),
     ],
   },
   {
-    sportsbookId: "pinnacle",
+    sportsbookId: "fanduel",
     snapshots: [
-      snapshot("pinnacle", "away", -115),
-      snapshot("pinnacle", "home", 105),
+      snapshot("fanduel", "away", -115),
+      snapshot("fanduel", "home", 105),
+    ],
+  },
+  {
+    sportsbookId: "betmgm",
+    snapshots: [
+      snapshot("betmgm", "away", -118),
+      snapshot("betmgm", "home", 108),
     ],
   },
 ];
@@ -177,7 +184,7 @@ const input = {
   evaluationPolicy: defaultEvaluationPolicy,
   eventVersion: 1,
   selectionKeys: ["away", "home"],
-  comparisonSportsbookIds: ["circa", "pinnacle"],
+  comparisonSportsbookIds: ["draftkings", "fanduel", "betmgm"],
   promptHash: "c".repeat(64),
 } as const;
 
@@ -214,19 +221,19 @@ describe("pick evaluation service", () => {
     if (first.terminal !== "evaluation") throw new Error("expected evaluation");
     expect(
       first.pair.evaluation.manifest.comparisonOutcomeEvidence,
-    ).toHaveLength(4);
+    ).toHaveLength(6);
     expect(first.pair.evaluation.manifest.consensusProvenance).toMatchObject({
-      includedSportsbookIds: ["circa", "pinnacle"],
+      includedSportsbookIds: ["betmgm", "draftkings", "fanduel"],
       conservativeProbability: "interval-low",
     });
   });
   it("changes failed-attempt identity when exact evidence materially changes", async () => {
     let reads = 0;
     const changedOffered = {
-      sportsbookId: "draftkings",
+      sportsbookId: "hardrock",
       snapshots: [
-        snapshot("draftkings", "away", -125),
-        snapshot("draftkings", "home", 115),
+        snapshot("hardrock", "away", -125),
+        snapshot("hardrock", "home", 115),
       ],
     };
     const attempts = new MemoryEvaluationAttemptRepository();
@@ -499,12 +506,12 @@ describe("pick evaluation service", () => {
       status: "ready",
       reasonCodes: [],
       offered: {
-        sportsbookId: "draftkings",
+        sportsbookId: "hardrock",
         snapshots: selections.map((selection, index) =>
-          soccerSnapshot("draftkings", selection, [240, 260, 220][index]!),
+          soccerSnapshot("hardrock", selection, [240, 260, 220][index]!),
         ),
       },
-      comparisons: ["circa", "pinnacle"].map((book) => ({
+      comparisons: ["draftkings", "fanduel", "betmgm"].map((book) => ({
         sportsbookId: book,
         snapshots: selections.map((selection, index) =>
           soccerSnapshot(book, selection, [230, 250, 210][index]!),

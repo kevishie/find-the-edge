@@ -1290,14 +1290,14 @@ MVP cost controls:
 | --- | --- | --- | --- |
 | Soccer enrichment provider | Adapter implementation, report data depth, mapping confidence | Yes, behind interface | Before enriched scouting implementation |
 | Initial competitions | Event filters, provider calls, fixtures, test data | Partially | Before event ingestion configuration |
-| Comparison sportsbooks | Consensus quality, settings defaults, test fixtures | Partially | Before +EV qualification launch |
-| Bookmaker weights | Consensus algorithm inputs | Yes with placeholder config | Before production qualification |
-| EV threshold | Opportunity lifecycle and dashboard ranking | Yes with configurable unset/default dev value | Before Dashboard launch |
-| Odds freshness threshold | Current projection expiry and stale cleanup | Yes with config placeholder | Before active opportunity launch |
-| Minimum contributing books | Qualification rules | Yes with config placeholder | Before +EV qualification launch |
-| Outlier policy | Consensus and disqualification | Yes with simple initial strategy behind version | Before production qualification |
-| CLV benchmark | Bet settlement and performance reporting | Partially | Before CLV release |
-| Snapshot retention | TTL/archive policy and storage cost | Yes, keep snapshots by default | Before production retention policy |
+| Comparison sportsbooks | Resolved by ADR 0003: Pro-entitled DraftKings, FanDuel, BetMGM, and Caesars | Yes | Revise on entitlement or coverage evidence |
+| Bookmaker weights | Resolved by ADR 0003: equal initial weights, versioned and configurable | Yes | Revise on walk-forward evidence |
+| EV threshold | Resolved by ADR 0003: sport-configured provisional thresholds | Yes | Revise on walk-forward evidence |
+| Odds freshness threshold | Resolved by ADR 0003: 15-minute initial maximum age | Yes | Revise on cadence and stale-decision evidence |
+| Minimum contributing books | Resolved by ADR 0003: three eligible independent comparisons | Yes | Fail closed below three |
+| Outlier policy | Resolved by ADR 0003: any-outcome eight-point median deviation excludes the book | Yes | Revise with FTE-030 evidence |
+| CLV benchmark | Resolved by ADR 0003: closing comparison consensus excluding target | Yes | Unavailable below the book gate |
+| Snapshot retention | Resolved by ADR 0003: no immutable-snapshot TTL for MVP | Yes | New ADR required before destructive retention |
 | Compliance language | UI/report copy and warnings | Yes for internals | Before user-facing launch copy |
 
 ## 27. Implementation Sequence
