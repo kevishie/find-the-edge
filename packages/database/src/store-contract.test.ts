@@ -1461,6 +1461,37 @@ describe("dynamo reconciliation ownership fencing", () => {
     expect(gateway.writeAttempts).toBeGreaterThan(2);
   });
 
+  it("renews a still-owned lease before a fenced write after half its duration", async () => {
+    let now = Date.parse("2026-08-04T12:00:00.000Z");
+    class HalfLeaseGateway extends ContractGateway {
+      renewals = 0;
+      advanced = false;
+      override async get(pk: string, sk: string) {
+        if (!this.advanced && pk.startsWith("MAPPING#")) {
+          this.advanced = true;
+          now += 60;
+        }
+        return super.get(pk, sk);
+      }
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        this.renewals += writes.filter(
+          ({ kind }) => kind === "renew-reconciliation-lock",
+        ).length;
+        return super.transact(writes);
+      }
+    }
+    const gateway = new HalfLeaseGateway();
+    const outcome = await new DynamoEventIngestionStore(gateway, {
+      clock: () => new Date(now),
+      leaseMs: 100,
+      heartbeatMs: 90,
+    }).reconcileScheduledEvent(reconciliationInput("half-lease-renewal"));
+    expect(typeof outcome.kind).toBe("string");
+    expect(gateway.renewals).toBeGreaterThan(0);
+  });
+
   it("does not renew or resurrect a lease after its deadline", async () => {
     class ExpiringRenewalGateway extends ContractGateway {
       renewalAttempts = 0;
@@ -1577,11 +1608,19 @@ describe("dynamo reconciliation ownership fencing", () => {
       override async transact(
         writes: Parameters<DynamoGateway["transact"]>[0],
       ) {
+        if (
+          writes.some(
+            (write) =>
+              write.kind === "delete" &&
+              write.pk.startsWith("EVENT_RECONCILIATION#"),
+          )
+        )
+          throw new DynamoConditionalConflict();
         if (writes.some(({ kind }) => kind === "renew-reconciliation-lock")) {
           const lock = [...this.items.values()].find((item) =>
             item.pk.startsWith("EVENT_RECONCILIATION#"),
           );
-          if (lock)
+          if (lock) {
             this.items.set(this.key(lock.pk, lock.sk), {
               ...lock,
               value: {
@@ -1589,6 +1628,8 @@ describe("dynamo reconciliation ownership fencing", () => {
                 eventId: "takeover-token",
               },
             });
+            throw new DynamoConditionalConflict();
+          }
         }
         return super.transact(writes);
       }
@@ -1616,11 +1657,13 @@ describe("dynamo reconciliation ownership fencing", () => {
         );
         if (cleanup) {
           const lock = this.items.get(this.key(cleanup.pk, cleanup.sk));
-          if (lock)
+          if (lock) {
             this.items.set(this.key(cleanup.pk, cleanup.sk), {
               ...lock,
               value: { ...(lock.value as object), eventId: "new-owner" },
             });
+            throw new DynamoConditionalConflict();
+          }
         }
         return super.transact(writes);
       }
@@ -1629,6 +1672,56 @@ describe("dynamo reconciliation ownership fencing", () => {
     await expect(
       store.reconcileScheduledEvent(reconciliationInput("cleanup-conflict")),
     ).rejects.toThrow("event-reconciliation-ownership-lost");
+  });
+
+  it("retries transient transaction conflicts while releasing the lease", async () => {
+    class CleanupRetryGateway extends ContractGateway {
+      cleanupAttempts = 0;
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        if (
+          writes.some(
+            (write) =>
+              write.kind === "delete" &&
+              write.pk.startsWith("EVENT_RECONCILIATION#"),
+          )
+        ) {
+          this.cleanupAttempts += 1;
+          if (this.cleanupAttempts <= 2) throw new DynamoTransactionConflict();
+        }
+        return super.transact(writes);
+      }
+    }
+    const gateway = new CleanupRetryGateway();
+    const outcome = await new DynamoEventIngestionStore(
+      gateway,
+    ).reconcileScheduledEvent(reconciliationInput("cleanup-retry"));
+    expect(typeof outcome.kind).toBe("string");
+    expect(gateway.cleanupAttempts).toBe(3);
+  });
+
+  it("preserves non-ownership failures while releasing the lease", async () => {
+    class CleanupServiceFailureGateway extends ContractGateway {
+      override async transact(
+        writes: Parameters<DynamoGateway["transact"]>[0],
+      ) {
+        if (
+          writes.some(
+            (write) =>
+              write.kind === "delete" &&
+              write.pk.startsWith("EVENT_RECONCILIATION#"),
+          )
+        )
+          throw new Error("cleanup-service-failure");
+        return super.transact(writes);
+      }
+    }
+    await expect(
+      new DynamoEventIngestionStore(
+        new CleanupServiceFailureGateway(),
+      ).reconcileScheduledEvent(reconciliationInput("cleanup-service")),
+    ).rejects.toThrow("cleanup-service-failure");
   });
 });
 

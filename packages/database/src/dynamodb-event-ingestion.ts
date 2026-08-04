@@ -315,13 +315,58 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     if (!fence) return this.gateway.transact(writes);
     return this.withReconciliationOperation(fence.token, async () => {
       const lease = this.reconciliationLeases.get(fence.token);
-      const now = this.reconciliationNow().getTime();
-      if (
-        !lease ||
-        lease.pk !== fence.pk ||
-        lease.leaseUntil - now <= lease.leaseMs / 2
-      )
+      if (!lease || lease.pk !== fence.pk)
         throw new Error("event-reconciliation-ownership-lost");
+      let now = this.reconciliationNow().getTime();
+      if (now >= lease.leaseUntil)
+        throw new Error("event-reconciliation-ownership-lost");
+      if (lease.leaseUntil - now <= lease.leaseMs / 2) {
+        let renewed = false;
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          now = this.reconciliationNow().getTime();
+          const priorLeaseUntil = lease.leaseUntil;
+          if (now >= priorLeaseUntil)
+            throw new Error("event-reconciliation-ownership-lost");
+          const nextLeaseUntil = now + lease.leaseMs;
+          try {
+            await this.gateway.transact([
+              {
+                kind: "renew-reconciliation-lock",
+                item: {
+                  pk: fence.pk,
+                  sk: "CURRENT",
+                  value: {
+                    eventId: fence.token,
+                    leaseUntil: new Date(nextLeaseUntil).toISOString(),
+                    version: 1,
+                  },
+                  expiresAt: Math.ceil(nextLeaseUntil / 1_000),
+                },
+                expectedToken: fence.token,
+                leaseAfter: new Date(now).toISOString(),
+              },
+            ]);
+            if (this.reconciliationNow().getTime() >= priorLeaseUntil)
+              throw new Error("event-reconciliation-ownership-lost");
+            lease.leaseUntil = nextLeaseUntil;
+            renewed = true;
+            break;
+          } catch (error) {
+            if (error instanceof DynamoConditionalConflict)
+              throw new Error("event-reconciliation-ownership-lost");
+            if (!(error instanceof DynamoTransactionConflict) || attempt >= 5)
+              throw error;
+            const delayMs = 5 * 2 ** attempt;
+            if (
+              this.reconciliationNow().getTime() + delayMs >=
+              priorLeaseUntil
+            )
+              throw new Error("event-reconciliation-ownership-lost");
+            await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+          }
+        }
+        if (!renewed) throw new Error("event-reconciliation-ownership-lost");
+      }
       for (let attempt = 0; attempt < 6; attempt += 1)
         try {
           await this.gateway.transact([
@@ -758,7 +803,6 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     const heartbeatMs =
       this.reconciliationOptions.heartbeatMs ?? Math.max(10, leaseMs / 3);
     let acquired = false;
-    let ownedLeaseUntil = 0;
     for (let attempt = 0; attempt < 400; attempt += 1) {
       const now = this.reconciliationNow().getTime();
       const value = {
@@ -775,11 +819,10 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         })) === "inserted"
       ) {
         acquired = true;
-        ownedLeaseUntil = now + leaseMs;
         this.reconciliationLeases.set(token, {
           pk,
           leaseMs,
-          leaseUntil: ownedLeaseUntil,
+          leaseUntil: now + leaseMs,
         });
         break;
       }
@@ -814,74 +857,77 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
       });
     }
     if (!acquired) throw new Error("event-reconciliation-lock-timeout");
+    const ownedLease = this.reconciliationLeases.get(token);
+    if (!ownedLease)
+      throw new Error("event-reconciliation-ownership-lost");
     let ownershipLost: Error | undefined;
     let renewalFailure: Error | undefined;
     let renewal = Promise.resolve();
     const renew = () => {
       renewal = renewal.then(async () => {
         if (ownershipLost || renewalFailure) return;
-        for (let attempt = 0; attempt < 6; attempt += 1)
-          try {
-            const now = this.reconciliationNow().getTime();
-            if (now >= ownedLeaseUntil) {
-              ownershipLost = new Error("event-reconciliation-ownership-lost");
-              return;
-            }
-            const nextLeaseUntil = now + leaseMs;
-            await this.withReconciliationOperation(token, () =>
-              this.gateway.transact([
-                {
-                  kind: "renew-reconciliation-lock",
-                  item: {
-                    pk,
-                    sk: "CURRENT",
-                    value: {
-                      eventId: token,
-                      leaseUntil: new Date(nextLeaseUntil).toISOString(),
-                      version: 1,
+        try {
+          await this.withReconciliationOperation(token, async () => {
+            for (let attempt = 0; attempt < 6; attempt += 1) {
+              const now = this.reconciliationNow().getTime();
+              const priorLeaseUntil = ownedLease.leaseUntil;
+              if (now >= priorLeaseUntil)
+                throw new Error("event-reconciliation-ownership-lost");
+              const nextLeaseUntil = now + leaseMs;
+              try {
+                await this.gateway.transact([
+                  {
+                    kind: "renew-reconciliation-lock",
+                    item: {
+                      pk,
+                      sk: "CURRENT",
+                      value: {
+                        eventId: token,
+                        leaseUntil: new Date(nextLeaseUntil).toISOString(),
+                        version: 1,
+                      },
+                      expiresAt: Math.ceil(nextLeaseUntil / 1_000),
                     },
-                    expiresAt: Math.ceil(nextLeaseUntil / 1_000),
+                    expectedToken: token,
+                    leaseAfter: new Date(now).toISOString(),
                   },
-                  expectedToken: token,
-                  leaseAfter: new Date(now).toISOString(),
-                },
-              ]),
-            );
-            if (this.reconciliationNow().getTime() >= ownedLeaseUntil) {
-              ownershipLost = new Error("event-reconciliation-ownership-lost");
-              return;
-            }
-            ownedLeaseUntil = nextLeaseUntil;
-            const lease = this.reconciliationLeases.get(token);
-            if (lease) lease.leaseUntil = nextLeaseUntil;
-            return;
-          } catch (error) {
-            if (error instanceof DynamoConditionalConflict) {
-              ownershipLost = new Error("event-reconciliation-ownership-lost");
-              return;
-            }
-            if (error instanceof DynamoTransactionConflict && attempt < 5) {
-              const delayMs = 5 * 2 ** attempt;
-              if (
-                this.reconciliationNow().getTime() + delayMs >=
-                ownedLeaseUntil
-              ) {
-                ownershipLost = new Error(
-                  "event-reconciliation-ownership-lost",
-                );
+                ]);
+                if (this.reconciliationNow().getTime() >= priorLeaseUntil)
+                  throw new Error("event-reconciliation-ownership-lost");
+                ownedLease.leaseUntil = nextLeaseUntil;
                 return;
+              } catch (error) {
+                if (error instanceof DynamoConditionalConflict)
+                  throw new Error("event-reconciliation-ownership-lost");
+                if (
+                  !(error instanceof DynamoTransactionConflict) ||
+                  attempt >= 5
+                )
+                  throw error;
+                const delayMs = 5 * 2 ** attempt;
+                if (
+                  this.reconciliationNow().getTime() + delayMs >=
+                  priorLeaseUntil
+                )
+                  throw new Error("event-reconciliation-ownership-lost");
+                await new Promise<void>((resolve) => {
+                  setTimeout(resolve, delayMs);
+                });
               }
-              await new Promise<void>((resolve) => {
-                setTimeout(resolve, delayMs);
-              });
-              continue;
             }
+          });
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message === "event-reconciliation-ownership-lost"
+          )
+            ownershipLost = error;
+          else
             renewalFailure =
               error instanceof Error
                 ? error
                 : new Error("event-reconciliation-renewal-failed");
-            return;
-          }
+        }
       });
     };
     const heartbeat = setInterval(renew, heartbeatMs);
@@ -902,20 +948,29 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     if (ownershipLost) reconciliationFailure = ownershipLost;
     else if (renewalFailure) reconciliationFailure = renewalFailure;
     try {
-      await this.gateway.transact([
-        {
-          kind: "delete",
-          pk,
-          sk: "CURRENT",
-          expectedEventId: token,
-        },
-      ]);
-    } catch (error) {
+      for (let attempt = 0; attempt < 6; attempt += 1)
+        try {
+          await this.gateway.transact([
+            {
+              kind: "delete",
+              pk,
+              sk: "CURRENT",
+              expectedEventId: token,
+            },
+          ]);
+          break;
+        } catch (error) {
+          if (error instanceof DynamoConditionalConflict)
+            throw new Error("event-reconciliation-ownership-lost");
+          if (!(error instanceof DynamoTransactionConflict) || attempt >= 5)
+            throw error;
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 5 * 2 ** attempt);
+          });
+        }
+    } finally {
       this.reconciliationLeases.delete(token);
-      void error;
-      throw new Error("event-reconciliation-ownership-lost");
     }
-    this.reconciliationLeases.delete(token);
     if (reconciliationFailure !== undefined)
       throw reconciliationFailure instanceof Error
         ? reconciliationFailure
