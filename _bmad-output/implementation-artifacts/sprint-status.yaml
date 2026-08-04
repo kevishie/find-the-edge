@@ -549,7 +549,7 @@ stories:
   - id: FTE-019
     title: Spike - Initial Soccer Competitions Allowlist
     epic: Sports catalog and event ingestion
-    status: backlog
+    status: done
     dependencies: [FTE-014]
     risk: High
     approvalRequiredBeforeMerge: true
