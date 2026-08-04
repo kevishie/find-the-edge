@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { productionOddsCollectionPolicies } from "@find-the-edge/config";
 import { MemoryOddsControlPlaneStore } from "@find-the-edge/database";
 import {
+  classifyOddsControlPlaneFailure,
   deduplicateProviderBookEvidence,
   runDueOddsLeagues,
   runOddsLeague,
@@ -15,6 +16,20 @@ const provider = (
   fetchPage: ControlPlaneProvider["fetchPage"],
 ): ControlPlaneProvider => ({ providerId: id, fetchPage });
 describe("odds collection control plane", () => {
+  it("classifies bounded recovery and pagination failures without raw errors", () => {
+    expect(classifyOddsControlPlaneFailure(new Error("run-owned"))).toBe(
+      "provider-recovering",
+    );
+    expect(
+      classifyOddsControlPlaneFailure(new Error("page-limit-exceeded")),
+    ).toBe("pagination-invalid");
+    expect(
+      classifyOddsControlPlaneFailure(new Error("sealed-page-conflict")),
+    ).toBe("provider-response-unsealed");
+    expect(
+      classifyOddsControlPlaneFailure(new Error("sensitive unknown detail")),
+    ).toBe("internal-failure");
+  });
   it("waits for an in-flight heartbeat before accepting a paid response", async () => {
     let releaseHeartbeat!: () => void;
     const heartbeatGate = new Promise<void>((resolve) => {

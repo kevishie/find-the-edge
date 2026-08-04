@@ -242,8 +242,12 @@ const SAFE_FAILURES = [
   "pagination-invalid",
   "transition-conflict",
 ] as const;
-const failureCode = (error: unknown) => {
+export const classifyOddsControlPlaneFailure = (error: unknown) => {
   if (!(error instanceof Error)) return "internal-failure";
+  if (error.message === "run-owned") return "provider-recovering";
+  if (error.message === "page-limit-exceeded") return "pagination-invalid";
+  if (error.message === "sealed-page-conflict")
+    return "provider-response-unsealed";
   if (SAFE_FAILURES.includes(error.message as never)) return error.message;
   if (error.message.includes("transition-conflict"))
     return "transition-conflict";
@@ -264,7 +268,7 @@ const retryable = (error: unknown) =>
     "rate-limited",
     "not-entitled",
     "coverage-missing",
-  ].includes(failureCode(error));
+  ].includes(classifyOddsControlPlaneFailure(error));
 
 export async function runOddsLeague(input: {
   readonly policy: LeagueOddsCollectionPolicy;
@@ -519,7 +523,7 @@ export async function runOddsLeague(input: {
               state: ambiguous ? "ambiguous" : "failed",
               failureReason: ambiguous
                 ? "provider-request-ambiguous"
-                : failureCode(error),
+                : classifyOddsControlPlaneFailure(error),
             });
             await store.putHealth({
               ...(await store.getHealth(healthKey)),
@@ -813,7 +817,7 @@ export async function runOddsLeague(input: {
                   ? "provider-response-unsealed"
                   : ambiguous
                     ? "provider-request-ambiguous"
-                    : failureCode(error),
+                    : classifyOddsControlPlaneFailure(error),
               });
               if (ambiguous)
                 await putContinuationCas(store, {
@@ -941,7 +945,7 @@ export async function runOddsLeague(input: {
         quotaCost,
       };
     } catch (error) {
-      const reason = failureCode(error);
+      const reason = classifyOddsControlPlaneFailure(error);
       lastReason = reason;
       await store.putRun({
         ...run,
@@ -1019,7 +1023,7 @@ export async function runDueOddsLeagues(
         return {
           leagueKey: input.policy.leagueKey,
           status: "failed" as const,
-          reason: failureCode(error),
+          reason: classifyOddsControlPlaneFailure(error),
           pages: 0,
           quotaCost: 0,
         };
