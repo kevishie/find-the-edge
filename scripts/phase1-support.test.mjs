@@ -47,7 +47,7 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
 
 function validTemplate() {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const webOrigin = {
     "Fn::Join": [
       "",
@@ -72,7 +72,7 @@ function validTemplate() {
         { Ref: "Api" },
         '","CorsConfiguration":{"AllowOrigins":["https://',
         { "Fn::GetAtt": ["Distribution", "DomainName"] },
-        '"],"AllowHeaders":["authorization","content-type"],"AllowMethods":["GET","OPTIONS"]}},"physicalResourceId":{"id":"fixture-events-api-cors"}}',
+        '"],"AllowHeaders":["authorization","content-type"],"AllowMethods":["GET","POST","OPTIONS"]}},"physicalResourceId":{"id":"fixture-events-api-cors"}}',
       ],
     ],
   };
@@ -94,6 +94,11 @@ function validTemplate() {
             {
               ScopeDescription: "Read FIND THE EDGE events and odds",
               ScopeName: "events:read",
+            },
+            {
+              ScopeDescription:
+                "Review non-executable retrospective candidates",
+              ScopeName: "retrospectives:approve",
             },
           ],
         },
@@ -121,6 +126,39 @@ function validTemplate() {
             },
           ],
           LogoutURLs: [webOrigin],
+        },
+      },
+      ReviewerClient: {
+        Type: "AWS::Cognito::UserPoolClient",
+        Properties: {
+          GenerateSecret: false,
+          AllowedOAuthFlows: ["code"],
+          AllowedOAuthScopes: [
+            {
+              "Fn::Join": ["", [{ Ref: "Server" }, "/retrospectives:approve"]],
+            },
+          ],
+          UserPoolId: { Ref: "Pool" },
+          CallbackURLs: [
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "https://",
+                  { "Fn::GetAtt": ["Distribution", "DomainName"] },
+                  "/auth/callback",
+                ],
+              ],
+            },
+          ],
+          LogoutURLs: [webOrigin],
+        },
+      },
+      ReviewerGroup: {
+        Type: "AWS::Cognito::UserPoolGroup",
+        Properties: {
+          GroupName: "fte-retrospective-reviewers",
+          UserPoolId: { Ref: "Pool" },
         },
       },
       Bucket: {
@@ -267,6 +305,96 @@ function validTemplate() {
           },
         },
       },
+      PerformanceCohortsRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /performance/cohorts",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      PerformanceCohortRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /performance/cohorts/{eventId}",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      PerformanceReportsRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /performance/reports",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      PerformanceReportRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /performance/reports/{eventId}",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      RetrospectivesRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /retrospectives",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      RetrospectiveRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /retrospectives/{eventId}",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      RetrospectiveVersionsRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /retrospectives/{eventId}/versions",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      RetrospectiveReviewRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "POST /retrospectives/{eventId}/review",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "JWT",
+          AuthorizerId: { Ref: "Auth" },
+          AuthorizationScopes: ["events/retrospectives:approve"],
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
       EventsRoute: {
         Type: "AWS::ApiGatewayV2::Route",
         Properties: {
@@ -298,7 +426,7 @@ function validTemplate() {
           AuthorizerType: "JWT",
           JwtConfiguration: {
             Issuer: { "Fn::GetAtt": ["Pool", "ProviderURL"] },
-            Audience: [{ Ref: "Client" }],
+            Audience: [{ Ref: "Client" }, { Ref: "ReviewerClient" }],
           },
         },
       },
@@ -359,8 +487,10 @@ function validTemplate() {
                 Action: [
                   "dynamodb:BatchGetItem",
                   "dynamodb:GetItem",
+                  "dynamodb:PutItem",
                   "dynamodb:Query",
                   "dynamodb:TransactGetItems",
+                  "dynamodb:TransactWriteItems",
                 ],
                 Resource: [{ "Fn::GetAtt": ["Table", "Arn"] }],
               },

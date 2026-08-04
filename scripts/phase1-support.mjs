@@ -163,12 +163,26 @@ function dynamoActionsForRole(template, roleId, tableId) {
       const resources = Array.isArray(statement.Resource)
         ? statement.Resource
         : [statement.Resource];
+      const exactTableOrIndexes = (value) => {
+        if (isGetAtt(value, tableId, "Arn")) return true;
+        const parts = value?.["Fn::Join"];
+        return (
+          Array.isArray(parts) &&
+          parts[0] === "" &&
+          Array.isArray(parts[1]) &&
+          parts[1].length === 2 &&
+          isGetAtt(parts[1][0], tableId, "Arn") &&
+          parts[1][1] === "/index/*"
+        );
+      };
       if (
-        resources.length !== 1 ||
-        !resources.every((value) => isGetAtt(value, tableId, "Arn"))
+        resources.length < 1 ||
+        resources.length > 2 ||
+        !resources.every(exactTableOrIndexes) ||
+        !resources.some((value) => isGetAtt(value, tableId, "Arn"))
       )
         throw new Error(
-          "DynamoDB IAM must reference only the exact event table ARN",
+          "DynamoDB IAM must reference only the exact event table and its indexes",
         );
       for (const action of statementActions) actions.add(action);
     }
@@ -187,7 +201,7 @@ function requireActions(actual, expected, label) {
 
 export function validateTemplate(template, config) {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits') {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const tables = entriesOfType(template, "AWS::DynamoDB::Table");
   const apis = entriesOfType(template, "AWS::ApiGatewayV2::Api");
   if (tables.length !== 1 || apis.length !== 1)
@@ -196,6 +210,7 @@ export function validateTemplate(template, config) {
   const [apiId, api] = apis[0];
   const pools = entriesOfType(template, "AWS::Cognito::UserPool");
   const clients = entriesOfType(template, "AWS::Cognito::UserPoolClient");
+  const groups = entriesOfType(template, "AWS::Cognito::UserPoolGroup");
   const servers = entriesOfType(
     template,
     "AWS::Cognito::UserPoolResourceServer",
@@ -219,7 +234,6 @@ export function validateTemplate(template, config) {
   if (
     [
       pools,
-      clients,
       servers,
       domains,
       buckets,
@@ -227,13 +241,33 @@ export function validateTemplate(template, config) {
       distributions,
       oacs,
       cloudFrontFunctions,
-    ].some((items) => items.length !== 1)
+    ].some((items) => items.length !== 1) ||
+    clients.length !== 2 ||
+    groups.length !== 1
   )
     throw new Error(
-      "Phase1 requires exactly one Cognito pool/client/resource server and private web distribution",
+      "Phase1 requires one Cognito pool/resource server, ordinary and reviewer clients, reviewer group, and private web distribution",
     );
   const [poolId, pool] = pools[0];
-  const [clientId, client] = clients[0];
+  const reviewerScopeFragment = "/retrospectives:approve";
+  const reviewerClients = clients.filter(([, value]) =>
+    (JSON.stringify(value.Properties?.AllowedOAuthScopes) ?? "").includes(
+      reviewerScopeFragment,
+    ),
+  );
+  const ordinaryClients = clients.filter(
+    ([, value]) =>
+      !(JSON.stringify(value.Properties?.AllowedOAuthScopes) ?? "").includes(
+        reviewerScopeFragment,
+      ),
+  );
+  if (ordinaryClients.length !== 1 || reviewerClients.length !== 1)
+    throw new Error(
+      "Cognito must separate ordinary read access from reviewer approval access",
+    );
+  const [clientId, client] = ordinaryClients[0];
+  const [, reviewerClient] = reviewerClients[0];
+  const [, reviewerGroup] = groups[0];
   const [serverId, server] = servers[0];
   const [domainId, cognitoDomain] = domains[0];
   const [bucketId, bucket] = buckets[0];
@@ -285,36 +319,47 @@ export function validateTemplate(template, config) {
           ScopeDescription: "Read FIND THE EDGE events and odds",
           ScopeName: "events:read",
         },
+        {
+          ScopeDescription: "Review non-executable retrospective candidates",
+          ScopeName: "retrospectives:approve",
+        },
       ])
   )
     throw new Error(
-      "Cognito must define only the events:read resource-server scope",
+      "Cognito must define only the read and retrospective approval scopes",
     );
   if (!isRef(cognitoDomain.Properties?.UserPoolId, poolId))
     throw new Error("Cognito domain must bind to the selected user pool");
-  const oauth = client.Properties;
+  const exactCallbackUrls = [
+    {
+      "Fn::Join": [
+        "",
+        [
+          "https://",
+          { "Fn::GetAtt": [distributionId, "DomainName"] },
+          "/auth/callback",
+        ],
+      ],
+    },
+  ];
+  const validWebClient = (oauth) =>
+    oauth?.GenerateSecret === false &&
+    JSON.stringify(oauth?.AllowedOAuthFlows) === JSON.stringify(["code"]) &&
+    isRef(oauth?.UserPoolId, poolId) &&
+    JSON.stringify(oauth?.CallbackURLs) === JSON.stringify(exactCallbackUrls) &&
+    JSON.stringify(oauth?.LogoutURLs) === JSON.stringify([webOrigin]);
   if (
-    oauth?.GenerateSecret !== false ||
-    JSON.stringify(oauth?.AllowedOAuthFlows) !== JSON.stringify(["code"]) ||
-    !isRef(oauth?.UserPoolId, poolId) ||
-    JSON.stringify(oauth?.CallbackURLs) !==
-      JSON.stringify([
-        {
-          "Fn::Join": [
-            "",
-            [
-              "https://",
-              { "Fn::GetAtt": [distributionId, "DomainName"] },
-              "/auth/callback",
-            ],
-          ],
-        },
-      ]) ||
-    JSON.stringify(oauth?.LogoutURLs) !== JSON.stringify([webOrigin])
+    !validWebClient(client.Properties) ||
+    !validWebClient(reviewerClient.Properties)
   )
     throw new Error(
-      "Cognito web client must be a public authorization-code client with exact hosted URLs",
+      "Cognito web clients must be public authorization-code clients with exact hosted URLs",
     );
+  if (
+    reviewerGroup.Properties?.GroupName !== "fte-retrospective-reviewers" ||
+    !isRef(reviewerGroup.Properties?.UserPoolId, poolId)
+  )
+    throw new Error("Reviewer group must bind to the selected user pool");
   const publicBlock = bucket.Properties?.PublicAccessBlockConfiguration;
   if (
     ![
@@ -397,7 +442,9 @@ export function validateTemplate(template, config) {
       JSON.stringify({ "Fn::GetAtt": [distributionId, "DomainName"] }),
     ) ||
     !createRendered.includes('\\"AllowOrigins\\":[\\"https://') ||
-    !createRendered.includes('\\"AllowMethods\\":[\\"GET\\",\\"OPTIONS\\"]') ||
+    !createRendered.includes(
+      '\\"AllowMethods\\":[\\"GET\\",\\"POST\\",\\"OPTIONS\\"]',
+    ) ||
     !createRendered.includes(
       '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\"]',
     ) ||
@@ -441,7 +488,7 @@ export function validateTemplate(template, config) {
       "ProviderURL",
     ) ||
     JSON.stringify(authorizers[0][1].Properties?.JwtConfiguration?.Audience) !==
-      JSON.stringify([{ Ref: clientId }])
+      JSON.stringify([{ Ref: clientId }, { Ref: reviewerClients[0][0] }])
   )
     throw new Error(
       "Internal event listing must keep its exact JWT authorizer",
@@ -462,6 +509,14 @@ export function validateTemplate(template, config) {
     "GET /events/{eventId}",
     "GET /games",
     "GET /splits",
+    "GET /performance/cohorts",
+    "GET /performance/cohorts/{eventId}",
+    "GET /performance/reports",
+    "GET /performance/reports/{eventId}",
+    "GET /retrospectives",
+    "GET /retrospectives/{eventId}",
+    "GET /retrospectives/{eventId}/versions",
+    "POST /retrospectives/{eventId}/review",
   ];
   if (
     apiRoutes.length !== requiredRouteKeys.length ||
@@ -476,6 +531,15 @@ export function validateTemplate(template, config) {
           !isRef(value.Properties?.AuthorizerId, authorizerId) ||
           JSON.stringify(value.Properties?.AuthorizationScopes) !==
             JSON.stringify(["events/events:read"])
+        );
+      if (
+        value.Properties?.RouteKey === "POST /retrospectives/{eventId}/review"
+      )
+        return (
+          value.Properties?.AuthorizationType !== "JWT" ||
+          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
+          JSON.stringify(value.Properties?.AuthorizationScopes) !==
+            JSON.stringify(["events/retrospectives:approve"])
         );
       return (
         value.Properties?.AuthorizationType !== "NONE" ||
@@ -644,12 +708,26 @@ export function validateTemplate(template, config) {
         const resources = Array.isArray(statement.Resource)
           ? statement.Resource
           : [statement.Resource];
+        const exactTableOrIndexes = (value) => {
+          if (isGetAtt(value, tableId, "Arn")) return true;
+          const parts = value?.["Fn::Join"];
+          return (
+            Array.isArray(parts) &&
+            parts[0] === "" &&
+            Array.isArray(parts[1]) &&
+            parts[1].length === 2 &&
+            isGetAtt(parts[1][0], tableId, "Arn") &&
+            parts[1][1] === "/index/*"
+          );
+        };
         if (
-          resources.length !== 1 ||
-          !resources.every((value) => isGetAtt(value, tableId, "Arn"))
+          resources.length < 1 ||
+          resources.length > 2 ||
+          !resources.every(exactTableOrIndexes) ||
+          !resources.some((value) => isGetAtt(value, tableId, "Arn"))
         )
           throw new Error(
-            "DynamoDB IAM must reference only the exact event table ARN",
+            "DynamoDB IAM must reference only the exact event table and its indexes",
           );
       }
     }
@@ -665,8 +743,10 @@ export function validateTemplate(template, config) {
     [
       "dynamodb:BatchGetItem",
       "dynamodb:GetItem",
+      "dynamodb:PutItem",
       "dynamodb:Query",
       "dynamodb:TransactGetItems",
+      "dynamodb:TransactWriteItems",
     ],
     "API DynamoDB IAM",
   );
