@@ -252,6 +252,25 @@ test("live ingestion proof accepts production control-plane summaries", () => {
         {
           leagueKey: "mlb",
           status: "failed",
+          reason: "schedule-provider-unavailable",
+          pages: 0,
+          quotaCost: 1,
+        },
+        {
+          leagueKey: "mls",
+          status: "completed",
+          pages: 1,
+          quotaCost: 1,
+        },
+      ]),
+    /mlb=failed:schedule-provider-unavailable,mls=completed/,
+  );
+  assert.throws(
+    () =>
+      assertLiveIngestionSummary([
+        {
+          leagueKey: "mlb",
+          status: "failed",
           reason: "raw-secret-provider-message",
           pages: 0,
           quotaCost: 1,

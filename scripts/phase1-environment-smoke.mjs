@@ -210,7 +210,10 @@ export function assertLiveIngestionSummary(summary) {
           "transition-conflict",
           "internal-failure",
           "cadence-not-due",
-        ].includes(result.reason)) &&
+        ].includes(result.reason) ||
+        /^schedule-(provider-unavailable|rate-limited|not-entitled|coverage-missing|provider-request-ambiguous|quota-reserve|provider-cooldown|provider-recovering|pagination-invalid|transition-conflict|internal-failure)$/.test(
+          result.reason,
+        )) &&
       Number.isSafeInteger(result.pages) &&
       result.pages >= 0 &&
       Number.isSafeInteger(result.quotaCost) &&
