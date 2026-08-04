@@ -12,6 +12,7 @@ export * from "./event-repository";
 export * from "./dynamodb-event-repository";
 export * from "./memory-event-repository";
 export * from "./fixture-odds-adapter";
+export * from "./fixture-odds-projector";
 export * from "./games-repository";
 export * from "./dynamodb-games-repository";
 export * from "./memory-games-repository";

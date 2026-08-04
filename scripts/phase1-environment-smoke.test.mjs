@@ -7,6 +7,7 @@ import {
   assertLiveIngestionSummary,
   assertLiveIngestionResourceBinding,
   assertWrongOriginDenied,
+  isTransientLiveIngestionSummary,
   liveOddsInvocationArguments,
   phase1EnvironmentSmoke,
   validateEnvironment,
@@ -284,6 +285,33 @@ test("live ingestion proof accepts production control-plane summaries", () => {
       ]),
     /mls=completed/,
   );
+});
+
+test("live ingestion retries only bounded schedule ownership overlap", () => {
+  const recovering = ["mlb", "mls"].map((leagueKey) => ({
+    leagueKey,
+    status: "failed",
+    reason: "schedule-provider-recovering",
+    pages: 0,
+    quotaCost: 0,
+  }));
+  assert.equal(isTransientLiveIngestionSummary(recovering), true);
+  for (const malformed of [
+    [recovering[0], recovering[0]],
+    [recovering[0], { ...recovering[1], pages: 1 }],
+    [recovering[0], { ...recovering[1], quotaCost: 1 }],
+    [recovering[0], { ...recovering[1], pages: 0.5 }],
+    [recovering[0], { ...recovering[1], extra: true }],
+  ])
+    assert.equal(isTransientLiveIngestionSummary(malformed), false);
+  assert.equal(
+    isTransientLiveIngestionSummary([
+      recovering[0],
+      { ...recovering[1], reason: "schedule-provider-unavailable" },
+    ]),
+    false,
+  );
+  assert.equal(isTransientLiveIngestionSummary({}), false);
 });
 
 test("live game proof accepts complete real sportsbook markets and rejects fixtures", () => {

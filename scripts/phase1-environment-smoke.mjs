@@ -268,6 +268,26 @@ export function assertLiveIngestionSummary(summary) {
     throw new Error("live ingestion returned an invalid legacy summary");
 }
 
+export function isTransientLiveIngestionSummary(summary) {
+  if (!Array.isArray(summary) || summary.length !== 2) return false;
+  const leagues = new Set(["mlb", "mls"]);
+  return summary.every(
+    (result) =>
+      result &&
+      typeof result === "object" &&
+      !Array.isArray(result) &&
+      Object.keys(result).sort().join(",") ===
+        "leagueKey,pages,quotaCost,reason,status" &&
+      leagues.delete(result.leagueKey) &&
+      result.status === "failed" &&
+      result.reason === "schedule-provider-recovering" &&
+      Number.isSafeInteger(result.pages) &&
+      result.pages === 0 &&
+      Number.isSafeInteger(result.quotaCost) &&
+      result.quotaCost === 0,
+  );
+}
+
 export function assertLiveGame(game, sport) {
   if (
     !game ||
@@ -435,7 +455,10 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       throw new Error(
         "Hosted hashed asset cache/compression policy is invalid",
       );
-    for (let invocation = 1; invocation <= 1; invocation += 1) {
+    const recoveryAttempts = 11;
+    const recoveryDelayMs = 30_000;
+    const recoveryDeadline = Date.now() + 15 * 60_000;
+    for (let invocation = 1; invocation <= recoveryAttempts; invocation += 1) {
       const mutationIdentity = JSON.parse(
         run("aws", ["sts", "get-caller-identity", "--output", "json"], {
           capture: true,
@@ -482,7 +505,20 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       if (invocationResult.StatusCode !== 200 || invocationResult.FunctionError)
         throw new Error("live ingestion Lambda invocation failed");
       const summary = JSON.parse(await readFile(responseFile, "utf8"));
-      assertLiveIngestionSummary(summary);
+      try {
+        assertLiveIngestionSummary(summary);
+        break;
+      } catch (error) {
+        if (
+          invocation === recoveryAttempts ||
+          Date.now() + recoveryDelayMs > recoveryDeadline ||
+          !isTransientLiveIngestionSummary(summary)
+        )
+          throw error;
+        await new Promise((resolveDelay) =>
+          setTimeout(resolveDelay, recoveryDelayMs),
+        );
+      }
     }
     const apiBase = environment.FTE_PHASE1_API_BASE.replace(/\/$/, "");
     let liveGames = 0;

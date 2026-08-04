@@ -7,7 +7,12 @@ import {
   CfnOutput,
   type StackProps,
 } from "aws-cdk-lib";
-import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
+import {
+  AttributeType,
+  BillingMode,
+  StreamViewType,
+  Table,
+} from "aws-cdk-lib/aws-dynamodb";
 import { Alarm, ComparisonOperator, Metric } from "aws-cdk-lib/aws-cloudwatch";
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
 import {
@@ -21,7 +26,11 @@ import {
   SfnStateMachine,
   SqsQueue,
 } from "aws-cdk-lib/aws-events-targets";
-import { Runtime } from "aws-cdk-lib/aws-lambda";
+import {
+  FilterCriteria,
+  Runtime,
+  StartingPosition,
+} from "aws-cdk-lib/aws-lambda";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
 import {
   AccountRecovery,
@@ -54,7 +63,11 @@ import {
   ViewerProtocolPolicy,
 } from "aws-cdk-lib/aws-cloudfront";
 import { S3BucketOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
-import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import {
+  DynamoEventSource,
+  SqsDlq,
+  SqsEventSource,
+} from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { Topic } from "aws-cdk-lib/aws-sns";
@@ -125,6 +138,7 @@ export class FoundationStack extends Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: RemovalPolicy.RETAIN,
       timeToLiveAttribute: "expiresAt",
+      stream: StreamViewType.NEW_IMAGE,
     });
     const performanceWorker = new NodejsFunction(this, "PerformanceWorker", {
       runtime: Runtime.NODEJS_22_X,
@@ -568,6 +582,62 @@ export class FoundationStack extends Stack {
     liveOddsScheduler.addTarget(
       new SqsQueue(liveOddsQueue, { messageGroupId: "odds-cadence" }),
     );
+    const oddsProjectionDlq = new Queue(this, "FixtureOddsProjectionDlq", {
+      queueName: `find-the-edge-${props.stageName}-odds-projection-dlq`,
+      encryption: QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+    });
+    const oddsProjection = new NodejsFunction(this, "FixtureOddsProjection", {
+      entry: path.resolve(
+        directory,
+        "../../../apps/workers/src/fixture-odds-projection-lambda.ts",
+      ),
+      handler: "handler",
+      runtime: Runtime.NODEJS_24_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      environment: { FTE_EVENT_TABLE: table.tableName },
+      bundling: { minify: true, sourceMap: true },
+    });
+    oddsProjection.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["dynamodb:PutItem"],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["FIXTURE_ODDS#*"],
+          },
+        },
+      }),
+    );
+    oddsProjection.addEventSource(
+      new DynamoEventSource(table, {
+        startingPosition: StartingPosition.TRIM_HORIZON,
+        batchSize: 100,
+        bisectBatchOnError: true,
+        reportBatchItemFailures: true,
+        retryAttempts: 5,
+        maxRecordAge: Duration.days(1),
+        onFailure: new SqsDlq(oddsProjectionDlq),
+        filters: [
+          FilterCriteria.filter({
+            eventName: ["INSERT"],
+            dynamodb: {
+              Keys: {
+                pk: { S: [{ prefix: "FIXTURE_ODDS#" }] },
+                sk: { S: [{ prefix: "SNAPSHOT#" }] },
+              },
+            },
+          }),
+        ],
+      }),
+    );
+    new CfnOutput(this, "FixtureOddsProjectionFunctionName", {
+      value: oddsProjection.functionName,
+    });
+    new CfnOutput(this, "FixtureOddsProjectionDlqUrl", {
+      value: oddsProjectionDlq.queueUrl,
+    });
     new CfnOutput(this, "LiveOddsIngestionFunctionName", {
       value: liveOdds.functionName,
     });
@@ -937,6 +1007,36 @@ export class FoundationStack extends Stack {
         evaluationPeriods: 1,
         comparisonOperator:
           ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "FixtureOddsProjectionErrorsAlarm", {
+        metric: oddsProjection.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+      }),
+      new Alarm(this, "FixtureOddsProjectionFailuresAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/OddsProjection",
+          metricName: "ProjectionFailure",
+          statistic: "Sum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+      }),
+      new Alarm(this, "FixtureOddsProjectionLagAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/OddsProjection",
+          metricName: "ProjectionLagMilliseconds",
+          statistic: "Maximum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 300_000,
+        evaluationPeriods: 1,
+      }),
+      new Alarm(this, "FixtureOddsProjectionDlqAlarm", {
+        metric: oddsProjectionDlq.metricApproximateNumberOfMessagesVisible(),
+        threshold: 1,
+        evaluationPeriods: 1,
       }),
       new Alarm(this, "OddsControlPlaneLeagueFailureAlarm", {
         metric: new Metric({

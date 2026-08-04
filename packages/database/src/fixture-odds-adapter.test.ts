@@ -17,6 +17,7 @@ import {
 } from "./fixture-odds-adapter";
 import { mappingId } from "./event-ingestion";
 import { DynamoExactOddsSnapshotRepository } from "./exact-odds-snapshot-repository";
+import { FixtureOddsCurrentProjector } from "./fixture-odds-projector";
 
 const input = (observedAt = "2026-08-01T12:00:00.000Z", odds = -110) => ({
   providerId: "fixture",
@@ -333,6 +334,32 @@ describe("DynamoFixtureOddsAdapter", () => {
       "CURRENT",
     );
     expect(current?.value.observedAt).toBe("2026-08-01T13:00:00.000Z");
+  });
+
+  it("converges synchronous and replayed stream projection in any delivery order", async () => {
+    const gateway = boundHarness();
+    const writer = new DynamoFixtureOddsAdapter(gateway);
+    const projector = new FixtureOddsCurrentProjector(gateway);
+    const older = await writer.persist(input("2026-08-01T12:00:00.000Z", -110));
+    const newer = await writer.persist(input("2026-08-01T13:00:00.000Z", 120));
+    await expect(
+      projector.project({
+        pk: newer.value.partitionKey,
+        sk: newer.value.sortKey,
+        value: newer.value,
+      }),
+    ).resolves.toMatchObject({ decision: "retained" });
+    await expect(
+      projector.project({
+        pk: older.value.partitionKey,
+        sk: older.value.sortKey,
+        value: older.value,
+      }),
+    ).resolves.toMatchObject({ decision: "retained" });
+    expect(
+      (await gateway.getExact(newer.value.partitionKey, "CURRENT"))?.value
+        .snapshotId,
+    ).toBe(newer.value.snapshotId);
   });
 
   it("uses A1 snapshot-id ordering for equal observed times", async () => {

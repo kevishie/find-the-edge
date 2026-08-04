@@ -6,6 +6,7 @@ import {
 import type { IsoTimestamp } from "@find-the-edge/domain";
 import type { SharpApiLeague } from "@find-the-edge/providers";
 import {
+  capabilityFailure,
   evidenceGaps,
   runProductionOddsControlPlane,
 } from "./production-odds-control-plane";
@@ -14,6 +15,14 @@ const now = new Date("2026-08-03T12:00:00.000Z");
 const at = now.toISOString() as IsoTimestamp;
 
 describe("production odds control-plane composition", () => {
+  it("preserves recoverable ownership and reservation failure mappings", () => {
+    expect(capabilityFailure(new Error("run-owned"))).toBe(
+      "provider-recovering",
+    );
+    expect(
+      capabilityFailure(new Error("schedule-attempt-reservation-conflict")),
+    ).toBe("transition-conflict");
+  });
   it("creates per-book market gaps and preserves provider source states", () => {
     const states = [
       ["stale", { isStalePregamePrice: true }],

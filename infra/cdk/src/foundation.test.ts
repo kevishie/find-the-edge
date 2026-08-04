@@ -19,7 +19,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 10);
+    template.resourceCountIs("AWS::Lambda::Function", 11);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -98,7 +98,7 @@ describe("foundation CDK app", () => {
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 9);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 10);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -114,8 +114,8 @@ describe("foundation CDK app", () => {
 
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
-    template.resourceCountIs("AWS::SQS::Queue", 5);
-    template.resourceCountIs("AWS::Lambda::Function", 9);
+    template.resourceCountIs("AWS::SQS::Queue", 6);
+    template.resourceCountIs("AWS::Lambda::Function", 10);
     template.resourceCountIs("AWS::Events::Rule", 5);
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
     template.hasResourceProperties("AWS::Events::Rule", {
@@ -157,8 +157,25 @@ describe("foundation CDK app", () => {
     });
     template.hasResourceProperties("AWS::DynamoDB::Table", {
       BillingMode: "PAY_PER_REQUEST",
+      StreamSpecification: { StreamViewType: "NEW_IMAGE" },
       PointInTimeRecoverySpecification: {
         PointInTimeRecoveryEnabled: true,
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      BatchSize: 100,
+      BisectBatchOnFunctionError: true,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+      MaximumRetryAttempts: 5,
+      MaximumRecordAgeInSeconds: 86400,
+      StartingPosition: "TRIM_HORIZON",
+      FilterCriteria: {
+        Filters: [
+          {
+            Pattern:
+              '{"eventName":["INSERT"],"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"FIXTURE_ODDS#"}]},"sk":{"S":[{"prefix":"SNAPSHOT#"}]}}}}',
+          },
+        ],
       },
     });
     template.hasResourceProperties("AWS::SQS::Queue", {
@@ -214,6 +231,70 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("sqs:ReceiveMessage");
     expect(rendered).toContain("sqs:SendMessage");
     expect(rendered).toContain("FindTheEdge/UpcomingEvents");
+    expect(rendered).toContain("FindTheEdge/OddsProjection");
+    expect(rendered).toContain("FixtureOddsProjectionDlqAlarm");
+    expect(rendered).toContain("FixtureOddsProjectionErrorsAlarm");
+    expect(rendered).toContain("FixtureOddsProjectionFailuresAlarm");
+    expect(rendered).toContain("dynamodb:GetRecords");
+    expect(rendered).toContain("dynamodb:GetShardIterator");
+    expect(rendered).toContain("FIXTURE_ODDS#");
+    expect(rendered).toContain("SNAPSHOT#");
+    expect(rendered).toContain("FixtureOddsProjectionFunctionName");
+    expect(rendered).toContain("FixtureOddsProjectionDlqUrl");
+    const resources = template.toJSON().Resources as Record<
+      string,
+      { Type: string; Properties?: Record<string, unknown> }
+    >;
+    const projectionPolicy = Object.entries(resources).find(
+      ([key, value]) =>
+        key.startsWith("FixtureOddsProjectionServiceRoleDefaultPolicy") &&
+        value.Type === "AWS::IAM::Policy",
+    );
+    const projectionPolicyText = JSON.stringify(projectionPolicy?.[1]);
+    expect(projectionPolicyText).toContain('"Action":"dynamodb:PutItem"');
+    expect(projectionPolicyText).toContain("dynamodb:GetRecords");
+    expect(projectionPolicyText).toContain("dynamodb:GetShardIterator");
+    expect(projectionPolicyText).toContain("dynamodb:DescribeStream");
+    expect(projectionPolicyText).toContain("dynamodb:ListStreams");
+    expect(projectionPolicyText).toContain("dynamodb:LeadingKeys");
+    expect(projectionPolicyText).toContain("FIXTURE_ODDS#*");
+    expect(projectionPolicyText).not.toContain("dynamodb:Scan");
+    expect(projectionPolicyText).not.toContain("dynamodb:UpdateItem");
+    const projectionStatements = (
+      projectionPolicy?.[1].Properties?.["PolicyDocument"] as {
+        Statement: Array<Record<string, unknown>>;
+      }
+    ).Statement;
+    expect(
+      projectionStatements.filter((statement) =>
+        JSON.stringify(statement["Action"]).includes("dynamodb"),
+      ),
+    ).toEqual([
+      {
+        Action: "dynamodb:PutItem",
+        Condition: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["FIXTURE_ODDS#*"],
+          },
+        },
+        Effect: "Allow",
+        Resource: { "Fn::GetAtt": [expect.any(String), "Arn"] },
+      },
+      {
+        Action: "dynamodb:ListStreams",
+        Effect: "Allow",
+        Resource: "*",
+      },
+      {
+        Action: [
+          "dynamodb:DescribeStream",
+          "dynamodb:GetRecords",
+          "dynamodb:GetShardIterator",
+        ],
+        Effect: "Allow",
+        Resource: { "Fn::GetAtt": [expect.any(String), "StreamArn"] },
+      },
+    ]);
     expect(rendered).toContain("FailedRecords");
     expect(rendered).toContain("FindTheEdge/EventApi");
     expect(rendered).toContain("GET /games");
@@ -486,7 +567,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 44);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 48);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

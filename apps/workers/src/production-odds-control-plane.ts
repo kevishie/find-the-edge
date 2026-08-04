@@ -141,8 +141,11 @@ interface SharpPageMaterial {
 }
 
 const digest = (value: unknown) => sha256Hex(JSON.stringify(value));
-const capabilityFailure = (error: unknown) => {
+export const capabilityFailure = (error: unknown) => {
   const reason = error instanceof Error ? error.message : "provider-error";
+  if (reason === "run-owned") return "provider-recovering";
+  if (reason === "schedule-attempt-reservation-conflict")
+    return "transition-conflict";
   if (reason.includes("pagination")) return "pagination-invalid";
   if (reason.includes("mapping")) return "mapping-quarantine";
   if (reason.includes("transition-conflict")) return "transition-conflict";
