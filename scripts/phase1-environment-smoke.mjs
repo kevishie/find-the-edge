@@ -455,9 +455,12 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       throw new Error(
         "Hosted hashed asset cache/compression policy is invalid",
       );
-    const recoveryAttempts = 11;
+    // Production provider health uses a 15-minute cooldown. The deployment
+    // proof must be able to outlive that exact window without bypassing it or
+    // issuing overlapping paid requests.
+    const recoveryAttempts = 31;
     const recoveryDelayMs = 30_000;
-    const recoveryDeadline = Date.now() + 15 * 60_000;
+    const recoveryDeadline = Date.now() + 17 * 60_000;
     for (let invocation = 1; invocation <= recoveryAttempts; invocation += 1) {
       const mutationIdentity = JSON.parse(
         run("aws", ["sts", "get-caller-identity", "--output", "json"], {
