@@ -16,6 +16,11 @@ describe("live odds Lambda invocation", () => {
     expect(parseLiveOddsInvocation({ forceRefresh: true })).toEqual({
       forceRefresh: true,
     });
+    expect(
+      parseLiveOddsInvocation({
+        Records: [{ eventSource: "aws:sqs", body: "{}" }],
+      }),
+    ).toEqual({ forceRefresh: false });
   });
 
   it.each([

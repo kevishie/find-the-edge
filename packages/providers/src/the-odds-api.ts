@@ -78,6 +78,12 @@ export interface TheOddsApiResult {
   readonly retrievedAt: IsoTimestamp;
 }
 
+/** Normalized control-plane page metadata. The endpoint is currently single-page. */
+export interface TheOddsApiControlPlanePage extends TheOddsApiResult {
+  readonly pageToken: "single";
+  readonly nextPageToken?: never;
+}
+
 export class TheOddsApiError extends Error {
   override readonly name = "TheOddsApiError";
   constructor(

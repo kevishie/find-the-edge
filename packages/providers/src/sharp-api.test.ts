@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SportKey } from "@find-the-edge/domain";
 import {
   parseSharpApiOddsPage,
+  parseSharpApiSchedulePage,
   parseSharpApiSplitPage,
   sharpApiLeagues,
   sharpApiDescriptor,
@@ -38,6 +39,57 @@ const disabled: SharpApiActivationConfig = {
 };
 
 describe("SharpAPI activation boundary", () => {
+  it("strictly normalizes the verified event-reference schedule", () => {
+    const retrievedAt = "2026-08-03T12:00:00.000Z" as never;
+    expect(
+      parseSharpApiSchedulePage(
+        {
+          data: [
+            {
+              id: "mlb-event-1",
+              league: "mlb",
+              away_team: "Away",
+              home_team: "Home",
+              start_time: "2026-08-03T19:00:00Z",
+              status: "upcoming",
+              is_live: false,
+            },
+          ],
+          pagination: { has_more: false, next_offset: null },
+        },
+        sharpApiLeagues[0]!,
+        retrievedAt,
+      ).events,
+    ).toEqual([
+      {
+        providerEventId: "mlb-event-1",
+        awayTeam: "Away",
+        homeTeam: "Home",
+        startsAt: "2026-08-03T19:00:00.000Z",
+        status: "scheduled",
+      },
+    ]);
+    expect(() =>
+      parseSharpApiSchedulePage(
+        {
+          data: [
+            {
+              id: "mlb-event-1",
+              league: "mlb",
+              away_team: "Away",
+              home_team: "Home",
+              start_time: "2026-08-03T19:00:00Z",
+              status: "live",
+              is_live: true,
+            },
+          ],
+          pagination: { has_more: false },
+        },
+        sharpApiLeagues[0]!,
+        retrievedAt,
+      ),
+    ).toThrow("invalid-response");
+  });
   it("keeps unverified coverage explicitly disabled", () => {
     expect(validateSharpApiActivation(disabled).coverage[1]?.reason).toBe(
       "not-entitled",

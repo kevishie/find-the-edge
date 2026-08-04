@@ -106,6 +106,25 @@ export interface SharpApiOddsPage {
   readonly retrievedAt: IsoTimestamp;
 }
 
+export interface SharpApiScheduleEvent {
+  readonly providerEventId: string;
+  readonly awayTeam: string;
+  readonly homeTeam: string;
+  readonly startsAt: IsoTimestamp;
+  readonly status: "scheduled";
+}
+export interface SharpApiSchedulePage {
+  readonly events: readonly SharpApiScheduleEvent[];
+  readonly hasMore: boolean;
+  readonly nextOffset?: number;
+  readonly retrievedAt: IsoTimestamp;
+}
+
+/** Cursor identity is carried separately so durable orchestration never guesses page progress. */
+export interface SharpApiControlPlanePage extends SharpApiOddsPage {
+  readonly pageToken: string;
+}
+
 export interface SharpApiSplitSelection {
   readonly selectionKey: "away" | "home" | "over" | "under";
   readonly point?: number;
@@ -473,6 +492,56 @@ export function parseSharpApiOddsPage(
   };
 }
 
+export function parseSharpApiSchedulePage(
+  input: unknown,
+  league: SharpApiLeague,
+  retrievedAt: IsoTimestamp,
+): SharpApiSchedulePage {
+  if (
+    !record(input) ||
+    !Array.isArray(input["data"]) ||
+    input["data"].length > 200 ||
+    !record(input["pagination"]) ||
+    typeof input["pagination"]["has_more"] !== "boolean"
+  )
+    throw new SharpApiError("invalid-response");
+  const events: SharpApiScheduleEvent[] = [];
+  const ids = new Set<string>();
+  for (const value of input["data"]) {
+    if (
+      !record(value) ||
+      !canonical(value["id"]) ||
+      !canonical(value["league"], 64) ||
+      value["league"].toLowerCase() !== league.leagueKey ||
+      !canonical(value["away_team"]) ||
+      !canonical(value["home_team"]) ||
+      value["away_team"] === value["home_team"] ||
+      !instant(value["start_time"]) ||
+      value["status"] !== "upcoming" ||
+      value["is_live"] !== false ||
+      ids.has(value["id"])
+    )
+      throw new SharpApiError("invalid-response");
+    ids.add(value["id"]);
+    events.push({
+      providerEventId: value["id"],
+      awayTeam: value["away_team"],
+      homeTeam: value["home_team"],
+      startsAt: iso(value["start_time"]),
+      status: "scheduled",
+    });
+  }
+  const next = input["pagination"]["next_offset"];
+  if (next !== null && next !== undefined && (!integer(next) || next < 0))
+    throw new SharpApiError("invalid-response");
+  return {
+    events,
+    hasMore: input["pagination"]["has_more"],
+    ...(integer(next) ? { nextOffset: next } : {}),
+    retrievedAt,
+  };
+}
+
 const splitPercent = (value: unknown) => {
   if (!finite(value) || value < 0 || value > 1)
     throw new SharpApiError("invalid-response");
@@ -596,6 +665,26 @@ export async function fetchSharpApiOddsPage(
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
   return parseSharpApiOddsPage(
     await request(`/odds?${query.toString()}`, apiKey, fetcher),
+    league,
+    retrievedAt,
+  );
+}
+
+export async function fetchSharpApiSchedulePage(
+  league: SharpApiLeague,
+  apiKey: string,
+  offset = 0,
+  fetcher: typeof fetch = fetch,
+) {
+  const query = new URLSearchParams({
+    league: league.providerLeague.toLowerCase(),
+    live: "false",
+    limit: "200",
+    offset: String(offset),
+  });
+  const retrievedAt = new Date().toISOString() as IsoTimestamp;
+  return parseSharpApiSchedulePage(
+    await request(`/events?${query.toString()}`, apiKey, fetcher),
     league,
     retrievedAt,
   );

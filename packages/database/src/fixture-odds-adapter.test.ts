@@ -139,6 +139,45 @@ function boundHarness() {
 }
 
 describe("DynamoFixtureOddsAdapter", () => {
+  it("rejects post-start evidence and fences the canonical status/start", async () => {
+    const gateway = boundHarness();
+    gateway.seed("EVENT#event-1", "CURRENT", {
+      id: "event-1",
+      version: 3,
+      sportKey: "baseball",
+      leagueKey: "mlb",
+      status: "scheduled",
+      startsAt: "2026-08-01T13:00:00.000Z",
+    });
+    const adapter = new DynamoFixtureOddsAdapter(gateway);
+    await adapter.persist({
+      ...input(),
+      expectedStatus: "scheduled",
+      expectedStartsAt: "2026-08-01T13:00:00.000Z",
+    });
+    expect(gateway.transactions[0]?.canonicalEvent.expected).toMatchObject({
+      status: "scheduled",
+      startsAt: "2026-08-01T13:00:00.000Z",
+    });
+    await expect(
+      adapter.persist({
+        ...input("2026-08-01T13:00:00.000Z"),
+        expectedStatus: "scheduled",
+        expectedStartsAt: "2026-08-01T13:00:00.000Z",
+      }),
+    ).rejects.toBeInstanceOf(FixtureOddsBindingConflictError);
+    await expect(
+      adapter.persist({
+        ...input(),
+        expectedStatus: "scheduled",
+        expectedStartsAt: "2026-08-01T13:00:00.000Z",
+        observation: {
+          ...input().observation,
+          retrievedAt: "2026-08-01T13:00:00.000Z",
+        },
+      }),
+    ).rejects.toBeInstanceOf(FixtureOddsBindingConflictError);
+  });
   it("uses exact DATA002 binding keys and protected condition shapes", async () => {
     const gateway = boundHarness();
     const result = await new DynamoFixtureOddsAdapter(gateway).persist(input());

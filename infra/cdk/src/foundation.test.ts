@@ -111,7 +111,7 @@ describe("foundation CDK app", () => {
 
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
-    template.resourceCountIs("AWS::SQS::Queue", 2);
+    template.resourceCountIs("AWS::SQS::Queue", 4);
     template.resourceCountIs("AWS::Lambda::Function", 6);
     template.resourceCountIs("AWS::Events::Rule", 3);
     template.hasResourceProperties("AWS::Lambda::Function", {
@@ -135,6 +135,17 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::SQS::Queue", {
       SqsManagedSseEnabled: true,
       MessageRetentionPeriod: 1209600,
+    });
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      FifoQueue: true,
+      QueueName: "find-the-edge-test-odds-control.fifo",
+      VisibilityTimeout: 360,
+      RedrivePolicy: Match.objectLike({ maxReceiveCount: 5 }),
+    });
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      BatchSize: 1,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+      ScalingConfig: { MaximumConcurrency: 2 },
     });
     template.hasResourceProperties("AWS::SQS::Queue", {
       RedrivePolicy: Match.objectLike({ maxReceiveCount: 5 }),
@@ -382,10 +393,13 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 12);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 16);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });
+    expect(JSON.stringify(template.toJSON())).toContain(
+      "FindTheEdge/OddsControlPlane",
+    );
   });
 
   it("rejects an alarm topic outside the configured stack region", () => {

@@ -44,6 +44,64 @@ describe("fixture odds normalization", () => {
     expect(Object.isFrozen(utc)).toBe(true);
   });
 
+  it("preserves provider policy provenance and rejects fabricated source states", () => {
+    const snapshot = normalizeFixtureOddsObservation(
+      base({
+        provenance: {
+          providerId: "sharpapi",
+          policyVersion: "2026-08-03.control-plane.v1",
+          bookRole: "offered",
+          sourceState: "active",
+        },
+      }),
+    );
+    expect(snapshot.provenance).toEqual({
+      providerId: "sharpapi",
+      policyVersion: "2026-08-03.control-plane.v1",
+      bookRole: "offered",
+      sourceState: "active",
+    });
+    expect(() =>
+      normalizeFixtureOddsObservation(
+        base({
+          provenance: {
+            providerId: "sharpapi",
+            policyVersion: "v1",
+            bookRole: "offered",
+            sourceState: "active",
+            fabricated: true,
+          } as never,
+        }),
+      ),
+    ).toThrow(FixtureOddsInputError);
+  });
+
+  it("selects Sharp once for a shared-book tie while retaining both provider snapshots", () => {
+    const fallback = base({
+      provenance: {
+        providerId: "the-odds-api",
+        policyVersion: "v1",
+        bookRole: "offered",
+        sourceState: "active",
+      },
+    });
+    const primary = base({
+      americanOdds: -111,
+      provenance: {
+        providerId: "sharpapi",
+        policyVersion: "v1",
+        bookRole: "offered",
+        sourceState: "active",
+      },
+    });
+    const first = transitionFixtureOdds(undefined, fallback);
+    const selected = transitionFixtureOdds(first.state, primary);
+    expect(selected.state.currentSnapshotId).toBe(
+      normalizeFixtureOddsObservation(primary).snapshotId,
+    );
+    expect(Object.keys(selected.state.snapshots)).toHaveLength(2);
+  });
+
   it("uses an unambiguous, versioned canonical-array partition", () => {
     const first = normalizeFixtureOddsObservation(
       base({ canonicalEventId: "a:b", sportKey: "c" }),

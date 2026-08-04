@@ -11,7 +11,7 @@ import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
 import { Alarm, ComparisonOperator, Metric } from "aws-cdk-lib/aws-cloudwatch";
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
 import { Rule, Schedule } from "aws-cdk-lib/aws-events";
-import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
+import { LambdaFunction, SqsQueue } from "aws-cdk-lib/aws-events-targets";
 import { Runtime } from "aws-cdk-lib/aws-lambda";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
 import {
@@ -324,9 +324,31 @@ export class FoundationStack extends Stack {
           "dynamodb:BatchGetItem",
           "dynamodb:Query",
           "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
           "dynamodb:TransactWriteItems",
         ],
         resources: [table.tableArn],
+      }),
+    );
+    const liveOddsDlq = new Queue(this, "LiveOddsControlPlaneDlq", {
+      fifo: true,
+      queueName: `find-the-edge-${props.stageName}-odds-control-dlq.fifo`,
+      encryption: QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+    });
+    const liveOddsQueue = new Queue(this, "LiveOddsControlPlaneQueue", {
+      fifo: true,
+      queueName: `find-the-edge-${props.stageName}-odds-control.fifo`,
+      contentBasedDeduplication: true,
+      encryption: QueueEncryption.SQS_MANAGED,
+      deadLetterQueue: { queue: liveOddsDlq, maxReceiveCount: 5 },
+      visibilityTimeout: Duration.minutes(6),
+    });
+    liveOdds.addEventSource(
+      new SqsEventSource(liveOddsQueue, {
+        batchSize: 1,
+        maxConcurrency: 2,
+        reportBatchItemFailures: true,
       }),
     );
     const liveOddsScheduler = new Rule(this, "LiveOddsScheduler", {
@@ -334,10 +356,7 @@ export class FoundationStack extends Stack {
       schedule: Schedule.rate(Duration.minutes(15)),
     });
     liveOddsScheduler.addTarget(
-      new LambdaFunction(liveOdds, {
-        retryAttempts: 0,
-        maxEventAge: Duration.minutes(5),
-      }),
+      new SqsQueue(liveOddsQueue, { messageGroupId: "odds-cadence" }),
     );
     new CfnOutput(this, "LiveOddsIngestionFunctionName", {
       value: liveOdds.functionName,
@@ -633,6 +652,49 @@ export class FoundationStack extends Stack {
     const alarms = [
       new Alarm(this, "LiveOddsIngestionErrorsAlarm", {
         metric: liveOdds.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "LiveOddsControlPlaneDlqAlarm", {
+        metric: liveOddsDlq.metricApproximateNumberOfMessagesVisible(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "OddsControlPlaneLeagueFailureAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/OddsControlPlane",
+          metricName: "OddsLeagueFailure",
+          statistic: "Sum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "OddsControlPlaneCadenceLagAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/OddsControlPlane",
+          metricName: "OddsCadenceLagSeconds",
+          statistic: "Maximum",
+          period: Duration.minutes(15),
+        }),
+        threshold: 3_600,
+        evaluationPeriods: 2,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "OddsControlPlaneQuotaReserveAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/OddsControlPlane",
+          metricName: "OddsQuotaReserveSkip",
+          statistic: "Sum",
+          period: Duration.minutes(15),
+        }),
         threshold: 1,
         evaluationPeriods: 1,
         comparisonOperator:

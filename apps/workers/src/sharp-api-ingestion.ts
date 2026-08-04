@@ -4,14 +4,13 @@ import type {
   FixtureOddsIngestInput,
   FixtureOddsPersistResult,
 } from "@find-the-edge/database";
-import type {
-  FixtureOddsObservation,
-  IsoTimestamp,
-} from "@find-the-edge/domain";
+import type { IsoTimestamp } from "@find-the-edge/domain";
+import { oddsCollectionPolicyVersion } from "@find-the-edge/config";
 import {
   SHARP_API_PROVIDER_ID,
   fetchSharpApiAccount,
   fetchSharpApiOddsPage,
+  fetchSharpApiSchedulePage,
   fetchSharpApiSplitsPage,
   fixtureBootstrap,
   normalizedUpcomingEventIdentity,
@@ -19,6 +18,7 @@ import {
   type SharpApiAccount,
   type SharpApiLeague,
   type SharpApiOddsPage,
+  type SharpApiSchedulePage,
   type SharpApiSplitPage,
 } from "@find-the-edge/providers";
 
@@ -129,6 +129,26 @@ const loadOdds = async (
   throw new Error("sharpapi-pagination-limit");
 };
 
+const loadSchedule = async (
+  league: SharpApiLeague,
+  apiKey: string,
+  fetchPage: typeof fetchSharpApiSchedulePage,
+) => {
+  const events: SharpApiSchedulePage["events"][number][] = [];
+  let offset = 0;
+  let retrievedAt = new Date().toISOString() as IsoTimestamp;
+  for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+    const page = await fetchPage(league, apiKey, offset);
+    retrievedAt = page.retrievedAt;
+    events.push(...page.events);
+    if (!page.hasMore) return { events, retrievedAt };
+    if (page.nextOffset === undefined || page.nextOffset <= offset)
+      throw new Error("sharpapi-schedule-pagination-invalid");
+    offset = page.nextOffset;
+  }
+  throw new Error("sharpapi-schedule-pagination-limit");
+};
+
 const loadSplits = async (
   league: SharpApiLeague,
   apiKey: string,
@@ -193,83 +213,67 @@ const completeMainPrices = (
   return complete;
 };
 
-export async function ingestSharpApi(
+export async function persistSharpApiOddsPage(
   store: EventIngestionStore,
   odds: SharpApiOddsPersister,
-  splitRepository: BettingSplitRepository,
-  apiKey: string,
-  options: {
-    readonly fetchAccount?: typeof fetchSharpApiAccount;
-    readonly fetchOddsPage?: typeof fetchSharpApiOddsPage;
-    readonly fetchSplitsPage?: typeof fetchSharpApiSplitsPage;
-  } = {},
-): Promise<SharpApiIngestionSummary> {
-  const account = await (options.fetchAccount ?? fetchSharpApiAccount)(apiKey);
-  const splitsEntitled = account.features.includes("splits");
+  league: SharpApiLeague,
+  page: Pick<SharpApiOddsPage, "events" | "retrievedAt">,
+  bookRoles?: Readonly<Record<string, "offered" | "comparison" | "splits">>,
+) {
+  const canonicalOddsEvents: {
+    readonly raw: SharpApiOddsPage["events"][number];
+    readonly canonical: NonNullable<
+      Awaited<ReturnType<EventIngestionStore["resolveExactCanonicalBinding"]>>
+    >;
+  }[] = [];
   let events = 0;
   let observations = 0;
-  let splits = 0;
-  for (const league of sharpApiLeagues) {
-    const oddsResult = await loadOdds(
-      league,
-      apiKey,
-      options.fetchOddsPage ?? fetchSharpApiOddsPage,
-    );
-    const canonicalOddsEvents: {
-      readonly raw: SharpApiOddsPage["events"][number];
-      readonly canonical: NonNullable<
-        Awaited<ReturnType<EventIngestionStore["resolveExactCanonicalBinding"]>>
-      >;
-    }[] = [];
-    for (const raw of oddsResult.events) {
-      if (isDerivativeEvent(raw)) continue;
-      const event = providerEvent(league, raw, oddsResult.retrievedAt);
-      const command = {
-        ...event,
-        providerId: SHARP_API_PROVIDER_ID,
-        normalizedIdentity: normalizedUpcomingEventIdentity(event),
-        observedAt: oddsResult.retrievedAt,
-      };
-      let ingested = await store.ingestEvent(command);
-      if (
-        ingested.kind === "unresolved" &&
-        ingested.reason === "no-candidate"
-      ) {
-        await store.bootstrapCanonicalEvent(
-          fixtureBootstrap(event, raw.providerEventId),
-          oddsResult.retrievedAt,
-        );
-        ingested = await store.ingestEvent(command);
-      }
-      if (ingested.kind === "unresolved")
-        throw new Error(`sharpapi-event-mapping-${ingested.reason}`);
-      const canonical = await store.resolveExactCanonicalBinding({
-        providerId: SHARP_API_PROVIDER_ID,
-        providerEventId: raw.providerEventId,
-        sportKey: league.sportKey,
-        leagueKey: league.leagueKey,
-      });
-      if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
-      canonicalOddsEvents.push({ raw, canonical });
-      let eventObservations = 0;
-      for (const book of raw.bookmakers) {
-        const main = completeMainPrices(
-          book.prices.filter(
-            (price) =>
-              price.isMainLine &&
-              !price.isAlternateLine &&
-              !price.isPlayerProp &&
-              !price.isStalePregamePrice,
-          ),
-        );
-        for (const price of main) {
-          const canonicalSelectionLabel =
-            price.selectionKey === "away"
-              ? canonical.participantLabels?.[0]
-              : price.selectionKey === "home"
-                ? canonical.participantLabels?.[1]
-                : undefined;
-          const observation: FixtureOddsObservation = {
+  for (const raw of page.events) {
+    if (isDerivativeEvent(raw)) continue;
+    const event = providerEvent(league, raw, page.retrievedAt);
+    const ingested = await store.ingestEvent({
+      ...event,
+      providerId: SHARP_API_PROVIDER_ID,
+      normalizedIdentity: normalizedUpcomingEventIdentity(event),
+      observedAt: page.retrievedAt,
+    });
+    if (ingested.kind === "unresolved")
+      throw new Error(`sharpapi-odds-mapping-${ingested.reason}`);
+    const canonical = await store.resolveExactCanonicalBinding({
+      providerId: SHARP_API_PROVIDER_ID,
+      providerEventId: raw.providerEventId,
+      sportKey: league.sportKey,
+      leagueKey: league.leagueKey,
+    });
+    if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
+    canonicalOddsEvents.push({ raw, canonical });
+    let eventObservations = 0;
+    for (const book of raw.bookmakers) {
+      const bookRole = bookRoles?.[book.id];
+      if (bookRoles && !bookRole) continue;
+      const main = completeMainPrices(
+        book.prices.filter(
+          (price) =>
+            price.isMainLine &&
+            !price.isAlternateLine &&
+            !price.isPlayerProp &&
+            !price.isStalePregamePrice,
+        ),
+      );
+      for (const price of main) {
+        const canonicalSelectionLabel =
+          price.selectionKey === "away"
+            ? canonical.participantLabels?.[0]
+            : price.selectionKey === "home"
+              ? canonical.participantLabels?.[1]
+              : undefined;
+        await odds.persist({
+          providerId: SHARP_API_PROVIDER_ID,
+          providerEventId: raw.providerEventId,
+          leagueKey: league.leagueKey,
+          expectedStartsAt: canonical.startsAt,
+          expectedStatus: "scheduled",
+          observation: {
             canonicalEventId: canonical.id,
             canonicalEventVersion: canonical.version,
             sportKey: canonical.sportKey,
@@ -281,112 +285,200 @@ export async function ingestSharpApi(
             ...(price.point === undefined ? {} : { point: price.point }),
             americanOdds: price.americanOdds,
             observedAt: price.observedAt,
-            retrievedAt: oddsResult.retrievedAt,
-          };
-          await odds.persist({
-            providerId: SHARP_API_PROVIDER_ID,
-            providerEventId: raw.providerEventId,
-            leagueKey: league.leagueKey,
-            observation,
-          });
-          observations += 1;
-          eventObservations += 1;
-        }
+            retrievedAt: page.retrievedAt,
+            provenance: {
+              providerId: SHARP_API_PROVIDER_ID,
+              policyVersion: oddsCollectionPolicyVersion,
+              bookRole: bookRole ?? "offered",
+              sourceState: "active",
+            },
+          },
+        });
+        observations += 1;
+        eventObservations += 1;
       }
-      if (eventObservations === 0) continue;
-      events += 1;
     }
+    if (eventObservations > 0) events += 1;
+  }
+  return { events, observations, canonicalOddsEvents };
+}
+
+export async function persistSharpApiSplitPage(
+  store: EventIngestionStore,
+  splitRepository: BettingSplitRepository,
+  league: SharpApiLeague,
+  splitResult: Pick<SharpApiSplitPage, "items" | "retrievedAt">,
+  canonicalOddsEvents: Awaited<
+    ReturnType<typeof persistSharpApiOddsPage>
+  >["canonicalOddsEvents"] = [],
+) {
+  let splits = 0;
+  for (const raw of splitResult.items) {
+    const expectedSport = league.leagueKey === "mlb" ? "baseball" : "soccer";
+    if (
+      raw.league.toLowerCase() !== league.leagueKey ||
+      raw.sport.toLowerCase() !== expectedSport
+    ) {
+      await splitRepository.persistGap({
+        providerId: SHARP_API_PROVIDER_ID,
+        providerEventId: raw.providerEventId,
+        sportKey: league.sportKey,
+        leagueKey: league.leagueKey,
+        reason: "identity-mismatch",
+        retrievedAt: splitResult.retrievedAt,
+      });
+      continue;
+    }
+    let canonical = await store.resolveExactCanonicalBinding({
+      providerId: SHARP_API_PROVIDER_ID,
+      providerEventId: raw.providerEventId,
+      sportKey: league.sportKey,
+      leagueKey: league.leagueKey,
+    });
+    if (!canonical) {
+      const splitDay = providerEventDay(raw.providerEventId);
+      const candidates = canonicalOddsEvents.filter(
+        ({ raw: oddsEvent }) =>
+          oddsEvent.awayTeam === raw.awayTeam &&
+          oddsEvent.homeTeam === raw.homeTeam &&
+          splitDay !== undefined &&
+          easternDay(oddsEvent.startsAt) === splitDay,
+      );
+      if (candidates.length === 1) canonical = candidates[0]!.canonical;
+    }
+    if (!canonical) {
+      await splitRepository.persistGap({
+        providerId: SHARP_API_PROVIDER_ID,
+        providerEventId: raw.providerEventId,
+        sportKey: league.sportKey,
+        leagueKey: league.leagueKey,
+        reason: "event-unmapped",
+        retrievedAt: splitResult.retrievedAt,
+      });
+      continue;
+    }
+    if (
+      canonical.participantLabels?.[0] !== raw.awayTeam ||
+      canonical.participantLabels?.[1] !== raw.homeTeam
+    ) {
+      await splitRepository.persistGap({
+        providerId: SHARP_API_PROVIDER_ID,
+        providerEventId: raw.providerEventId,
+        sportKey: league.sportKey,
+        leagueKey: league.leagueKey,
+        reason: "participant-mismatch",
+        retrievedAt: splitResult.retrievedAt,
+      });
+      continue;
+    }
+    for (const market of raw.markets)
+      for (const selection of market.selections) {
+        await splitRepository.persist({
+          providerId: SHARP_API_PROVIDER_ID,
+          providerEventId: raw.providerEventId,
+          canonicalEventId: canonical.id,
+          canonicalEventVersion: canonical.version,
+          sportKey: canonical.sportKey,
+          leagueKey: league.leagueKey,
+          marketKey: market.marketKey,
+          selectionKey: selection.selectionKey,
+          ...(selection.point === undefined ? {} : { point: selection.point }),
+          ...(selection.betPercent === undefined
+            ? {}
+            : { betPercent: selection.betPercent }),
+          ...(selection.moneyPercent === undefined
+            ? {}
+            : { moneyPercent: selection.moneyPercent }),
+          providerTimestamp: raw.providerTimestamp,
+          retrievedAt: splitResult.retrievedAt,
+          scope: raw.sportsbookId,
+        });
+        splits += 1;
+      }
+  }
+  return splits;
+}
+
+export async function ingestSharpApi(
+  store: EventIngestionStore,
+  odds: SharpApiOddsPersister,
+  splitRepository: BettingSplitRepository,
+  apiKey: string,
+  options: {
+    readonly fetchAccount?: typeof fetchSharpApiAccount;
+    readonly fetchSchedulePage?: typeof fetchSharpApiSchedulePage;
+    readonly fetchOddsPage?: typeof fetchSharpApiOddsPage;
+    readonly fetchSplitsPage?: typeof fetchSharpApiSplitsPage;
+  } = {},
+): Promise<SharpApiIngestionSummary> {
+  const account = await (options.fetchAccount ?? fetchSharpApiAccount)(apiKey);
+  const splitsEntitled = account.features.includes("splits");
+  let events = 0;
+  let observations = 0;
+  let splits = 0;
+  for (const league of sharpApiLeagues) {
+    const scheduleResult = await loadSchedule(
+      league,
+      apiKey,
+      options.fetchSchedulePage ?? fetchSharpApiSchedulePage,
+    );
+    for (const raw of scheduleResult.events) {
+      const event = providerEvent(
+        league,
+        {
+          ...raw,
+          providerEventUuid: raw.providerEventId,
+          bookmakers: [],
+        },
+        scheduleResult.retrievedAt,
+      );
+      const command = {
+        ...event,
+        providerId: SHARP_API_PROVIDER_ID,
+        normalizedIdentity: normalizedUpcomingEventIdentity(event),
+        observedAt: scheduleResult.retrievedAt,
+      };
+      let ingested = await store.ingestEvent(command);
+      if (
+        ingested.kind === "unresolved" &&
+        ingested.reason === "no-candidate"
+      ) {
+        await store.bootstrapCanonicalEvent(
+          fixtureBootstrap(event, raw.providerEventId),
+          scheduleResult.retrievedAt,
+        );
+        ingested = await store.ingestEvent(command);
+      }
+      if (ingested.kind === "unresolved")
+        throw new Error(`sharpapi-schedule-mapping-${ingested.reason}`);
+    }
+    const oddsResult = await loadOdds(
+      league,
+      apiKey,
+      options.fetchOddsPage ?? fetchSharpApiOddsPage,
+    );
+    const persisted = await persistSharpApiOddsPage(
+      store,
+      odds,
+      league,
+      oddsResult,
+    );
+    const { canonicalOddsEvents } = persisted;
+    events += persisted.events;
+    observations += persisted.observations;
     if (!splitsEntitled) continue;
     const splitResult = await loadSplits(
       league,
       apiKey,
       options.fetchSplitsPage ?? fetchSharpApiSplitsPage,
     );
-    for (const raw of splitResult.items) {
-      const expectedSport = league.leagueKey === "mlb" ? "baseball" : "soccer";
-      if (
-        raw.league.toLowerCase() !== league.leagueKey ||
-        raw.sport.toLowerCase() !== expectedSport
-      ) {
-        await splitRepository.persistGap({
-          providerId: SHARP_API_PROVIDER_ID,
-          providerEventId: raw.providerEventId,
-          sportKey: league.sportKey,
-          leagueKey: league.leagueKey,
-          reason: "identity-mismatch",
-          retrievedAt: splitResult.retrievedAt,
-        });
-        continue;
-      }
-      let canonical = await store.resolveExactCanonicalBinding({
-        providerId: SHARP_API_PROVIDER_ID,
-        providerEventId: raw.providerEventId,
-        sportKey: league.sportKey,
-        leagueKey: league.leagueKey,
-      });
-      if (!canonical) {
-        const splitDay = providerEventDay(raw.providerEventId);
-        const candidates = canonicalOddsEvents.filter(
-          ({ raw: oddsEvent }) =>
-            oddsEvent.awayTeam === raw.awayTeam &&
-            oddsEvent.homeTeam === raw.homeTeam &&
-            splitDay !== undefined &&
-            easternDay(oddsEvent.startsAt) === splitDay,
-        );
-        if (candidates.length === 1) canonical = candidates[0]!.canonical;
-      }
-      if (!canonical) {
-        await splitRepository.persistGap({
-          providerId: SHARP_API_PROVIDER_ID,
-          providerEventId: raw.providerEventId,
-          sportKey: league.sportKey,
-          leagueKey: league.leagueKey,
-          reason: "event-unmapped",
-          retrievedAt: splitResult.retrievedAt,
-        });
-        continue;
-      }
-      if (
-        canonical.participantLabels?.[0] !== raw.awayTeam ||
-        canonical.participantLabels?.[1] !== raw.homeTeam
-      ) {
-        await splitRepository.persistGap({
-          providerId: SHARP_API_PROVIDER_ID,
-          providerEventId: raw.providerEventId,
-          sportKey: league.sportKey,
-          leagueKey: league.leagueKey,
-          reason: "participant-mismatch",
-          retrievedAt: splitResult.retrievedAt,
-        });
-        continue;
-      }
-      for (const market of raw.markets)
-        for (const selection of market.selections) {
-          await splitRepository.persist({
-            providerId: SHARP_API_PROVIDER_ID,
-            providerEventId: raw.providerEventId,
-            canonicalEventId: canonical.id,
-            canonicalEventVersion: canonical.version,
-            sportKey: canonical.sportKey,
-            leagueKey: league.leagueKey,
-            marketKey: market.marketKey,
-            selectionKey: selection.selectionKey,
-            ...(selection.point === undefined
-              ? {}
-              : { point: selection.point }),
-            ...(selection.betPercent === undefined
-              ? {}
-              : { betPercent: selection.betPercent }),
-            ...(selection.moneyPercent === undefined
-              ? {}
-              : { moneyPercent: selection.moneyPercent }),
-            providerTimestamp: raw.providerTimestamp,
-            retrievedAt: splitResult.retrievedAt,
-            scope: raw.sportsbookId,
-          });
-          splits += 1;
-        }
-    }
+    splits += await persistSharpApiSplitPage(
+      store,
+      splitRepository,
+      league,
+      splitResult,
+      canonicalOddsEvents,
+    );
   }
   return {
     account,

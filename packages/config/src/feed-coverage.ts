@@ -6,6 +6,92 @@ import type {
 } from "@find-the-edge/domain";
 
 export const feedCoverageCatalogVersion = "2026-08-03.v6";
+export const oddsCollectionPolicyVersion = "2026-08-03.control-plane.v1";
+
+export type OddsBookRole = "offered" | "comparison" | "splits";
+export interface OddsProviderPolicy {
+  readonly providerId: "sharpapi" | "the-odds-api";
+  readonly role: "primary" | "fallback";
+  readonly active: boolean;
+  readonly quotaReserve: number;
+  readonly cooldownSeconds: number;
+  readonly failbackSuccesses: number;
+  readonly books: Readonly<Record<string, OddsBookRole>>;
+}
+export interface LeagueOddsCollectionPolicy {
+  readonly leagueKey: "mlb" | "mls";
+  readonly baseCadenceSeconds: number;
+  readonly nearStart: {
+    readonly windowSeconds: number;
+    readonly cadenceSeconds: number;
+  };
+  readonly markets: readonly string[];
+  readonly providers: readonly OddsProviderPolicy[];
+}
+export interface ScheduleDiscoveryPolicy {
+  readonly providerId: "sharpapi" | "the-odds-api";
+  readonly role: "primary" | "fallback";
+  readonly cadenceSeconds: number;
+  readonly quotaReserve: number;
+  readonly requestCost: number;
+}
+/** Schedule requests have an explicit budget independent from odds reserves. */
+export const productionScheduleDiscoveryPolicies: readonly ScheduleDiscoveryPolicy[] =
+  deepFreeze([
+    {
+      providerId: "sharpapi",
+      role: "primary",
+      cadenceSeconds: 3_600,
+      quotaReserve: 20,
+      requestCost: 1,
+    },
+    {
+      providerId: "the-odds-api",
+      role: "fallback",
+      cadenceSeconds: 3_600,
+      quotaReserve: 10,
+      requestCost: 1,
+    },
+  ]);
+
+const providerPolicy = (
+  leagueKey: "mlb" | "mls",
+): LeagueOddsCollectionPolicy => ({
+  leagueKey,
+  baseCadenceSeconds: 3_600,
+  nearStart: {
+    windowSeconds: leagueKey === "mlb" ? 5_400 : 7_200,
+    cadenceSeconds: leagueKey === "mlb" ? 900 : 1_800,
+  },
+  markets:
+    leagueKey === "mlb"
+      ? ["moneyline", "spread", "total"]
+      : ["three_way_moneyline", "spread", "total"],
+  providers: [
+    {
+      providerId: "sharpapi",
+      role: "primary",
+      active: true,
+      quotaReserve: 100,
+      cooldownSeconds: 900,
+      failbackSuccesses: 2,
+      books: { draftkings: "offered", circa: "comparison" },
+    },
+    {
+      providerId: "the-odds-api",
+      role: "fallback",
+      active: true,
+      quotaReserve: 50,
+      cooldownSeconds: 1_800,
+      failbackSuccesses: 1,
+      books: { draftkings: "offered", circa: "comparison" },
+    },
+  ],
+});
+
+/** Versioned, immutable production policy. Scheduling ticks do not imply paid calls. */
+export const productionOddsCollectionPolicies: readonly LeagueOddsCollectionPolicy[] =
+  deepFreeze([providerPolicy("mlb"), providerPolicy("mls")]);
 const capabilities = ["schedule", "odds", "results"] as const;
 
 function enabledLeague(

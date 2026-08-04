@@ -124,10 +124,11 @@ stories:
     league: enabled
     module: odds-ingestion
     priority: P0
-    status: blocked
+    status: done
     dependencies: [FTE-DATA-002, FTE-SPORT-007]
     risk: High
     approvalRequiredBeforeMerge: false
+    blockerReason: superseded-and-completed-by-FTE-DATA-003C
   - id: FTE-DATA-003A
     title: Durable Odds Provider Page Recovery
     epic: Multi-sport feed and result spine
@@ -135,10 +136,11 @@ stories:
     league: enabled
     module: odds-ingestion
     priority: P0
-    status: blocked
+    status: done
     dependencies: [FTE-DATA-001, FTE-DATA-002]
     risk: High
     approvalRequiredBeforeMerge: false
+    blockerReason: superseded-and-completed-by-FTE-DATA-003C
   - id: FTE-DATA-003B
     title: SharpAPI Redundant Odds and Betting Splits
     epic: Multi-sport feed and result spine
@@ -146,9 +148,22 @@ stories:
     league: enabled
     module: odds-ingestion
     priority: P0
-    status: review
+    status: done
     dependencies: [FTE-DATA-001, FTE-DATA-002, FTE-DATA-003, FTE-SPORT-003, FTE-SPORT-007]
     validationCommands: [pnpm check, pnpm synth]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-DATA-003C
+    title: Production Odds Collection Control Plane
+    epic: Multi-sport feed and result spine
+    sport: core
+    league: enabled
+    module: odds-ingestion
+    priority: P0
+    status: done
+    dependencies: [FTE-DATA-001, FTE-DATA-002, FTE-DATA-003B]
+    validationCommands: [pnpm check, pnpm synth, pnpm test:e2e]
     blockerReason:
     risk: High
     approvalRequiredBeforeMerge: true

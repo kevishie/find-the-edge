@@ -206,6 +206,8 @@ export async function seedFixtureOdds(
           providerId: fixture.providerId,
           providerEventId: fixture.providerEventId,
           leagueKey: fixture.leagueKey,
+          expectedStartsAt: canonical.startsAt,
+          expectedStatus: "scheduled",
           observation,
         });
         if (result.snapshot === "created") snapshotsCreated += 1;

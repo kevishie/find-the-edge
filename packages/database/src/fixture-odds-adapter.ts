@@ -24,6 +24,8 @@ export interface FixtureOddsBinding {
 
 export interface FixtureOddsIngestInput extends FixtureOddsBinding {
   readonly observation: FixtureOddsObservation;
+  readonly expectedStartsAt?: string;
+  readonly expectedStatus?: "scheduled";
 }
 
 export interface FixtureOddsItem {
@@ -244,6 +246,7 @@ const snapshotObservation = (
   americanOdds: stored.americanOdds,
   observedAt: stored.observedAt,
   retrievedAt: stored.retrievedAt,
+  ...(stored.provenance === undefined ? {} : { provenance: stored.provenance }),
 });
 
 const conditionalOnlyAt = (
@@ -305,7 +308,7 @@ function validateStoredSnapshot(
       "sortKey",
     ],
     "stored odds value",
-    ["selectionLabel", "sportsbookLabel", "point"],
+    ["selectionLabel", "sportsbookLabel", "point", "provenance"],
   );
   let normalized: NormalizedFixtureOddsSnapshot;
   try {
@@ -394,6 +397,16 @@ export class DynamoFixtureOddsAdapter {
     input: FixtureOddsIngestInput,
   ): Promise<FixtureOddsPersistResult> {
     const snapshot = normalizeFixtureOddsObservation(input.observation);
+    if (
+      input.expectedStatus !== undefined &&
+      (input.expectedStatus !== "scheduled" ||
+        input.expectedStartsAt === undefined ||
+        Date.parse(snapshot.observedAt) >= Date.parse(input.expectedStartsAt) ||
+        Date.parse(snapshot.retrievedAt) >= Date.parse(input.expectedStartsAt))
+    )
+      throw new FixtureOddsBindingConflictError(
+        "fixture odds observation is not fenced to a scheduled pregame event",
+      );
     const mappingKey = mappingId({
       providerId: input.providerId,
       providerEventId: input.providerEventId,
@@ -421,6 +434,12 @@ export class DynamoFixtureOddsAdapter {
             version: snapshot.canonicalEventVersion,
             sportKey: snapshot.sportKey,
             leagueKey: input.leagueKey,
+            ...(input.expectedStatus === undefined
+              ? {}
+              : {
+                  status: input.expectedStatus,
+                  startsAt: input.expectedStartsAt!,
+                }),
           },
         },
         snapshot: {

@@ -14,9 +14,11 @@ import {
   DynamoBettingSplitRepository,
   DynamoEventIngestionStore,
   DynamoFixtureOddsAdapter,
+  DynamoOddsControlPlaneStore,
 } from "@find-the-edge/database";
 import { ingestLiveOdds, type LiveOddsStateStore } from "./live-odds-ingestion";
-import { ingestSharpApi } from "./sharp-api-ingestion";
+import { runProductionOddsControlPlane } from "./production-odds-control-plane";
+import { embeddedOddsControlPlaneMetrics } from "./odds-control-plane";
 
 export function parseTheOddsApiSecret(value: string | undefined): string {
   if (!value) throw new Error("the-odds-api-secret-missing");
@@ -48,6 +50,17 @@ export function parseLiveOddsInvocation(event: unknown): {
   if (!event || typeof event !== "object" || Array.isArray(event))
     throw new Error("live-odds-invocation-invalid");
   const record = event as Record<string, unknown>;
+  if (Array.isArray(record["Records"])) {
+    const records = record["Records"];
+    if (
+      records.length !== 1 ||
+      !records[0] ||
+      typeof records[0] !== "object" ||
+      (records[0] as Record<string, unknown>)["eventSource"] !== "aws:sqs"
+    )
+      throw new Error("live-odds-invocation-invalid");
+    return { forceRefresh: false };
+  }
   if (!Object.prototype.hasOwnProperty.call(record, "forceRefresh"))
     return { forceRefresh: false };
   if (Reflect.ownKeys(record).length !== 1 || record["forceRefresh"] !== true)
@@ -61,7 +74,7 @@ export const handler = async (event?: unknown) => {
   const secretId = process.env["FTE_THE_ODDS_API_SECRET_ID"];
   const sharpSecretId = process.env["FTE_SHARP_API_SECRET_ID"];
   const sharpEnabled = process.env["FTE_SHARP_API_ENABLED"] === "true";
-  if (!tableName || (sharpEnabled ? !sharpSecretId : !secretId))
+  if (!tableName || (sharpEnabled ? !sharpSecretId || !secretId : !secretId))
     throw new Error("live-odds-configuration-invalid");
   const secrets = new SecretsManagerClient({});
   const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -98,17 +111,22 @@ export const handler = async (event?: unknown) => {
   let provider = "the-odds-api";
   let summary: unknown;
   if (sharpEnabled && sharpSecretId) {
-    const sharpSecret = await secrets.send(
-      new GetSecretValueCommand({ SecretId: sharpSecretId }),
-    );
+    const [sharpSecret, fallbackSecret] = await Promise.all([
+      secrets.send(new GetSecretValueCommand({ SecretId: sharpSecretId })),
+      secrets.send(new GetSecretValueCommand({ SecretId: secretId! })),
+    ]);
     const sharpApiKey = parseTheOddsApiSecret(sharpSecret.SecretString);
-    summary = await ingestSharpApi(
-      eventStore,
-      oddsStore,
-      new DynamoBettingSplitRepository(client, tableName),
+    const theOddsApiKey = parseTheOddsApiSecret(fallbackSecret.SecretString);
+    summary = await runProductionOddsControlPlane({
+      events: eventStore,
+      odds: oddsStore,
+      splits: new DynamoBettingSplitRepository(client, tableName),
+      control: new DynamoOddsControlPlaneStore(client, tableName),
       sharpApiKey,
-    );
-    provider = "sharpapi";
+      theOddsApiKey,
+      metrics: embeddedOddsControlPlaneMetrics,
+    });
+    provider = "odds-control-plane";
   }
   if (!sharpEnabled && secretId) {
     const secret = await secrets.send(

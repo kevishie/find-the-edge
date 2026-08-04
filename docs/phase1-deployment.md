@@ -1,6 +1,6 @@
 # Phase1 deployment and environment smoke
 
-Phase1 packages the public live-games UI. MLB and MLS schedules and moneylines come from The Odds API; no development fixtures are part of the production read path.
+Phase1 packages the public live-games UI. SharpAPI is the primary MLB/MLS odds source and The Odds API is a bounded fallback; no development fixtures are part of the production read path.
 
 The games and odds UI and its read-only API are public and require no account or
 token. CloudFront serves an encrypted, private S3 bucket through signed origin
@@ -58,7 +58,7 @@ user pool, web bucket, and logs are retained.
 
 ## Live ingestion, quota, and cadence
 
-The stack output `LiveOddsIngestionFunctionName` is the safe manual trigger. Invoke it once after the secret exists; the 15-minute EventBridge tick then discovers schedules and admits paid odds calls only when due.
+The stack output `LiveOddsIngestionFunctionName` is the safe manual trigger. Invoke it once after both provider secrets exist. A 15-minute EventBridge tick enqueues one FIFO control-plane command; policy—not the tick—decides whether each league is due. Exhausted commands enter the dedicated odds DLQ and alarm without blocking another league.
 
 ```sh
 export AWS_ACCOUNT_ID=228246988391
@@ -73,6 +73,14 @@ pnpm phase1:smoke
 ```
 
 Normal MLB/MLS odds refresh hourly. Inside 90 minutes of first pitch, MLB refreshes every 15 minutes and MLS every 30 minutes. Other league profiles default to six hours. The durable provider `x-requests-remaining` value blocks paid calls at a 50-credit monthly reserve. Schedule discovery continues independently. CloudWatch logs emit only bounded summaries, never keys or credential-bearing URLs.
+
+The versioned control-plane policy keeps a 100-request SharpAPI reserve and a separate 50-request The Odds API reserve. Schedule discovery has its own explicit request-cost/reserve policy and only uses its fallback after Sharp schedule discovery fails. Every physical request is reserved before execution, and its redacted outcome, quota cost, sealed normalized page, cursor, gap evidence, provider-and-league health and league checkpoint are durable. An unsealed paid response remains ambiguous behind a five-minute reconciliation lease; it is not automatically recalled during that lease. A retry consumes a sealed normalized page before making another paid call. Automatic fallback is permitted only when the primary has not committed evidence in that run; a partial SharpAPI run never continues through The Odds API.
+
+Manual refresh is only a scheduler hint. It does not bypass provider activation, cadence/quota decisions, cooldown, exact canonical mappings, scheduled/pregame fences or immutable history. Missing, partial, stale, suspended, closed and unsupported evidence is stored as an explicit gap rather than inferred.
+
+### Migration and rollback
+
+Deploy the retained-table schema and disabled FIFO path first, verify the `LiveOddsControlPlaneDlqAlarm` notification target, then enable the scheduler. Existing odds rows remain readable; new rows add optional provider/policy provenance. Roll back by disabling `FTE_UPCOMING_SCHEDULER_ENABLED` and redeploying the prior worker bundle. Do not delete the retained table, queues, secrets or immutable snapshots. Before re-enabling, inspect failed run/page/attempt records and redrive only the failed league command.
 
 ## Automatic deployment from GitHub
 

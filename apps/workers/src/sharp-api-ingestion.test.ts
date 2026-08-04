@@ -160,6 +160,21 @@ describe("SharpAPI primary ingestion", () => {
         retrievedAt: "2026-08-03T23:00:01.000Z" as IsoTimestamp,
       });
     });
+    const fetchSchedulePage = vi.fn((league: SharpApiLeague) =>
+      Promise.resolve({
+        events: [
+          {
+            providerEventId: `${league.leagueKey}-event_2026-08-03_b3`,
+            awayTeam: "Away Club",
+            homeTeam: "Home Club",
+            startsAt: "2026-08-04T00:00:00.000Z" as IsoTimestamp,
+            status: "scheduled" as const,
+          },
+        ],
+        hasMore: false,
+        retrievedAt: "2026-08-03T22:59:00.000Z" as IsoTimestamp,
+      }),
+    );
     const fetchSplitsPage = vi.fn((league: SharpApiLeague) =>
       Promise.resolve({
         items: [
@@ -201,6 +216,7 @@ describe("SharpAPI primary ingestion", () => {
           streamingEnabled: false,
         }),
       fetchOddsPage,
+      fetchSchedulePage,
       fetchSplitsPage,
     });
 

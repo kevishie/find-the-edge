@@ -4,6 +4,33 @@ const MAX_LABEL_BYTES = 256;
 const MAX_SORT_KEY_BYTES = 1_024;
 const MAX_NORMALIZED_BYTES = 16_384;
 
+export type OddsEvidenceSourceState =
+  | "active"
+  | "stale"
+  | "suspended"
+  | "closed"
+  | "partial"
+  | "missing"
+  | "unsupported";
+export type OddsEvidenceGapReason =
+  Exclude<OddsEvidenceSourceState, "active"> | "unmapped" | "binding-changed";
+export interface OddsEvidenceProvenance {
+  readonly providerId: string;
+  readonly policyVersion: string;
+  readonly bookRole: "offered" | "comparison" | "splits";
+  readonly sourceState: OddsEvidenceSourceState;
+}
+export interface OddsEvidenceGap extends OddsEvidenceProvenance {
+  readonly gapId: string;
+  readonly runId: string;
+  readonly leagueKey: string;
+  readonly providerEventId?: string;
+  readonly marketKey?: string;
+  readonly sportsbookId?: string;
+  readonly reason: OddsEvidenceGapReason;
+  readonly observedAt: string;
+}
+
 export interface FixtureOddsObservation {
   readonly canonicalEventId: string;
   readonly canonicalEventVersion: number;
@@ -17,6 +44,7 @@ export interface FixtureOddsObservation {
   readonly americanOdds: number;
   readonly observedAt: string;
   readonly retrievedAt: string;
+  readonly provenance?: OddsEvidenceProvenance;
 }
 
 export interface FixtureOddsPartition {
@@ -30,11 +58,15 @@ export interface FixtureOddsPartition {
 }
 
 export interface NormalizedFixtureOddsSnapshot extends Required<
-  Omit<FixtureOddsObservation, "selectionLabel" | "sportsbookLabel" | "point">
+  Omit<
+    FixtureOddsObservation,
+    "selectionLabel" | "sportsbookLabel" | "point" | "provenance"
+  >
 > {
   readonly selectionLabel?: string;
   readonly sportsbookLabel?: string;
   readonly point?: number;
+  readonly provenance?: OddsEvidenceProvenance;
   readonly partitionKey: string;
   readonly snapshotId: string;
   readonly sortKey: string;
@@ -78,6 +110,7 @@ const OBSERVATION_OPTIONAL_KEYS = [
   "selectionLabel",
   "sportsbookLabel",
   "point",
+  "provenance",
 ] as const;
 const PARTITION_KEYS = [
   "canonicalEventId",
@@ -413,6 +446,13 @@ function snapshotContent(
     snapshot.retrievedAt,
   ];
   if (snapshot.point !== undefined) values.push(snapshot.point);
+  if (snapshot.provenance !== undefined)
+    values.push(
+      snapshot.provenance.providerId,
+      snapshot.provenance.policyVersion,
+      snapshot.provenance.bookRole,
+      snapshot.provenance.sourceState,
+    );
   return encodeComposite(values);
 }
 
@@ -439,6 +479,43 @@ export function normalizeFixtureOddsObservation(
     "sportsbookLabel",
     captured.sportsbookLabel,
   );
+  let provenance: OddsEvidenceProvenance | undefined;
+  if (captured.provenance !== undefined) {
+    const value = captureOwnDataRecord(
+      captured.provenance,
+      ["providerId", "policyVersion", "bookRole", "sourceState"],
+      [],
+      FixtureOddsInputError,
+      "provenance",
+    );
+    if (
+      !["offered", "comparison", "splits"].includes(value.bookRole as string) ||
+      ![
+        "active",
+        "stale",
+        "suspended",
+        "closed",
+        "partial",
+        "missing",
+        "unsupported",
+      ].includes(value.sourceState as string)
+    )
+      throw new FixtureOddsInputError(
+        "provenance has invalid role or source state",
+      );
+    provenance = {
+      providerId: normalizeIdentifier(
+        "provenance.providerId",
+        value.providerId,
+      ),
+      policyVersion: normalizeIdentifier(
+        "provenance.policyVersion",
+        value.policyVersion,
+      ),
+      bookRole: value.bookRole as OddsEvidenceProvenance["bookRole"],
+      sourceState: value.sourceState as OddsEvidenceProvenance["sourceState"],
+    };
+  }
   if (
     captured.point !== undefined &&
     (typeof captured.point !== "number" ||
@@ -461,6 +538,7 @@ export function normalizeFixtureOddsObservation(
     americanOdds: captured.americanOdds,
     observedAt: normalizeTimestamp("observedAt", captured.observedAt),
     retrievedAt: normalizeTimestamp("retrievedAt", captured.retrievedAt),
+    ...(provenance === undefined ? {} : { provenance }),
     partitionKey: partition.key,
   };
   const content = snapshotContent(base);
@@ -495,6 +573,12 @@ function compareSnapshots(
 ): number {
   if (a.observedAt < b.observedAt) return -1;
   if (a.observedAt > b.observedAt) return 1;
+  const providerRank = (providerId: string) =>
+    providerId === "sharpapi" ? 2 : providerId === "the-odds-api" ? 1 : 0;
+  const providerDifference =
+    providerRank(a.provenance?.providerId ?? "") -
+    providerRank(b.provenance?.providerId ?? "");
+  if (providerDifference !== 0) return providerDifference;
   return a.snapshotId < b.snapshotId ? -1 : a.snapshotId > b.snapshotId ? 1 : 0;
 }
 

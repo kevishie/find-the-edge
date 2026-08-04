@@ -5,3 +5,5 @@ export * from "./fixture-odds-seed";
 export * from "./live-odds-ingestion";
 export * from "./provider-selection";
 export * from "./sharp-api-ingestion";
+export * from "./odds-control-plane";
+export * from "./production-odds-control-plane";

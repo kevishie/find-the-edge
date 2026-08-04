@@ -3,10 +3,8 @@ import type {
   FixtureOddsIngestInput,
   FixtureOddsPersistResult,
 } from "@find-the-edge/database";
-import type {
-  FixtureOddsObservation,
-  IsoTimestamp,
-} from "@find-the-edge/domain";
+import type { IsoTimestamp } from "@find-the-edge/domain";
+import { oddsCollectionPolicyVersion } from "@find-the-edge/config";
 import {
   THE_ODDS_API_PROVIDER_ID,
   fetchTheOddsApi,
@@ -114,6 +112,60 @@ const providerEvent = (
     token: updatedAt,
   },
 });
+
+export async function persistTheOddsApiPage(
+  store: EventIngestionStore,
+  odds: LiveOddsPersister,
+  league: TheOddsApiLeague,
+  response: TheOddsApiResult,
+  bookRoles?: Readonly<Record<string, "offered" | "comparison" | "splits">>,
+) {
+  let observations = 0;
+  for (const raw of response.events) {
+    const canonical = await store.resolveExactCanonicalBinding({
+      providerId: THE_ODDS_API_PROVIDER_ID,
+      providerEventId: raw.providerEventId,
+      sportKey: league.sportKey,
+      leagueKey: league.leagueKey,
+    });
+    if (!canonical) throw new Error("live-event-binding-unavailable");
+    for (const book of raw.bookmakers) {
+      const bookRole = bookRoles?.[book.id];
+      if (bookRoles && !bookRole) continue;
+      for (const price of book.prices) {
+        await odds.persist({
+          providerId: THE_ODDS_API_PROVIDER_ID,
+          providerEventId: raw.providerEventId,
+          leagueKey: league.leagueKey,
+          expectedStartsAt: canonical.startsAt,
+          expectedStatus: "scheduled",
+          observation: {
+            canonicalEventId: canonical.id,
+            canonicalEventVersion: canonical.version,
+            sportKey: canonical.sportKey,
+            marketKey: price.marketKey,
+            selectionKey: price.selectionKey,
+            selectionLabel: price.selectionLabel,
+            sportsbookId: book.id,
+            sportsbookLabel: book.label,
+            ...(price.point === undefined ? {} : { point: price.point }),
+            americanOdds: price.americanOdds,
+            observedAt: book.updatedAt,
+            retrievedAt: response.retrievedAt,
+            provenance: {
+              providerId: THE_ODDS_API_PROVIDER_ID,
+              policyVersion: oddsCollectionPolicyVersion,
+              bookRole: bookRole ?? "offered",
+              sourceState: "active",
+            },
+          },
+        });
+        observations += 1;
+      }
+    }
+  }
+  return { events: response.events.length, observations };
+}
 
 export async function ingestLiveOdds(
   store: EventIngestionStore,
@@ -224,39 +276,8 @@ export async function ingestLiveOdds(
       events += scheduleEvents.size;
       continue;
     }
-    for (const raw of response.events) {
-      const canonical = await store.resolveExactCanonicalBinding({
-        providerId: THE_ODDS_API_PROVIDER_ID,
-        providerEventId: raw.providerEventId,
-        sportKey: league.sportKey,
-        leagueKey: league.leagueKey,
-      });
-      if (!canonical) throw new Error("live-event-binding-unavailable");
-      for (const book of raw.bookmakers)
-        for (const price of book.prices) {
-          const observation: FixtureOddsObservation = {
-            canonicalEventId: canonical.id,
-            canonicalEventVersion: canonical.version,
-            sportKey: canonical.sportKey,
-            marketKey: price.marketKey,
-            selectionKey: price.selectionKey,
-            selectionLabel: price.selectionLabel,
-            sportsbookId: book.id,
-            sportsbookLabel: book.label,
-            ...(price.point === undefined ? {} : { point: price.point }),
-            americanOdds: price.americanOdds,
-            observedAt: book.updatedAt,
-            retrievedAt: response.retrievedAt,
-          };
-          await odds.persist({
-            providerId: THE_ODDS_API_PROVIDER_ID,
-            providerEventId: raw.providerEventId,
-            leagueKey: league.leagueKey,
-            observation,
-          });
-          observations += 1;
-        }
-    }
+    observations += (await persistTheOddsApiPage(store, odds, league, response))
+      .observations;
     events += scheduleEvents.size;
     quotaRemaining = response.quota.remaining ?? quotaRemaining;
     await stateStore.write(league.leagueKey, {
