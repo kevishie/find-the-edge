@@ -2,7 +2,7 @@
 title: "Epics and Stories: FIND THE EDGE"
 status: "initial"
 created: "2026-07-15"
-updated: "2026-07-29"
+updated: "2026-08-04"
 workflow: "bmad-create-epics-and-stories"
 stepsCompleted:
   - "validate-prerequisites"
@@ -163,6 +163,24 @@ This is an early platform epic. It establishes reusable acquisition and truth da
 - Definition of done: Fixture-backed provider failover and split ingestion pass end to end, infrastructure is deployable but SharpAPI activation remains disabled until account contract and plan approval are recorded.
 - Risk: High.
 - Approval required before merge: Yes.
+
+#### FTE-DATA-003D: SharpAPI Entitled Sportsbook Ingestion
+
+- Epic: Multi-sport feed and result spine.
+- Outcome: The upgraded SharpAPI account's approved sportsbook set, including Pinnacle, is normalized and persisted without silently changing consensus policy.
+- Context: The production parser currently rejects every sportsbook absent from the small canonical registry; the upgraded account exposes up to 25 books, but entitlement does not guarantee coverage for every event, league, or market.
+- In scope: authenticated entitlement verification, redacted bookmaker catalog discovery, canonical aliases, collection-eligibility policy separated from evaluation weights, Pinnacle and approved-book ingestion through existing immutable snapshots/current projections, scoped availability evidence, bounded telemetry, canary, runbook, and rollback.
+- Out of scope: direct Pinnacle access or scraping, vendor-derived EV/fair odds as truth, consensus reweighting, UI, backfill, additional providers, sports, leagues, markets, live odds, props, or SSE.
+- Dependencies: FTE-DATA-001, FTE-DATA-003B, FTE-DATA-003C, FTE-020.
+- Acceptance criteria: The account proves capacity for at least 25 books; exact returned IDs map through a collision-free reviewed allowlist; Pinnacle persists end-to-end when returned; approved books use existing strict normalization, exact canonical binding, immutable/replay-safe snapshots and monotonic current projections; collection eligibility is distinct from evaluation weights; missing evidence is league/market scoped; unknown books fail closed; telemetry and fixtures contain no secrets or raw licensed payloads.
+- Required automated tests: Account/catalog fixtures, all approved aliases, Pinnacle MLB/soccer market structures, unknown/collision handling, pagination, suspension/partial/missing states, replay/out-of-order behavior, sportsbook-specific snapshot identity, scoped gap generation, unchanged default consensus weights, control-plane recovery, secret-safe synth.
+- Likely files/packages affected: `packages/config`, `packages/providers`, `apps/workers`, operations docs; database schema and UI should not change.
+- Observability: Bounded account capacity, approved/observed/unknown book counts, Pinnacle coverage state, normalized observations, and scoped expected-book gaps by canonical ID/league/market.
+- Security: Reuse the server-side SharpAPI secret; never log or commit keys, raw licensed responses, commercial terms, or unbounded provider labels.
+- Data migration/backfill impact: None. New evidence starts at activation; historical snapshots remain immutable and readable.
+- Definition of done: Synthetic verification and quality gates pass, and an explicitly authorized paid canary proves Pinnacle observed/persisted or reports coverage-unverified without fabricating success.
+- Risk: High.
+- Approval required before merge: Yes; the plan upgrade does not itself authorize a paid live canary.
 
 #### FTE-DATA-004: Completed-Event Result Ingestion and Correction History
 
@@ -876,21 +894,39 @@ Every story below includes: Story ID, title, epic, user/system outcome, context,
 - Risk: Medium.
 - Approval required before merge: No.
 
-#### FTE-026: Odds History API and Chart
+#### FTE-026: Complete Odds History API and Chart-Series Projection
 
 - Epic: Odds ingestion and market normalization.
-- Outcome: The user can inspect line movement over time.
-- Context: Immutable snapshots must be visible as odds history and movement.
-- In scope: odds history API, Recharts line/step chart, opening/current/unavailable states, movement labels in American odds and implied probability.
-- Out of scope: Causal claims such as sharp/public action.
+- Outcome: Every stored price for a game can be retrieved as trustworthy, chart-ready history across all available sportsbooks.
+- Context: Immutable snapshots are already stored per event version, market, selection, and sportsbook, but a graph must see one continuous game history rather than leak storage partitions into the user experience.
+- In scope: authenticated odds-history API; event-version aggregation; market and selection filters; all-book or selected-book scope; provider-time ordering with deterministic tie-breaking; cursor pagination; opening/current markers; raw point, American-odds, and implied-probability values; stale, suspended, missing, and unavailable intervals; chart-series DTOs; display-only collapse of consecutive identical observations without deleting immutable evidence.
+- Out of scope: Chart rendering, synthetic observations, destructive history compaction, and causal claims such as sharp/public action.
 - Dependencies: FTE-021, FTE-025, FTE-027.
-- Acceptance criteria: Chart is derived from stored snapshots; missing opening price is unavailable; suspended gaps are visible; pagination handles long histories.
-- Required automated tests: API repository tests and chart rendering tests with sparse/suspended data fixtures.
-- Likely files/packages affected: `apps/api`, `apps/web`, `packages/database`, `packages/odds`.
-- Observability: API logs event/market/selection count and latency.
+- Acceptance criteria: A request for an event, market, and selection returns a separately identified chronological series for every requested sportsbook; harmless canonical-event version changes do not split the game history; spread and total observations include both point and price; moneyline observations include American odds and deterministic implied probability; exact retries do not appear as duplicate points; repeated unchanged observations may be collapsed only in the projection and retain their first/last timestamps; tied provider timestamps have stable ordering; missing opening price is explicitly unavailable; stale, suspended, and missing-book intervals are represented without invented prices; pagination is stable with no skipped or repeated observations; raw immutable snapshots remain unchanged and have no TTL until a separately approved retention policy exists.
+- Required automated tests: Repository and API contract tests covering multiple books, event-version changes, point and price changes, identical observations, timestamp ties, sparse histories, suspended gaps, missing books, pagination boundaries, authorization, and malformed cursors.
+- Likely files/packages affected: `apps/api`, `packages/database`, `packages/domain`, `packages/odds`.
+- Observability: API logs event, market, selection, requested/returned book counts, raw/projected point counts, page size, and latency without logging provider payloads.
 - Security: Auth required.
 - Data migration/backfill impact: No synthetic historical backfill before snapshot collection starts.
-- Definition of done: Event Detail can show odds history for supported market selections.
+- Definition of done: A documented, authenticated API can reconstruct continuous, paginated, chart-ready multi-book history from all retained snapshots for a supported event market and selection.
+- Risk: Medium.
+- Approval required before merge: No.
+
+#### FTE-026A: Multi-Sportsbook Line Movement Graph
+
+- Epic: Odds ingestion and market normalization.
+- Outcome: The user can visually compare how the line and price moved across every available sportsbook for a game or match.
+- Context: A single current-price table hides whether books moved together, which book led or lagged, and how the market evolved before the current price.
+- In scope: Event Detail history panel; market and selection controls; sportsbook multi-select with all books enabled by default; Recharts step-line series with one stable color and label per sportsbook; shared time axis; opening and current markers; legend and hover/focus details; spread/total point view with associated American price; moneyline American-odds and implied-probability views; visible stale, suspended, and unavailable gaps; zoom or time-window controls for long histories; responsive desktop/tablet/mobile presentation; accessible tabular alternative containing the plotted values and timestamps.
+- Out of scope: Live streaming animation, predictive trend lines, claims about sharp/public action, and editing or deleting snapshots.
+- Dependencies: FTE-025, FTE-026, FTE-027.
+- Acceptance criteria: The graph can display every sportsbook returned by the history API without merging their series; sportsbook identity remains clear when colors are unavailable; lines use step interpolation rather than smoothing; hovering or keyboard-focusing a time shows each available book's point, price, provider timestamp, collection timestamp, and freshness; spread/total users can distinguish movement of the point from movement of its price; moneyline users can switch between American odds and implied probability; missing data produces a gap rather than a connected or zero-valued line; opening/current states are labeled per book; filters and time window do not mutate underlying history; long histories remain usable; the accessible data table and chart expose equivalent information; reduced-motion and WCAG 2.1 AA requirements are met.
+- Required automated tests: Component tests for all-book rendering, book filtering, point-versus-price views, American-odds/implied-probability switching, timestamp details, opening/current markers, identical projected values, sparse/suspended gaps, empty and single-point histories, large histories, keyboard access, reduced motion, and accessible data-table parity; Playwright Event Detail coverage at desktop and mobile widths.
+- Likely files/packages affected: `apps/web`, `packages/ui`.
+- Observability: Client reports safe chart-load failures and render latency without sending odds payloads or user interaction details.
+- Security: Authenticated Event Detail only; rendered labels and API values are treated as untrusted display data.
+- Data migration/backfill impact: None; the graph begins when real snapshot collection begins and never fabricates an opening line.
+- Definition of done: Event Detail shows a responsive, accessible multi-line history graph where every available sportsbook can be compared over the full retained life of the game.
 - Risk: Medium.
 - Approval required before merge: No.
 

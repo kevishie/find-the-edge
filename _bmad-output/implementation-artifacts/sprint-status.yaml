@@ -167,6 +167,19 @@ stories:
     blockerReason:
     risk: High
     approvalRequiredBeforeMerge: true
+  - id: FTE-DATA-003D
+    title: SharpAPI Entitled Sportsbook Ingestion
+    epic: Multi-sport feed and result spine
+    sport: core
+    league: enabled
+    module: odds-ingestion
+    priority: P0
+    status: ready
+    dependencies: [FTE-DATA-001, FTE-DATA-003B, FTE-DATA-003C, FTE-020]
+    validationCommands: [pnpm check, pnpm synth, pnpm phase1:preflight]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
   - id: FTE-MVP-001
     title: Fixture-Backed Games and Odds Vertical Slice
     epic: MVP games explorer
@@ -591,7 +604,7 @@ stories:
   - id: FTE-025
     title: Event Detail Odds Comparison
     epic: Odds ingestion and market normalization
-    status: backlog
+    status: in-progress
     dependencies: [FTE-011, FTE-016, FTE-021, FTE-020]
     risk: Medium
     approvalRequiredBeforeMerge: false
