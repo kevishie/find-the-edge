@@ -145,7 +145,7 @@ describe("production odds control-plane composition", () => {
     expect(fetchSharpOdds).toHaveBeenCalledTimes(3);
     expect(fetchFallbackSchedule).not.toHaveBeenCalled();
   });
-  it("requires schedule readiness for the selected provider and isolates account setup failure", async () => {
+  it("fails closed without a secondary schedule and isolates account setup failure", async () => {
     const events = new MemoryEventIngestionStore();
     const control = new MemoryOddsControlPlaneStore();
     const scheduleEvent = (providerEventId: string) => ({
@@ -210,12 +210,12 @@ describe("production odds control-plane composition", () => {
       fetchSharpAccount: vi.fn().mockRejectedValue(new Error("account-down")),
     });
     expect(result.map(({ providerId }) => providerId)).toEqual([
-      "the-odds-api",
+      undefined,
       "sharpapi",
     ]);
     expect(fetchSharpOdds).toHaveBeenCalledTimes(1);
     expect(fetchSharpOdds.mock.calls[0]?.[0].leagueKey).toBe("mls");
-    expect(fetchFallbackOdds).toHaveBeenCalledTimes(1);
+    expect(fetchFallbackOdds).not.toHaveBeenCalled();
     expect(
       [...control.runs.values()].some(
         (run) => run.leagueKey === "account" && run.status === "failed",

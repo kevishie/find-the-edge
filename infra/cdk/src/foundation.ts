@@ -500,12 +500,7 @@ export class FoundationStack extends Stack {
       visibilityTimeout: Duration.seconds(180),
     });
     const directory = path.dirname(fileURLToPath(import.meta.url));
-    const oddsSecret = Secret.fromSecretNameV2(
-      this,
-      "TheOddsApiSecret",
-      `find-the-edge/${props.stageName}/the-odds-api`,
-    );
-    // SharpAPI is primary; The Odds API remains configured as operator-selected standby.
+    // SharpAPI is the sole production schedule and odds source.
     const sharpApiSecret = Secret.fromSecretNameV2(
       this,
       "SharpApiSecret",
@@ -525,13 +520,11 @@ export class FoundationStack extends Stack {
       reservedConcurrentExecutions: 2,
       environment: {
         FTE_EVENT_TABLE: table.tableName,
-        FTE_THE_ODDS_API_SECRET_ID: oddsSecret.secretName,
         FTE_SHARP_API_ENABLED: "true",
         FTE_SHARP_API_SECRET_ID: sharpApiSecret.secretName,
       },
       bundling: { minify: true, sourceMap: true },
     });
-    oddsSecret.grantRead(liveOdds);
     sharpApiSecret.grantRead(liveOdds);
     liveOdds.addToRolePolicy(
       new PolicyStatement({
@@ -577,9 +570,6 @@ export class FoundationStack extends Stack {
     );
     new CfnOutput(this, "LiveOddsIngestionFunctionName", {
       value: liveOdds.functionName,
-    });
-    new CfnOutput(this, "TheOddsApiSecretName", {
-      value: oddsSecret.secretName,
     });
     new CfnOutput(this, "SharpApiSecretName", {
       value: sharpApiSecret.secretName,

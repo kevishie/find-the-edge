@@ -5,8 +5,9 @@ import type {
   SportKey,
 } from "@find-the-edge/domain";
 
-export const feedCoverageCatalogVersion = "2026-08-03.v6";
-export const oddsCollectionPolicyVersion = "2026-08-03.control-plane.v1";
+export const feedCoverageCatalogVersion = "2026-08-04.v7";
+export const oddsCollectionPolicyVersion =
+  "2026-08-04.control-plane.sharpapi-only.v2";
 
 export type OddsBookRole = "offered" | "comparison" | "splits";
 export interface OddsProviderPolicy {
@@ -45,13 +46,6 @@ export const productionScheduleDiscoveryPolicies: readonly ScheduleDiscoveryPoli
       quotaReserve: 20,
       requestCost: 1,
     },
-    {
-      providerId: "the-odds-api",
-      role: "fallback",
-      cadenceSeconds: 3_600,
-      quotaReserve: 10,
-      requestCost: 1,
-    },
   ]);
 
 const providerPolicy = (
@@ -75,15 +69,6 @@ const providerPolicy = (
       quotaReserve: 100,
       cooldownSeconds: 900,
       failbackSuccesses: 2,
-      books: { draftkings: "offered", circa: "comparison" },
-    },
-    {
-      providerId: "the-odds-api",
-      role: "fallback",
-      active: true,
-      quotaReserve: 50,
-      cooldownSeconds: 1_800,
-      failbackSuccesses: 1,
       books: { draftkings: "offered", circa: "comparison" },
     },
   ],

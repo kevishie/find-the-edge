@@ -420,6 +420,147 @@ export interface GameDisplayDto extends EventDisplayDto {
       }
     | { readonly state: "unavailable" };
 }
+
+const MLB_PARTICIPANT_KEYS = [
+  "angels",
+  "astros",
+  "athletics",
+  "bluejays",
+  "braves",
+  "brewers",
+  "cardinals",
+  "cubs",
+  "diamondbacks",
+  "dodgers",
+  "giants",
+  "guardians",
+  "mariners",
+  "marlins",
+  "mets",
+  "nationals",
+  "orioles",
+  "padres",
+  "phillies",
+  "pirates",
+  "rangers",
+  "rays",
+  "redsox",
+  "reds",
+  "rockies",
+  "royals",
+  "tigers",
+  "twins",
+  "whitesox",
+  "yankees",
+] as const;
+
+export function canonicalDisplayParticipantKey(
+  sportKey: string,
+  label: string,
+): string {
+  let compact = label
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^a-z0-9]/g, "");
+  if (sportKey === "soccer") {
+    compact = compact.replace(/(?:footballclub|futbolclub|fc|cf|sc)$/u, "");
+    return compact;
+  }
+  if (sportKey !== "mlb") return compact;
+  if (["as", "oaklandas", "sacramentoas", "oaklandathletics"].includes(compact))
+    return "athletics";
+  if (["chicagows", "chiwhitesox", "cws"].includes(compact)) return "whitesox";
+  if (["dbacks", "arizonadbacks"].includes(compact)) return "diamondbacks";
+  return (
+    MLB_PARTICIPANT_KEYS.find((nickname) => compact.endsWith(nickname)) ??
+    compact
+  );
+}
+
+const displayDuplicateKey = (game: GameDisplayDto) =>
+  JSON.stringify([
+    game.sportKey,
+    game.leagueKey,
+    game.participants.map(({ label }) =>
+      canonicalDisplayParticipantKey(game.sportKey, label),
+    ),
+  ]);
+
+const finiteInstant = (value: string | null) => {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+};
+
+const lifecycleRank: Readonly<Record<EventStatus, number>> = {
+  unknown: 0,
+  scheduled: 1,
+  postponed: 2,
+  cancelled: 3,
+  started: 4,
+  completed: 5,
+};
+
+const preferredDisplayDuplicate = (
+  left: GameDisplayDto,
+  right: GameDisplayDto,
+) => {
+  // Existing SharpAPI-owned events have accumulated authoritative versions;
+  // legacy one-off fallback rows are version 1. Authority outranks whether an
+  // obsolete row happens to retain an old price.
+  if (left.version !== right.version)
+    return left.version > right.version ? left : right;
+  const leftEvidence = finiteInstant(left.metadata.freshness.evidenceAt);
+  const rightEvidence = finiteInstant(right.metadata.freshness.evidenceAt);
+  if (leftEvidence !== rightEvidence)
+    return leftEvidence > rightEvidence ? left : right;
+  if (lifecycleRank[left.status] !== lifecycleRank[right.status])
+    return lifecycleRank[left.status] > lifecycleRank[right.status]
+      ? left
+      : right;
+  const leftOdds = left.odds.state === "available" ? 1 : 0;
+  const rightOdds = right.odds.state === "available" ? 1 : 0;
+  if (leftOdds !== rightOdds) return leftOdds > rightOdds ? left : right;
+  return left.id.localeCompare(right.id) <= 0 ? left : right;
+};
+
+/** Collapses legacy cross-provider aliases after pagination/status partitions
+ * are combined. Clusters are deterministic and anchored to the earliest start
+ * so tolerance is never widened transitively. */
+export function collapseNearDuplicateGames(
+  games: readonly GameDisplayDto[],
+): readonly GameDisplayDto[] {
+  const sorted = [...games].sort(
+    (left, right) =>
+      left.startsAt.localeCompare(right.startsAt) ||
+      left.id.localeCompare(right.id),
+  );
+  const clusters = new Map<
+    string,
+    { anchor: number; winner: GameDisplayDto }[]
+  >();
+  for (const game of sorted) {
+    const key = displayDuplicateKey(game);
+    const candidates = clusters.get(key) ?? [];
+    const startsAt = Date.parse(game.startsAt);
+    const nearby = candidates.findIndex(
+      ({ anchor }) => Math.abs(startsAt - anchor) <= 120_000,
+    );
+    if (nearby < 0) candidates.push({ anchor: startsAt, winner: game });
+    else
+      candidates[nearby] = {
+        ...candidates[nearby]!,
+        winner: preferredDisplayDuplicate(candidates[nearby]!.winner, game),
+      };
+    clusters.set(key, candidates);
+  }
+  const retained = new Set(
+    [...clusters.values()].flatMap((entries) =>
+      entries.map(({ winner }) => winner.id),
+    ),
+  );
+  return sorted.filter(({ id }) => retained.has(id));
+}
 export interface CanonicalEventBootstrap {
   readonly id: EntityId;
   readonly sportKey: SportKey;

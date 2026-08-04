@@ -4,6 +4,7 @@ import type {
   GameOddsSelectionDto,
 } from "@find-the-edge/domain";
 import {
+  collapseNearDuplicateGames,
   EVENT_LIFECYCLE_STATES,
   validateEventMetadataAssessment,
 } from "@find-the-edge/domain";
@@ -1633,7 +1634,9 @@ export function createGamesClient(
           );
           throw (failure as PromiseRejectedResult).reason;
         }
-        const ordered = [...items.values()].sort(
+        const ordered = [
+          ...collapseNearDuplicateGames([...items.values()]),
+        ].sort(
           (a, b) =>
             a.startsAt.localeCompare(b.startsAt) || a.id.localeCompare(b.id),
         );

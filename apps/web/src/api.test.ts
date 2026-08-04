@@ -210,9 +210,19 @@ describe("games client", () => {
       const status = new URL(href).searchParams.get("status")!;
       if (status === "cancelled")
         return new Response("unavailable", { status: 503 });
+      const lifecycleIndex = [
+        "scheduled",
+        "postponed",
+        "started",
+        "completed",
+        "unknown",
+      ].indexOf(status);
       const item = {
         ...payload.items[0]!,
         id: `${payload.items[0]!.id}-${status}`,
+        startsAt: new Date(
+          Date.parse(payload.items[0]!.startsAt) + lifecycleIndex * 5 * 60_000,
+        ).toISOString(),
         status,
         metadata: assessEventMetadata(
           status as Parameters<typeof assessEventMetadata>[0],

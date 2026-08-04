@@ -603,7 +603,7 @@ const outputs = {
   CognitoScope: "events/events:read",
   CognitoCallbackUrl: "https://abc123.cloudfront.net/auth/callback",
   LiveOddsIngestionFunctionName: "fte-live-odds",
-  TheOddsApiSecretName: "find-the-edge/dev/the-odds-api",
+  SharpApiSecretName: "find-the-edge/dev/sharpapi",
 };
 test("launch binds every discovered output to intended targets", () => {
   assert.doesNotThrow(() => validateStackOutputs(outputs));

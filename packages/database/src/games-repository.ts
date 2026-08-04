@@ -1,4 +1,5 @@
 import {
+  collapseNearDuplicateGames,
   fixtureOddsPartition,
   type GameDisplayDto,
   type GameOddsSelectionDto,
@@ -196,68 +197,69 @@ export class JoinedGamesRepository implements GamesRepository {
         throw new EventStorageError("duplicate-current-odds-row");
       byKey.set(row.pk, row);
     }
+    const joined = page.items.map((event, index) => {
+      const candidates = requestedByEvent[index]!.map((groups) => {
+        const selections: GameOddsSelectionDto[] = [];
+        let requiredAvailable = false;
+        for (const { specification, keys } of groups) {
+          const rows = keys.map(({ pk }) => byKey.get(pk));
+          const present = rows.filter((row) => row !== undefined).length;
+          if (present === 0) {
+            if (specification.required) return null;
+            continue;
+          }
+          if (present !== rows.length) {
+            rows.forEach((row, selectionIndex) => {
+              if (row !== undefined)
+                validateCurrent(row, keys[selectionIndex]!, event);
+            });
+            if (specification.required) return null;
+            continue;
+          }
+          const market = rows.map((row, selectionIndex) =>
+            validateCurrent(row, keys[selectionIndex]!, event),
+          );
+          const first = market[0]!;
+          if (
+            !market.every(
+              (selection) =>
+                selection.sportsbookId === first.sportsbookId &&
+                selection.observedAt === first.observedAt &&
+                selection.retrievedAt === first.retrievedAt,
+            )
+          ) {
+            if (specification.required) return null;
+            continue;
+          }
+          if (specification.required) requiredAvailable = true;
+          selections.push(...market);
+        }
+        if (!requiredAvailable) return null;
+        const first = selections[0]!;
+        return selections.filter(
+          (selection) =>
+            selection.sportsbookId === first.sportsbookId &&
+            selection.observedAt === first.observedAt &&
+            selection.retrievedAt === first.retrievedAt,
+        );
+      });
+      const selected = candidates.find(
+        (candidate): candidate is GameOddsSelectionDto[] =>
+          candidate !== null && candidate.length > 0,
+      );
+      return {
+        ...event,
+        odds: selected
+          ? {
+              state: "available" as const,
+              selections: selected,
+            }
+          : { state: "unavailable" as const },
+      };
+    });
     return {
       ...page,
-      items: page.items.map((event, index) => {
-        const candidates = requestedByEvent[index]!.map((groups) => {
-          const selections: GameOddsSelectionDto[] = [];
-          let requiredAvailable = false;
-          for (const { specification, keys } of groups) {
-            const rows = keys.map(({ pk }) => byKey.get(pk));
-            const present = rows.filter((row) => row !== undefined).length;
-            if (present === 0) {
-              if (specification.required) return null;
-              continue;
-            }
-            if (present !== rows.length) {
-              rows.forEach((row, selectionIndex) => {
-                if (row !== undefined)
-                  validateCurrent(row, keys[selectionIndex]!, event);
-              });
-              if (specification.required) return null;
-              continue;
-            }
-            const market = rows.map((row, selectionIndex) =>
-              validateCurrent(row, keys[selectionIndex]!, event),
-            );
-            const first = market[0]!;
-            if (
-              !market.every(
-                (selection) =>
-                  selection.sportsbookId === first.sportsbookId &&
-                  selection.observedAt === first.observedAt &&
-                  selection.retrievedAt === first.retrievedAt,
-              )
-            ) {
-              if (specification.required) return null;
-              continue;
-            }
-            if (specification.required) requiredAvailable = true;
-            selections.push(...market);
-          }
-          if (!requiredAvailable) return null;
-          const first = selections[0]!;
-          return selections.filter(
-            (selection) =>
-              selection.sportsbookId === first.sportsbookId &&
-              selection.observedAt === first.observedAt &&
-              selection.retrievedAt === first.retrievedAt,
-          );
-        });
-        const selected = candidates.find(
-          (candidate): candidate is GameOddsSelectionDto[] =>
-            candidate !== null && candidate.length > 0,
-        );
-        return {
-          ...event,
-          odds: selected
-            ? {
-                state: "available" as const,
-                selections: selected,
-              }
-            : { state: "unavailable" as const },
-        };
-      }),
+      items: collapseNearDuplicateGames(joined),
     };
   }
 }

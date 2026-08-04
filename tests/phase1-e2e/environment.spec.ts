@@ -47,6 +47,22 @@ async function findProviderGame(
   throw new Error(`no provider-backed ${sport} game was available`);
 }
 
+async function findEmptyDay(
+  request: APIRequestContext,
+  sport: "mlb" | "soccer",
+) {
+  for (let offset = 30; offset <= 365; offset += 15) {
+    const day = easternDay(offset);
+    const response = await request.get(
+      `${apiBase}/games?sport=${sport}&status=scheduled&day=${day}`,
+    );
+    expect(response.ok()).toBe(true);
+    const body = (await response.json()) as { items?: Game[] };
+    if ((body.items?.length ?? 0) === 0) return day;
+  }
+  throw new Error(`no empty ${sport} calendar day was available`);
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     sessionStorage.removeItem("fte.oauth.session");
@@ -73,7 +89,7 @@ test("real hosted bundle loads provider MLB and MLS games by day", async ({
     .toBe(apiBase);
   const mlb = await findProviderGame(request, "mlb", true);
   await page.getByLabel("Eastern calendar day").fill(mlb.day);
-  await expect(page.locator("article.event-card").first()).toBeVisible();
+  await expect(page.locator("[data-event-id]").first()).toBeVisible();
   await expect(
     page.getByText(mlb.game.odds.selections![0]!.sportsbookLabel).first(),
   ).toBeVisible();
@@ -81,10 +97,12 @@ test("real hosted bundle loads provider MLB and MLS games by day", async ({
   const mls = await findProviderGame(request, "soccer", false);
   await page.getByRole("button", { name: "MLS" }).click();
   await page.getByLabel("Eastern calendar day").fill(mls.day);
-  await expect(page.locator("article.event-card").first()).toBeVisible();
+  await expect(page.locator("[data-event-id]").first()).toBeVisible();
 
   await page.getByRole("button", { name: "MLB" }).click();
-  await page.getByLabel("Eastern calendar day").fill(easternDay(60));
+  await page
+    .getByLabel("Eastern calendar day")
+    .fill(await findEmptyDay(request, "mlb"));
   await expect(
     page.getByText("No MLB games are scheduled for this day."),
   ).toBeVisible();
@@ -97,7 +115,7 @@ test("anonymous session survives reload without Cognito state or redirects", asy
   const mlb = await findProviderGame(request, "mlb", true);
   await page.getByLabel("Eastern calendar day").fill(mlb.day);
   await page.reload();
-  await expect(page.locator("article.event-card").first()).toBeVisible();
+  await expect(page.locator("[data-event-id]").first()).toBeVisible();
   expect(
     await page.evaluate(() => ({
       session: sessionStorage.getItem("fte.oauth.session"),

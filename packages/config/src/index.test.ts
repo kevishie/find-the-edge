@@ -62,7 +62,7 @@ describe("validateEnvironment", () => {
 
 describe("default feed coverage catalog", () => {
   it("contains complete, immutable, secret-free league policy sets", () => {
-    expect(feedCoverageCatalogVersion).toBe("2026-08-03.v6");
+    expect(feedCoverageCatalogVersion).toBe("2026-08-04.v7");
     expect(defaultFeedCoveragePolicies).toHaveLength(18);
     const leagues = new Map<string, Set<string>>();
     for (const policy of defaultFeedCoveragePolicies) {

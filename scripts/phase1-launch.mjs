@@ -638,7 +638,7 @@ export function validateStackOutputs(outputs) {
     !/^[A-Za-z0-9_-]{1,128}$/.test(outputs.CognitoClientId) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(outputs.ReviewerCognitoClientId) ||
     !/^[A-Za-z0-9-_]{1,64}$/.test(outputs.LiveOddsIngestionFunctionName) ||
-    outputs.TheOddsApiSecretName !== "find-the-edge/dev/the-odds-api"
+    outputs.SharpApiSecretName !== "find-the-edge/dev/sharpapi"
   )
     throw new Error("A launch output has an invalid target identifier");
 }
@@ -942,7 +942,7 @@ export async function phase1Launch(environment = process.env) {
     "CognitoScope",
     "CognitoCallbackUrl",
     "LiveOddsIngestionFunctionName",
-    "TheOddsApiSecretName",
+    "SharpApiSecretName",
   ];
   if (required.some((key) => !outputs[key]))
     throw new Error(

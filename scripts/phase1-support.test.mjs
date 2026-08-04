@@ -504,7 +504,8 @@ function validTemplate() {
           Role: { "Fn::GetAtt": ["SeedRole", "Arn"] },
           Environment: {
             Variables: {
-              FTE_THE_ODDS_API_SECRET_ID: "find-the-edge/dev/the-odds-api",
+              FTE_SHARP_API_ENABLED: "true",
+              FTE_SHARP_API_SECRET_ID: "find-the-edge/dev/sharpapi",
             },
           },
         },
@@ -603,7 +604,7 @@ function validTemplate() {
         },
       },
       LiveOddsIngestionFunctionName: { Value: { Ref: "Seed" } },
-      TheOddsApiSecretName: { Value: "find-the-edge/dev/the-odds-api" },
+      SharpApiSecretName: { Value: "find-the-edge/dev/sharpapi" },
       WebOrigin: { Value: webOrigin },
       WebDistributionId: { Value: { Ref: "Distribution" } },
       WebAssetsBucketName: { Value: { Ref: "Bucket" } },

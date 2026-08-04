@@ -618,7 +618,9 @@ export function validateTemplate(template, config) {
     throw new Error("Fixture seed function must be absent from live Phase1");
   const liveFunctions = entriesOfType(template, "AWS::Lambda::Function").filter(
     ([, value]) =>
-      value.Properties?.Environment?.Variables?.FTE_THE_ODDS_API_SECRET_ID,
+      value.Properties?.Environment?.Variables?.FTE_SHARP_API_ENABLED ===
+        "true" &&
+      value.Properties?.Environment?.Variables?.FTE_SHARP_API_SECRET_ID,
   );
   if (liveFunctions.length !== 1)
     throw new Error("Exactly one live odds ingestion function is required");
@@ -630,8 +632,8 @@ export function validateTemplate(template, config) {
       "Live odds output must reference the real ingestion function",
     );
   if (
-    liveFunction.Properties?.Environment?.Variables
-      ?.FTE_THE_ODDS_API_SECRET_ID === undefined ||
+    liveFunction.Properties?.Environment?.Variables?.FTE_SHARP_API_SECRET_ID ===
+      undefined ||
     JSON.stringify(template).includes("apiKey")
   )
     throw new Error(
@@ -688,7 +690,7 @@ export function validateTemplate(template, config) {
     "CognitoScope",
     "CognitoCallbackUrl",
     "LiveOddsIngestionFunctionName",
-    "TheOddsApiSecretName",
+    "SharpApiSecretName",
   ])
     if (!template.Outputs?.[outputName]?.Value)
       throw new Error(`Required launch output ${outputName} is missing`);

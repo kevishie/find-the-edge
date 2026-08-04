@@ -14,10 +14,7 @@ describe("production odds policy", () => {
       );
       expect(
         policy.providers.map((p) => [p.providerId, p.role, p.quotaReserve]),
-      ).toEqual([
-        ["sharpapi", "primary", 100],
-        ["the-odds-api", "fallback", 50],
-      ]);
+      ).toEqual([["sharpapi", "primary", 100]]);
       expect(Object.isFrozen(policy)).toBe(true);
     }
   });

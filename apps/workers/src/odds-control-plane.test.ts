@@ -10,7 +10,24 @@ import {
   type ControlPlaneProvider,
 } from "./odds-control-plane";
 const now = new Date("2026-08-03T12:00:00.000Z");
-const policy = productionOddsCollectionPolicies[0]!;
+// The generic control-plane retains explicit failover behavior for reusable
+// callers. Production policy is SharpAPI-only, so these unit tests opt into a
+// secondary provider locally when exercising the generic state machine.
+const policy = {
+  ...productionOddsCollectionPolicies[0]!,
+  providers: [
+    ...productionOddsCollectionPolicies[0]!.providers,
+    {
+      providerId: "the-odds-api" as const,
+      role: "fallback" as const,
+      active: true,
+      quotaReserve: 50,
+      cooldownSeconds: 1_800,
+      failbackSuccesses: 1,
+      books: { draftkings: "offered" as const, circa: "comparison" as const },
+    },
+  ],
+};
 const provider = (
   id: "sharpapi" | "the-odds-api",
   fetchPage: ControlPlaneProvider["fetchPage"],

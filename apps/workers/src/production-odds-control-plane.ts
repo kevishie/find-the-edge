@@ -695,13 +695,14 @@ export async function runProductionOddsControlPlane(input: {
     }
   }
   for (const fallbackLeague of theOddsApiLeagues) {
+    const schedulePolicy = productionScheduleDiscoveryPolicies.find(
+      ({ providerId }) => providerId === THE_ODDS_API_PROVIDER_ID,
+    );
+    if (!schedulePolicy) continue;
     if (sharpScheduleHealthy.has(fallbackLeague.leagueKey)) continue;
     let activeScheduleRunId: string | undefined;
     let scheduleQuotaCost = 0;
     try {
-      const schedulePolicy = productionScheduleDiscoveryPolicies.find(
-        ({ providerId }) => providerId === THE_ODDS_API_PROVIDER_ID,
-      )!;
       const scheduleHealth = await input.control.getHealth(
         `${THE_ODDS_API_PROVIDER_ID}:${fallbackLeague.leagueKey}:schedule`,
       );

@@ -275,4 +275,47 @@ describe("joined games repository", () => {
     }).list({ sportKey: "soccer", status: "scheduled", day: "2026-08-01" }, 50);
     expect(requested).toBe(1_400);
   });
+
+  it("never returns legacy provider duplicates within the schedule tolerance", async () => {
+    const canonical = {
+      ...event,
+      id: "event-sharp",
+      version: 23,
+      participants: [
+        { id: "cws", label: "Chicago White Sox" },
+        { id: "bos", label: "Boston Red Sox" },
+      ],
+      startsAt: "2026-08-01T23:10:00.000Z",
+    } as EventDisplayDto;
+    const legacyAlias = {
+      ...canonical,
+      id: "event-fallback",
+      version: 1,
+      participants: [
+        { id: "cws-2", label: "Chicago WS" },
+        { id: "bos-2", label: "Boston Red Sox" },
+      ],
+      startsAt: "2026-08-01T23:11:00.000Z",
+    } as EventDisplayDto;
+    const doubleheader = {
+      ...canonical,
+      id: "event-doubleheader",
+      startsAt: "2026-08-01T23:12:01.000Z",
+    } as EventDisplayDto;
+    const selections = [
+      current(canonical, "away", "Chicago White Sox"),
+      current(canonical, "home", "Boston Red Sox"),
+    ];
+
+    const page = await new JoinedGamesRepository(
+      events([legacyAlias, canonical, doubleheader]),
+      { batchGet: () => Promise.resolve(selections.map(row)) },
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 50);
+
+    expect(page.items.map(({ id }) => id)).toEqual([
+      "event-sharp",
+      "event-doubleheader",
+    ]);
+    expect(page.items[0]?.odds.state).toBe("available");
+  });
 });

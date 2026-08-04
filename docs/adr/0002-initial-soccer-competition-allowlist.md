@@ -9,14 +9,14 @@
 
 The private MVP soccer allowlist is:
 
-| Priority | Competition | Canonical key | The Odds API key | SharpAPI league aliases | Activation |
-| --- | --- | --- | --- | --- | --- |
-| 1 | Major League Soccer | `soccer:mls` | `soccer_usa_mls` | `usa_-_major_league_soccer`, `estados_unidos_-_mls` | Always when in season |
-| 2 | English Premier League | `soccer:epl` | `soccer_epl` | `england_-_premier_league`, `inglaterra_-_premier_league` | Always when in season |
-| 3 | Liga MX | `soccer:liga-mx` | `soccer_mexico_ligamx` | `mexico_-_liga_mx`, `m_xico_-_liga_mx` | Always when in season |
-| 4 | UEFA Champions League | `soccer:uefa-champions-league` | `soccer_uefa_champs_league` | `uefa_-_champions_league` | Only while provider catalog says active or scheduled events exist |
+| Priority | Competition            | Canonical key                  | The Odds API key            | SharpAPI league aliases                                   | Activation                                                        |
+| -------- | ---------------------- | ------------------------------ | --------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------- |
+| 1        | Major League Soccer    | `soccer:mls`                   | `soccer_usa_mls`            | `usa_-_major_league_soccer`, `estados_unidos_-_mls`       | Always when in season                                             |
+| 2        | English Premier League | `soccer:epl`                   | `soccer_epl`                | `england_-_premier_league`, `inglaterra_-_premier_league` | Always when in season                                             |
+| 3        | Liga MX                | `soccer:liga-mx`               | `soccer_mexico_ligamx`      | `mexico_-_liga_mx`, `m_xico_-_liga_mx`                    | Always when in season                                             |
+| 4        | UEFA Champions League  | `soccer:uefa-champions-league` | `soccer_uefa_champs_league` | `uefa_-_champions_league`                                 | Only while provider catalog says active or scheduled events exist |
 
-SharpAPI remains the primary schedule and odds provider. The Odds API is a fallback and reconciliation source, not a second unconditional polling loop. Provider-native aliases map to one canonical competition; virtual, esports, futures, qualification, reserve, youth, and friendly competitions do not enter the MVP catalog through fuzzy matching.
+SharpAPI is the sole production schedule and odds provider. The Odds API is not called by production ingestion. Provider-native aliases map to one canonical competition; virtual, esports, futures, qualification, reserve, youth, and friendly competitions do not enter the MVP catalog through fuzzy matching.
 
 This ADR is the human approval required by FTE-019. Expanding the allowlist requires an explicit configuration change and evidence review; it must not happen automatically when a provider adds a league.
 
@@ -57,11 +57,11 @@ Evidence sources:
 
 ## Quota implications
 
-SharpAPI is primary and should be read with cursor pagination and the existing adaptive collection policy. The Odds API fallback uses the free sports/events catalog before requesting odds.
+SharpAPI is the only enabled production source and is read with cursor pagination and the existing adaptive collection policy. The Odds API cost analysis below is retained as historical rationale only; production must not call it.
 
 For The Odds API, an odds request costs `markets × regions`. With the three MVP main markets (`h2h`, `spreads`, `totals`) and one US region, one competition scan costs 3 credits. A naive hourly scan of all four competitions would cost 12 credits/hour or 288 credits/day, so it is prohibited.
 
-Fallback collection must instead:
+If the provider decision is revisited in a future ADR, any fallback collection must:
 
 1. Check the free sports/events endpoints and skip inactive or empty competitions.
 2. Request odds only after SharpAPI is stale/unavailable or during a bounded reconciliation run.
@@ -86,4 +86,3 @@ Fallback collection must instead:
 - [x] Included and excluded competitions are explicit.
 - [x] Credentials and paid-license payloads are not published.
 - [x] Human approval recorded through the user's standing approval to continue and merge BMad stories.
-
