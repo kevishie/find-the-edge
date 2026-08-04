@@ -7,12 +7,24 @@ import {
   assertLiveIngestionSummary,
   assertLiveIngestionResourceBinding,
   assertWrongOriginDenied,
+  boundedLiveIngestionDiagnostic,
   isTransientLiveIngestionSummary,
   liveOddsInvocationArguments,
   phase1EnvironmentSmoke,
   validateEnvironment,
   validateWrongScopeToken,
 } from "./phase1-environment-smoke.mjs";
+
+test("live ingestion diagnostics expose only bounded league outcomes", () => {
+  assert.equal(
+    boundedLiveIngestionDiagnostic([
+      { leagueKey: "mlb", status: "skipped", reason: "cadence-not-due" },
+      { leagueKey: "secret-league", status: "failed", reason: "raw payload!" },
+    ]),
+    "mlb:skipped:cadence-not-due,league-invalid:failed:none",
+  );
+  assert.equal(boundedLiveIngestionDiagnostic({}), "summary-shape-invalid");
+});
 
 test("environment smoke is a clear non-mutating skip unless explicitly enabled", async () => {
   assert.deepEqual(await phase1EnvironmentSmoke({}), {

@@ -291,6 +291,28 @@ export function assertLiveIngestionSummary(summary) {
     throw new Error("live ingestion returned an invalid legacy summary");
 }
 
+export function boundedLiveIngestionDiagnostic(summary) {
+  if (!Array.isArray(summary)) return "summary-shape-invalid";
+  return summary
+    .slice(0, 10)
+    .map((result) => {
+      if (!result || typeof result !== "object") return "result-invalid";
+      const league = RELEASE_REFRESH_LEAGUES.has(result.leagueKey)
+        ? result.leagueKey
+        : "league-invalid";
+      const status = ["completed", "skipped", "failed"].includes(result.status)
+        ? result.status
+        : "status-invalid";
+      const reason =
+        typeof result.reason === "string" &&
+        /^[a-z0-9-]{1,80}$/.test(result.reason)
+          ? result.reason
+          : "none";
+      return `${league}:${status}:${reason}`;
+    })
+    .join(",");
+}
+
 export function isTransientLiveIngestionSummary(summary) {
   if (
     !Array.isArray(summary) ||
@@ -491,6 +513,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
     const recoveryAttempts = 31;
     const recoveryDelayMs = 30_000;
     const recoveryDeadline = Date.now() + 17 * 60_000;
+    let ingestionDiagnostic = "summary-unavailable";
     for (let invocation = 1; invocation <= recoveryAttempts; invocation += 1) {
       const mutationIdentity = JSON.parse(
         run("aws", ["sts", "get-caller-identity", "--output", "json"], {
@@ -538,6 +561,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       if (invocationResult.StatusCode !== 200 || invocationResult.FunctionError)
         throw new Error("live ingestion Lambda invocation failed");
       const summary = JSON.parse(await readFile(responseFile, "utf8"));
+      ingestionDiagnostic = boundedLiveIngestionDiagnostic(summary);
       try {
         assertLiveIngestionSummary(summary);
         break;
@@ -592,7 +616,9 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       void foundForSport;
     }
     if (liveGames === 0)
-      throw new Error("no provider-backed games were visible");
+      throw new Error(
+        `no provider-backed games were visible (${ingestionDiagnostic})`,
+      );
     if (fullMarketGames === 0)
       throw new Error(
         "no provider-backed spread/total/moneyline board was visible",
