@@ -129,6 +129,34 @@ const currentKey = (value: BettingSplitObservation) =>
   ]);
 const authority = (value: BettingSplitObservation) =>
   `${value.providerTimestamp}\u0000${value.retrievedAt}\u0000${value.id}`;
+const logicalCurrentKey = (value: BettingSplitObservation) =>
+  JSON.stringify([
+    value.providerId,
+    value.marketKey,
+    value.selectionKey,
+    value.point ?? null,
+    value.scope ?? null,
+  ]);
+const latestLogicalCurrent = (
+  values: readonly BettingSplitObservation[],
+  canonicalEventVersion?: number,
+) => {
+  const latest = new Map<string, BettingSplitObservation>();
+  for (const value of values) {
+    if (
+      canonicalEventVersion !== undefined &&
+      value.canonicalEventVersion !== canonicalEventVersion
+    )
+      continue;
+    const key = logicalCurrentKey(value);
+    const existing = latest.get(key);
+    if (!existing || authority(value) > authority(existing))
+      latest.set(key, value);
+  }
+  return [...latest.values()].sort((left, right) =>
+    logicalCurrentKey(left).localeCompare(logicalCurrentKey(right)),
+  );
+};
 const replayValue = (value: BettingSplitObservation) => {
   const { retrievedAt, ...stable } = value;
   void retrievedAt;
@@ -185,17 +213,12 @@ export class MemoryBettingSplitRepository implements BettingSplitRepository {
   }
   listCurrent(canonicalEventId: string, canonicalEventVersion?: number) {
     return Promise.resolve(
-      [...this.#current.values()]
-        .filter(
-          (value) =>
-            value.canonicalEventId === canonicalEventId &&
-            (canonicalEventVersion === undefined ||
-              value.canonicalEventVersion === canonicalEventVersion),
-        )
-        .sort((left, right) =>
-          currentKey(left).localeCompare(currentKey(right)),
-        )
-        .map((value) => structuredClone(value)),
+      latestLogicalCurrent(
+        [...this.#current.values()].filter(
+          (value) => value.canonicalEventId === canonicalEventId,
+        ),
+        canonicalEventVersion,
+      ).map((value) => structuredClone(value)),
     );
   }
   persistGap(input: Parameters<BettingSplitRepository["persistGap"]>[0]) {
@@ -332,17 +355,14 @@ export class DynamoBettingSplitRepository implements BettingSplitRepository {
         ConsistentRead: true,
       }),
     );
-    return (result.Items ?? [])
-      .map((item) =>
+    return latestLogicalCurrent(
+      (result.Items ?? []).map((item) =>
         normalizeBettingSplitObservation(
           item["value"] as BettingSplitObservation,
         ),
-      )
-      .filter(
-        (value) =>
-          canonicalEventVersion === undefined ||
-          value.canonicalEventVersion === canonicalEventVersion,
-      );
+      ),
+      canonicalEventVersion,
+    );
   }
 
   async persistGap(input: Parameters<BettingSplitRepository["persistGap"]>[0]) {

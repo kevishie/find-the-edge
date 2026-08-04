@@ -319,6 +319,51 @@ describe("games client", () => {
     },
   );
 
+  it("accepts current split evidence from an earlier canonical schedule version", async () => {
+    const game = payload.items[0]!;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...payload,
+          items: [
+            {
+              ...game,
+              version: 10,
+              splits: [
+                {
+                  id: "split:older-event-version",
+                  providerId: "sharpapi",
+                  providerEventId: "provider-event",
+                  canonicalEventId: game.id,
+                  canonicalEventVersion: 9,
+                  sportKey: "mlb",
+                  leagueKey: "mlb",
+                  marketKey: "moneyline",
+                  selectionKey: "away",
+                  betPercent: 45,
+                  moneyPercent: 55,
+                  providerTimestamp: "2026-08-01T12:30:00.000Z",
+                  retrievedAt: "2026-08-01T12:30:01.000Z",
+                  scope: "consensus",
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.listSplits!(
+        { sport: "mlb", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({
+      items: [{ version: 10, splits: [{ canonicalEventVersion: 9 }] }],
+    });
+  });
+
   it("continues after a complete page when its authoritative cursor is non-null", async () => {
     const secondGame = {
       ...payload.items[0]!,

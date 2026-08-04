@@ -60,4 +60,22 @@ describe("betting split evidence", () => {
       normalizeBettingSplitObservation(split({ providerId: "other" })).id,
     );
   });
+  it("returns the freshest logical splits across harmless event version bumps", async () => {
+    const repository = new MemoryBettingSplitRepository();
+    await repository.persist(split({ canonicalEventVersion: 8 }));
+    await repository.persist(
+      split({
+        canonicalEventVersion: 9,
+        betPercent: 64,
+        providerTimestamp: "2026-08-03T12:10:00.000Z",
+        retrievedAt: "2026-08-03T12:10:01.000Z",
+      }),
+    );
+    expect(await repository.listCurrent("event-1")).toMatchObject([
+      { canonicalEventVersion: 9, betPercent: 64 },
+    ]);
+    expect(await repository.listCurrent("event-1", 8)).toMatchObject([
+      { canonicalEventVersion: 8, betPercent: 62 },
+    ]);
+  });
 });

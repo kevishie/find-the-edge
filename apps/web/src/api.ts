@@ -445,7 +445,8 @@ function parseSplitsPage(
         !Number.isSafeInteger(split["canonicalEventVersion"]) ||
         (split["canonicalEventVersion"] as number) < 1 ||
         split["canonicalEventId"] !== games.items[index]?.id ||
-        split["canonicalEventVersion"] !== games.items[index]?.version ||
+        (split["canonicalEventVersion"] as number) >
+          (games.items[index]?.version ?? 0) ||
         split["sportKey"] !== games.items[index]?.sportKey ||
         split["leagueKey"] !== games.items[index]?.leagueKey ||
         !iso(split["providerTimestamp"]) ||

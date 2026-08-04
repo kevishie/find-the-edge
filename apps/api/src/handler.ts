@@ -97,7 +97,10 @@ export const createEventHandler =
       const items = await Promise.all(
         page.items.map(async (game) => ({
           ...game,
-          splits: await splitsRepository.listCurrent(game.id, game.version),
+          // Schedule refreshes may advance the canonical event version even
+          // when the event identity and split evidence are unchanged. Return
+          // the freshest logical split per market/selection across versions.
+          splits: await splitsRepository.listCurrent(game.id),
         })),
       );
       return response(200, { ...page, items });
