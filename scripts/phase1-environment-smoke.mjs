@@ -352,6 +352,21 @@ export function isTransientLiveIngestionSummary(summary) {
   );
 }
 
+export function liveIngestionRecoveryAction({
+  summary,
+  invocation,
+  recoveryAttempts,
+  now,
+  recoveryDeadline,
+  recoveryDelayMs,
+}) {
+  if (!isTransientLiveIngestionSummary(summary)) return "complete";
+  return invocation === recoveryAttempts ||
+    now + recoveryDelayMs > recoveryDeadline
+    ? "exhausted"
+    : "retry";
+}
+
 export function assertLiveGame(game, sport) {
   if (
     !game ||
@@ -576,7 +591,19 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       ingestionDiagnostic = boundedLiveIngestionDiagnostic(summary);
       try {
         assertLiveIngestionSummary(summary);
-        break;
+        const recoveryAction = liveIngestionRecoveryAction({
+          summary,
+          invocation,
+          recoveryAttempts,
+          now: Date.now(),
+          recoveryDeadline,
+          recoveryDelayMs,
+        });
+        if (recoveryAction === "complete") break;
+        if (recoveryAction === "exhausted")
+          throw new Error(
+            `live ingestion remained in provider recovery (${ingestionDiagnostic})`,
+          );
       } catch (error) {
         if (
           invocation === recoveryAttempts ||
@@ -584,10 +611,10 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
           !isTransientLiveIngestionSummary(summary)
         )
           throw error;
-        await new Promise((resolveDelay) =>
-          setTimeout(resolveDelay, recoveryDelayMs),
-        );
       }
+      await new Promise((resolveDelay) =>
+        setTimeout(resolveDelay, recoveryDelayMs),
+      );
     }
     const apiBase = environment.FTE_PHASE1_API_BASE.replace(/\/$/, "");
     let liveGames = 0;

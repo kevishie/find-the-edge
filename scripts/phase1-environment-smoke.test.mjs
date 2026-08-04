@@ -9,6 +9,7 @@ import {
   assertWrongOriginDenied,
   boundedLiveIngestionDiagnostic,
   isTransientLiveIngestionSummary,
+  liveIngestionRecoveryAction,
   liveOddsInvocationArguments,
   phase1EnvironmentSmoke,
   validateEnvironment,
@@ -385,6 +386,36 @@ test("live ingestion retries bounded schedule and provider recovery", () => {
     false,
   );
   assert.equal(isTransientLiveIngestionSummary({}), false);
+  const recoveryInput = {
+    summary: recovering,
+    invocation: 1,
+    recoveryAttempts: 3,
+    now: 1_000,
+    recoveryDeadline: 100_000,
+    recoveryDelayMs: 30_000,
+  };
+  assert.equal(liveIngestionRecoveryAction(recoveryInput), "retry");
+  assert.equal(
+    liveIngestionRecoveryAction({ ...recoveryInput, invocation: 3 }),
+    "exhausted",
+  );
+  assert.equal(
+    liveIngestionRecoveryAction({ ...recoveryInput, recoveryDeadline: 30_000 }),
+    "exhausted",
+  );
+  assert.equal(
+    liveIngestionRecoveryAction({
+      ...recoveryInput,
+      summary: recovering.map((result) => ({
+        leagueKey: result.leagueKey,
+        status: "completed",
+        providerId: "sharpapi",
+        pages: 1,
+        quotaCost: 1,
+      })),
+    }),
+    "complete",
+  );
 });
 
 test("live game proof accepts complete real sportsbook markets and rejects fixtures", () => {
