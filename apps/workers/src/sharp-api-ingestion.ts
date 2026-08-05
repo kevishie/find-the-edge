@@ -332,14 +332,53 @@ export async function persistSharpApiOddsPage(
       .replace(/æ/g, "ae")
       .replace(/œ/g, "oe")
       .replace(/[^a-z0-9]/g, "");
+  const comparableParticipantTokens = (value: string) => {
+    const genericClubTokens = new Set([
+      "afc",
+      "cf",
+      "club",
+      "fc",
+      "fk",
+      "gnk",
+      "pfc",
+      "sc",
+      "sk",
+    ]);
+    return (
+      value
+        .normalize("NFKD")
+        .toLowerCase()
+        .replace(/ø/g, "o")
+        .replace(/ł/g, "l")
+        .replace(/[đð]/g, "d")
+        .replace(/þ/g, "th")
+        .replace(/æ/g, "ae")
+        .replace(/œ/g, "oe")
+        .replace(/[\u0300-\u036f]/g, "")
+        .match(/[a-z0-9]+/g)
+        ?.filter((token) => !genericClubTokens.has(token)) ?? []
+    );
+  };
   const credibleParticipantAlias = (left: string, right: string) => {
     const comparableLeft = comparableParticipant(left);
     const comparableRight = comparableParticipant(right);
+    const leftTokens = comparableParticipantTokens(left);
+    const rightTokens = comparableParticipantTokens(right);
+    const sameTokenSet =
+      leftTokens.length > 0 &&
+      rightTokens.length > 0 &&
+      [...new Set(leftTokens)].sort().join(":") ===
+        [...new Set(rightTokens)].sort().join(":");
+    const sharesDistinctiveToken = leftTokens.some(
+      (leftToken) => leftToken.length >= 4 && rightTokens.includes(leftToken),
+    );
     return (
       comparableLeft === comparableRight ||
       (Math.min(comparableLeft.length, comparableRight.length) >= 4 &&
         (comparableLeft.includes(comparableRight) ||
-          comparableRight.includes(comparableLeft)))
+          comparableRight.includes(comparableLeft))) ||
+      sameTokenSet ||
+      sharesDistinctiveToken
     );
   };
   const canonicalOddsEvents: {

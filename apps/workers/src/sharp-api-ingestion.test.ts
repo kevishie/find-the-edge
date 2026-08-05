@@ -320,6 +320,58 @@ describe("SharpAPI primary ingestion", () => {
 
     await expect(
       persistSharpApiOddsPage(
+        {
+          ingestEvent,
+          resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
+            ...canonical,
+            participantIds: ["ararat-id", "celje-id"],
+            participantLabels: ["FC Ararat-Armenia", "NK Celje"],
+          }),
+        } as unknown as EventIngestionStore,
+        { persist },
+        league,
+        {
+          retrievedAt: "2026-08-05T16:00:01.000Z" as IsoTimestamp,
+          events: [
+            {
+              ...rawEvent,
+              awayTeam: "Ararat-Armenia FC",
+              homeTeam: "NK Celje",
+            },
+          ],
+        },
+        { pinnacle: "collected" },
+      ),
+    ).resolves.toMatchObject({ observations: 3 });
+
+    await expect(
+      persistSharpApiOddsPage(
+        {
+          ingestEvent,
+          resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
+            ...canonical,
+            participantIds: ["olympiacos-id", "nijmegen-id"],
+            participantLabels: ["Olympiacos Piraeus", "NEC Nijmegen"],
+          }),
+        } as unknown as EventIngestionStore,
+        { persist },
+        league,
+        {
+          retrievedAt: "2026-08-05T16:00:01.000Z" as IsoTimestamp,
+          events: [
+            {
+              ...rawEvent,
+              awayTeam: "Olympiakos CFP",
+              homeTeam: "Nijmegen Eendracht Combinatie",
+            },
+          ],
+        },
+        { pinnacle: "collected" },
+      ),
+    ).resolves.toMatchObject({ observations: 3 });
+
+    await expect(
+      persistSharpApiOddsPage(
         store,
         { persist },
         league,
