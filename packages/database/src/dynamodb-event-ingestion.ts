@@ -204,6 +204,11 @@ export interface DynamoGateway {
   ): Promise<readonly (DynamoItem | null)[]>;
   queryAll(pk: string): Promise<readonly DynamoItem[]>;
   insert(item: DynamoItem): Promise<"inserted" | "exists">;
+  deleteOwnedReconciliationLock(
+    pk: string,
+    expectedEventId: string,
+    expectedLeaseUntil?: string,
+  ): Promise<void>;
   transact(writes: readonly DynamoWrite[]): Promise<void>;
   compareAndSetCheckpoint(
     pk: string,
@@ -858,15 +863,11 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
           throw new Error("invalid-event-reconciliation-lock");
         if (Date.parse(lock.leaseUntil) <= now)
           try {
-            await this.gateway.transact([
-              {
-                kind: "delete",
-                pk,
-                sk: "CURRENT",
-                expectedEventId: lock.eventId,
-                expectedLeaseUntil: lock.leaseUntil,
-              },
-            ]);
+            await this.gateway.deleteOwnedReconciliationLock(
+              pk,
+              lock.eventId,
+              lock.leaseUntil,
+            );
           } catch (error) {
             if (!(error instanceof DynamoConditionalConflict)) throw error;
           }
@@ -985,14 +986,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     try {
       for (let attempt = 0; attempt < 6; attempt += 1)
         try {
-          await this.gateway.transact([
-            {
-              kind: "delete",
-              pk,
-              sk: "CURRENT",
-              expectedEventId: token,
-            },
-          ]);
+          await this.gateway.deleteOwnedReconciliationLock(pk, token);
           break;
         } catch (error) {
           if (error instanceof DynamoConditionalConflict)

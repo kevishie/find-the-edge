@@ -42,6 +42,8 @@ describe("foundation CDK app", () => {
     const sharpRendered = JSON.stringify(template.toJSON());
     expect(sharpRendered).toContain("sharpapi");
     expect(sharpRendered).toContain("sqs:ChangeMessageVisibility");
+    expect(sharpRendered).toContain("dynamodb:DeleteItem");
+    expect(sharpRendered).toContain("EVENT_RECONCILIATION#*");
     expect(sharpRendered).not.toContain("sk_live_");
     template.hasOutput("FixtureOddsSeedFunctionName", {});
     template.hasResourceProperties("AWS::IAM::Policy", {

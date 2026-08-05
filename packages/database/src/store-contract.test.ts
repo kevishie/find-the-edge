@@ -83,6 +83,25 @@ class ContractGateway implements DynamoGateway {
     this.items.set(key, item);
     return "inserted" as const;
   }
+  async deleteOwnedReconciliationLock(
+    pk: string,
+    expectedEventId: string,
+    expectedLeaseUntil?: string,
+  ) {
+    await Promise.resolve();
+    const key = this.key(pk, "CURRENT");
+    const item = this.items.get(key);
+    const value = item?.value as
+      { eventId?: string; leaseUntil?: string } | undefined;
+    if (
+      !item ||
+      value?.eventId !== expectedEventId ||
+      (expectedLeaseUntil !== undefined &&
+        value.leaseUntil !== expectedLeaseUntil)
+    )
+      throw new DynamoConditionalConflict();
+    this.items.delete(key);
+  }
   async transact(writes: Parameters<DynamoGateway["transact"]>[0]) {
     await Promise.resolve();
     const targets = new Set<string>();
@@ -1687,27 +1706,26 @@ describe("dynamo reconciliation ownership fencing", () => {
 
   it("surfaces token loss during cleanup", async () => {
     class CleanupConflictGateway extends ContractGateway {
-      override async transact(
-        writes: Parameters<DynamoGateway["transact"]>[0],
+      override async deleteOwnedReconciliationLock(
+        pk: string,
+        expectedEventId: string,
+        expectedLeaseUntil?: string,
       ) {
-        const cleanup = writes.find(
-          (
-            write,
-          ): write is Extract<(typeof writes)[number], { kind: "delete" }> =>
-            write.kind === "delete" &&
-            write.pk.startsWith("EVENT_RECONCILIATION#"),
-        );
-        if (cleanup) {
-          const lock = this.items.get(this.key(cleanup.pk, cleanup.sk));
+        if (pk.startsWith("EVENT_RECONCILIATION#")) {
+          const lock = this.items.get(this.key(pk, "CURRENT"));
           if (lock) {
-            this.items.set(this.key(cleanup.pk, cleanup.sk), {
+            this.items.set(this.key(pk, "CURRENT"), {
               ...lock,
               value: { ...(lock.value as object), eventId: "new-owner" },
             });
             throw new DynamoConditionalConflict();
           }
         }
-        return super.transact(writes);
+        return super.deleteOwnedReconciliationLock(
+          pk,
+          expectedEventId,
+          expectedLeaseUntil,
+        );
       }
     }
     const store = new DynamoEventIngestionStore(new CleanupConflictGateway());
@@ -1719,20 +1737,20 @@ describe("dynamo reconciliation ownership fencing", () => {
   it("retries transient transaction conflicts while releasing the lease", async () => {
     class CleanupRetryGateway extends ContractGateway {
       cleanupAttempts = 0;
-      override async transact(
-        writes: Parameters<DynamoGateway["transact"]>[0],
+      override async deleteOwnedReconciliationLock(
+        pk: string,
+        expectedEventId: string,
+        expectedLeaseUntil?: string,
       ) {
-        if (
-          writes.some(
-            (write) =>
-              write.kind === "delete" &&
-              write.pk.startsWith("EVENT_RECONCILIATION#"),
-          )
-        ) {
+        if (pk.startsWith("EVENT_RECONCILIATION#")) {
           this.cleanupAttempts += 1;
           if (this.cleanupAttempts <= 2) throw new DynamoTransactionConflict();
         }
-        return super.transact(writes);
+        return super.deleteOwnedReconciliationLock(
+          pk,
+          expectedEventId,
+          expectedLeaseUntil,
+        );
       }
     }
     const gateway = new CleanupRetryGateway();
@@ -1745,18 +1763,18 @@ describe("dynamo reconciliation ownership fencing", () => {
 
   it("preserves non-ownership failures while releasing the lease", async () => {
     class CleanupServiceFailureGateway extends ContractGateway {
-      override async transact(
-        writes: Parameters<DynamoGateway["transact"]>[0],
+      override async deleteOwnedReconciliationLock(
+        pk: string,
+        expectedEventId: string,
+        expectedLeaseUntil?: string,
       ) {
-        if (
-          writes.some(
-            (write) =>
-              write.kind === "delete" &&
-              write.pk.startsWith("EVENT_RECONCILIATION#"),
-          )
-        )
-          throw new Error("cleanup-service-failure");
-        return super.transact(writes);
+        if (pk.startsWith("EVENT_RECONCILIATION#"))
+          return Promise.reject(new Error("cleanup-service-failure"));
+        return super.deleteOwnedReconciliationLock(
+          pk,
+          expectedEventId,
+          expectedLeaseUntil,
+        );
       }
     }
     await expect(

@@ -1,5 +1,6 @@
 import {
   BatchGetCommand,
+  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
@@ -151,6 +152,46 @@ export class AwsDynamoGateway implements DynamoGateway {
         error.name === "ConditionalCheckFailedException"
       )
         return "exists" as const;
+      throw error;
+    }
+  }
+  async deleteOwnedReconciliationLock(
+    pk: string,
+    expectedEventId: string,
+    expectedLeaseUntil?: string,
+  ) {
+    if (!pk.startsWith("EVENT_RECONCILIATION#"))
+      throw new Error("invalid-reconciliation-lock-key");
+    try {
+      await this.client.send(
+        new DeleteCommand({
+          TableName: this.tableName,
+          Key: { pk, sk: "CURRENT" },
+          ConditionExpression: [
+            "#value.#eventId=:eventId",
+            ...(expectedLeaseUntil ? ["#value.#leaseUntil=:leaseUntil"] : []),
+          ].join(" AND "),
+          ExpressionAttributeNames: {
+            "#value": "value",
+            "#eventId": "eventId",
+            ...(expectedLeaseUntil ? { "#leaseUntil": "leaseUntil" } : {}),
+          },
+          ExpressionAttributeValues: {
+            ":eventId": expectedEventId,
+            ...(expectedLeaseUntil
+              ? { ":leaseUntil": expectedLeaseUntil }
+              : {}),
+          },
+        }),
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.name === "ConditionalCheckFailedException"
+      )
+        throw new DynamoConditionalConflict();
+      if (error instanceof Error && isTransactionConflict(error))
+        throw new DynamoTransactionConflict();
       throw error;
     }
   }

@@ -554,6 +554,17 @@ export class FoundationStack extends Stack {
         resources: [table.tableArn],
       }),
     );
+    liveOdds.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["dynamodb:DeleteItem"],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["EVENT_RECONCILIATION#*"],
+          },
+        },
+      }),
+    );
     const liveOddsDlq = new Queue(this, "LiveOddsControlPlaneDlq", {
       fifo: true,
       queueName: `find-the-edge-${props.stageName}-odds-control-dlq.fifo`,
