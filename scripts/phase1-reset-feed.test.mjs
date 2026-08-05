@@ -10,6 +10,7 @@ import {
   createBackup,
   deleteFeedBatches,
   executeReset,
+  forcedIngestionDiagnostics,
   quiesceTarget,
   requirePitr,
   resourceState,
@@ -547,6 +548,54 @@ test("forced ingestion requires every enabled SharpAPI league", () => {
       ]),
     /league-set-invalid/,
   );
+});
+
+test("forced ingestion diagnostics expose only bounded league outcomes", () => {
+  assert.deepEqual(
+    forcedIngestionDiagnostics([
+      {
+        leagueKey: "mlb",
+        providerId: "sharpapi",
+        status: "skipped",
+        reason: "schedule-provider-recovering",
+        pages: 0,
+        quotaCost: 1,
+        licensedPayload: "must-not-appear",
+      },
+      {
+        leagueKey: "secret-league",
+        providerId: "secret-provider",
+        status: "unexpected",
+        failureReason: "contains spaces and secret detail",
+        pages: -1,
+        quotaCost: 1.5,
+      },
+    ]),
+    {
+      shape: "array",
+      results: [
+        {
+          leagueKey: "mlb",
+          providerId: "sharpapi",
+          status: "skipped",
+          reason: "schedule-provider-recovering",
+          pages: 0,
+          quotaCost: 1,
+        },
+        {
+          leagueKey: "invalid",
+          providerId: "invalid",
+          status: "invalid",
+          reason: "none",
+          pages: null,
+          quotaCost: null,
+        },
+      ],
+    },
+  );
+  assert.deepEqual(forcedIngestionDiagnostics({ secret: "value" }), {
+    shape: "invalid",
+  });
 });
 
 const now = new Date("2026-08-05T20:00:00.000Z");

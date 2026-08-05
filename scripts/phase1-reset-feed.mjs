@@ -722,6 +722,46 @@ export function validateForcedIngestion(
   };
 }
 
+export function forcedIngestionDiagnostics(summary) {
+  if (!Array.isArray(summary) || summary.length > 20)
+    return { shape: "invalid" };
+  return {
+    shape: "array",
+    results: summary.map((candidate) => {
+      const result =
+        candidate && typeof candidate === "object" ? candidate : {};
+      const leagueKey = RESET_ENABLED_LEAGUES.includes(result.leagueKey)
+        ? result.leagueKey
+        : "invalid";
+      const providerId =
+        result.providerId === "sharpapi" ? "sharpapi" : "invalid";
+      const status = ["completed", "skipped", "failed"].includes(result.status)
+        ? result.status
+        : "invalid";
+      const rawReason =
+        result.reason ?? result.skipReason ?? result.failureReason;
+      const reason =
+        typeof rawReason === "string" && /^[a-z0-9-]{1,80}$/.test(rawReason)
+          ? rawReason
+          : "none";
+      return {
+        leagueKey,
+        providerId,
+        status,
+        reason,
+        pages:
+          Number.isSafeInteger(result.pages) && result.pages >= 0
+            ? result.pages
+            : null,
+        quotaCost:
+          Number.isSafeInteger(result.quotaCost) && result.quotaCost >= 0
+            ? result.quotaCost
+            : null,
+      };
+    }),
+  };
+}
+
 const validatePage = (page, withSplits) => {
   if (
     !page ||
@@ -1812,6 +1852,12 @@ const invokeIngestion = async (
     } catch {
       throw new Error("reset-ingestion-response-invalid");
     }
+    process.stdout.write(
+      `${JSON.stringify({
+        event: "phase1-feed-ingestion-summary",
+        ...forcedIngestionDiagnostics(summary),
+      })}\n`,
+    );
     return validateForcedIngestion(summary);
   } catch (error) {
     invocationError = error;
