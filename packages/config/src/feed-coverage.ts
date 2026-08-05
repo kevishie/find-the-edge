@@ -4,13 +4,13 @@ import type {
   InactiveFeedPolicy,
   SportKey,
 } from "@find-the-edge/domain";
-import { productionSportsbookRoles } from "./sportsbooks";
+import { approvedSportsbookCollection } from "./sportsbooks";
 
 export const feedCoverageCatalogVersion = "2026-08-04.v7";
 export const oddsCollectionPolicyVersion =
   "2026-08-04.control-plane.sharpapi-pro.v3";
 
-export type OddsBookRole = "offered" | "comparison" | "splits";
+export type OddsBookRole = "offered" | "comparison" | "collected" | "splits";
 export interface OddsProviderPolicy {
   readonly providerId: string;
   readonly role: "primary" | "fallback";
@@ -19,6 +19,8 @@ export interface OddsProviderPolicy {
   readonly cooldownSeconds: number;
   readonly failbackSuccesses: number;
   readonly books: Readonly<Record<string, OddsBookRole>>;
+  /** Only these scoped books produce absence evidence. Collection alone does not. */
+  readonly expectedBooks?: Readonly<Record<string, readonly string[]>>;
 }
 export interface LeagueOddsCollectionPolicy {
   readonly leagueKey:
@@ -40,7 +42,7 @@ export interface ScheduleDiscoveryPolicy {
 }
 
 const productionOddsBooks: Readonly<Record<string, OddsBookRole>> =
-  productionSportsbookRoles;
+  approvedSportsbookCollection;
 /** Schedule requests have an explicit budget independent from odds reserves. */
 export const productionScheduleDiscoveryPolicies: readonly ScheduleDiscoveryPolicy[] =
   deepFreeze([
@@ -75,6 +77,11 @@ const providerPolicy = (
       cooldownSeconds: 900,
       failbackSuccesses: 2,
       books: productionOddsBooks,
+      expectedBooks: {
+        // Only canary-verified league/market expectations belong here.
+        // Collection approval alone never implies expected coverage.
+        ...(leagueKey === "mlb" ? { pinnacle: ["moneyline"] } : {}),
+      },
     },
   ],
 });

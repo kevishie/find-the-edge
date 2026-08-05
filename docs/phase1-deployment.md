@@ -31,6 +31,14 @@ The focused endpoint returns all entitled books/markets. Local normalization kee
 
 Operational verification should confirm `OddsProviderRequest`, `OddsRequestDeduplicated`, `OddsNormalizedObservation`, `OddsNormalizationRejected`, snapshot/current outcomes, and provider failures with bounded `provider`, `league`, `endpoint`, `markets`, `partial`, and `reason` dimensions. SharpAPI is the sole production schedule and odds source. Production Lambda configuration must contain only `FTE_SHARP_API_SECRET_ID`; `THE_ODDS_API_KEY`, calls to The Odds API, and any provider fallback are forbidden.
 
+The 25-book entitlement is a capacity bound, not an expectation that every book
+appears on every event. The closed collection allowlist retains approved raw
+Pinnacle and other entitled-book prices with `providerId=sharpapi`; it does not
+consume vendor fair-odds/EV analytics or alter consensus weights. Expected-book
+gaps are configured per league and market. Rollout uses a redacted authorized
+canary, one league, then remaining leagues; Pinnacle is reported as observed or
+`coverage-unverified`, without a second paid provider call for absence.
+
 - For environment smoke: the deployed API, live-ingestion function output, cursor-secret identifier, and exact hosted browser origin.
 
 ## Credential-free preflight and bundle

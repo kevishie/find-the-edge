@@ -3,7 +3,7 @@
 ## Current state
 
 SharpAPI is the sole enabled production schedule, odds, and public-betting
-provider. The Odds API is not called by production ingestion. The subscribed account was verified on
+provider. The Odds API is not called by production ingestion. The prior account was verified on
 2026-08-03 as Pro: 300 requests/minute, 15 selected sportsbooks, odds, schedule,
 +EV, arbitrage, middles, low hold, steam, closing line, and betting splits.
 Streaming and Live Game State add-ons are intentionally disabled for MVP.
@@ -27,7 +27,7 @@ freshness, not the exact time a line moved. Split `fetched_at` remains separate.
 The operator approved Pro activation. A plan upgrade or add-on remains a manual
 decision and is never performed by deployment automation.
 
-## Pro odds roster and consensus policy
+## Entitled collection roster and consensus policy
 
 ADR 0003 defines Hard Rock (`hardrock`) as the offered sportsbook and
 DraftKings, FanDuel, BetMGM, and Caesars as equal-weight comparison books. Live
@@ -35,12 +35,23 @@ account checks returned HTTP 200 with odds data for all five identifiers. The
 production collector requests that roster for MLB and MLS and excludes Hard
 Rock unconditionally from a Hard Rock consensus.
 
-Circa and Pinnacle odds require the Sharp tier and must not appear in the Pro
-production odds roster. The DraftKings/Circa splits feed is a separate
-entitlement and does not authorize Circa odds. If fewer than three configured
+The upgraded entitlement is modeled separately from evaluation. Approved
+Pinnacle, Circa, Bally Bet, Betano, Fanatics, Fanatics Markets, BetRivers,
+BetOnline, Bovada, Fliff, Kalshi, Novig, 1xBet, Polymarket, ProphetX, SBOBET,
+Stake, and theScore Bet rows may be retained with the existing five books, but only
+DraftKings, FanDuel, BetMGM, and Caesars retain evaluation weights. The
+DraftKings/Circa splits feed remains separate. If fewer than three configured
 comparison books remain eligible for a market, consensus and qualification are
 unavailable; operators must not weaken the gate or substitute an unapproved
 book.
+
+Before rollout, use the existing server-side account boundary and record only
+whether `maxBooks >= 25`; never record the key, response body, price, or contract
+terms. An explicitly authorized canary across each enabled league retains only
+bounded canonical IDs and counts. Pinnacle is `observed` or
+`coverage-unverified`; absence is never success. Unknown identifiers stay
+rejected until reviewed in the versioned alias map. Collection approval does not
+make a book expected everywhere: policy scopes absence by league and market.
 
 ## Expected degradation
 
@@ -65,6 +76,11 @@ latency, quota, normalized counts, mapping gaps, and entitlement. Disable the
 SharpAPI immediately on malformed material or unexpected licensing constraints;
 production ingestion then remains unavailable until SharpAPI is re-enabled or a
 separately approved fallback policy is deployed.
+
+Stage entitlement rollout as canary, one enabled league, then remaining leagues.
+Roll back by disabling new collection entries or restoring the prior catalog.
+Never delete or rewrite immutable snapshots; removed-book history stays
+auditable and receives no evaluation weight.
 
 ## Failure, health, and redrive matrix
 

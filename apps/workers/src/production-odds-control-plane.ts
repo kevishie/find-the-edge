@@ -265,6 +265,28 @@ const boundedScheduleInternalFailures = new Set([
   "bootstrap-identity-already-exists",
   "bootstrap-identity-snapshot-mismatch",
   "identity-conflict-count-exhausted",
+  "invalid-scheduled-reconciliation",
+  "reconciliation-participants-required",
+  "invalid-provider-event-mapping",
+  "invalid-provider-revision",
+  "invalid-canonical-event",
+  "invalid-identity-claim",
+  "identity-version-exhausted",
+  "version-exhausted",
+  "bootstrap-response-conflict",
+  "bootstrap-failed",
+]);
+
+const boundedScheduleStorageExceptions = new Map<string, string>([
+  ["ValidationException", "storage-validation"],
+  ["ResourceNotFoundException", "storage-resource-missing"],
+  ["ProvisionedThroughputExceededException", "storage-throttled"],
+  ["ThrottlingException", "storage-throttled"],
+  ["RequestLimitExceeded", "storage-throttled"],
+  ["TransactionCanceledException", "storage-transaction-cancelled"],
+  ["TransactionInProgressException", "storage-transaction-in-progress"],
+  ["InternalServerError", "storage-unavailable"],
+  ["ServiceUnavailable", "storage-unavailable"],
 ]);
 
 const scheduleFailureStages = [
@@ -318,6 +340,11 @@ export const scheduleCapabilityFailure = (
     boundedScheduleInternalFailures.has(message)
   )
     return `provider-error-${message}`;
+  const storageReason =
+    stage === "event-reconcile" && error instanceof Error
+      ? boundedScheduleStorageExceptions.get(error.name)
+      : undefined;
+  if (storageReason) return `provider-error-${storageReason}`;
   const alias = boundedScheduleCapabilityAliases.get(message);
   if (alias) return alias;
   if (boundedScheduleCapabilityFailures.has(message)) return message;
@@ -360,10 +387,11 @@ export const evidenceGaps = (
   }[],
   markets: readonly string[],
   configuredBooks: Readonly<
-    Record<string, "offered" | "comparison" | "splits">
+    Record<string, "offered" | "comparison" | "collected" | "splits">
   >,
   observedAt: string,
   expectedProviderEventIds: readonly string[] = [],
+  expectedBookMarkets?: Readonly<Record<string, readonly string[]>>,
 ): OddsEvidenceGap[] => {
   const gaps: OddsEvidenceGap[] = [];
   const eventById = new Map(
@@ -372,7 +400,9 @@ export const evidenceGaps = (
   const expected = new Set([...expectedProviderEventIds, ...eventById.keys()]);
   for (const providerEventId of expected)
     for (const [sportsbookId, bookRole] of Object.entries(configuredBooks))
-      for (const marketKey of markets) {
+      for (const marketKey of expectedBookMarkets
+        ? (expectedBookMarkets[sportsbookId] ?? [])
+        : markets) {
         const event = eventById.get(providerEventId);
         const book = event?.bookmakers.find(({ id }) => id === sportsbookId);
         const prices =
@@ -493,7 +523,9 @@ const normalizationGaps = (
   runId: string,
   leagueKey: string,
   page: SharpApiOddsPage,
-  books: Readonly<Record<string, "offered" | "comparison" | "splits">>,
+  books: Readonly<
+    Record<string, "offered" | "comparison" | "collected" | "splits">
+  >,
 ): OddsEvidenceGap[] =>
   (page.rejections ?? []).flatMap((rejection) => {
     const bookRole = rejection.sportsbookId
@@ -802,7 +834,7 @@ export async function runFocusedSharpOddsIngestion(input: {
       operation.page,
       policy.providers[0]?.books,
       undefined,
-      policy.markets,
+      policy.providers[0]?.expectedBooks,
     );
     const gaps = [
       ...evidenceGaps(
@@ -814,6 +846,7 @@ export async function runFocusedSharpOddsIngestion(input: {
         policy.providers[0]?.books ?? {},
         operation.page.retrievedAt,
         [input.request.providerEventId],
+        policy.providers[0]?.expectedBooks,
       ),
       ...normalizationGaps(
         runId,
@@ -866,6 +899,13 @@ export async function runFocusedSharpOddsIngestion(input: {
       ...dimensions,
       partial: gaps.length > 0 ? "true" : "false",
     });
+    for (const [sportsbook, count] of Object.entries(
+      persisted.observationsBySportsbook,
+    ))
+      input.metrics?.emit("OddsNormalizedObservationBySportsbook", count, {
+        ...dimensions,
+        sportsbook,
+      });
     return {
       status: "completed" as const,
       requestIdentity: identity,
@@ -1589,6 +1629,7 @@ export async function runProductionOddsControlPlane(input: {
                       `${SHARP_API_PROVIDER_ID}:${policy.leagueKey}`,
                     ) ?? []
                   ).filter((id) => !seenProviderEventIds.has(id)),
+                  policy.providers[0]?.expectedBooks,
                 ),
               ),
             probe: async () => {
@@ -1598,6 +1639,9 @@ export async function runProductionOddsControlPlane(input: {
               const accountRateWindow = nonEmptyRateWindow(
                 account.responseMetadata?.rateWindow,
               );
+              input.metrics?.emit("OddsAccountBookCapacity", account.maxBooks, {
+                provider: SHARP_API_PROVIDER_ID,
+              });
               return {
                 quotaCost: 1,
                 ...(accountRateWindow ? { rateWindow: accountRateWindow } : {}),
@@ -1626,6 +1670,25 @@ export async function runProductionOddsControlPlane(input: {
                       pageToken === "start" ? undefined : pageToken,
                     )
                   ).page;
+              const observedBooks = new Set(
+                page.events.flatMap((event) =>
+                  event.bookmakers
+                    .map(({ id }) => id)
+                    .filter((id) => policy.providers[0]?.books[id]),
+                ),
+              );
+              input.metrics?.emit(
+                "OddsPageDistinctApprovedBooksObserved",
+                observedBooks.size,
+                { provider: SHARP_API_PROVIDER_ID, league: policy.leagueKey },
+              );
+              input.metrics?.emit("OddsPagePinnacleCoverage", 1, {
+                provider: SHARP_API_PROVIDER_ID,
+                league: policy.leagueKey,
+                status: observedBooks.has("pinnacle")
+                  ? "observed"
+                  : "coverage-unverified",
+              });
               const material: SharpPageMaterial = { kind: "sharpapi", page };
               const pageRateWindow = nonEmptyRateWindow(
                 page.responseMetadata?.rateWindow,
@@ -1642,6 +1705,7 @@ export async function runProductionOddsControlPlane(input: {
                     policy.providers[0]?.books ?? {},
                     page.retrievedAt,
                     [],
+                    policy.providers[0]?.expectedBooks,
                   ),
                   ...normalizationGaps(
                     runId,
@@ -1732,13 +1796,25 @@ export async function runProductionOddsControlPlane(input: {
                       dimensions,
                     );
                 },
-                policy.markets,
+                policy.providers[0]?.expectedBooks,
               );
               input.metrics?.emit(
                 "OddsNormalizedObservation",
                 persisted.observations,
                 { provider: SHARP_API_PROVIDER_ID, league: policy.leagueKey },
               );
+              for (const [sportsbook, count] of Object.entries(
+                persisted.observationsBySportsbook,
+              ))
+                input.metrics?.emit(
+                  "OddsNormalizedObservationBySportsbook",
+                  count,
+                  {
+                    provider: SHARP_API_PROVIDER_ID,
+                    league: policy.leagueKey,
+                    sportsbook,
+                  },
+                );
               const persistenceMetrics = [
                 ["OddsStaleEvidence", persisted.staleEvidence],
                 ["OddsPartialEvidence", persisted.partialEvidence],

@@ -4,6 +4,23 @@ export type CanonicalSportsbookId =
   | "fanduel"
   | "betmgm"
   | "caesars"
+  | "pinnacle"
+  | "ballybet"
+  | "betano"
+  | "fanatics"
+  | "fanatics_markets"
+  | "betrivers"
+  | "betonline"
+  | "bovada"
+  | "fliff"
+  | "kalshi"
+  | "novig"
+  | "onexbet"
+  | "polymarket"
+  | "prophetx"
+  | "sbobet"
+  | "stake"
+  | "thescorebet"
   | "circa"
   | "consensus";
 export type ProductionSportsbookRole = "offered" | "comparison";
@@ -60,6 +77,71 @@ export const sportsbookRegistry: readonly SportsbookRegistration[] =
       productionRole: "comparison",
     },
     {
+      id: "pinnacle",
+      name: "Pinnacle",
+      aliases: ["pinnacle", "pinnacle sports", "pinnaclesports"],
+    },
+    {
+      id: "ballybet",
+      name: "Bally Bet",
+      aliases: ["ballybet", "bally bet"],
+    },
+    {
+      id: "betano",
+      name: "Betano",
+      aliases: ["betano"],
+    },
+    {
+      id: "fanatics",
+      name: "Fanatics Sportsbook",
+      aliases: ["fanatics", "fanatics sportsbook", "fanaticssportsbook"],
+    },
+    {
+      id: "fanatics_markets",
+      name: "Fanatics Markets",
+      aliases: ["fanatics_markets", "fanatics markets"],
+    },
+    {
+      id: "betrivers",
+      name: "BetRivers",
+      aliases: ["betrivers", "bet rivers", "bet-rivers"],
+    },
+    {
+      id: "betonline",
+      name: "BetOnline",
+      aliases: ["betonline", "bet online", "betonline.ag"],
+    },
+    {
+      id: "bovada",
+      name: "Bovada",
+      aliases: ["bovada", "bovada.lv"],
+    },
+    {
+      id: "fliff",
+      name: "Fliff",
+      aliases: ["fliff"],
+    },
+    {
+      id: "kalshi",
+      name: "Kalshi",
+      aliases: ["kalshi"],
+    },
+    { id: "novig", name: "Novig", aliases: ["novig", "no vig"] },
+    { id: "onexbet", name: "1xBet", aliases: ["onexbet", "1xbet"] },
+    {
+      id: "polymarket",
+      name: "Polymarket",
+      aliases: ["polymarket"],
+    },
+    { id: "prophetx", name: "ProphetX", aliases: ["prophetx", "prophet x"] },
+    { id: "sbobet", name: "SBOBET", aliases: ["sbobet", "sbo bet"] },
+    { id: "stake", name: "Stake", aliases: ["stake", "stake.com"] },
+    {
+      id: "thescorebet",
+      name: "theScore Bet",
+      aliases: ["thescorebet", "the score bet"],
+    },
+    {
       id: "circa",
       name: "Circa Sports",
       logo: "/sportsbooks/circa.svg",
@@ -73,11 +155,20 @@ export const sportsbookRegistry: readonly SportsbookRegistration[] =
     },
   ]);
 
-const byAlias = new Map(
-  sportsbookRegistry.flatMap((book) =>
-    [book.id, ...book.aliases].map((alias) => [token(alias), book] as const),
-  ),
-);
+const byAlias = new Map<string, SportsbookRegistration>();
+const canonicalIds = new Set<string>();
+for (const book of sportsbookRegistry) {
+  if (canonicalIds.has(book.id)) throw new Error("duplicate-sportsbook-id");
+  canonicalIds.add(book.id);
+  for (const alias of [book.id, ...book.aliases]) {
+    const normalized = token(alias);
+    if (!normalized) throw new Error("empty-sportsbook-alias");
+    const existing = byAlias.get(normalized);
+    if (existing && existing.id !== book.id)
+      throw new Error("conflicting-sportsbook-alias");
+    byAlias.set(normalized, book);
+  }
+}
 
 export type SportsbookNormalization =
   | { readonly kind: "normalized"; readonly sportsbook: SportsbookRegistration }
@@ -102,3 +193,30 @@ export const productionSportsbookRoles = Object.freeze(
     ),
   ) as Readonly<Record<string, ProductionSportsbookRole>>,
 );
+
+/** Closed allowlist for licensed odds collection; independent of evaluation. */
+export const approvedSportsbookCollection = Object.freeze({
+  hardrock: "offered",
+  draftkings: "comparison",
+  fanduel: "comparison",
+  betmgm: "comparison",
+  caesars: "comparison",
+  pinnacle: "collected",
+  circa: "collected",
+  ballybet: "collected",
+  betano: "collected",
+  fanatics: "collected",
+  fanatics_markets: "collected",
+  betrivers: "collected",
+  betonline: "collected",
+  bovada: "collected",
+  fliff: "collected",
+  kalshi: "collected",
+  novig: "collected",
+  onexbet: "collected",
+  polymarket: "collected",
+  prophetx: "collected",
+  sbobet: "collected",
+  stake: "collected",
+  thescorebet: "collected",
+} as const);

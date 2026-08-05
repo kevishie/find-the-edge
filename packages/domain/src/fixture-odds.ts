@@ -34,7 +34,7 @@ export type OddsEvidenceGapReason =
 export interface OddsEvidenceProvenance {
   readonly providerId: string;
   readonly policyVersion: string;
-  readonly bookRole: "offered" | "comparison" | "splits";
+  readonly bookRole: "offered" | "comparison" | "collected" | "splits";
   readonly sourceState: OddsEvidenceSourceState;
 }
 export interface OddsEvidenceGap extends OddsEvidenceProvenance {
@@ -589,7 +589,9 @@ export function normalizeFixtureOddsObservation(
       "provenance",
     );
     if (
-      !["offered", "comparison", "splits"].includes(value.bookRole as string) ||
+      !["offered", "comparison", "collected", "splits"].includes(
+        value.bookRole as string,
+      ) ||
       ![
         "active",
         "stale",

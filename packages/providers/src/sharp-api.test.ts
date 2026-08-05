@@ -277,6 +277,7 @@ describe("SharpAPI activation boundary", () => {
       {
         data: [
           oddsRow(),
+          oddsRow({ id: "pinnacle-price", sportsbook: "Pinnacle Sports" }),
           oddsRow({ id: "unknown-book", sportsbook: "Mystery Book" }),
           oddsRow({ id: "unknown-market", market_type: "first_corner" }),
           oddsRow({
@@ -290,7 +291,10 @@ describe("SharpAPI activation boundary", () => {
       sharpApiLeagues[1]!,
       "2026-08-04T20:00:01.000Z" as never,
     );
-    expect(page.events[0]?.bookmakers[0]?.id).toBe("hardrock");
+    expect(page.events[0]?.bookmakers.map(({ id }) => id)).toEqual([
+      "hardrock",
+      "pinnacle",
+    ]);
     expect((page.rejections ?? []).map(({ reason }) => reason)).toEqual([
       "unknown-bookmaker",
       "unsupported-market",

@@ -5,6 +5,7 @@ import {
   MemoryOddsControlPlaneStore,
 } from "@find-the-edge/database";
 import type { IsoTimestamp } from "@find-the-edge/domain";
+import { productionOddsCollectionPolicies } from "@find-the-edge/config";
 import {
   parseSharpApiSchedulePage,
   SharpApiError,
@@ -23,6 +24,12 @@ import { ScheduleEventConflictError } from "./schedule-reconciliation";
 
 const now = new Date("2026-08-03T12:00:00.000Z");
 const at = now.toISOString() as IsoTimestamp;
+const expectedMarketCount = (leagueKey: string) =>
+  Object.values(
+    productionOddsCollectionPolicies.find(
+      (policy) => policy.leagueKey === leagueKey,
+    )!.providers[0]!.expectedBooks!,
+  ).reduce((count, markets) => count + markets.length, 0);
 
 describe("production odds control-plane composition", () => {
   it("deduplicates focused event refreshes by durable polling-window identity", async () => {
@@ -62,7 +69,10 @@ describe("production odds control-plane composition", () => {
       fetchFocused,
     };
     expect(await runFocusedSharpOddsIngestion(input)).toEqual(
-      expect.objectContaining({ status: "completed", gaps: 15 }),
+      expect.objectContaining({
+        status: "completed",
+        gaps: expectedMarketCount("mls"),
+      }),
     );
     expect(await runFocusedSharpOddsIngestion(input)).toEqual(
       expect.objectContaining({ status: "deduplicated" }),
@@ -197,7 +207,7 @@ describe("production odds control-plane composition", () => {
     } as never);
     await control.putHealth({
       providerId: "sharpapi",
-      healthKey: "sharpapi:mls:odds",
+      healthKey: "sharpapi:mlb:odds",
       healthy: true,
       consecutiveSuccesses: 1,
       quotaRemaining: 100,
@@ -209,7 +219,7 @@ describe("production odds control-plane composition", () => {
       odds: { persist: vi.fn() },
       control,
       sharpApiKey: "server-secret",
-      request: { leagueKey: "mls" as const, providerEventId: "event-2" },
+      request: { leagueKey: "mlb" as const, providerEventId: "event-2" },
       now,
       fetchFocused,
     };
@@ -219,7 +229,7 @@ describe("production odds control-plane composition", () => {
     expect(fetchFocused).not.toHaveBeenCalled();
 
     await control.putHealth({
-      ...(await control.getHealth("sharpapi:mls:odds"))!,
+      ...(await control.getHealth("sharpapi:mlb:odds"))!,
       quotaRemaining: 1000,
       updatedAt: at,
     });
@@ -237,7 +247,7 @@ describe("production odds control-plane composition", () => {
       (
         await control.getAttempt(
           sharpOddsRequestIdentity({
-            leagueKey: "mls",
+            leagueKey: "mlb",
             endpointMode: "focused",
             providerEventId: "event-2",
             marketSet: ["main"],
@@ -330,10 +340,40 @@ describe("production odds control-plane composition", () => {
       "bootstrap-identity-already-exists",
       "bootstrap-identity-snapshot-mismatch",
       "identity-conflict-count-exhausted",
+      "invalid-scheduled-reconciliation",
+      "reconciliation-participants-required",
+      "invalid-provider-event-mapping",
+      "invalid-provider-revision",
+      "invalid-canonical-event",
+      "invalid-identity-claim",
+      "identity-version-exhausted",
+      "version-exhausted",
+      "bootstrap-response-conflict",
+      "bootstrap-failed",
     ])
       expect(
         scheduleCapabilityFailure(new Error(reason), "event-reconcile"),
       ).toBe(`provider-error-${reason}`);
+    for (const [name, reason] of [
+      ["ValidationException", "storage-validation"],
+      ["ResourceNotFoundException", "storage-resource-missing"],
+      ["ProvisionedThroughputExceededException", "storage-throttled"],
+      ["ThrottlingException", "storage-throttled"],
+      ["RequestLimitExceeded", "storage-throttled"],
+      ["TransactionCanceledException", "storage-transaction-cancelled"],
+      ["TransactionInProgressException", "storage-transaction-in-progress"],
+      ["InternalServerError", "storage-unavailable"],
+      ["ServiceUnavailable", "storage-unavailable"],
+    ] as const) {
+      const error = new Error("sensitive provider detail");
+      error.name = name;
+      expect(scheduleCapabilityFailure(error, "event-reconcile")).toBe(
+        `provider-error-${reason}`,
+      );
+      expect(scheduleCapabilityFailure(error, "schedule-fetch")).toBe(
+        "provider-error-schedule-fetch",
+      );
+    }
     for (const reason of [
       "invalid-event-reconciliation-lock",
       "event-reconciliation-lock-timeout",
@@ -622,9 +662,20 @@ describe("production odds control-plane composition", () => {
         1,
         expect.objectContaining({ provider: "sharpapi", league: "mlb" }),
       );
-    expect(
-      [...control.gaps.values()].filter((gap) => gap.reason === "missing"),
-    ).toHaveLength(72);
+    const missingGaps = [...control.gaps.values()].filter(
+      (gap) => gap.reason === "missing",
+    );
+    const mlbExpected = productionOddsCollectionPolicies.find(
+      (policy) => policy.leagueKey === "mlb",
+    )!.providers[0]!.expectedBooks as Readonly<
+      Record<string, readonly string[]>
+    >;
+    expect(missingGaps.length).toBeGreaterThan(0);
+    for (const gap of missingGaps)
+      expect(mlbExpected).toHaveProperty(
+        gap.sportsbookId!,
+        expect.arrayContaining([gap.marketKey]),
+      );
     expect(
       [...control.gaps.values()].find(
         (gap) => gap.reason === "missing-provider-timestamp",

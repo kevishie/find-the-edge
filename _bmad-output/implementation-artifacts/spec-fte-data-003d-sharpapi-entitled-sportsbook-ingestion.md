@@ -2,7 +2,8 @@
 title: 'FTE-DATA-003D SharpAPI Entitled Sportsbook Ingestion'
 type: 'feature'
 created: '2026-08-04T00:00:00-04:00'
-status: 'ready-for-dev'
+status: 'in-progress'
+baseline_revision: '73aa13e'
 approval_required_before_merge: true
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/spec-fte-data-003b-sharpapi-redundant-odds-and-betting-splits.md'
@@ -12,7 +13,7 @@ context:
 
 # Story FTE-DATA-003D: SharpAPI Entitled Sportsbook Ingestion
 
-Status: ready-for-dev
+Status: in-progress
 
 ## Story
 
@@ -160,5 +161,20 @@ GPT-5 Codex
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created.
+- Authorized bounded canary verified Sharp tier capacity `maxBooks=25` and
+  Pinnacle coverage without retaining credentials, commercial terms, or raw
+  licensed responses. A ten-page MLB scan remained paginated, so capacity is
+  explicitly not treated as a complete stable catalog.
+- One-page samples across all enabled leagues observed 23 exact wire IDs:
+  `ballybet`, `betano`, `betmgm`, `betonline`, `betrivers`, `bovada`, `caesars`,
+  `circa`, `draftkings`, `fanatics`, `fanatics_markets`, `fanduel`, `fliff`,
+  `hardrock`, `kalshi`, `novig`, `onexbet`, `pinnacle`, `polymarket`,
+  `prophetx`, `sbobet`, `stake`, and `thescorebet`.
+- The closed canonical registry and collection policy use only those observed
+  identities. Collection approval is separate from evaluation weights, and
+  expected absence is league/market scoped.
+- Remaining live proof before merge: execute one explicitly authorized
+  ingestion canary that persists and reads back a normalized Pinnacle snapshot;
+  record only bounded counts and observed/coverage-unverified status.
 
 ### File List

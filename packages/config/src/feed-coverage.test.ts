@@ -5,14 +5,6 @@ import {
 } from "./feed-coverage";
 import { defaultEvaluationPolicy } from "./evaluation-policy";
 
-const PRO_ENTITLED_ODDS_BOOKS = new Set([
-  "hardrock",
-  "draftkings",
-  "fanduel",
-  "betmgm",
-  "caesars",
-]);
-
 describe("production odds policy", () => {
   it("is Sharp-primary, independently budgeted and adaptive", () => {
     expect(oddsCollectionPolicyVersion).toContain("control-plane");
@@ -40,13 +32,22 @@ describe("production odds policy", () => {
       expect(comparisons.length).toBeGreaterThanOrEqual(
         defaultEvaluationPolicy.minimumComparisonBooks,
       );
+      expect(provider.books.pinnacle).toBe("collected");
+      expect(provider.books.circa).toBe("collected");
+      expect(defaultEvaluationPolicy.comparisonWeights).not.toHaveProperty(
+        "pinnacle",
+      );
       expect(
-        Object.keys(provider.books).every((book) =>
-          PRO_ENTITLED_ODDS_BOOKS.has(book),
+        Object.keys(defaultEvaluationPolicy.comparisonWeights).every(
+          (book) => provider.books[book] === "comparison",
         ),
       ).toBe(true);
-      expect(provider.books).not.toHaveProperty("circa");
-      expect(provider.books).not.toHaveProperty("pinnacle");
+      if (policy.leagueKey === "mlb")
+        expect(provider.expectedBooks?.pinnacle).toEqual(["moneyline"]);
+      else expect(provider.expectedBooks).not.toHaveProperty("pinnacle");
+      expect(provider.expectedBooks).not.toHaveProperty("hardrock");
+      expect(provider.expectedBooks).not.toHaveProperty("draftkings");
+      expect(provider.expectedBooks).not.toHaveProperty("circa");
     }
   });
 });

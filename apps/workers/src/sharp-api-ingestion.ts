@@ -310,13 +310,15 @@ export async function persistSharpApiOddsPage(
   league: SharpApiLeague,
   page: Pick<SharpApiOddsPage, "events" | "retrievedAt"> &
     Partial<Pick<SharpApiOddsPage, "rejections">>,
-  bookRoles?: Readonly<Record<string, "offered" | "comparison" | "splits">>,
+  bookRoles?: Readonly<
+    Record<string, "offered" | "comparison" | "collected" | "splits">
+  >,
   onPersistenceOutcome?: (outcome: {
     readonly snapshot?: "created" | "existing";
     readonly current?: "advanced" | "retained";
     readonly mirrorFailure?: true;
   }) => void,
-  expectedMarkets?: readonly string[],
+  expectedBookMarkets?: Readonly<Record<string, readonly string[]>>,
 ) {
   const comparableParticipant = (value: string) =>
     value
@@ -331,6 +333,7 @@ export async function persistSharpApiOddsPage(
   }[] = [];
   let events = 0;
   let observations = 0;
+  const observationsBySportsbook: Record<string, number> = {};
   let snapshotsCreated = 0;
   let snapshotsExisting = 0;
   let currentAdvanced = 0;
@@ -615,6 +618,8 @@ export async function persistSharpApiOddsPage(
         if (persisted.current === "advanced") currentAdvanced += 1;
         else currentRetained += 1;
         observations += 1;
+        observationsBySportsbook[sportsbook.id] =
+          (observationsBySportsbook[sportsbook.id] ?? 0) + 1;
         eventObservations += 1;
         persistedByMarket.set(
           price.marketKey,
@@ -652,17 +657,31 @@ export async function persistSharpApiOddsPage(
           }
         }
     }
-    if (odds.persistAvailability && bookRoles && expectedMarkets) {
+    if (odds.persistAvailability && bookRoles && expectedBookMarkets) {
       const observed = new Map<string, Set<string>>();
       for (const book of raw.bookmakers) {
         const normalized = normalizeSportsbook(book.id);
         if (normalized.kind === "rejected") continue;
+        const complete = completeMainPrices(
+          book.prices.filter(
+            (price) =>
+              price.isMainLine &&
+              !price.isAlternateLine &&
+              !price.isPlayerProp &&
+              !price.isStalePregamePrice &&
+              !price.isSuspended &&
+              price.isActive !== false,
+          ),
+          league.leagueKey,
+        );
         observed.set(
           normalized.sportsbook.id,
-          new Set(book.prices.map(({ marketKey }) => marketKey)),
+          new Set(complete.prices.map(({ marketKey }) => marketKey)),
         );
       }
-      for (const sportsbookId of Object.keys(bookRoles))
+      for (const [sportsbookId, expectedMarkets] of Object.entries(
+        expectedBookMarkets,
+      ))
         for (const expectedMarket of expectedMarkets) {
           if (
             !["moneyline", "spread", "total", "btts", "team_total"].includes(
@@ -702,6 +721,7 @@ export async function persistSharpApiOddsPage(
   return {
     events,
     observations,
+    observationsBySportsbook,
     canonicalOddsEvents,
     rejectionCounts,
     snapshotsCreated,

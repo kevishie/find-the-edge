@@ -71,8 +71,8 @@ describe("SharpAPI primary ingestion", () => {
               startsAt: canonical.startsAt,
               bookmakers: [
                 {
-                  id: "draftkings",
-                  label: "DraftKings",
+                  id: "pinnacle",
+                  label: "Pinnacle",
                   prices: [
                     {
                       ...base,
@@ -104,7 +104,7 @@ describe("SharpAPI primary ingestion", () => {
             },
           ],
         },
-        { draftkings: "comparison" },
+        { pinnacle: "collected" },
         (outcome) => outcomes.push(outcome),
       ),
     ).rejects.toThrow("later-page-write-failed");
@@ -119,6 +119,14 @@ describe("SharpAPI primary ingestion", () => {
       observedAt: "2026-08-03T23:00:02.000Z",
     });
     expect(outcomes).toEqual([{ snapshot: "created", current: "advanced" }]);
+    expect(persist.mock.calls[0]?.[0]).toMatchObject({
+      providerId: "sharpapi",
+      observation: {
+        sportsbookId: "pinnacle",
+        sportsbookLabel: "Pinnacle",
+        provenance: { bookRole: "collected" },
+      },
+    });
     const ingested = ingestEvent.mock.calls[0]?.[0] as unknown as {
       readonly participantIdentityKeys: readonly string[];
       readonly normalizedIdentity: string;
