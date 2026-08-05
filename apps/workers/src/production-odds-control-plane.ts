@@ -23,10 +23,7 @@ export async function fetchSharpOddsPageWithRetry(
   try {
     return { page: await fetchPage(), quotaCost: 1 };
   } catch (error) {
-    if (
-      !(error instanceof SharpApiError) ||
-      error.code !== "invalid-response"
-    )
+    if (!(error instanceof SharpApiError) || error.code !== "invalid-response")
       throw error;
     onRetry();
     return { page: await fetchPage(), quotaCost: 2 };
