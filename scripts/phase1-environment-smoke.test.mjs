@@ -408,6 +408,21 @@ test("live ingestion proof accepts only the closed reconciliation diagnostic set
     "schedule-conflict-metric-pending-secret",
   ])
     assert.equal(isSafeLiveIngestionResult(result(reason)), false);
+
+  for (const reason of [
+    "mapping-canonical-missing",
+    "mapping-canonical-scope-mismatch",
+    "mapping-scope-mismatch",
+    "sharpapi-odds-mapping-no-candidate",
+    "sharpapi-odds-mapping-ambiguous-candidates",
+    "sharpapi-odds-mapping-participant-mismatch",
+    "sharpapi-odds-mapping-start-mismatch",
+  ])
+    assert.equal(isSafeLiveIngestionResult(result(reason)), true);
+  assert.equal(
+    isSafeLiveIngestionResult(result("sharpapi-odds-mapping-secret-detail")),
+    false,
+  );
 });
 
 test("live ingestion retries bounded schedule and provider recovery", () => {

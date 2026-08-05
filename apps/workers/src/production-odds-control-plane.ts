@@ -211,12 +211,23 @@ export const sharpOddsRequestIdentity = (input: {
     ]),
   );
 };
+const boundedOddsMappingFailures = new Set([
+  "mapping-canonical-missing",
+  "mapping-canonical-scope-mismatch",
+  "mapping-scope-mismatch",
+  "sharpapi-odds-mapping-no-candidate",
+  "sharpapi-odds-mapping-ambiguous-candidates",
+  "sharpapi-odds-mapping-participant-mismatch",
+  "sharpapi-odds-mapping-start-mismatch",
+]);
+
 export const capabilityFailure = (error: unknown) => {
   const reason = error instanceof Error ? error.message : "provider-error";
   if (reason === "run-owned") return "provider-recovering";
   if (reason === "schedule-attempt-reservation-conflict")
     return "transition-conflict";
   if (reason.includes("pagination")) return "pagination-invalid";
+  if (boundedOddsMappingFailures.has(reason)) return reason;
   if (reason.includes("mapping")) return "mapping-quarantine";
   if (reason.includes("transition-conflict")) return "transition-conflict";
   if (reason === "quota-reserve") return reason;

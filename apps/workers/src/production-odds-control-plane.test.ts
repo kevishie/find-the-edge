@@ -290,6 +290,19 @@ describe("production odds control-plane composition", () => {
     expect(
       capabilityFailure(new Error("schedule-conflict-metric-pending")),
     ).toBe("conflict-metric-pending");
+    for (const reason of [
+      "mapping-canonical-missing",
+      "mapping-canonical-scope-mismatch",
+      "mapping-scope-mismatch",
+      "sharpapi-odds-mapping-no-candidate",
+      "sharpapi-odds-mapping-ambiguous-candidates",
+      "sharpapi-odds-mapping-participant-mismatch",
+      "sharpapi-odds-mapping-start-mismatch",
+    ])
+      expect(capabilityFailure(new Error(reason))).toBe(reason);
+    expect(capabilityFailure(new Error("secret mapping detail"))).toBe(
+      "mapping-quarantine",
+    );
     for (const [reason, expected] of [
       ["run-owned", "provider-recovering"],
       ["schedule-attempt-reservation-conflict", "transition-conflict"],
