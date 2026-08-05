@@ -480,22 +480,26 @@ export async function runOddsLeague(input: {
   const { policy, store, now } = input;
   const clock = input.clock ?? (() => now);
   if (input.dependencyFailure) {
+    const ownershipOverlap =
+      input.dependencyFailure === "schedule-provider-recovering";
     const runId = `${policy.leagueKey}:odds:${now.toISOString()}`;
     await store.putRun({
       runId,
       leagueKey: policy.leagueKey,
       providerId: "none",
       policyVersion: oddsCollectionPolicyVersion,
-      status: "failed",
+      status: ownershipOverlap ? "skipped" : "failed",
       startedAt: iso(now),
       updatedAt: iso(now),
-      failureReason: input.dependencyFailure,
+      ...(ownershipOverlap
+        ? { skipReason: input.dependencyFailure }
+        : { failureReason: input.dependencyFailure }),
       evidenceCommitted: false,
       quotaCost: 0,
     });
     return {
       leagueKey: policy.leagueKey,
-      status: "failed",
+      status: ownershipOverlap ? "skipped" : "failed",
       reason: input.dependencyFailure,
       pages: 0,
       quotaCost: 0,

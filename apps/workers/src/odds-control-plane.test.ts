@@ -53,6 +53,37 @@ const provider = (
   fetchPage: ControlPlaneProvider["fetchPage"],
 ): ControlPlaneProvider => ({ providerId: id, fetchPage });
 describe("odds collection control plane", () => {
+  it("records an overlapping schedule owner as a recoverable skip", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+
+    await expect(
+      runOddsLeague({
+        policy,
+        store,
+        providers: new Map(),
+        committer: { commit: vi.fn() },
+        now,
+        dependencyFailure: "schedule-provider-recovering",
+      }),
+    ).resolves.toEqual({
+      leagueKey: policy.leagueKey,
+      status: "skipped",
+      reason: "schedule-provider-recovering",
+      pages: 0,
+      quotaCost: 0,
+    });
+
+    expect(
+      [...store.runs.values()].find(
+        ({ runId }) =>
+          runId === `${policy.leagueKey}:odds:${now.toISOString()}`,
+      ),
+    ).toMatchObject({
+      status: "skipped",
+      skipReason: "schedule-provider-recovering",
+    });
+  });
+
   it("retries only safe transient failures and reconciles ambiguous paid calls", () => {
     expect(
       decideOddsRetry({

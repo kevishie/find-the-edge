@@ -45,7 +45,12 @@ import {
   sportsbookMetadata,
   sportsbookScopeKey,
 } from "./sportsbooks";
-import { GamesClientError, type RetrospectiveDto } from "./api";
+import {
+  GamesClientError,
+  type OddsHistoryDto,
+  type OddsHistorySeriesDto,
+  type RetrospectiveDto,
+} from "./api";
 import { detailMatchesRoute } from "./route-state";
 
 const SPLITS_REFRESH_INTERVAL_MS = 30_000;
@@ -246,6 +251,7 @@ interface UiGamesClient {
     eventId: string,
     signal: AbortSignal,
   ): Promise<import("@find-the-edge/domain").GameOddsComparisonDto>;
+  oddsHistory?(eventId: string, signal: AbortSignal): Promise<OddsHistoryDto>;
   listSplits?(
     filter: { readonly sport: GamesSport; readonly day: string },
     signal: AbortSignal,
@@ -1673,6 +1679,441 @@ function SplitsExplorer() {
   );
 }
 
+const movementValue = (
+  series: OddsHistorySeriesDto,
+  point: OddsHistorySeriesDto["points"][number],
+  metric: "line" | "price",
+) =>
+  metric === "line" && series.marketKey !== "moneyline"
+    ? point.point
+    : point.americanOdds < 0
+      ? (-point.americanOdds / (-point.americanOdds + 100)) * 100
+      : (100 / (point.americanOdds + 100)) * 100;
+
+const seriesColor = (sportsbookId: string) => {
+  let hash = 0;
+  for (const character of sportsbookId)
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return `hsl(${hash % 360} 78% 64%)`;
+};
+
+const movementDelta = (
+  series: OddsHistorySeriesDto,
+  metric: "line" | "price",
+) => {
+  const values = series.points
+    .map((point) => movementValue(series, point, metric))
+    .filter((value): value is number => value !== undefined);
+  return values.length > 1 ? values.at(-1)! - values[0]! : null;
+};
+
+function LineMovementChart({
+  series,
+  metric,
+}: {
+  readonly series: readonly OddsHistorySeriesDto[];
+  readonly metric: "line" | "price";
+}) {
+  const width = 960;
+  const height = 320;
+  const inset = { top: 20, right: 24, bottom: 42, left: 62 };
+  const samples = series.flatMap((item) =>
+    item.points.flatMap((point) => {
+      const value = movementValue(item, point, metric);
+      return value === undefined
+        ? []
+        : [{ at: Date.parse(point.observedAt), value }];
+    }),
+  );
+  const hasMovement = series.some(
+    (item) =>
+      item.points.filter(
+        (point) => movementValue(item, point, metric) !== undefined,
+      ).length > 1,
+  );
+  if (!hasMovement)
+    return (
+      <div className="movement-empty" role="status">
+        A second observation will create the movement graph. Current lines are
+        still shown in the comparison board above.
+      </div>
+    );
+  const minTime = Math.min(...samples.map(({ at }) => at));
+  const maxTime = Math.max(...samples.map(({ at }) => at));
+  let minValue = Math.min(...samples.map(({ value }) => value));
+  let maxValue = Math.max(...samples.map(({ value }) => value));
+  if (minValue === maxValue) {
+    minValue -= 1;
+    maxValue += 1;
+  }
+  const x = (at: number) =>
+    inset.left +
+    ((at - minTime) / Math.max(1, maxTime - minTime)) *
+      (width - inset.left - inset.right);
+  const y = (value: number) =>
+    inset.top +
+    ((maxValue - value) / (maxValue - minValue)) *
+      (height - inset.top - inset.bottom);
+  const ticks = Array.from({ length: 5 }, (_, index) => {
+    const ratio = index / 4;
+    return maxValue - ratio * (maxValue - minValue);
+  });
+  return (
+    <div
+      className="movement-chart-scroll"
+      role="region"
+      tabIndex={0}
+      aria-label="Scrollable movement chart"
+    >
+      <svg
+        className="movement-chart"
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={`${metric === "line" ? "Line" : "Implied probability"} movement across ${series.length} sportsbooks`}
+      >
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line
+              x1={inset.left}
+              x2={width - inset.right}
+              y1={y(tick)}
+              y2={y(tick)}
+              className="movement-grid-line"
+            />
+            <text
+              x={inset.left - 10}
+              y={y(tick) + 4}
+              textAnchor="end"
+              className="movement-axis-label"
+            >
+              {metric === "price"
+                ? `${tick.toFixed(1)}%`
+                : Number.isInteger(tick)
+                  ? tick
+                  : tick.toFixed(1)}
+            </text>
+          </g>
+        ))}
+        <text x={inset.left} y={height - 12} className="movement-axis-label">
+          {new Date(minTime).toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })}
+        </text>
+        <text
+          x={width - inset.right}
+          y={height - 12}
+          textAnchor="end"
+          className="movement-axis-label"
+        >
+          {new Date(maxTime).toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })}
+        </text>
+        {series.map((item) => {
+          const coordinates = item.points.flatMap((point) => {
+            const value = movementValue(item, point, metric);
+            return value === undefined
+              ? []
+              : [{ x: x(Date.parse(point.observedAt)), y: y(value), point }];
+          });
+          if (!coordinates.length) return null;
+          const color = seriesColor(item.sportsbookId);
+          return (
+            <g key={item.sportsbookId}>
+              <polyline
+                points={coordinates
+                  .map(({ x: xPoint, y: yPoint }) => `${xPoint},${yPoint}`)
+                  .join(" ")}
+                fill="none"
+                stroke={color}
+                strokeWidth="3"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+              {coordinates.map(({ x: xPoint, y: yPoint, point }, index) => (
+                <circle
+                  key={`${xPoint}-${yPoint}-${index}`}
+                  cx={xPoint}
+                  cy={yPoint}
+                  r={index === 0 || index === coordinates.length - 1 ? 4 : 2}
+                  fill={color}
+                >
+                  <title>
+                    {`${item.sportsbookLabel}: ${metric === "price" ? `${movementValue(item, point, metric)?.toFixed(2)}% implied` : movementValue(item, point, metric)} at ${new Date(point.observedAt).toLocaleString()}`}
+                  </title>
+                </circle>
+              ))}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function DecisionWorkbench({
+  game,
+  client,
+}: {
+  readonly game: import("@find-the-edge/domain").GameOddsComparisonDto;
+  readonly client: UiGamesClient;
+}) {
+  type Split = NonNullable<
+    Awaited<ReturnType<NonNullable<UiGamesClient["listSplits"]>>>
+  >["items"][number]["splits"][number];
+  const [historyState, setHistoryState] = useState<
+    | { readonly kind: "loading" }
+    | { readonly kind: "ready"; readonly value: OddsHistoryDto }
+    | { readonly kind: "unavailable" }
+  >({ kind: "loading" });
+  const [splits, setSplits] = useState<readonly Split[]>([]);
+  const [marketKey, setMarketKey] = useState("moneyline");
+  const [selectionKey, setSelectionKey] = useState("");
+  const [metric, setMetric] = useState<"line" | "price">("price");
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = () => {
+      if (!client.oddsHistory) setHistoryState({ kind: "unavailable" });
+      else
+        client
+          .oddsHistory(game.id, controller.signal)
+          .then((value) => {
+            if (!controller.signal.aborted)
+              setHistoryState({ kind: "ready", value });
+          })
+          .catch(() => {
+            if (!controller.signal.aborted)
+              setHistoryState({ kind: "unavailable" });
+          });
+      if (client.listSplits)
+        client
+          .listSplits(
+            {
+              sport: game.sportKey === "mlb" ? "mlb" : "soccer",
+              day: game.eastern.calendarDay,
+            },
+            controller.signal,
+          )
+          .then((page) => {
+            if (!controller.signal.aborted)
+              setSplits(
+                page.items.find(({ id }) => id === game.id)?.splits ?? [],
+              );
+          })
+          .catch(() => undefined);
+    };
+    load();
+    return () => controller.abort();
+  }, [client, game.eastern.calendarDay, game.id, game.sportKey]);
+
+  const history = historyState.kind === "ready" ? historyState.value : null;
+  const marketSeries =
+    history?.series.filter((item) => item.marketKey === marketKey) ?? [];
+  const selections = [
+    ...new Map(
+      marketSeries.map((item) => [
+        item.selectionKey,
+        { key: item.selectionKey, label: item.selectionLabel },
+      ]),
+    ).values(),
+  ];
+  const activeSelection = selections.some(({ key }) => key === selectionKey)
+    ? selectionKey
+    : (selections[0]?.key ?? "");
+  const selectedSeries = marketSeries.filter(
+    (item) => item.selectionKey === activeSelection,
+  );
+  const effectiveMetric = marketKey === "moneyline" ? "price" : metric;
+  const sharpSeries = selectedSeries.filter(({ sportsbookId }) =>
+    ["pinnacle", "circa"].includes(sportsbookId),
+  );
+  const publicSeries = selectedSeries.filter(
+    ({ sportsbookId }) => sportsbookId === "draftkings",
+  );
+  const averageDelta = (items: readonly OddsHistorySeriesDto[]) => {
+    const values = items
+      .map((item) => movementDelta(item, effectiveMetric))
+      .filter((value): value is number => value !== null);
+    return values.length
+      ? values.reduce((sum, value) => sum + value, 0) / values.length
+      : null;
+  };
+  const selectedSplits = splits.filter(
+    (split) =>
+      split.marketKey === marketKey && split.selectionKey === activeSelection,
+  );
+  return (
+    <section className="decision-workbench" aria-labelledby="movement-title">
+      <div className="decision-heading">
+        <div>
+          <p className="eyebrow">DECISION WORKBENCH</p>
+          <h2 id="movement-title">Line movement &amp; public money</h2>
+          <p>
+            Compare immutable first-to-latest movement in the retained window
+            across every observed book, then contrast Pinnacle/Circa with
+            DraftKings betting splits.
+          </p>
+        </div>
+        <span className="provider-chip">SharpAPI evidence</span>
+      </div>
+      <div className="movement-controls">
+        <div role="group" aria-label="Movement market" className="market-tabs">
+          {["moneyline", "spread", "total"].map((candidate) => (
+            <button
+              key={candidate}
+              aria-pressed={marketKey === candidate}
+              onClick={() => {
+                setMarketKey(candidate);
+                setSelectionKey("");
+                setMetric(candidate === "moneyline" ? "price" : "line");
+              }}
+            >
+              {candidate === "moneyline"
+                ? "Moneyline"
+                : candidate[0]!.toUpperCase() + candidate.slice(1)}
+            </button>
+          ))}
+        </div>
+        <label>
+          Selection
+          <select
+            value={activeSelection}
+            onChange={(event) => setSelectionKey(event.target.value)}
+          >
+            {selections.map((selection) => (
+              <option key={selection.key} value={selection.key}>
+                {selection.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {marketKey !== "moneyline" && (
+          <div className="metric-toggle" role="group" aria-label="Chart metric">
+            <button
+              className={metric === "line" ? "active" : ""}
+              aria-pressed={metric === "line"}
+              onClick={() => setMetric("line")}
+            >
+              Line
+            </button>
+            <button
+              className={metric === "price" ? "active" : ""}
+              aria-pressed={metric === "price"}
+              onClick={() => setMetric("price")}
+            >
+              Price
+            </button>
+          </div>
+        )}
+      </div>
+      {historyState.kind === "loading" ? (
+        <p role="status">Loading immutable line history…</p>
+      ) : historyState.kind === "unavailable" ? (
+        <p role="status">Line movement is temporarily unavailable.</p>
+      ) : (
+        <>
+          <LineMovementChart series={selectedSeries} metric={effectiveMetric} />
+          <div
+            className="movement-legend"
+            aria-label="Sportsbook movement legend"
+          >
+            {selectedSeries.map((item) => {
+              const delta = movementDelta(item, effectiveMetric);
+              const latest = [...item.points]
+                .reverse()
+                .find(
+                  (point) =>
+                    movementValue(item, point, effectiveMetric) !== undefined,
+                );
+              return (
+                <article key={item.sportsbookId}>
+                  <span
+                    className="series-swatch"
+                    style={{ background: seriesColor(item.sportsbookId) }}
+                  />
+                  <SportsbookLogo scope={item.sportsbookId} />
+                  <strong>{item.sportsbookLabel}</strong>
+                  <span>
+                    {latest
+                      ? effectiveMetric === "line"
+                        ? linePoint(latest.point!)
+                        : oddsPrice(latest.americanOdds)
+                      : "—"}
+                  </span>
+                  <small>
+                    {delta === null
+                      ? "1 observation"
+                      : `${delta > 0 ? "+" : ""}${delta.toFixed(1)} ${effectiveMetric === "price" ? "probability points" : "line move"}`}
+                  </small>
+                </article>
+              );
+            })}
+          </div>
+        </>
+      )}
+      <div className="signal-grid">
+        <article>
+          <span>Sharp reference</span>
+          <strong>
+            {averageDelta(sharpSeries) === null
+              ? "Not enough history"
+              : `${averageDelta(sharpSeries)! > 0 ? "+" : ""}${averageDelta(sharpSeries)!.toFixed(1)} pp`}
+          </strong>
+          <small>Pinnacle and Circa first-to-latest probability move</small>
+        </article>
+        <article>
+          <span>Public reference</span>
+          <strong>
+            {averageDelta(publicSeries) === null
+              ? "Not enough history"
+              : `${averageDelta(publicSeries)! > 0 ? "+" : ""}${averageDelta(publicSeries)!.toFixed(1)} pp`}
+          </strong>
+          <small>DraftKings first-to-latest probability move</small>
+        </article>
+        {selectedSplits.length ? (
+          selectedSplits.map((split) => (
+            <article key={split.id}>
+              <span>
+                {sportsbookMetadata(split.scope ?? "consensus").name} splits
+              </span>
+              <strong>
+                {split.betPercent === undefined ? "—" : `${split.betPercent}%`}{" "}
+                bets ·{" "}
+                {split.moneyPercent === undefined
+                  ? "—"
+                  : `${split.moneyPercent}%`}{" "}
+                money
+              </strong>
+              <small>
+                {split.betPercent !== undefined &&
+                split.moneyPercent !== undefined
+                  ? `${Math.abs(split.moneyPercent - split.betPercent)} point handle/ticket gap`
+                  : "Partial split evidence"}
+              </small>
+            </article>
+          ))
+        ) : (
+          <article>
+            <span>Public splits</span>
+            <strong>No current evidence</strong>
+            <small>DraftKings/Circa only; never fabricated</small>
+          </article>
+        )}
+      </div>
+      <p className="decision-caution">
+        Splits and movement are evidence, not a recommendation. Confirm price,
+        limits, availability, and model edge before acting.
+      </p>
+    </section>
+  );
+}
+
 function GameDetail() {
   const client = useContext(GamesClientContext);
   const { gameId } = useParams({ from: "/games/$gameId" });
@@ -1744,6 +2185,8 @@ function GameDetail() {
     );
   if (!detailMatchesRoute(state.game.id, gameId))
     return <p>Loading game details…</p>;
+  if (!client.ok)
+    return <p role="alert">Game details are temporarily unavailable.</p>;
   const game = state.game;
   const comparison = buildOddsComparisonViewModel(game);
   const targetBook = comparison.books.find(({ target }) => target)!;
@@ -1896,6 +2339,7 @@ function GameDetail() {
           <p>No supported markets are available.</p>
         )}
       </section>
+      <DecisionWorkbench game={game} client={client.value} />
     </>
   );
 }

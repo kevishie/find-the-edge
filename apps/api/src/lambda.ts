@@ -10,7 +10,12 @@ import {
   DynamoRetrospectiveRepository,
   EventCursorCodec,
   DynamoDbStrategyExperimentRepository,
+  DynamoOddsHistoryRepository,
 } from "@find-the-edge/database";
+import {
+  approvedSportsbookCollection,
+  sportsbookRegistry,
+} from "@find-the-edge/config";
 import { createEventHandler } from "./handler";
 import { loadSecretRing } from "./secrets";
 interface LambdaEvent {
@@ -52,7 +57,19 @@ export const handler = async (event: LambdaEvent) => {
       );
     },
   );
-  const games = new DynamoGamesRepository(repository, gateway);
+  const approvedLabels = Object.fromEntries(
+    sportsbookRegistry
+      .filter(({ id }) => id in approvedSportsbookCollection)
+      .map(({ id, name }) => [id, name]),
+  );
+  const detailSportsbooks = Object.entries(approvedLabels).map(
+    ([id, label]) => ({ id, label }),
+  );
+  const games = new DynamoGamesRepository(
+    repository,
+    gateway,
+    detailSportsbooks,
+  );
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const claims = event.requestContext?.authorizer?.jwt?.claims;
   const route =
@@ -74,27 +91,29 @@ export const handler = async (event: LambdaEvent) => {
                     ? "retrospective-versions"
                     : event.routeKey === "POST /retrospectives/{eventId}/review"
                       ? "retrospective-review"
-                      : event.routeKey?.startsWith("GET /games")
-                        ? "games"
-                        : event.routeKey?.startsWith("GET /splits")
-                          ? "splits"
-                          : event.routeKey === "GET /performance/reports"
-                            ? "performance-reports"
-                            : event.routeKey?.startsWith(
-                                  "GET /performance/reports/",
-                                )
-                              ? "performance-detail"
+                      : event.routeKey === "GET /games/{eventId}/odds-history"
+                        ? "odds-history"
+                        : event.routeKey?.startsWith("GET /games")
+                          ? "games"
+                          : event.routeKey?.startsWith("GET /splits")
+                            ? "splits"
+                            : event.routeKey === "GET /performance/reports"
+                              ? "performance-reports"
                               : event.routeKey?.startsWith(
-                                    "GET /performance/cohorts/",
+                                    "GET /performance/reports/",
                                   )
-                                ? "performance-members"
+                                ? "performance-detail"
                                 : event.routeKey?.startsWith(
-                                      "GET /performance/cohorts",
+                                      "GET /performance/cohorts/",
                                     )
-                                  ? "performance-list"
-                                  : event.routeKey?.includes("/{eventId}")
-                                    ? "detail"
-                                    : "list";
+                                  ? "performance-members"
+                                  : event.routeKey?.startsWith(
+                                        "GET /performance/cohorts",
+                                      )
+                                    ? "performance-list"
+                                    : event.routeKey?.includes("/{eventId}")
+                                      ? "detail"
+                                      : "list";
   const eventId = event.pathParameters?.eventId;
   const subject =
     typeof claims?.["sub"] === "string" ? claims["sub"] : undefined;
@@ -132,6 +151,12 @@ export const handler = async (event: LambdaEvent) => {
       documentClient,
       tableName,
       cursorCodec,
+    ),
+    new DynamoOddsHistoryRepository(
+      documentClient,
+      tableName,
+      cursorCodec,
+      approvedLabels,
     ),
   )({
     route,

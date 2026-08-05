@@ -309,6 +309,17 @@ function validTemplate() {
           },
         },
       },
+      OddsHistoryRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /games/{eventId}/odds-history",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
       SplitsRoute: {
         Type: "AWS::ApiGatewayV2::Route",
         Properties: {

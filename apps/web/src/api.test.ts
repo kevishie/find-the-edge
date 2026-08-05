@@ -220,6 +220,83 @@ describe("games client", () => {
     ).resolves.toMatchObject({ oddsComparison: { targetQualified: true } });
   });
 
+  it("loads strictly ordered immutable multi-book odds history", async () => {
+    const eventId = payload.items[0]!.id;
+    const history = {
+      eventId,
+      generatedAt: "2026-08-01T12:30:00.000Z",
+      series: [
+        {
+          marketKey: "moneyline",
+          selectionKey: participantSelectionKey(
+            payload.items[0]!.participants[0]!.id as EntityId,
+          ),
+          selectionLabel: "Boston Red Sox",
+          sportsbookId: "pinnacle",
+          sportsbookLabel: "Pinnacle",
+          points: [
+            {
+              americanOdds: 125,
+              observedAt: "2026-08-01T11:00:00.000Z",
+              retrievedAt: "2026-08-01T11:00:01.000Z",
+            },
+          ],
+        },
+      ],
+      nextCursor: "page-two",
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(history)))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ...history,
+            generatedAt: "2026-08-01T12:30:01.000Z",
+            series: [
+              {
+                ...history.series[0],
+                points: [
+                  {
+                    americanOdds: 115,
+                    observedAt: "2026-08-01T12:00:00.000Z",
+                    retrievedAt: "2026-08-01T12:00:01.000Z",
+                  },
+                ],
+              },
+            ],
+            nextCursor: null,
+          }),
+        ),
+      );
+    const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.oddsHistory!(eventId, new AbortController().signal),
+    ).resolves.toMatchObject({
+      eventId,
+      series: [
+        {
+          sportsbookId: "pinnacle",
+          points: [{ americanOdds: 125 }, { americanOdds: 115 }],
+        },
+      ],
+    });
+    const request = new URL(requestHref(fetcher.mock.calls[0]![0]));
+    expect(`${request.origin}${request.pathname}`).toBe(
+      `https://api.example.test/games/${encodeURIComponent(eventId)}/odds-history`,
+    );
+    expect(request.searchParams.get("limit")).toBe("200");
+    const from = Date.parse(request.searchParams.get("from") ?? "");
+    const to = Date.parse(request.searchParams.get("to") ?? "");
+    expect(to - from).toBe(31 * 24 * 60 * 60 * 1_000);
+    expect(
+      new URL(requestHref(fetcher.mock.calls[1]![0])).searchParams.get(
+        "cursor",
+      ),
+    ).toBe("page-two");
+  });
+
   it.each([
     [
       "qualification",

@@ -330,6 +330,10 @@ describe("foundation CDK app", () => {
       AuthorizationType: "NONE",
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "GET /games/{eventId}/odds-history",
+      AuthorizationType: "NONE",
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "GET /events/{eventId}",
       AuthorizationType: "NONE",
     });

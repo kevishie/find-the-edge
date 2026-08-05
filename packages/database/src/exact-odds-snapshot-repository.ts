@@ -6,6 +6,7 @@ import {
 import type { NormalizedFixtureOddsSnapshot } from "@find-the-edge/domain";
 import { FixtureOddsStateCorruptionError } from "@find-the-edge/domain";
 import type { ClosingCandidate } from "./closing-odds-repository.js";
+import { oddsHistoryPartition } from "./odds-history-repository.js";
 
 export interface ExactOddsSnapshotIndex {
   put(snapshot: NormalizedFixtureOddsSnapshot): Promise<void>;
@@ -19,13 +20,29 @@ export class DynamoExactOddsSnapshotRepository implements ExactOddsSnapshotIndex
     private readonly tableName: string,
   ) {}
   async put(snapshot: NormalizedFixtureOddsSnapshot) {
+    await this.putImmutable(
+      "ODDS_SNAPSHOTS_BY_ID",
+      snapshot.snapshotId,
+      snapshot,
+    );
+    await this.putImmutable(
+      oddsHistoryPartition(snapshot.canonicalEventId),
+      snapshot.sortKey,
+      snapshot,
+    );
+  }
+  private async putImmutable(
+    pk: string,
+    sk: string,
+    snapshot: NormalizedFixtureOddsSnapshot,
+  ) {
     try {
       await this.client.send(
         new PutCommand({
           TableName: this.tableName,
           Item: {
-            pk: "ODDS_SNAPSHOTS_BY_ID",
-            sk: snapshot.snapshotId,
+            pk,
+            sk,
             value: snapshot,
           },
           ConditionExpression:
@@ -41,7 +58,7 @@ export class DynamoExactOddsSnapshotRepository implements ExactOddsSnapshotIndex
       const existing = await this.client.send(
         new GetCommand({
           TableName: this.tableName,
-          Key: { pk: "ODDS_SNAPSHOTS_BY_ID", sk: snapshot.snapshotId },
+          Key: { pk, sk },
           ConsistentRead: true,
         }),
       );

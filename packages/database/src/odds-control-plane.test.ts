@@ -609,6 +609,39 @@ describe("atomic paid-call guards", () => {
     expect(takeover.ownerId).toBe("owner-b");
   });
 
+  it("returns the Dynamo winner when two workers race to take over an expired lease", async () => {
+    const client = new FakeDocumentClient();
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    const expired = await store.claimContinuation({
+      leagueKey: "schedule:sharpapi:mlb",
+      runId: "recoverable-run",
+      providerId: "sharpapi",
+      updatedAt: "2026-08-03T00:00:00.000Z",
+      ownerId: "expired-owner",
+      leaseUntil: "2026-08-03T00:01:00.000Z",
+    });
+    const claim = (ownerId: string) =>
+      store.claimContinuation({
+        ...expired,
+        updatedAt: "2026-08-03T00:02:00.000Z",
+        ownerId,
+        leaseUntil: "2026-08-03T00:07:00.000Z",
+      });
+
+    const [first, second] = await Promise.all([
+      claim("takeover-a"),
+      claim("takeover-b"),
+    ]);
+
+    expect(first.ownerId).toBe(second.ownerId);
+    expect(["takeover-a", "takeover-b"]).toContain(first.ownerId);
+    expect(first.runId).toBe("recoverable-run");
+    expect(second.runId).toBe("recoverable-run");
+  });
+
   it("adopts a legacy ownerless continuation exactly once", async () => {
     const store = new MemoryOddsControlPlaneStore();
     await store.putContinuation({

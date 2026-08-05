@@ -1139,12 +1139,31 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
     )
       return old;
     if (old) {
-      await this.putVersioned(
-        "CONTINUATION",
-        v.leagueKey,
-        { ...v, version: old.version ?? 0 },
-        "continuation-transition-conflict",
-      );
+      try {
+        await this.putVersioned(
+          "CONTINUATION",
+          v.leagueKey,
+          { ...v, version: old.version ?? 0 },
+          "continuation-transition-conflict",
+        );
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "continuation-transition-conflict"
+        )
+          throw error;
+        // A concurrent claimant may have won the expired-lease takeover
+        // between our read and conditional write. Observing that live owner is
+        // a successful election result, not a storage/provider failure.
+        const winner = await this.getContinuation(v.leagueKey);
+        if (
+          !winner?.ownerId ||
+          !winner.leaseUntil ||
+          Date.parse(winner.leaseUntil) <= Date.parse(v.updatedAt)
+        )
+          throw error;
+        return winner;
+      }
       return (await this.getContinuation(v.leagueKey))!;
     }
     const created = { ...v, version: 1 };

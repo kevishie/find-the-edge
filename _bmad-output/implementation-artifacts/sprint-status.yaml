@@ -1,6 +1,6 @@
 project: FIND THE EDGE
 created: "2026-07-15"
-updated: "2026-08-04"
+updated: "2026-08-05"
 source: "_bmad-output/planning-artifacts/epics-and-stories.md"
 statusValues:
   - backlog
@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-025
+nextReadyStory: FTE-DATA-003D
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -163,7 +163,7 @@ stories:
     priority: P0
     status: done
     dependencies: [FTE-DATA-001, FTE-DATA-002, FTE-DATA-003B]
-    validationCommands: [pnpm check, pnpm synth, pnpm test:e2e]
+    validationCommands: [pnpm check, pnpm synth, "pnpm test:e2e"]
     blockerReason:
     risk: High
     approvalRequiredBeforeMerge: true
@@ -174,9 +174,9 @@ stories:
     league: enabled
     module: odds-ingestion
     priority: P0
-    status: ready
+    status: in-progress
     dependencies: [FTE-DATA-001, FTE-DATA-003B, FTE-DATA-003C, FTE-020]
-    validationCommands: [pnpm check, pnpm synth, pnpm phase1:preflight]
+    validationCommands: [pnpm check, pnpm synth, "pnpm phase1:preflight"]
     blockerReason:
     risk: High
     approvalRequiredBeforeMerge: true
@@ -189,7 +189,7 @@ stories:
     priority: P0
     status: blocked
     dependencies: [FTE-DATA-002, FTE-016]
-    validationCommands: [pnpm check, pnpm synth, pnpm test:e2e]
+    validationCommands: [pnpm check, pnpm synth, "pnpm test:e2e"]
     blockerReason:
     risk: High
     approvalRequiredBeforeMerge: false
@@ -267,7 +267,7 @@ stories:
     priority: P0
     status: done
     dependencies: [FTE-MVP-001B, FTE-MVP-001B1, FTE-MVP-001B2]
-    validationCommands: [pnpm check, pnpm test:e2e]
+    validationCommands: [pnpm check, "pnpm test:e2e"]
     blockerReason:
     risk: Medium
     approvalRequiredBeforeMerge: false
@@ -306,7 +306,7 @@ stories:
     priority: P0
     status: done
     dependencies: [FTE-MVP-001A3, FTE-MVP-001B, FTE-MVP-001B2, FTE-MVP-001C]
-    validationCommands: [pnpm check, pnpm phase1:preflight, pnpm phase1:bundle]
+    validationCommands: [pnpm check, "pnpm phase1:preflight", "pnpm phase1:bundle"]
     blockerReason:
     risk: High
     approvalRequiredBeforeMerge: false
@@ -319,7 +319,7 @@ stories:
     priority: P0
     status: done
     dependencies: [FTE-MVP-001D]
-    validationCommands: [pnpm check, pnpm phase1:test, pnpm phase1:preflight, pnpm phase1:bundle]
+    validationCommands: [pnpm check, "pnpm phase1:test", "pnpm phase1:preflight", "pnpm phase1:bundle"]
     blockerReason:
     risk: High
     approvalRequiredBeforeMerge: false
@@ -604,15 +604,22 @@ stories:
   - id: FTE-025
     title: Event Detail Odds Comparison
     epic: Odds ingestion and market normalization
-    status: in-progress
+    status: review
     dependencies: [FTE-011, FTE-016, FTE-021, FTE-020]
     risk: Medium
     approvalRequiredBeforeMerge: false
   - id: FTE-026
     title: Odds History API and Chart
     epic: Odds ingestion and market normalization
-    status: backlog
+    status: in-progress
     dependencies: [FTE-021, FTE-025, FTE-027]
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-026A
+    title: Multi-Sportsbook Line Movement Graph
+    epic: Odds ingestion and market normalization
+    status: in-progress
+    dependencies: [FTE-025, FTE-026, FTE-027]
     risk: Medium
     approvalRequiredBeforeMerge: false
   - id: FTE-027

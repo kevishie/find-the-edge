@@ -1564,27 +1564,33 @@ export async function runProductionOddsControlPlane(input: {
     } catch (error) {
       const reason = scheduleCapabilityFailure(error, scheduleStage);
       const scheduleHealthKey = `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`;
-      await input.control.putHealth(
-        unhealthyOddsProviderState(
-          await input.control.getHealth(scheduleHealthKey),
-          {
-            providerId: SHARP_API_PROVIDER_ID,
-            healthKey: scheduleHealthKey,
-            now,
-            decision: decideOddsRetry({
-              error:
-                reason === "stored-event-conflict" ? new Error(reason) : error,
-              attempt: 1,
+      // Another healthy worker owning this league is coordination, not a
+      // provider outage. Recording it as unhealthy can race the real owner's
+      // successful health write and manufacture a 30-minute SharpAPI cooldown.
+      if (reason !== "provider-recovering")
+        await input.control.putHealth(
+          unhealthyOddsProviderState(
+            await input.control.getHealth(scheduleHealthKey),
+            {
+              providerId: SHARP_API_PROVIDER_ID,
+              healthKey: scheduleHealthKey,
               now,
-              ...(error instanceof SharpApiError && error.retryAt
-                ? { providerRetryAt: error.retryAt }
-                : {}),
-              jitter: () => 0,
-            }),
-            cooldownSeconds: 1_800,
-          },
-        ),
-      );
+              decision: decideOddsRetry({
+                error:
+                  reason === "stored-event-conflict"
+                    ? new Error(reason)
+                    : error,
+                attempt: 1,
+                now,
+                ...(error instanceof SharpApiError && error.retryAt
+                  ? { providerRetryAt: error.retryAt }
+                  : {}),
+                jitter: () => 0,
+              }),
+              cooldownSeconds: 1_800,
+            },
+          ),
+        );
       scheduleFailures.set(sharpLeague.leagueKey, `schedule-${reason}`);
       if (activeScheduleRunId) {
         const run = await input.control.getRun(activeScheduleRunId);

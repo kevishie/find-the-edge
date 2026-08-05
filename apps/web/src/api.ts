@@ -84,6 +84,29 @@ export interface SplitsPageDto extends Omit<GamesPageDto, "items"> {
   })[];
 }
 
+export interface OddsHistoryPointDto {
+  readonly point?: number;
+  readonly americanOdds: number;
+  readonly observedAt: string;
+  readonly retrievedAt: string;
+}
+
+export interface OddsHistorySeriesDto {
+  readonly marketKey: string;
+  readonly selectionKey: string;
+  readonly selectionLabel: string;
+  readonly sportsbookId: string;
+  readonly sportsbookLabel: string;
+  readonly points: readonly OddsHistoryPointDto[];
+}
+
+export interface OddsHistoryDto {
+  readonly eventId: string;
+  readonly generatedAt: string;
+  readonly series: readonly OddsHistorySeriesDto[];
+  readonly nextCursor: string | null;
+}
+
 export interface GamesClient {
   listExperiments?(signal: AbortSignal): Promise<
     readonly {
@@ -120,6 +143,7 @@ export interface GamesClient {
   ): Promise<unknown>;
   list(filter: GamesFilter, signal: AbortSignal): Promise<GamesExplorerPageDto>;
   detail?(eventId: string, signal: AbortSignal): Promise<GameOddsComparisonDto>;
+  oddsHistory?(eventId: string, signal: AbortSignal): Promise<OddsHistoryDto>;
   listSplits?(filter: GamesFilter, signal: AbortSignal): Promise<SplitsPageDto>;
   listPerformance?(signal: AbortSignal): Promise<PerformanceReportDto | null>;
   listRetrospectives?(
@@ -968,6 +992,90 @@ const validOddsComparison = (
   return value["targetQualified"] === computedQualified;
 };
 
+const parseOddsHistory = (value: unknown, eventId: string): OddsHistoryDto => {
+  if (
+    !plain(value) ||
+    !exact(value, ["eventId", "generatedAt", "series", "nextCursor"]) ||
+    value["eventId"] !== eventId ||
+    !iso(value["generatedAt"]) ||
+    !Array.isArray(value["series"]) ||
+    (value["nextCursor"] !== null && !boundedString(value["nextCursor"], 4_096))
+  )
+    throw new GamesClientError(
+      "invalid-response",
+      "The odds history response was invalid.",
+    );
+  const series = value["series"].map((candidate) => {
+    if (
+      !plain(candidate) ||
+      !exact(candidate, [
+        "marketKey",
+        "selectionKey",
+        "selectionLabel",
+        "sportsbookId",
+        "sportsbookLabel",
+        "points",
+      ]) ||
+      !["moneyline", "spread", "total"].includes(
+        String(candidate["marketKey"]),
+      ) ||
+      !boundedString(candidate["selectionKey"], 256) ||
+      !boundedString(candidate["selectionLabel"], 160) ||
+      !boundedString(candidate["sportsbookId"], 128) ||
+      !boundedString(candidate["sportsbookLabel"], 160) ||
+      !Array.isArray(candidate["points"]) ||
+      candidate["points"].length > 10_000
+    )
+      throw new GamesClientError(
+        "invalid-response",
+        "The odds history response was invalid.",
+      );
+    const points = candidate["points"].map((point) => {
+      if (
+        !plain(point) ||
+        !exact(point, [
+          "americanOdds",
+          "observedAt",
+          "retrievedAt",
+          ...(Object.hasOwn(point, "point") ? ["point"] : []),
+        ]) ||
+        !validAmericanOdds(point["americanOdds"]) ||
+        !iso(point["observedAt"]) ||
+        !iso(point["retrievedAt"]) ||
+        (point["point"] !== undefined &&
+          (typeof point["point"] !== "number" ||
+            !Number.isFinite(point["point"])))
+      )
+        throw new GamesClientError(
+          "invalid-response",
+          "The odds history response was invalid.",
+        );
+      return point as unknown as OddsHistoryPointDto;
+    });
+    if (
+      points.some(
+        (point, index) =>
+          index > 0 && point.observedAt < (points[index - 1]?.observedAt ?? ""),
+      )
+    )
+      throw new GamesClientError(
+        "invalid-response",
+        "The odds history response was invalid.",
+      );
+    return { ...candidate, points } as unknown as OddsHistorySeriesDto;
+  });
+  const identities = series.map(
+    ({ marketKey, selectionKey, sportsbookId }) =>
+      `${marketKey}|${selectionKey}|${sportsbookId}`,
+  );
+  if (new Set(identities).size !== identities.length)
+    throw new GamesClientError(
+      "invalid-response",
+      "The odds history response was invalid.",
+    );
+  return { ...value, series } as unknown as OddsHistoryDto;
+};
+
 export const isCanonicalEventStatus = (value: unknown): value is EventStatus =>
   EVENT_LIFECYCLE_STATES.some((state) => state === value);
 
@@ -1444,6 +1552,7 @@ function parseSplitsPage(
 }
 
 const MAX_PAGES = 100;
+const ODDS_HISTORY_MAX_PAGES = 512;
 const LIFECYCLE_REQUEST_TIMEOUT_MS = 10_000;
 
 async function boundedLifecycleRequest<T>(
@@ -1928,6 +2037,107 @@ export function createGamesClient(
             "The game details response was invalid.",
           );
         return item as unknown as GameOddsComparisonDto;
+      },
+      async oddsHistory(eventId, signal) {
+        const series = new Map<string, OddsHistorySeriesDto>();
+        const cursors = new Set<string>();
+        let cursor: string | undefined;
+        let generatedAt: string | undefined;
+        const to = new Date();
+        const from = new Date(to.getTime() - 31 * 24 * 60 * 60 * 1_000);
+        for (
+          let pageNumber = 0;
+          pageNumber < ODDS_HISTORY_MAX_PAGES;
+          pageNumber += 1
+        ) {
+          const query = new URLSearchParams({
+            from: from.toISOString(),
+            to: to.toISOString(),
+            limit: "200",
+          });
+          if (cursor) query.set("cursor", cursor);
+          let response: Response;
+          try {
+            response = await fetcher(
+              `${bootstrap.value.config.apiBase}/games/${encodeURIComponent(eventId)}/odds-history?${query}`,
+              { signal },
+            );
+          } catch (error) {
+            if (signal.aborted) throw error;
+            throw new GamesClientError(
+              "request-failed",
+              "Line movement is temporarily unavailable.",
+            );
+          }
+          if (response.status === 404)
+            throw new GamesClientError("not-found", "This game was not found.");
+          if (!response.ok)
+            throw new GamesClientError(
+              "request-failed",
+              "Line movement is temporarily unavailable.",
+            );
+          const page = parseOddsHistory(
+            await response.json().catch(() => null),
+            eventId,
+          );
+          if (generatedAt === undefined) generatedAt = page.generatedAt;
+          for (const item of page.series) {
+            const key = `${item.marketKey}|${item.selectionKey}|${item.sportsbookId}`;
+            const existing = series.get(key);
+            if (!existing) series.set(key, item);
+            else {
+              const points = [...existing.points, ...item.points];
+              const identities = new Set<string>();
+              if (
+                points.some((point) => {
+                  const identity = JSON.stringify([
+                    point.point ?? null,
+                    point.americanOdds,
+                    point.observedAt,
+                    point.retrievedAt,
+                  ]);
+                  if (identities.has(identity)) return true;
+                  identities.add(identity);
+                  return false;
+                })
+              )
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The odds history response repeated an observation.",
+                );
+              if (
+                points.some(
+                  (point, index) =>
+                    index > 0 &&
+                    point.observedAt < (points[index - 1]?.observedAt ?? ""),
+                )
+              )
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The odds history response was out of order.",
+                );
+              series.set(key, { ...item, points });
+            }
+          }
+          if (page.nextCursor === null)
+            return {
+              eventId,
+              generatedAt: generatedAt ?? new Date(0).toISOString(),
+              series: [...series.values()],
+              nextCursor: null,
+            };
+          if (cursors.has(page.nextCursor))
+            throw new GamesClientError(
+              "invalid-response",
+              "The odds history cursor repeated.",
+            );
+          cursors.add(page.nextCursor);
+          cursor = page.nextCursor;
+        }
+        throw new GamesClientError(
+          "invalid-response",
+          "The odds history response exceeded the page limit.",
+        );
       },
       async listSplits(filter, signal) {
         return exhaustPages({

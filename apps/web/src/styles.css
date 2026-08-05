@@ -984,7 +984,8 @@ footer {
   color: #bbb3c7;
   background: transparent;
 }
-.market-tabs button[aria-selected="true"] {
+.market-tabs button[aria-selected="true"],
+.market-tabs button[aria-pressed="true"] {
   color: white;
   border-color: #8b5cf6;
   background: rgba(139, 92, 246, 0.18);
@@ -1011,6 +1012,18 @@ footer {
 .comparison-board thead th {
   color: #aaa3b5;
   font-size: 12px;
+}
+.comparison-board thead th:first-child,
+.comparison-board tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 150px;
+  background: #100d16;
+  box-shadow: 1px 0 #3b3248;
+}
+.comparison-board thead th:first-child {
+  z-index: 3;
 }
 .comparison-board thead th span,
 .comparison-board thead th small {
@@ -1053,6 +1066,180 @@ footer {
   opacity: 0.72;
 }
 
+.decision-workbench {
+  margin-top: 24px;
+  padding: 22px;
+  border: 1px solid #3d3351;
+  border-radius: 14px;
+  background:
+    radial-gradient(
+      circle at 85% 0%,
+      rgba(139, 92, 246, 0.14),
+      transparent 34%
+    ),
+    #100d16;
+}
+.decision-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.decision-heading h2 {
+  margin: 4px 0 8px;
+}
+.decision-heading p:not(.eyebrow) {
+  max-width: 760px;
+  margin: 0;
+  color: #aaa3b5;
+  line-height: 1.55;
+}
+.provider-chip {
+  flex: 0 0 auto;
+  padding: 7px 11px;
+  border: 1px solid #397658;
+  border-radius: 999px;
+  color: #80e5b1;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.movement-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px;
+  margin: 24px 0 14px;
+}
+.movement-controls .market-tabs {
+  padding: 0;
+}
+.movement-controls label {
+  display: grid;
+  gap: 6px;
+  color: #8f879b;
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.movement-controls select {
+  min-width: 190px;
+  padding: 9px 12px;
+  border: 1px solid #443852;
+  border-radius: 8px;
+  color: #f7f4fb;
+  background: #0b0910;
+}
+.metric-toggle {
+  display: flex;
+  padding: 3px;
+  border: 1px solid #443852;
+  border-radius: 9px;
+  background: #0b0910;
+}
+.metric-toggle button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 6px;
+  color: #aaa3b5;
+  background: transparent;
+}
+.metric-toggle button.active {
+  color: #fff;
+  background: #6d3bd1;
+}
+.movement-chart-scroll {
+  overflow-x: auto;
+  border: 1px solid #2d2637;
+  border-radius: 10px;
+  background: rgba(7, 6, 10, 0.72);
+}
+.movement-chart {
+  display: block;
+  min-width: 720px;
+  width: 100%;
+  height: auto;
+}
+.movement-grid-line {
+  stroke: #292331;
+  stroke-width: 1;
+}
+.movement-axis-label {
+  fill: #777181;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+}
+.movement-empty {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border: 1px dashed #443852;
+  border-radius: 10px;
+  color: #918b9e;
+  text-align: center;
+}
+.movement-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.movement-legend article {
+  display: grid;
+  grid-template-columns: 8px 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #2d2637;
+  border-radius: 8px;
+  background: rgba(13, 10, 18, 0.8);
+}
+.movement-legend article small {
+  grid-column: 3 / 5;
+  color: #8f879b;
+}
+.series-swatch {
+  width: 8px;
+  height: 28px;
+  border-radius: 999px;
+}
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 20px;
+}
+.signal-grid article {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid #332b40;
+  border-radius: 9px;
+  background: rgba(139, 92, 246, 0.07);
+}
+.signal-grid article > span,
+.signal-grid article > small {
+  color: #918b9e;
+}
+.signal-grid article > span {
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.decision-caution {
+  margin: 18px 0 0;
+  color: #777181;
+  font-size: 12px;
+}
+
 @media (max-width: 640px) {
   .odds-comparison-heading {
     align-items: flex-start;
@@ -1060,6 +1247,12 @@ footer {
   }
   .market-tabs {
     overflow-x: auto;
+  }
+  .decision-heading {
+    flex-direction: column;
+  }
+  .decision-workbench {
+    padding: 16px;
   }
 }
 

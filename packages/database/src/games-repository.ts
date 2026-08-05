@@ -45,6 +45,10 @@ export interface CurrentOddsReadGateway {
     }[],
   ): Promise<readonly unknown[]>;
 }
+export interface GameDetailSportsbook {
+  readonly id: string;
+  readonly label: string;
+}
 
 const marketSpecifications = (event: EventPage["items"][number]) => {
   const sides = event.participants
@@ -201,6 +205,9 @@ export class JoinedGamesRepository implements GamesRepository {
     readonly freshnessWindowMs = 2 * 60 * 60 * 1000,
     readonly targetSportsbookId = "hardrock",
     readonly clockSkewToleranceMs = 5 * 60 * 1000,
+    readonly detailSportsbooks: readonly GameDetailSportsbook[] = sportsbookIds.map(
+      (id) => ({ id, label: id }),
+    ),
   ) {}
   async detail(eventId: string) {
     const detail = await this.events.detail(eventId);
@@ -209,13 +216,17 @@ export class JoinedGamesRepository implements GamesRepository {
     const event = detail.item;
     const readAt = this.now().getTime();
     if (
-      new Set(this.sportsbookIds).size !== this.sportsbookIds.length ||
-      this.sportsbookIds.filter((id) => id === this.targetSportsbookId)
+      new Set(this.detailSportsbooks.map(({ id }) => id)).size !==
+        this.detailSportsbooks.length ||
+      this.detailSportsbooks.some(
+        ({ id, label }) => !id || !label || id === "consensus",
+      ) ||
+      this.detailSportsbooks.filter(({ id }) => id === this.targetSportsbookId)
         .length !== 1
     )
       throw new EventStorageError("invalid-detail-sportsbook-roster");
     const specifications = marketSpecifications(event);
-    const requested = this.sportsbookIds.flatMap((sportsbookId) =>
+    const requested = this.detailSportsbooks.flatMap(({ id: sportsbookId }) =>
       specifications.flatMap((specification) => [
         ...specification.selectionKeys.flatMap((selectionKey) => {
           const key = currentKey(
@@ -300,7 +311,7 @@ export class JoinedGamesRepository implements GamesRepository {
       selections: specification.selectionKeys.map((selectionKey) => {
         const cells: Record<string, GameOddsCellDto> = {};
         const label = canonicalSelectionLabel(event, selectionKey);
-        for (const sportsbookId of this.sportsbookIds) {
+        for (const { id: sportsbookId } of this.detailSportsbooks) {
           const key = currentKey(
             event,
             specification.marketKey,
@@ -422,20 +433,9 @@ export class JoinedGamesRepository implements GamesRepository {
             ),
           ),
           generatedAt,
-          sportsbooks: this.sportsbookIds.map((id) => ({
+          sportsbooks: this.detailSportsbooks.map(({ id, label }) => ({
             id,
-            label:
-              id === "hardrock"
-                ? "Hard Rock Bet"
-                : id === "draftkings"
-                  ? "DraftKings"
-                  : id === "fanduel"
-                    ? "FanDuel"
-                    : id === "betmgm"
-                      ? "BetMGM"
-                      : id === "caesars"
-                        ? "Caesars"
-                        : id,
+            label,
             target: id === targetSportsbookId,
           })),
           markets,

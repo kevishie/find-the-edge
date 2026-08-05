@@ -11,6 +11,8 @@ import {
   StrategyExperimentConflictError,
   StrategyExperimentNotFoundError,
   type StrategyExperimentRepository,
+  type OddsHistoryRepository,
+  OddsHistoryInputError,
 } from "@find-the-edge/database";
 import { EVENT_LIFECYCLE_STATES } from "@find-the-edge/domain";
 export interface ApiRequest {
@@ -18,6 +20,7 @@ export interface ApiRequest {
     | "list"
     | "detail"
     | "games"
+    | "odds-history"
     | "splits"
     | "performance-list"
     | "performance-detail"
@@ -62,6 +65,7 @@ export const createEventHandler =
     cohortRepository?: CohortRepository,
     retrospectiveRepository?: RetrospectiveRepository,
     strategyExperimentRepository?: StrategyExperimentRepository,
+    oddsHistoryRepository?: OddsHistoryRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -76,6 +80,11 @@ export const createEventHandler =
       stale: number;
       partial: number;
       unavailable: number;
+    } | null = null;
+    let oddsHistoryCounts: {
+      series: number;
+      sportsbooks: number;
+      points: number;
     } | null = null;
     try {
       if (request.route.startsWith("experiment-")) {
@@ -370,6 +379,54 @@ export const createEventHandler =
         !request.scopes?.includes("events/events:read")
       )
         return response((status = 403), { error: "forbidden" });
+      if (request.route === "odds-history") {
+        if (!oddsHistoryRepository)
+          throw new Error("odds-history-repository-not-configured");
+        const query = request.query ?? {};
+        const from = query["from"] ?? "";
+        const to = query["to"] ?? "";
+        const limitText = query["limit"] ?? "100";
+        const canonicalTimestamp = (value: string) => {
+          const parsed = Date.parse(value);
+          return (
+            Number.isFinite(parsed) && new Date(parsed).toISOString() === value
+          );
+        };
+        if (
+          Object.keys(query).some(
+            (key) => !["from", "to", "limit", "cursor"].includes(key),
+          ) ||
+          !canonicalTimestamp(from) ||
+          !canonicalTimestamp(to) ||
+          Date.parse(from) > Date.parse(to) ||
+          Date.parse(to) - Date.parse(from) > 31 * 24 * 60 * 60 * 1_000 ||
+          !/^(?:[1-9]|[1-9][0-9]|1[0-9]{2}|200)$/.test(limitText) ||
+          query["cursor"] === ""
+        )
+          throw new EventInputError("invalid-odds-history-query");
+        const eventId = request.eventId ?? "";
+        const event = await repository.detail(eventId);
+        if (!event.item)
+          return response((status = 404), { error: "not-found" });
+        const page = await oddsHistoryRepository.list({
+          eventId,
+          from,
+          to,
+          limit: Number(limitText),
+          ...(query["cursor"] ? { cursor: query["cursor"] } : {}),
+        });
+        oddsHistoryCounts = {
+          series: page.series.length,
+          sportsbooks: new Set(
+            page.series.map(({ sportsbookId }) => sportsbookId),
+          ).size,
+          points: page.series.reduce(
+            (count, series) => count + series.points.length,
+            0,
+          ),
+        };
+        return response(200, page);
+      }
       if (request.route === "detail") {
         const result = gamesRepository?.detail
           ? await gamesRepository.detail(request.eventId ?? "")
@@ -456,7 +513,11 @@ export const createEventHandler =
       );
       return response(200, { ...page, items });
     } catch (error) {
-      if (error instanceof EventInputError || error instanceof EventCursorError)
+      if (
+        error instanceof EventInputError ||
+        error instanceof EventCursorError ||
+        error instanceof OddsHistoryInputError
+      )
         return response((status = 400), { error: "invalid-request" });
       if (
         error instanceof RetrospectiveNotFoundError ||
@@ -506,6 +567,13 @@ export const createEventHandler =
               { Name: "UnavailableEventMetadata", Unit: "Count" },
             ]
           : []),
+        ...(oddsHistoryCounts
+          ? [
+              { Name: "OddsHistorySeries", Unit: "Count" },
+              { Name: "OddsHistorySportsbooks", Unit: "Count" },
+              { Name: "OddsHistoryPoints", Unit: "Count" },
+            ]
+          : []),
       ];
       log({
         _aws: {
@@ -549,6 +617,13 @@ export const createEventHandler =
               StaleEventMetadata: metadataCounts.stale,
               PartialEventMetadata: metadataCounts.partial,
               UnavailableEventMetadata: metadataCounts.unavailable,
+            }
+          : {}),
+        ...(oddsHistoryCounts
+          ? {
+              OddsHistorySeries: oddsHistoryCounts.series,
+              OddsHistorySportsbooks: oddsHistoryCounts.sportsbooks,
+              OddsHistoryPoints: oddsHistoryCounts.points,
             }
           : {}),
       });

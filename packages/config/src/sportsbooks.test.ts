@@ -51,5 +51,11 @@ describe("sportsbook registry", () => {
     expect(new Set(sportsbookRegistry.map(({ id }) => id)).size).toBe(
       sportsbookRegistry.length,
     );
+    expect(Object.keys(approvedSportsbookCollection).sort()).toEqual(
+      sportsbookRegistry
+        .filter(({ id }) => id !== "consensus")
+        .map(({ id }) => id)
+        .sort(),
+    );
   });
 });

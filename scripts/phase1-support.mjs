@@ -523,6 +523,7 @@ export function validateTemplate(template, config) {
     "GET /events",
     "GET /events/{eventId}",
     "GET /games",
+    "GET /games/{eventId}/odds-history",
     "GET /splits",
     "GET /performance/cohorts",
     "GET /performance/cohorts/{eventId}",

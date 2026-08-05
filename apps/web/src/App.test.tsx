@@ -360,10 +360,41 @@ it("renders independent accessible lifecycle and freshness badges on games and d
       },
     } as const),
   );
+  const oddsHistory = vi.fn(() =>
+    Promise.resolve({
+      eventId: game.id,
+      generatedAt: "2026-08-01T12:30:00.000Z",
+      series: [
+        {
+          marketKey: "moneyline",
+          selectionKey: "away",
+          selectionLabel: "Boston",
+          sportsbookId: "pinnacle",
+          sportsbookLabel: "Pinnacle",
+          points: [
+            {
+              americanOdds: 125,
+              observedAt: "2026-08-01T11:00:00.000Z",
+              retrievedAt: "2026-08-01T11:00:01.000Z",
+            },
+            {
+              americanOdds: 115,
+              observedAt: "2026-08-01T12:00:00.000Z",
+              retrievedAt: "2026-08-01T12:00:01.000Z",
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    }),
+  );
   render(
     <App
       initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
-      gamesClient={{ ok: true, value: { list: vi.fn(), detail } }}
+      gamesClient={{
+        ok: true,
+        value: { list: vi.fn(), detail, oddsHistory },
+      }}
     />,
   );
   expect(await screen.findByLabelText("Lifecycle: scheduled")).toBeVisible();
@@ -383,6 +414,14 @@ it("renders independent accessible lifecycle and freshness badges on games and d
   expect(
     screen.getByText("Market suspended").closest("td")?.querySelector("time"),
   ).toHaveAttribute("datetime", "2026-08-01T12:15:00.000Z");
+  expect(
+    await screen.findByRole("img", {
+      name: "Implied probability movement across 1 sportsbooks",
+    }),
+  ).toBeVisible();
+  expect(
+    screen.getByText("Pinnacle and Circa first-to-latest probability move"),
+  ).toBeVisible();
 });
 
 it("keeps not-found detail distinct from retryable outages", async () => {

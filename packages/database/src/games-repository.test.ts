@@ -295,13 +295,20 @@ describe("joined games repository", () => {
       () => new Date("2026-08-01T12:30:00.000Z"),
       7_200_000,
       "hardrock",
+      undefined,
+      [
+        { id: "hardrock", label: "Hard Rock Bet" },
+        { id: "draftkings", label: "DraftKings" },
+        { id: "pinnacle", label: "Pinnacle" },
+      ],
     ).detail(event.id);
     expect(detail.item?.oddsComparison).toMatchObject({
       targetSportsbookId: "hardrock",
       targetQualified: false,
       sportsbooks: [
-        { id: "draftkings", target: false },
-        { id: "hardrock", target: true },
+        { id: "hardrock", label: "Hard Rock Bet", target: true },
+        { id: "draftkings", label: "DraftKings", target: false },
+        { id: "pinnacle", label: "Pinnacle", target: false },
       ],
     });
   });

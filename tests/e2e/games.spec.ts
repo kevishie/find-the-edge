@@ -150,6 +150,24 @@ test("opens multi-book comparison directly and keeps Hard Rock first", async ({
   const headings = page.locator(".comparison-board thead th");
   await expect(headings.nth(1)).toContainText("Hard Rock Bet");
   await expect(headings.nth(2)).toContainText("DraftKings");
+  await expect(headings.nth(3)).toContainText("Pinnacle");
+  await expect(
+    page.getByRole("heading", { name: "Line movement & public money" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("img", {
+      name: /Implied probability movement across 3 sportsbooks/,
+    }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Sportsbook movement legend")).toContainText(
+    "Pinnacle",
+  );
+  await expect(
+    page.getByText("Sharp reference", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Public reference", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("Target unavailable")).toBeVisible();
   await page.getByRole("tab", { name: "Moneyline" }).focus();
   await page.keyboard.press("ArrowRight");

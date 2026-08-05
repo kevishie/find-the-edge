@@ -865,6 +865,11 @@ export class FoundationStack extends Stack {
       integration,
     });
     api.addRoutes({
+      path: "/games/{eventId}/odds-history",
+      methods: [HttpMethod.GET],
+      integration,
+    });
+    api.addRoutes({
       path: "/splits",
       methods: [HttpMethod.GET],
       integration,

@@ -18,6 +18,7 @@ import {
 import {
   normalizeSportsbook,
   oddsCollectionPolicyVersion,
+  productionOddsCollectionPolicies,
 } from "@find-the-edge/config";
 import {
   SHARP_API_PROVIDER_ID,
@@ -875,6 +876,14 @@ export async function ingestSharpApi(
   let observations = 0;
   let splits = 0;
   for (const league of sharpApiLeagues) {
+    const collectionPolicy = productionOddsCollectionPolicies.find(
+      (candidate) => candidate.leagueKey === league.leagueKey,
+    );
+    const sharpApiPolicy = collectionPolicy?.providers.find(
+      (provider) => provider.providerId === SHARP_API_PROVIDER_ID,
+    );
+    if (!sharpApiPolicy?.active)
+      throw new Error("sharpapi-collection-policy-unavailable");
     const scheduleResult = await loadSchedule(
       league,
       apiKey,
@@ -907,6 +916,9 @@ export async function ingestSharpApi(
       odds,
       league,
       oddsResult,
+      sharpApiPolicy.books,
+      undefined,
+      sharpApiPolicy.expectedBooks,
     );
     const { canonicalOddsEvents } = persisted;
     events += persisted.events;

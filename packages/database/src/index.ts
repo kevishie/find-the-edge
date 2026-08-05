@@ -45,3 +45,5 @@ export * from "./performance-evidence-repository";
 export * from "./exact-odds-snapshot-repository";
 export * from "./production-performance-evidence-store";
 export * from "./dynamodb-closing-candidate-source";
+export * from "./odds-history-repository";
+export * from "./dynamodb-odds-history-repository";

@@ -2,6 +2,7 @@ import type { EventRepository } from "./event-repository";
 import {
   JoinedGamesRepository,
   type CurrentOddsReadGateway,
+  type GameDetailSportsbook,
 } from "./games-repository";
 
 export class MemoryGamesRepository extends JoinedGamesRepository {
@@ -10,7 +11,17 @@ export class MemoryGamesRepository extends JoinedGamesRepository {
     gateway: CurrentOddsReadGateway,
     sportsbookIds: readonly string[] = ["fixture-book"],
     now: () => Date = () => new Date(),
+    detailSportsbooks?: readonly GameDetailSportsbook[],
   ) {
-    super(events, gateway, sportsbookIds, now);
+    super(
+      events,
+      gateway,
+      sportsbookIds,
+      now,
+      undefined,
+      undefined,
+      undefined,
+      detailSportsbooks,
+    );
   }
 }

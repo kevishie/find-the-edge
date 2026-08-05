@@ -1434,6 +1434,195 @@ describe("production odds control-plane composition", () => {
     expect(fetchSharpOdds).toHaveBeenCalledTimes(10);
   });
 
+  it("does not poison provider health when another schedule worker owns the lease", async () => {
+    const events = new MemoryEventIngestionStore();
+    const control = new MemoryOddsControlPlaneStore();
+    for (const { leagueKey } of productionOddsCollectionPolicies) {
+      if (leagueKey === "mlb") continue;
+      await control.putCheckpoint({
+        leagueKey: `schedule:sharpapi:${leagueKey}`,
+        providerId: "sharpapi",
+        completedAt: "2026-08-03T11:00:00.000Z",
+        nextDueAt: "2026-08-03T13:00:00.000Z",
+        runId: `stored-${leagueKey}`,
+        upcomingStarts: ["2026-08-03T20:00:00.000Z"],
+        expectedProviderEventIds: [`${leagueKey}-event`],
+        expectedProviderEvents: [
+          {
+            providerEventId: `${leagueKey}-event`,
+            startsAt: "2026-08-03T20:00:00.000Z",
+          },
+        ],
+      });
+    }
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:schedule",
+      healthy: true,
+      status: "healthy",
+      consecutiveSuccesses: 4,
+      quotaRemaining: 900,
+      updatedAt: "2026-08-03T11:55:00.000Z",
+    });
+    await control.claimContinuation({
+      leagueKey: "schedule:sharpapi:mlb",
+      runId: "active-mlb-schedule",
+      providerId: "sharpapi",
+      updatedAt: now.toISOString(),
+      startedAt: now.toISOString(),
+      capability: "schedule",
+      evidenceCommitted: false,
+      quotaCost: 0,
+      ownerId: "active-owner",
+      leaseUntil: "2026-08-03T12:05:00.000Z",
+    });
+    const fetchSharpSchedule = vi.fn();
+    const fetchSharpOdds = vi.fn().mockResolvedValue({
+      events: [],
+      hasMore: false,
+      retrievedAt: at,
+    });
+
+    const results = await runProductionOddsControlPlane({
+      events,
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      clock: () => now,
+      fetchSharpSchedule,
+      fetchSharpOdds,
+      fetchSharpAccount: vi.fn().mockRejectedValue(new Error("account-down")),
+    });
+
+    expect(results.find(({ leagueKey }) => leagueKey === "mlb")).toMatchObject({
+      status: "skipped",
+      reason: "schedule-provider-recovering",
+    });
+    expect(fetchSharpSchedule).not.toHaveBeenCalled();
+    expect(await control.getHealth("sharpapi:mlb:schedule")).toMatchObject({
+      healthy: true,
+      status: "healthy",
+      consecutiveSuccesses: 4,
+      quotaRemaining: 900,
+      updatedAt: "2026-08-03T11:55:00.000Z",
+    });
+  });
+
+  it("takes over an expired schedule lease and reuses its sealed paid page", async () => {
+    const events = new MemoryEventIngestionStore();
+    const control = new MemoryOddsControlPlaneStore();
+    for (const { leagueKey } of productionOddsCollectionPolicies) {
+      if (leagueKey === "mlb") continue;
+      await control.putCheckpoint({
+        leagueKey: `schedule:sharpapi:${leagueKey}`,
+        providerId: "sharpapi",
+        completedAt: "2026-08-03T11:00:00.000Z",
+        nextDueAt: "2026-08-03T13:00:00.000Z",
+        runId: `stored-${leagueKey}`,
+        upcomingStarts: ["2026-08-03T20:00:00.000Z"],
+        expectedProviderEventIds: [`${leagueKey}-event`],
+        expectedProviderEvents: [
+          {
+            providerEventId: `${leagueKey}-event`,
+            startsAt: "2026-08-03T20:00:00.000Z",
+          },
+        ],
+      });
+    }
+    await control.putRun({
+      runId: "interrupted-mlb-schedule",
+      leagueKey: "mlb",
+      providerId: "sharpapi",
+      policyVersion: "test",
+      status: "running",
+      startedAt: "2026-08-03T11:50:00.000Z",
+      updatedAt: "2026-08-03T11:55:00.000Z",
+      evidenceCommitted: false,
+      quotaCost: 1,
+    });
+    await control.claimContinuation({
+      leagueKey: "schedule:sharpapi:mlb",
+      runId: "interrupted-mlb-schedule",
+      providerId: "sharpapi",
+      updatedAt: "2026-08-03T11:50:00.000Z",
+      startedAt: "2026-08-03T11:50:00.000Z",
+      capability: "schedule",
+      evidenceCommitted: false,
+      quotaCost: 1,
+      ownerId: "expired-owner",
+      leaseUntil: "2026-08-03T11:55:00.000Z",
+    });
+    await control.sealPage({
+      runId: "interrupted-mlb-schedule",
+      pageToken: "0",
+      responseDigest: "already-paid",
+      normalizedItems: [
+        {
+          events: [
+            {
+              providerEventId: "mlb-recovered-event",
+              awayTeam: "Away",
+              homeTeam: "Home",
+              startsAt: "2026-08-03T20:00:00.000Z",
+              status: "scheduled",
+            },
+          ],
+          hasMore: false,
+          retrievedAt: at,
+        },
+      ],
+      gaps: [],
+      quotaCost: 1,
+      sealedAt: "2026-08-03T11:54:00.000Z",
+    });
+    const fetchSharpSchedule = vi.fn();
+    const fetchSharpOdds = vi.fn().mockResolvedValue({
+      events: [],
+      hasMore: false,
+      retrievedAt: at,
+    });
+
+    const results = await runProductionOddsControlPlane({
+      events,
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      clock: () => now,
+      fetchSharpSchedule,
+      fetchSharpOdds,
+      fetchSharpAccount: vi.fn().mockRejectedValue(new Error("account-down")),
+    });
+
+    expect(results.find(({ leagueKey }) => leagueKey === "mlb")).toMatchObject({
+      status: "completed",
+      providerId: "sharpapi",
+    });
+    expect(
+      fetchSharpSchedule.mock.calls.some(
+        ([league]) => (league as SharpApiLeague).leagueKey === "mlb",
+      ),
+    ).toBe(false);
+    expect(await control.getContinuation("schedule:sharpapi:mlb")).toBeNull();
+    expect(await control.getCheckpoint("schedule:sharpapi:mlb")).toMatchObject({
+      runId: "interrupted-mlb-schedule",
+      expectedProviderEventIds: ["mlb-recovered-event"],
+    });
+  });
+
   it("pairs legacy checkpoint IDs and starts only when their lengths match", async () => {
     const events = new MemoryEventIngestionStore();
     const control = new MemoryOddsControlPlaneStore();

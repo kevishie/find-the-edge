@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import { assessEventMetadata } from "@find-the-edge/domain";
 import {
   EventStorageError,
+  EventCursorCodec,
   MemoryCohortRepository,
+  MemoryOddsHistoryRepository,
   type GamesRepository,
   type EventRepository,
+  type OddsHistoryRepository,
 } from "@find-the-edge/database";
 import { createEventHandler } from "./handler";
 import { parseCursorSecretRing } from "./secrets";
@@ -23,6 +26,17 @@ const repository: EventRepository = {
   detail: async () => {
     await Promise.resolve();
     return { projectionState: "ready", item: null, unavailableReason: null };
+  },
+};
+const historyEventRepository: EventRepository = {
+  ...repository,
+  detail: async (eventId) => {
+    await Promise.resolve();
+    return {
+      projectionState: "ready",
+      item: eventId === "event:one" ? ({ id: eventId } as never) : null,
+      unavailableReason: null,
+    };
   },
 };
 describe("event API", () => {
@@ -197,7 +211,7 @@ describe("event API", () => {
       members: [],
     });
     const result = await createEventHandler(
-      repository,
+      historyEventRepository,
       undefined,
       undefined,
       undefined,
@@ -343,6 +357,165 @@ describe("event API", () => {
       items: [{ id: canonicalId }],
       projectionState: "ready",
     });
+  });
+  it("serves strict public chart-ready odds history", async () => {
+    const reads: unknown[] = [];
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const history: OddsHistoryRepository = {
+      list: (input) => {
+        reads.push(input);
+        return Promise.resolve({
+          eventId: input.eventId,
+          generatedAt: "2026-08-05T13:00:00.000Z",
+          series: [],
+          nextCursor: null,
+        });
+      },
+    };
+    const handler = createEventHandler(
+      historyEventRepository,
+      undefined,
+      (entry) => logs.push(entry),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      history,
+    );
+    const result = await handler({
+      route: "odds-history",
+      eventId: "event:one",
+      query: {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        limit: "100",
+      },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(reads).toEqual([
+      {
+        eventId: "event:one",
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        limit: 100,
+      },
+    ]);
+    expect(JSON.parse(result.body)).toEqual({
+      eventId: "event:one",
+      generatedAt: "2026-08-05T13:00:00.000Z",
+      series: [],
+      nextCursor: null,
+    });
+    expect(logs.at(-1)).toMatchObject({
+      OddsHistorySeries: 0,
+      OddsHistorySportsbooks: 0,
+      OddsHistoryPoints: 0,
+    });
+    expect(JSON.stringify(logs.at(-1))).not.toContain("event:one");
+  });
+
+  it("rejects malformed odds-history queries before reading storage", async () => {
+    let reads = 0;
+    const history: OddsHistoryRepository = {
+      list: async () => {
+        await Promise.resolve();
+        reads += 1;
+        throw new Error("must-not-read");
+      },
+    };
+    const handler = createEventHandler(
+      historyEventRepository,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      history,
+    );
+    for (const query of [
+      {},
+      { from: "bad", to: "2026-08-05T13:00:00.000Z" },
+      {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        limit: "0",
+      },
+      {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        unknown: "x",
+      },
+    ]) {
+      const result = await handler({
+        route: "odds-history",
+        eventId: "event:mlb:history",
+        query,
+      });
+      expect(result.statusCode).toBe(400);
+    }
+    expect(reads).toBe(0);
+  });
+
+  it("rejects a malformed odds-history cursor without exposing internals", async () => {
+    const history = new MemoryOddsHistoryRepository(
+      [],
+      new EventCursorCodec({
+        current: { id: "test", secret: new Uint8Array(32).fill(3) },
+      }),
+      { draftkings: "DraftKings" },
+      () => new Date("2026-08-05T13:00:00.000Z"),
+    );
+    const result = await createEventHandler(
+      historyEventRepository,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      history,
+    )({
+      route: "odds-history",
+      eventId: "event:one",
+      query: {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        cursor: "not-valid",
+      },
+    });
+    expect(result.statusCode).toBe(400);
+    expect(result.body).toBe('{"error":"invalid-request"}');
+  });
+  it("distinguishes a missing game from an empty history", async () => {
+    let reads = 0;
+    const history: OddsHistoryRepository = {
+      list: async () => {
+        await Promise.resolve();
+        reads += 1;
+        throw new Error("must-not-read");
+      },
+    };
+    const result = await createEventHandler(
+      repository,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      history,
+    )({
+      route: "odds-history",
+      eventId: "event:missing",
+      query: {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+      },
+    });
+    expect(result.statusCode).toBe(404);
+    expect(result.body).toBe('{"error":"not-found"}');
+    expect(reads).toBe(0);
   });
   it("rejects colon and percent external filters before repository selection", async () => {
     let reads = 0;

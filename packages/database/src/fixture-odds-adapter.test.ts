@@ -375,7 +375,19 @@ describe("DynamoFixtureOddsAdapter", () => {
         (item) => item.pk === normalized.partitionKey && item.sk !== "CURRENT",
       ),
     ).toHaveLength(1);
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(
+      send.mock.calls
+        .map(
+          ([command]) =>
+            (command as { input?: { Item?: { pk?: string } } }).input?.Item?.pk,
+        )
+        .filter(Boolean),
+    ).toEqual([
+      "ODDS_SNAPSHOTS_BY_ID",
+      "ODDS_SNAPSHOTS_BY_ID",
+      `ODDS_HISTORY#${normalized.canonicalEventId}`,
+    ]);
     await expect(mirror.get(normalized.snapshotId)).resolves.toMatchObject({
       snapshotId: normalized.snapshotId,
       americanOdds: normalized.americanOdds,
