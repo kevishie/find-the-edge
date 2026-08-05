@@ -294,6 +294,26 @@ export const classifyOddsControlPlaneFailure = (error: unknown) => {
   if (error.message.includes("provider")) return "provider-error";
   return "internal-failure";
 };
+
+const sanitizedDiagnosticText = (value: string, fallback: string) => {
+  const redacted = value
+    .replace(
+      /(api[-_ ]?key|authorization|token|secret)\s*[:=]\s*\S+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/[^\x20-\x7E]/g, " ")
+    .trim()
+    .slice(0, 240);
+  return redacted || fallback;
+};
+
+export const oddsFailureDiagnostic = (error: unknown) =>
+  error instanceof Error
+    ? {
+        errorName: sanitizedDiagnosticText(error.name, "Error"),
+        errorMessage: sanitizedDiagnosticText(error.message, "unknown"),
+      }
+    : { errorName: "NonError", errorMessage: "unknown" };
 const ambiguousTransport = (error: unknown) =>
   error instanceof Error &&
   (error.name === "AbortError" ||
@@ -1180,6 +1200,15 @@ export async function runOddsLeague(input: {
       };
     } catch (error) {
       const reason = classifyOddsControlPlaneFailure(error);
+      if (reason === "internal-failure")
+        console.error(
+          JSON.stringify({
+            event: "odds-league-internal-failure",
+            league: policy.leagueKey,
+            provider: candidate.providerId,
+            ...oddsFailureDiagnostic(error),
+          }),
+        );
       lastReason = reason;
       const safelySkipped =
         !evidenceCommitted &&
@@ -1274,10 +1303,19 @@ export async function runDueOddsLeagues(
       try {
         return await runOddsLeague(input);
       } catch (error) {
+        const reason = classifyOddsControlPlaneFailure(error);
+        if (reason === "internal-failure")
+          console.error(
+            JSON.stringify({
+              event: "odds-league-boundary-failure",
+              league: input.policy.leagueKey,
+              ...oddsFailureDiagnostic(error),
+            }),
+          );
         return {
           leagueKey: input.policy.leagueKey,
           status: "failed" as const,
-          reason: classifyOddsControlPlaneFailure(error),
+          reason,
           pages: 0,
           quotaCost: 0,
         };
