@@ -129,6 +129,9 @@ describe("Dynamo gateway", () => {
     expect(command.input.TransactItems[0].Delete.ConditionExpression).toContain(
       "#value.#eventId=:eventId",
     );
+    expect(
+      command.input.TransactItems[0].Delete.ConditionExpression,
+    ).not.toContain("#value=:eventId");
     expect(command.input.TransactItems[1].Put.ConditionExpression).toBe(
       "attribute_not_exists(pk)",
     );

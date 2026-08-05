@@ -276,9 +276,7 @@ export class AwsDynamoGateway implements DynamoGateway {
                                           ? ["#value.#version=:version"]
                                           : []),
                                         ...(write.expectedEventId !== undefined
-                                          ? [
-                                              "(#value.#eventId=:eventId OR #value=:eventId)",
-                                            ]
+                                          ? ["#value.#eventId=:eventId"]
                                           : []),
                                         ...(write.expectedLeaseUntil !==
                                         undefined
@@ -574,9 +572,7 @@ export class AwsDynamoGateway implements DynamoGateway {
                                               : []),
                                             ...(write.expectedEventId !==
                                             undefined
-                                              ? [
-                                                  "(#value.#eventId=:eventId OR #value=:eventId)",
-                                                ]
+                                              ? ["#value.#eventId=:eventId"]
                                               : []),
                                             ...(write.expectedLeaseUntil !==
                                             undefined
