@@ -969,6 +969,8 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     } catch (error) {
       reconciliationFailure =
         error instanceof EventDataConflict ||
+        error instanceof DynamoConditionalConflict ||
+        error instanceof DynamoTransactionConflict ||
         (error instanceof Error &&
           [
             "invalid-scheduled-reconciliation",
