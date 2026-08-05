@@ -827,12 +827,15 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
       if (currentProjections.length === 0) continue;
       if (currentProjections.length > 1)
         throw new Error("multiple-current-event-projections");
+      // League/day partitions contain every match in the kickoff window. A
+      // current projection for a different matchup is not stale evidence for
+      // this event and must not prevent reconciliation of either game.
+      if (!participantIdentityMatches(input, candidate)) continue;
       if (
         candidate.id !== id ||
         candidate.sportKey !== input.sportKey ||
         candidate.leagueKey !== input.leagueKey ||
         candidate.status !== "scheduled" ||
-        !participantIdentityMatches(input, candidate) ||
         Math.abs(Date.parse(candidate.startsAt) - target) > toleranceMs
       )
         throw new Error("near-canonical-projection-stale");

@@ -465,6 +465,51 @@ function contract(name: string, create: () => EventIngestionStore) {
       expect(result).toMatchObject({ kind: "updated", eventId: "legacy-mlb" });
     });
 
+    it("ignores a different soccer matchup in the same kickoff window", async () => {
+      const store = create();
+      const soccerBase = {
+        ...bootstrap,
+        sportKey: "soccer" as SportKey,
+        leagueKey: "epl",
+        leagueId: "epl" as EntityId,
+        startsAt: "2026-08-01T14:00:00.000Z" as IsoTimestamp,
+      };
+      await store.bootstrapCanonicalEvent(
+        {
+          ...soccerBase,
+          id: "arsenal-chelsea" as EntityId,
+          canonicalKey: "arsenal-chelsea",
+          participantIds: ["arsenal", "chelsea"] as [EntityId, EntityId],
+          participantLabels: ["Arsenal", "Chelsea"],
+          normalizedIdentity: "arsenal-chelsea",
+        },
+        observedAt,
+      );
+      await store.bootstrapCanonicalEvent(
+        {
+          ...soccerBase,
+          id: "liverpool-everton" as EntityId,
+          canonicalKey: "liverpool-everton",
+          participantIds: ["liverpool", "everton"] as [EntityId, EntityId],
+          participantLabels: ["Liverpool", "Everton"],
+          normalizedIdentity: "liverpool-everton",
+          revision: { ...soccerBase.revision, token: "liverpool-everton" },
+        },
+        observedAt,
+      );
+
+      await expect(
+        store.findNearCanonicalCandidates({
+          sportKey: "soccer" as SportKey,
+          leagueKey: "epl",
+          startsAt: soccerBase.startsAt,
+          status: "scheduled",
+          participantLabels: ["Arsenal", "Chelsea"],
+          participantIdentityIds: ["arsenal", "chelsea"] as EntityId[],
+        }),
+      ).resolves.toEqual([expect.objectContaining({ id: "arsenal-chelsea" })]);
+    });
+
     it("crosses Eastern midnight and ignores closed projections", async () => {
       const store = create();
       const beforeMidnight = {
