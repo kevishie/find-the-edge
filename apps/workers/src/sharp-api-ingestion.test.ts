@@ -1,12 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import type {
-  BettingSplitRepository,
-  EventIngestionStore,
+import {
+  DynamoConditionalConflict,
+  DynamoEventIngestionStore,
+  type BettingSplitRepository,
+  type DynamoGateway,
+  type DynamoItem,
+  type EventIngestionStore,
 } from "@find-the-edge/database";
 import type {
   CanonicalEvent,
   CanonicalEventBootstrap,
   IsoTimestamp,
+  SportKey,
 } from "@find-the-edge/domain";
 import type { SharpApiLeague } from "@find-the-edge/providers";
 
@@ -17,7 +22,342 @@ import {
   type SharpApiOddsPersister,
 } from "./sharp-api-ingestion";
 
+class InMemoryDynamoGateway implements DynamoGateway {
+  readonly items = new Map<string, DynamoItem>();
+  readonly commits: string[][] = [];
+
+  private key(pk: string, sk: string) {
+    return JSON.stringify([pk, sk]);
+  }
+
+  get(pk: string, sk: string) {
+    return Promise.resolve(this.items.get(this.key(pk, sk)) ?? null);
+  }
+
+  batchGet(keys: readonly { readonly pk: string; readonly sk: string }[]) {
+    return Promise.resolve(
+      keys.flatMap(({ pk, sk }) => {
+        const item = this.items.get(this.key(pk, sk));
+        return item ? [item] : [];
+      }),
+    );
+  }
+
+  queryUpTo(pk: string, limit: number) {
+    return Promise.resolve(
+      [...this.items.values()]
+        .filter((item) => item.pk === pk)
+        .sort((left, right) => left.sk.localeCompare(right.sk))
+        .slice(0, limit),
+    );
+  }
+
+  queryPage(pk: string, startSk: string | undefined, limit: number) {
+    const all = [...this.items.values()]
+      .filter((item) => item.pk === pk && (!startSk || item.sk > startSk))
+      .sort((left, right) => left.sk.localeCompare(right.sk));
+    const items = all.slice(0, limit);
+    return Promise.resolve({
+      items,
+      ...(all.length > limit && items.length
+        ? { lastEvaluatedSk: items.at(-1)!.sk }
+        : {}),
+    });
+  }
+
+  transactGet(keys: readonly { readonly pk: string; readonly sk: string }[]) {
+    return Promise.resolve(
+      keys.map(({ pk, sk }) => this.items.get(this.key(pk, sk)) ?? null),
+    );
+  }
+
+  queryAll(pk: string) {
+    return Promise.resolve(
+      [...this.items.values()].filter((item) => item.pk === pk),
+    );
+  }
+
+  insert(item: DynamoItem) {
+    const key = this.key(item.pk, item.sk);
+    if (this.items.has(key)) return Promise.resolve("exists" as const);
+    this.items.set(key, item);
+    return Promise.resolve("inserted" as const);
+  }
+
+  deleteOwnedReconciliationLock(
+    pk: string,
+    expectedEventId: string,
+    expectedLeaseUntil?: string,
+  ) {
+    const key = this.key(pk, "CURRENT");
+    const item = this.items.get(key);
+    const value = item?.value as
+      { readonly eventId?: string; readonly leaseUntil?: string } | undefined;
+    if (
+      !item ||
+      value?.eventId !== expectedEventId ||
+      (expectedLeaseUntil !== undefined &&
+        value.leaseUntil !== expectedLeaseUntil)
+    )
+      return Promise.reject(new DynamoConditionalConflict());
+    this.items.delete(key);
+    return Promise.resolve();
+  }
+
+  transact(writes: Parameters<DynamoGateway["transact"]>[0]) {
+    const snapshot = new Map(this.items);
+    const targets = new Set<string>();
+    const commitKinds: string[] = [];
+    for (const write of writes) {
+      const target =
+        "item" in write
+          ? this.key(write.item.pk, write.item.sk)
+          : this.key(write.pk, write.sk);
+      if (targets.has(target)) throw new Error("duplicate-transaction-target");
+      targets.add(target);
+      commitKinds.push(`${write.kind}:${target}`);
+
+      if (write.kind === "check-identity-absent") {
+        if (snapshot.has(target)) throw new DynamoConditionalConflict();
+        continue;
+      }
+      if (write.kind === "check-identity") {
+        const current = snapshot.get(target)?.value as
+          | {
+              readonly version?: number;
+              readonly candidateEventIds?: readonly string[];
+            }
+          | undefined;
+        if (
+          current?.version !== write.expectedVersion ||
+          JSON.stringify(current.candidateEventIds) !==
+            JSON.stringify(write.expectedCandidateEventIds)
+        )
+          throw new DynamoConditionalConflict();
+        continue;
+      }
+      if (write.kind === "check-event") {
+        const current = snapshot.get(target)?.value as
+          | { readonly version?: number; readonly candidateIdentity?: string }
+          | undefined;
+        if (
+          current?.version !== write.expectedVersion ||
+          current.candidateIdentity !== write.expectedIdentity ||
+          (write.expectedSnapshot !== undefined &&
+            JSON.stringify(current) !== JSON.stringify(write.expectedSnapshot))
+        )
+          throw new DynamoConditionalConflict();
+        continue;
+      }
+      if (write.kind === "check-reconciliation-lock") {
+        const current = snapshot.get(target)?.value as
+          | { readonly eventId?: string; readonly leaseUntil?: string }
+          | undefined;
+        if (
+          current?.eventId !== write.expectedToken ||
+          !current.leaseUntil ||
+          current.leaseUntil <= write.leaseAfter
+        )
+          throw new DynamoConditionalConflict();
+        continue;
+      }
+      if (write.kind === "delete") {
+        snapshot.delete(target);
+        continue;
+      }
+      if (write.kind === "renew-reconciliation-lock") {
+        const current = snapshot.get(target)?.value as
+          { readonly eventId?: string } | undefined;
+        if (current?.eventId !== write.expectedToken)
+          throw new DynamoConditionalConflict();
+        snapshot.set(target, write.item);
+        continue;
+      }
+      if (
+        write.kind === "put-provider-event-fence" ||
+        write.kind === "put-bootstrap-marker"
+      ) {
+        const current = snapshot.get(target)?.value as
+          { readonly pagePositionDigest?: string } | undefined;
+        if (
+          current &&
+          current.pagePositionDigest !== write.expectedPagePositionDigest
+        )
+          throw new DynamoConditionalConflict();
+        snapshot.set(target, write.item);
+        continue;
+      }
+      if (
+        write.kind === "put-projection" &&
+        write.expectedValue !== undefined &&
+        JSON.stringify(snapshot.get(target)?.value) !==
+          JSON.stringify(write.expectedValue)
+      )
+        throw new DynamoConditionalConflict();
+      if (
+        write.kind === "put-projection" &&
+        write.requireAbsent &&
+        snapshot.has(target)
+      )
+        throw new DynamoConditionalConflict();
+      if (
+        (write.kind === "insert" || write.kind === "claim-identity") &&
+        snapshot.has(target)
+      )
+        throw new DynamoConditionalConflict();
+      if (write.kind === "replace") {
+        const current = snapshot.get(target)?.value as
+          { readonly version?: number } | undefined;
+        if (current?.version !== write.expectedVersion)
+          throw new DynamoConditionalConflict();
+      }
+      snapshot.set(target, write.item);
+    }
+    this.items.clear();
+    for (const [key, value] of snapshot) this.items.set(key, value);
+    this.commits.push(commitKinds);
+    return Promise.resolve();
+  }
+
+  compareAndSetCheckpoint(): Promise<boolean> {
+    return Promise.reject(new Error("unused-test-operation"));
+  }
+
+  transactCheckpoint(): Promise<boolean> {
+    return Promise.reject(new Error("unused-test-operation"));
+  }
+
+  put(item: DynamoItem) {
+    this.items.set(this.key(item.pk, item.sk), item);
+    return Promise.resolve();
+  }
+}
+
 describe("SharpAPI primary ingestion", () => {
+  it("bootstraps an odds-only featured MLB event into an empty Dynamo store before persisting observations", async () => {
+    const gateway = new InMemoryDynamoGateway();
+    const store = new DynamoEventIngestionStore(gateway);
+    const league = { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague;
+    const binding = {
+      providerId: "sharpapi",
+      providerEventId: "mlb-marlins-braves_2026-08-05_b3",
+      sportKey: "mlb" as SportKey,
+      leagueKey: "mlb",
+    };
+    const persist = vi.fn(
+      async (input: Parameters<SharpApiOddsPersister["persist"]>[0]) => {
+        const canonical = await store.resolveExactCanonicalBinding(binding);
+        expect(canonical).toMatchObject({
+          id: input.observation.canonicalEventId,
+          participantLabels: ["Miami Marlins", "Atlanta Braves"],
+        });
+        return {
+          snapshot: "created" as const,
+          current: "advanced" as const,
+          value: input.observation as never,
+        };
+      },
+    );
+
+    // The schedule inventory is empty: this exact featured event has no
+    // canonical row or provider mapping before its odds page arrives.
+    await expect(
+      store.resolveExactCanonicalBinding(binding),
+    ).resolves.toBeNull();
+    const result = await persistSharpApiOddsPage(
+      store,
+      { persist },
+      league,
+      {
+        retrievedAt: "2026-08-05T12:00:01.000Z" as IsoTimestamp,
+        events: [
+          {
+            providerEventId: binding.providerEventId,
+            providerEventUuid: `${binding.providerEventId}:uuid`,
+            awayTeam: "Miami Marlins",
+            homeTeam: "Atlanta Braves",
+            awayClubKey: "marlins",
+            homeClubKey: "braves",
+            startsAt: "2026-08-05T19:00:00.000Z" as IsoTimestamp,
+            bookmakers: [
+              {
+                id: "pinnacle",
+                label: "Pinnacle",
+                prices: [
+                  {
+                    providerPriceId: "odds-only-away",
+                    marketKey: "moneyline",
+                    outcomeStructure: "two-way",
+                    providerMarketType: "moneyline",
+                    providerMarketId: "odds-only-moneyline",
+                    selectionKey: "away",
+                    selectionLabel: "Miami Marlins",
+                    providerSelectionId: "marlins",
+                    americanOdds: 118,
+                    decimalOdds: 2.18,
+                    impliedProbability: 0.4587,
+                    isLive: false,
+                    isMainLine: true,
+                    isAlternateLine: false,
+                    isPlayerProp: false,
+                    isStalePregamePrice: false,
+                    observedAt: "2026-08-05T12:00:00.000Z" as IsoTimestamp,
+                  },
+                  {
+                    providerPriceId: "odds-only-home",
+                    marketKey: "moneyline",
+                    outcomeStructure: "two-way",
+                    providerMarketType: "moneyline",
+                    providerMarketId: "odds-only-moneyline",
+                    selectionKey: "home",
+                    selectionLabel: "Atlanta Braves",
+                    providerSelectionId: "braves",
+                    americanOdds: -128,
+                    decimalOdds: 1.78125,
+                    impliedProbability: 0.5614,
+                    isLive: false,
+                    isMainLine: true,
+                    isAlternateLine: false,
+                    isPlayerProp: false,
+                    isStalePregamePrice: false,
+                    observedAt: "2026-08-05T12:00:00.000Z" as IsoTimestamp,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      { pinnacle: "collected" },
+    );
+
+    const canonical = await store.resolveExactCanonicalBinding(binding);
+    expect(canonical).toMatchObject({
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      startsAt: "2026-08-05T19:00:00.000Z",
+      participantLabels: ["Miami Marlins", "Atlanta Braves"],
+    });
+    expect(result).toMatchObject({ events: 1, observations: 2 });
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(
+      gateway.commits.some((writes) =>
+        writes.some((write) => write.includes('insert:["EVENT#')),
+      ),
+    ).toBe(true);
+    expect(
+      gateway.commits.some(
+        (writes) =>
+          writes.some((write) => write.includes('insert:["MAPPING#')) &&
+          writes.some(
+            (write) =>
+              write.includes('check-event:["EVENT#') ||
+              write.includes('replace:["EVENT#'),
+          ),
+      ),
+    ).toBe(true);
+  });
+
   it("reports completed persistence decisions before a later write fails", async () => {
     const canonical = {
       id: "event-1",

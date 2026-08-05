@@ -181,11 +181,19 @@ describe("odds collection control plane", () => {
     expect(classifyOddsControlPlaneFailure(storageFailure)).toBe(
       "storage-validation",
     );
+    for (const reason of [
+      "sharpapi-odds-mapping-no-candidate",
+      "sharpapi-odds-mapping-ambiguous-candidates",
+      "sharpapi-odds-mapping-participant-mismatch",
+      "sharpapi-odds-mapping-start-mismatch",
+      "mapping-canonical-missing",
+      "mapping-canonical-scope-mismatch",
+      "mapping-scope-mismatch",
+    ])
+      expect(classifyOddsControlPlaneFailure(new Error(reason))).toBe(reason);
     expect(
-      classifyOddsControlPlaneFailure(
-        new Error("sharpapi-odds-mapping-no-candidate"),
-      ),
-    ).toBe("sharpapi-odds-mapping-no-candidate");
+      classifyOddsControlPlaneFailure(new Error("sensitive mapping detail")),
+    ).toBe("mapping-quarantine");
     expect(
       classifyOddsControlPlaneFailure(new Error("sensitive unknown detail")),
     ).toBe("internal-failure");
