@@ -410,6 +410,7 @@ export const createEventHandler =
           return response((status = 404), { error: "not-found" });
         const page = await oddsHistoryRepository.list({
           eventId,
+          canonicalEventVersion: event.item.version,
           from,
           to,
           limit: Number(limitText),

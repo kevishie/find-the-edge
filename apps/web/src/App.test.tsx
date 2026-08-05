@@ -297,6 +297,42 @@ const soccerGame: GamesPageDto["items"][number] = {
   },
 };
 
+const comparisonDetail = () => {
+  const { odds: _odds, ...event } = game;
+  void _odds;
+  return {
+    ...event,
+    oddsComparison: {
+      targetSportsbookId: "hardrock",
+      targetQualified: false,
+      generatedAt: "2026-08-01T12:30:00.000Z",
+      sportsbooks: [{ id: "hardrock", label: "Hard Rock Bet", target: true }],
+      markets: [
+        {
+          marketKey: "moneyline",
+          selections: [
+            {
+              selectionKey: "away",
+              selectionLabel: "Boston",
+              cells: {
+                hardrock: {
+                  state: "suspended",
+                  eligible: false,
+                  reason: "market-suspended",
+                  evidenceAt: "2026-08-01T12:15:00.000Z",
+                  americanOdds: 120,
+                  observedAt: "2026-08-01T12:00:00.000Z",
+                  retrievedAt: "2026-08-01T12:00:01.000Z",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    },
+  } as const;
+};
+
 const page = (items: GamesPageDto["items"] = [game]): GamesPageDto => ({
   items,
   nextCursor: null,
@@ -323,43 +359,7 @@ it("renders independent accessible lifecycle and freshness badges on games and d
   expect(screen.getByText(/Evidence .* Eastern/)).toBeVisible();
   unmount();
 
-  const eventDetail = (({ odds, ...rest }) => {
-    void odds;
-    return rest;
-  })(game);
-  const detail = vi.fn(() =>
-    Promise.resolve({
-      ...eventDetail,
-      oddsComparison: {
-        targetSportsbookId: "hardrock",
-        targetQualified: false,
-        generatedAt: "2026-08-01T12:30:00.000Z",
-        sportsbooks: [{ id: "hardrock", label: "Hard Rock Bet", target: true }],
-        markets: [
-          {
-            marketKey: "moneyline",
-            selections: [
-              {
-                selectionKey: "away",
-                selectionLabel: "Boston",
-                cells: {
-                  hardrock: {
-                    state: "suspended",
-                    eligible: false,
-                    reason: "market-suspended",
-                    evidenceAt: "2026-08-01T12:15:00.000Z",
-                    americanOdds: 120,
-                    observedAt: "2026-08-01T12:00:00.000Z",
-                    retrievedAt: "2026-08-01T12:00:01.000Z",
-                  },
-                },
-              },
-            ],
-          },
-        ],
-      },
-    } as const),
-  );
+  const detail = vi.fn(() => Promise.resolve(comparisonDetail()));
   const oddsHistory = vi.fn(() =>
     Promise.resolve({
       eventId: game.id,
@@ -373,12 +373,12 @@ it("renders independent accessible lifecycle and freshness badges on games and d
           sportsbookLabel: "Pinnacle",
           points: [
             {
-              americanOdds: 125,
+              americanOdds: -110,
               observedAt: "2026-08-01T11:00:00.000Z",
               retrievedAt: "2026-08-01T11:00:01.000Z",
             },
             {
-              americanOdds: 115,
+              americanOdds: 110,
               observedAt: "2026-08-01T12:00:00.000Z",
               retrievedAt: "2026-08-01T12:00:01.000Z",
             },
@@ -422,6 +422,57 @@ it("renders independent accessible lifecycle and freshness badges on games and d
   expect(
     screen.getByText("Pinnacle and Circa first-to-latest probability move"),
   ).toBeVisible();
+  expect(screen.getByText("-4.8 probability points")).toBeVisible();
+});
+
+it("does not declare movement from isolated points in separate sportsbook series", async () => {
+  const singleton = (sportsbookId: string, sportsbookLabel: string) => ({
+    marketKey: "moneyline",
+    selectionKey: "away",
+    selectionLabel: "Boston",
+    sportsbookId,
+    sportsbookLabel,
+    points: [
+      {
+        americanOdds: -110,
+        observedAt: "2026-08-01T11:00:00.000Z",
+        retrievedAt: "2026-08-01T11:00:01.000Z",
+      },
+    ],
+  });
+  const oddsHistory = vi.fn(() =>
+    Promise.resolve({
+      eventId: game.id,
+      generatedAt: "2026-08-01T12:30:00.000Z",
+      series: [
+        singleton("pinnacle", "Pinnacle"),
+        singleton("draftkings", "DraftKings"),
+      ],
+      nextCursor: null,
+    }),
+  );
+  render(
+    <App
+      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          detail: vi.fn(() => Promise.resolve(comparisonDetail())),
+          oddsHistory,
+        },
+      }}
+    />,
+  );
+  expect(
+    await screen.findByText(
+      /A second observation will create the movement graph/,
+    ),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("img", { name: /movement across/ }),
+  ).not.toBeInTheDocument();
+  expect(screen.getAllByText("1 observation")).toHaveLength(2);
 });
 
 it("keeps not-found detail distinct from retryable outages", async () => {

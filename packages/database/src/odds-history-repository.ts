@@ -34,6 +34,7 @@ export interface OddsHistoryPage {
 
 export interface OddsHistoryQuery {
   readonly eventId: string;
+  readonly canonicalEventVersion: number;
   readonly from: string;
   readonly to: string;
   readonly limit: number;
@@ -87,6 +88,8 @@ const validated = (query: OddsHistoryQuery) => {
   const to = Date.parse(query.to);
   if (
     !isCanonicalEntityId(query.eventId) ||
+    !Number.isSafeInteger(query.canonicalEventVersion) ||
+    query.canonicalEventVersion < 1 ||
     !canonicalTimestamp(query.from) ||
     !canonicalTimestamp(query.to) ||
     from > to ||
@@ -102,7 +105,7 @@ const validated = (query: OddsHistoryQuery) => {
 };
 
 const cursorScope = (query: OddsHistoryQuery) =>
-  `${oddsHistoryPartition(query.eventId)}#${query.from}#${query.to}`;
+  `${oddsHistoryPartition(query.eventId)}#V${query.canonicalEventVersion}#${query.from}#${query.to}`;
 
 const rowSnapshot = (
   row: OddsHistoryStoredRow,
@@ -205,6 +208,8 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
         throw new OddsHistoryStorageError("odds-history-order-invalid");
     const bySeries = new Map<string, OddsHistorySeries>();
     for (const snapshot of snapshots) {
+      if (snapshot.canonicalEventVersion !== query.canonicalEventVersion)
+        continue;
       const sportsbookLabel = this.approvedSportsbooks[snapshot.sportsbookId];
       if (!sportsbookLabel || !MAIN_MARKETS.has(snapshot.marketKey)) continue;
       const key = seriesKey(snapshot);

@@ -22,6 +22,7 @@ import {
 
 import {
   evaluateEdge,
+  impliedProbability,
   removeVig,
   type EdgeEvaluation,
 } from "@find-the-edge/odds";
@@ -1686,9 +1687,7 @@ const movementValue = (
 ) =>
   metric === "line" && series.marketKey !== "moneyline"
     ? point.point
-    : point.americanOdds < 0
-      ? (-point.americanOdds / (-point.americanOdds + 100)) * 100
-      : (100 / (point.americanOdds + 100)) * 100;
+    : impliedProbability(point.americanOdds) * 100;
 
 const seriesColor = (sportsbookId: string) => {
   let hash = 0;

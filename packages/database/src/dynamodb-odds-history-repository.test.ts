@@ -42,6 +42,7 @@ describe("Dynamo odds history repository", () => {
     await expect(
       repository.list({
         eventId: value.canonicalEventId,
+        canonicalEventVersion: value.canonicalEventVersion,
         from: "2026-08-05T11:00:00.000Z",
         to: "2026-08-05T13:00:00.000Z",
         limit: 25,

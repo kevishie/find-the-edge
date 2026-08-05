@@ -37,7 +37,7 @@ const snapshot = (
   });
 
 describe("odds history repository", () => {
-  it("projects chronological all-book series across canonical event versions", async () => {
+  it("projects chronological all-book series for only the requested canonical event version", async () => {
     const repository = new MemoryOddsHistoryRepository(
       [
         snapshot("draftkings", "2026-08-05T12:10:00.000Z", -115, {
@@ -59,6 +59,7 @@ describe("odds history repository", () => {
     );
     const page = await repository.list({
       eventId,
+      canonicalEventVersion: 2,
       from: "2026-08-05T12:00:00.000Z",
       to: "2026-08-05T13:00:00.000Z",
       limit: 50,
@@ -75,29 +76,9 @@ describe("odds history repository", () => {
           sportsbookLabel: "DraftKings",
           points: [
             {
-              americanOdds: -110,
-              observedAt: "2026-08-05T12:00:00.000Z",
-              retrievedAt: "2026-08-05T12:00:00.000Z",
-            },
-            {
               americanOdds: -115,
               observedAt: "2026-08-05T12:10:00.000Z",
               retrievedAt: "2026-08-05T12:10:00.000Z",
-            },
-          ],
-        },
-        {
-          marketKey: "spread",
-          selectionKey: "participant:away",
-          selectionLabel: "Away",
-          sportsbookId: "pinnacle",
-          sportsbookLabel: "Pinnacle",
-          points: [
-            {
-              point: 1.5,
-              americanOdds: 105,
-              observedAt: "2026-08-05T12:05:00.000Z",
-              retrievedAt: "2026-08-05T12:05:00.000Z",
             },
           ],
         },
@@ -119,6 +100,7 @@ describe("odds history repository", () => {
     );
     const range = {
       eventId,
+      canonicalEventVersion: 1,
       from: "2026-08-05T12:00:00.000Z",
       to: "2026-08-05T13:00:00.000Z",
       limit: 2,
@@ -151,12 +133,14 @@ describe("odds history repository", () => {
     });
     const base = {
       eventId,
+      canonicalEventVersion: 1,
       from: "2026-08-05T12:00:00.000Z",
       to: "2026-08-05T13:00:00.000Z",
       limit: 50,
     };
     for (const input of [
       { ...base, eventId: "not canonical/" },
+      { ...base, canonicalEventVersion: 0 },
       { ...base, from: "yesterday" },
       { ...base, from: base.to, to: base.from },
       { ...base, to: "2026-11-05T13:00:00.000Z" },

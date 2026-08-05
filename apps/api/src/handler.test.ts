@@ -34,7 +34,8 @@ const historyEventRepository: EventRepository = {
     await Promise.resolve();
     return {
       projectionState: "ready",
-      item: eventId === "event:one" ? ({ id: eventId } as never) : null,
+      item:
+        eventId === "event:one" ? ({ id: eventId, version: 7 } as never) : null,
       unavailableReason: null,
     };
   },
@@ -395,6 +396,7 @@ describe("event API", () => {
     expect(reads).toEqual([
       {
         eventId: "event:one",
+        canonicalEventVersion: 7,
         from: "2026-08-05T12:00:00.000Z",
         to: "2026-08-05T13:00:00.000Z",
         limit: 100,
