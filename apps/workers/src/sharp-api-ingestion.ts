@@ -468,34 +468,22 @@ export async function persistSharpApiOddsPage(
       canonical = await store.resolveExactCanonicalBinding(binding);
     }
     if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
-    const initialStartDrift = Math.abs(
-      Date.parse(raw.startsAt) - Date.parse(canonical.startsAt),
-    );
-    if (
-      exactMapping?.bindingKind === "source" &&
-      Number.isFinite(initialStartDrift) &&
-      initialStartDrift > 15 * 60_000
-    ) {
-      // SharpAPI can correct a postponed or delayed start between its schedule
-      // and odds endpoints. Only the exact source event ID may move the
-      // canonical event, and only after the two-team matchup still matches.
-      participantIndexes(raw, canonical, true);
-      await reconcileScheduledProviderEvent(
-        store,
-        SHARP_API_PROVIDER_ID,
-        event,
-        page.retrievedAt,
-      );
-      canonical = await store.resolveExactCanonicalBinding(binding);
-      if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
-    }
     canonicalOddsEvents.push({ raw, canonical });
     const providerParticipantIndexes = (() => {
       const startDrift = Math.abs(
         Date.parse(raw.startsAt) - Date.parse(canonical.startsAt),
       );
-      if (!Number.isFinite(startDrift) || startDrift > 15 * 60_000)
+      if (!Number.isFinite(startDrift))
         throw new Error("sharpapi-odds-mapping-start-mismatch");
+      if (startDrift > 15 * 60_000) {
+        // SharpAPI's events endpoint remains authoritative for displayed game
+        // time. Its odds endpoint can lag after a delay or postponement, so an
+        // exact source event ID plus both matching teams may still contribute
+        // prices without rewriting the canonical schedule.
+        if (exactMapping?.bindingKind === "source")
+          return participantIndexes(raw, canonical, true);
+        throw new Error("sharpapi-odds-mapping-start-mismatch");
+      }
       return participantIndexes(raw, canonical);
     })();
     let eventObservations = 0;

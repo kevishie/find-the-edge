@@ -359,7 +359,7 @@ describe("SharpAPI primary ingestion", () => {
     ).resolves.toMatchObject({ events: 1, observations: 2 });
     await expect(
       store.resolveExactCanonicalBinding(binding),
-    ).resolves.toMatchObject({ startsAt: "2026-08-05T19:30:00.000Z" });
+    ).resolves.toMatchObject({ startsAt: "2026-08-05T19:00:00.000Z" });
 
     await expect(
       persistSharpApiOddsPage(
@@ -381,7 +381,7 @@ describe("SharpAPI primary ingestion", () => {
     ).rejects.toThrow("sharpapi-odds-mapping-participant-mismatch");
     await expect(
       store.resolveExactCanonicalBinding(binding),
-    ).resolves.toMatchObject({ startsAt: "2026-08-05T19:30:00.000Z" });
+    ).resolves.toMatchObject({ startsAt: "2026-08-05T19:00:00.000Z" });
     expect(persist).toHaveBeenCalledTimes(4);
     expect(
       gateway.commits.some((writes) =>
