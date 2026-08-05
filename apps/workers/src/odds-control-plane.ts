@@ -257,6 +257,9 @@ const SAFE_FAILURES = [
   "storage-transaction-cancelled",
   "storage-transaction-in-progress",
   "storage-unavailable",
+  "sharpapi-odds-mapping-no-candidate",
+  "sharpapi-odds-mapping-ambiguous-candidates",
+  "sharpapi-event-binding-unavailable",
 ] as const;
 const SAFE_STORAGE_FAILURES = new Map<string, string>([
   ["ValidationException", "storage-validation"],
