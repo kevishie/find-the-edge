@@ -1371,6 +1371,46 @@ const reconciliationInput = (providerEventId: string) => {
 };
 
 describe("dynamo reconciliation ownership fencing", () => {
+  it("classifies acquisition service failures without exposing their detail", async () => {
+    class AcquisitionFailureGateway extends ContractGateway {
+      override insert() {
+        return Promise.reject(new Error("sensitive-acquisition-detail"));
+      }
+    }
+    const failure: unknown = await new DynamoEventIngestionStore(
+      new AcquisitionFailureGateway(),
+    )
+      .reconcileScheduledEvent(reconciliationInput("acquisition-failure"))
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      "event-reconciliation-acquisition-failed",
+    );
+    expect((failure as Error).cause).toMatchObject({
+      message: "sensitive-acquisition-detail",
+    });
+  });
+
+  it("classifies execution service failures without exposing their detail", async () => {
+    class ExecutionFailureGateway extends ContractGateway {
+      override queryAll() {
+        return Promise.reject(new Error("sensitive-execution-detail"));
+      }
+    }
+    const failure: unknown = await new DynamoEventIngestionStore(
+      new ExecutionFailureGateway(),
+    )
+      .reconcileScheduledEvent(reconciliationInput("execution-failure"))
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      "event-reconciliation-execution-failed",
+    );
+    expect((failure as Error).cause).toMatchObject({
+      message: "sensitive-execution-detail",
+    });
+  });
+
   it("serializes bootstrap writes with heartbeat renewal for the same lease", async () => {
     class SerializedGateway extends ContractGateway {
       activeLockTransactions = 0;
@@ -1567,7 +1607,7 @@ describe("dynamo reconciliation ownership fencing", () => {
     });
     await expect(
       store.reconcileScheduledEvent(reconciliationInput("renewal-failure")),
-    ).rejects.toThrow("renewal-service-failure");
+    ).rejects.toThrow("event-reconciliation-renewal-failed");
     expect(gateway.renewalAttempts).toBe(1);
   });
 
@@ -1721,7 +1761,7 @@ describe("dynamo reconciliation ownership fencing", () => {
       new DynamoEventIngestionStore(
         new CleanupServiceFailureGateway(),
       ).reconcileScheduledEvent(reconciliationInput("cleanup-service")),
-    ).rejects.toThrow("cleanup-service-failure");
+    ).rejects.toThrow("event-reconciliation-cleanup-failed");
   });
 });
 

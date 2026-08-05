@@ -275,6 +275,10 @@ const boundedScheduleInternalFailures = new Set([
   "version-exhausted",
   "bootstrap-response-conflict",
   "bootstrap-failed",
+  "event-reconciliation-acquisition-failed",
+  "event-reconciliation-execution-failed",
+  "event-reconciliation-renewal-failed",
+  "event-reconciliation-cleanup-failed",
 ]);
 
 const boundedScheduleStorageExceptions = new Map<string, string>([

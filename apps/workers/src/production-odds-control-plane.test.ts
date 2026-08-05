@@ -350,6 +350,10 @@ describe("production odds control-plane composition", () => {
       "version-exhausted",
       "bootstrap-response-conflict",
       "bootstrap-failed",
+      "event-reconciliation-acquisition-failed",
+      "event-reconciliation-execution-failed",
+      "event-reconciliation-renewal-failed",
+      "event-reconciliation-cleanup-failed",
     ])
       expect(
         scheduleCapabilityFailure(new Error(reason), "event-reconcile"),
