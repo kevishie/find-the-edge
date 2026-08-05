@@ -810,10 +810,33 @@ export function validateTemplate(template, config) {
       "dynamodb:Query",
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
       "dynamodb:TransactWriteItems",
     ],
     "Live ingestion DynamoDB IAM",
   );
+  const liveDeleteStatements = entriesOfType(template, "AWS::IAM::Policy")
+    .filter(([, policy]) =>
+      (policy.Properties?.Roles ?? []).some((role) => isRef(role, liveRoleId)),
+    )
+    .flatMap(([, policy]) => policy.Properties?.PolicyDocument?.Statement ?? [])
+    .filter((statement) => {
+      const actions = Array.isArray(statement.Action)
+        ? statement.Action
+        : [statement.Action];
+      return (
+        statement.Effect === "Allow" && actions.includes("dynamodb:DeleteItem")
+      );
+    });
+  if (
+    liveDeleteStatements.length !== 1 ||
+    liveDeleteStatements[0].Condition?.["ForAllValues:StringLike"]?.[
+      "dynamodb:LeadingKeys"
+    ]?.[0] !== "EVENT_RECONCILIATION#*"
+  )
+    throw new Error(
+      "Live ingestion DeleteItem IAM must be limited to reconciliation lock keys",
+    );
 }
 
 export async function filesRecursively(directory, root = directory) {

@@ -592,6 +592,16 @@ function validTemplate() {
                 ],
                 Resource: [{ "Fn::GetAtt": ["Table", "Arn"] }],
               },
+              {
+                Effect: "Allow",
+                Action: "dynamodb:DeleteItem",
+                Resource: [{ "Fn::GetAtt": ["Table", "Arn"] }],
+                Condition: {
+                  "ForAllValues:StringLike": {
+                    "dynamodb:LeadingKeys": ["EVENT_RECONCILIATION#*"],
+                  },
+                },
+              },
             ],
           },
         },
@@ -859,12 +869,21 @@ test("template validation structurally binds public reads, outputs, and scoped I
     const extraAction = structuredClone(template);
     extraAction.Resources[
       policy
-    ].Properties.PolicyDocument.Statement[0].Action.push("dynamodb:DeleteItem");
+    ].Properties.PolicyDocument.Statement[0].Action.push(
+      "dynamodb:BatchWriteItem",
+    );
     assert.throws(
       () => validateTemplate(extraAction, templateConfig),
       /exactly the required actions/,
     );
   }
+  const broadDelete = structuredClone(template);
+  delete broadDelete.Resources.SeedPolicy.Properties.PolicyDocument.Statement[1]
+    .Condition;
+  assert.throws(
+    () => validateTemplate(broadDelete, templateConfig),
+    /limited to reconciliation lock keys/,
+  );
   const denyOnly = structuredClone(template);
   denyOnly.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Effect =
     "Deny";
