@@ -348,12 +348,23 @@ export async function persistSharpApiOddsPage(
   for (const raw of page.events) {
     if (isSharpDerivativeMatchup(raw.awayTeam, raw.homeTeam)) continue;
     const event = providerEvent(league, raw, page.retrievedAt);
-    const ingested = await store.ingestEvent({
+    let ingested = await store.ingestEvent({
       ...event,
       providerId: SHARP_API_PROVIDER_ID,
       normalizedIdentity: normalizedUpcomingEventIdentity(event),
       observedAt: page.retrievedAt,
     });
+    // Featured odds may legitimately expose an entitled event before it has
+    // appeared on the paginated schedule scan. Bootstrap only the exact
+    // no-candidate case through the same fenced reconciliation boundary used
+    // by schedule ingestion. Ambiguous candidates remain quarantined.
+    if (ingested.kind === "unresolved" && ingested.reason === "no-candidate")
+      ingested = await reconcileScheduledProviderEvent(
+        store,
+        SHARP_API_PROVIDER_ID,
+        event,
+        page.retrievedAt,
+      );
     if (ingested.kind === "unresolved")
       throw new Error(`sharpapi-odds-mapping-${ingested.reason}`);
     const canonical = await store.resolveExactCanonicalBinding({

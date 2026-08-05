@@ -27,9 +27,16 @@ describe("SharpAPI primary ingestion", () => {
       participantIds: ["away-id", "home-id"],
       participantLabels: ["Away", "Home"],
     } as unknown as CanonicalEvent;
-    const ingestEvent = vi.fn().mockResolvedValue({ kind: "updated" });
+    const ingestEvent = vi.fn().mockResolvedValue({
+      kind: "unresolved",
+      reason: "no-candidate",
+    });
+    const reconcileScheduledEvent = vi
+      .fn()
+      .mockResolvedValue({ kind: "updated", eventId: canonical.id });
     const store = {
       ingestEvent,
+      reconcileScheduledEvent,
       resolveExactCanonicalBinding: vi.fn().mockResolvedValue(canonical),
     } as unknown as EventIngestionStore;
     const persist = vi
@@ -108,6 +115,7 @@ describe("SharpAPI primary ingestion", () => {
         (outcome) => outcomes.push(outcome),
       ),
     ).rejects.toThrow("later-page-write-failed");
+    expect(reconcileScheduledEvent).toHaveBeenCalledTimes(1);
     const blocked = persistAvailability.mock.calls[0]?.[0] as unknown as {
       readonly identity: string;
       readonly state: string;
