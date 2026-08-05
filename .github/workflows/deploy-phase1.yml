@@ -9,7 +9,7 @@ on:
 
 concurrency:
   group: deploy-phase1
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -25,6 +25,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Refuse to deploy an outdated main revision
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          latest_sha=$(gh api repos/${{ github.repository }}/commits/main --jq .sha)
+          test "$VERIFIED_SHA" = "$latest_sha"
+
       - name: Check out verified revision
         uses: actions/checkout@v4
         with:
