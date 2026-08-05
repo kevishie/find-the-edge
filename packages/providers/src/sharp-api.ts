@@ -1002,6 +1002,14 @@ export function parseSharpApiSchedulePage(
       continue;
     if (!canonical(awayTeam) || !canonical(homeTeam))
       throw new SharpApiError("invalid-response");
+    if (awayTeam === homeTeam) {
+      exclusions.push({
+        providerEventId: value["id"],
+        reason: "same-club-matchup",
+        auditId: auditId(value["id"]),
+      });
+      continue;
+    }
     const participants = canonicalSharpParticipants(league, awayTeam, homeTeam);
     if (participants.kind === "rejected") {
       exclusions.push({
@@ -1011,8 +1019,6 @@ export function parseSharpApiSchedulePage(
       });
       continue;
     }
-    if (league.leagueKey !== "mlb" && value["away_team"] === value["home_team"])
-      throw new SharpApiError("invalid-response");
     if (
       league.leagueKey !== "mlb" &&
       isSharpDerivativeMatchup(awayTeam, homeTeam)

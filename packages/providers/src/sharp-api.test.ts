@@ -656,6 +656,32 @@ describe("SharpAPI activation boundary", () => {
     expect(isSharpDerivativeMatchup("Innings United", "Cy Young Academy")).toBe(
       false,
     );
+
+    const soccerPage = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "mls-same-team-future",
+            league: "mls",
+            away_team: "San Diego FC",
+            home_team: "San Diego FC",
+            start_time: "2026-12-20T21:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagues[1]!,
+      "2026-08-05T18:00:00.000Z" as never,
+    );
+    expect(soccerPage.events).toEqual([]);
+    expect(soccerPage.exclusions).toEqual([
+      expect.objectContaining({
+        providerEventId: "mls-same-team-future",
+        reason: "same-club-matchup",
+      }),
+    ]);
   });
   it("validates malformed derivative-shaped rows before excluding them", () => {
     expect(() =>
