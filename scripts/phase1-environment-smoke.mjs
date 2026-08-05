@@ -320,6 +320,13 @@ export function boundedLiveIngestionDiagnostic(summary) {
     .join(",");
 }
 
+export function boundedLiveIngestionInvocationFailure(payload) {
+  const message = payload?.errorMessage;
+  return typeof message === "string" && /^[a-z0-9-]{1,120}$/.test(message)
+    ? message
+    : "failure-redacted";
+}
+
 export function isTransientLiveIngestionSummary(summary) {
   if (
     !Array.isArray(summary) ||
@@ -592,9 +599,12 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
           { capture: true, env: environment },
         ),
       );
+      const responsePayload = JSON.parse(await readFile(responseFile, "utf8"));
       if (invocationResult.StatusCode !== 200 || invocationResult.FunctionError)
-        throw new Error("live ingestion Lambda invocation failed");
-      const summary = JSON.parse(await readFile(responseFile, "utf8"));
+        throw new Error(
+          `live ingestion Lambda invocation failed:${boundedLiveIngestionInvocationFailure(responsePayload)}`,
+        );
+      const summary = responsePayload;
       ingestionDiagnostic = boundedLiveIngestionDiagnostic(summary);
       try {
         assertLiveIngestionSummary(summary);

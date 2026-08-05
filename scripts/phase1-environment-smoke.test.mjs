@@ -8,6 +8,7 @@ import {
   assertLiveIngestionResourceBinding,
   assertWrongOriginDenied,
   boundedLiveIngestionDiagnostic,
+  boundedLiveIngestionInvocationFailure,
   isSafeLiveIngestionResult,
   isTransientLiveIngestionSummary,
   liveIngestionRecoveryAction,
@@ -16,6 +17,21 @@ import {
   validateEnvironment,
   validateWrongScopeToken,
 } from "./phase1-environment-smoke.mjs";
+
+test("bounds Lambda invocation failures to safe machine codes", () => {
+  assert.equal(
+    boundedLiveIngestionInvocationFailure({
+      errorMessage: "event-reconciliation-cleanup-storage-access-denied",
+      stackTrace: ["secret internal path"],
+    }),
+    "event-reconciliation-cleanup-storage-access-denied",
+  );
+  assert.equal(
+    boundedLiveIngestionInvocationFailure({ errorMessage: "Secret: abc_123" }),
+    "failure-redacted",
+  );
+  assert.equal(boundedLiveIngestionInvocationFailure(null), "failure-redacted");
+});
 
 test("live ingestion diagnostics expose only bounded league outcomes", () => {
   assert.equal(
