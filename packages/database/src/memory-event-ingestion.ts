@@ -866,6 +866,28 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
         );
       return { kind: "skipped" as const, eventId: id };
     }
+    const canonicalMaterialMatches =
+      canonical.candidateIdentity === input.normalizedIdentity &&
+      canonical.startsAt === input.startsAt &&
+      canonical.status === input.status &&
+      JSON.stringify(canonical.participantLabels ?? []) ===
+        JSON.stringify(
+          input.participantLabels ?? canonical.participantLabels ?? [],
+        );
+    if (
+      persistedEvidence &&
+      "revision" in persistedEvidence &&
+      persistedEvidence.materialFingerprint === materialFingerprint &&
+      canonicalMaterialMatches
+    ) {
+      this.commitProviderEventFence(input);
+      if (!mapped) this.mappings.set(mid, mapping);
+      this.providerRevisions.set(
+        stableDigest(JSON.stringify([id, input.providerId])),
+        { revision: input.revision, materialFingerprint },
+      );
+      return { kind: "skipped" as const, eventId: id };
+    }
     const authoritative =
       compareAuthority(
         input.revision,

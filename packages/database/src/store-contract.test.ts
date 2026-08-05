@@ -360,6 +360,58 @@ function pendingOutbox(
 
 function contract(name: string, create: () => EventIngestionStore) {
   describe(`${name} event-ingestion contract`, () => {
+    it("does not churn the canonical version for fresher identical schedules", async () => {
+      const store = create();
+      await store.bootstrapCanonicalEvent(bootstrap, observedAt);
+      const first = {
+        providerId: "sharpapi",
+        providerEventId: "stable-schedule",
+        sportKey: bootstrap.sportKey,
+        leagueKey: bootstrap.leagueKey,
+        normalizedIdentity: bootstrap.normalizedIdentity,
+        startsAt: bootstrap.startsAt,
+        status: bootstrap.status,
+        participantLabels: bootstrap.participantLabels,
+        revision: {
+          providerId: "sharpapi",
+          authorityRank: 101,
+          updatedAt: observedAt,
+          sequence: 1,
+          token: "stable-1",
+        },
+        observedAt,
+      } as const;
+      await expect(store.ingestEvent(first)).resolves.toMatchObject({
+        kind: "updated",
+      });
+      const before = await store.resolveExactCanonicalBinding({
+        providerId: first.providerId,
+        providerEventId: first.providerEventId,
+        sportKey: first.sportKey,
+        leagueKey: first.leagueKey,
+      });
+      const refreshedAt = "2026-07-30T00:01:00.000Z" as IsoTimestamp;
+      await expect(
+        store.ingestEvent({
+          ...first,
+          revision: {
+            ...first.revision,
+            updatedAt: refreshedAt,
+            sequence: 2,
+            token: "stable-2",
+          },
+          observedAt: refreshedAt,
+        }),
+      ).resolves.toMatchObject({ kind: "skipped" });
+      const after = await store.resolveExactCanonicalBinding({
+        providerId: first.providerId,
+        providerEventId: first.providerEventId,
+        sportKey: first.sportKey,
+        leagueKey: first.leagueKey,
+      });
+      expect(after?.version).toBe(before?.version);
+    });
+
     it("serializes concurrent same-matchup reconciliation", async () => {
       const store = create();
       const reconciliation = (id: string, startsAt: string) => {

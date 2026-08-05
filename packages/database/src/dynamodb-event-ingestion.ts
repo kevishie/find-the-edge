@@ -2259,6 +2259,53 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         ]);
       return { kind: "skipped" as const, eventId: id };
     }
+    const canonicalMaterialMatches =
+      current.candidateIdentity === input.normalizedIdentity &&
+      current.startsAt === input.startsAt &&
+      current.status === input.status &&
+      JSON.stringify(current.participantLabels ?? []) ===
+        JSON.stringify(
+          input.participantLabels ?? current.participantLabels ?? [],
+        );
+    if (
+      revisionItem &&
+      persistedRevision?.materialFingerprint === materialFingerprint &&
+      canonicalMaterialMatches
+    ) {
+      await this.transactIngestion(input, [
+        ...identitySnapshotWrites(),
+        {
+          kind: "check-event",
+          pk: eventKey(id),
+          sk: "CURRENT",
+          expectedVersion: current.version,
+          expectedIdentity: input.normalizedIdentity,
+          expectedSnapshot: current,
+        },
+        ...(!mapped
+          ? [
+              {
+                kind: "insert" as const,
+                item: { pk: `MAPPING#${mid}`, sk: "CURRENT", value: mapping },
+              },
+            ]
+          : []),
+        {
+          kind: "replace",
+          item: {
+            pk: eventKey(id),
+            sk: revisionSk,
+            value: {
+              ...input.revision,
+              materialFingerprint,
+              version: nextBoundedVersion(persistedRevision.version),
+            },
+          },
+          expectedVersion: persistedRevision.version,
+        },
+      ]);
+      return { kind: "skipped" as const, eventId: id };
+    }
     const authoritative =
       compareAuthority(
         input.revision,
