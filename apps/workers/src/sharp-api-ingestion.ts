@@ -12,6 +12,7 @@ import type {
   OddsNormalizationReason,
 } from "@find-the-edge/domain";
 import {
+  FixtureOddsStateCorruptionError,
   fixtureOddsGroupAvailabilityIdentity,
   fixtureOddsPartition,
   participantSelectionKey,
@@ -738,7 +739,10 @@ export async function persistSharpApiOddsPage(
           // that observation without discarding valid sibling games from the
           // same page. The immutable adapter remains the authority: no
           // conflicted snapshot is written.
-          if (error instanceof FixtureOddsBindingConflictError) {
+          if (
+            error instanceof FixtureOddsBindingConflictError ||
+            error instanceof FixtureOddsStateCorruptionError
+          ) {
             rejectionCounts["participant-unavailable"] =
               (rejectionCounts["participant-unavailable"] ?? 0) + 1;
             continue;

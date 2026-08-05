@@ -14,6 +14,7 @@ import type {
   IsoTimestamp,
   SportKey,
 } from "@find-the-edge/domain";
+import { FixtureOddsStateCorruptionError } from "@find-the-edge/domain";
 import type {
   SharpApiLeague,
   SharpApiOddsPage,
@@ -491,11 +492,15 @@ describe("SharpAPI primary ingestion", () => {
           ? Promise.reject(
               new FixtureOddsBindingConflictError("binding changed"),
             )
-          : Promise.resolve({
-              snapshot: "created" as const,
-              current: "advanced" as const,
-              value: input.observation as never,
-            }),
+          : input.providerEventId === "corrupt"
+            ? Promise.reject(
+                new FixtureOddsStateCorruptionError("stored row forged"),
+              )
+            : Promise.resolve({
+                snapshot: "created" as const,
+                current: "advanced" as const,
+                value: input.observation as never,
+              }),
     );
 
     await expect(
@@ -505,14 +510,14 @@ describe("SharpAPI primary ingestion", () => {
         { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
         {
           retrievedAt: "2026-08-05T20:00:01.000Z" as IsoTimestamp,
-          events: [rawEvent("stale"), rawEvent("current")],
+          events: [rawEvent("stale"), rawEvent("corrupt"), rawEvent("current")],
         },
         { draftkings: "offered" },
       ),
     ).resolves.toMatchObject({
       events: 1,
       observations: 2,
-      rejectionCounts: { "participant-unavailable": 2 },
+      rejectionCounts: { "participant-unavailable": 4 },
     });
   });
 
