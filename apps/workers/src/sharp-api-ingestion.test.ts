@@ -382,6 +382,33 @@ describe("SharpAPI primary ingestion", () => {
     await expect(
       store.resolveExactCanonicalBinding(binding),
     ).resolves.toMatchObject({ startsAt: "2026-08-05T19:00:00.000Z" });
+
+    await expect(
+      persistSharpApiOddsPage(
+        store,
+        { persist },
+        league,
+        {
+          ...oddsPage,
+          retrievedAt: "2026-08-05T19:00:00.000Z" as IsoTimestamp,
+          events: oddsPage.events.map((event) => ({
+            ...event,
+            bookmakers: event.bookmakers.map((book) => ({
+              ...book,
+              prices: book.prices.map((price) => ({
+                ...price,
+                observedAt: "2026-08-05T18:59:59.000Z" as IsoTimestamp,
+              })),
+            })),
+          })),
+        },
+        { pinnacle: "collected" },
+      ),
+    ).resolves.toMatchObject({
+      events: 0,
+      observations: 0,
+      canonicalOddsEvents: [],
+    });
     expect(persist).toHaveBeenCalledTimes(4);
     expect(
       gateway.commits.some((writes) =>

@@ -468,6 +468,19 @@ export async function persistSharpApiOddsPage(
       canonical = await store.resolveExactCanonicalBinding(binding);
     }
     if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
+    const canonicalStartsAt = Date.parse(canonical.startsAt);
+    const pageRetrievedAt = Date.parse(page.retrievedAt);
+    if (
+      !Number.isFinite(canonicalStartsAt) ||
+      !Number.isFinite(pageRetrievedAt)
+    )
+      throw new Error("sharpapi-odds-mapping-start-mismatch");
+    // SharpAPI's featured endpoint can retain a completed game's final
+    // pregame board after first pitch/kickoff. The immutable odds adapter is
+    // intentionally fenced to scheduled pregame evidence, so omit the whole
+    // event once this page was retrieved at or after the authoritative start.
+    // A later live-state provider may persist those prices under a live model.
+    if (pageRetrievedAt >= canonicalStartsAt) continue;
     canonicalOddsEvents.push({ raw, canonical });
     const providerParticipantIndexes = (() => {
       const startDrift = Math.abs(
@@ -507,7 +520,8 @@ export async function persistSharpApiOddsPage(
               : price.isActive === false
                 ? "closed"
                 : undefined;
-          if (!state) continue;
+          if (!state || Date.parse(price.observedAt) >= canonicalStartsAt)
+            continue;
           if (state === "suspended") suspendedEvidence += 1;
           const providerParticipantIndex =
             price.selectionKey === "away"
@@ -576,6 +590,7 @@ export async function persistSharpApiOddsPage(
             !price.isAlternateLine &&
             !price.isPlayerProp &&
             !price.isStalePregamePrice &&
+            Date.parse(price.observedAt) < canonicalStartsAt &&
             !price.isSuspended,
         ),
         league.leagueKey,
@@ -605,6 +620,7 @@ export async function persistSharpApiOddsPage(
                   !price.isAlternateLine &&
                   !price.isPlayerProp &&
                   !price.isStalePregamePrice &&
+                  Date.parse(price.observedAt) < canonicalStartsAt &&
                   !price.isSuspended,
               ),
               league.leagueKey,
@@ -778,6 +794,7 @@ export async function persistSharpApiOddsPage(
               !price.isAlternateLine &&
               !price.isPlayerProp &&
               !price.isStalePregamePrice &&
+              Date.parse(price.observedAt) < canonicalStartsAt &&
               !price.isSuspended &&
               price.isActive !== false,
           ),
