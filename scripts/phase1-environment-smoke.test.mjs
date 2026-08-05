@@ -42,6 +42,16 @@ test("live ingestion diagnostics expose only bounded league outcomes", () => {
     "mlb:skipped:cadence-not-due,league-invalid:failed:none",
   );
   assert.equal(boundedLiveIngestionDiagnostic({}), "summary-shape-invalid");
+  assert.equal(
+    isSafeLiveIngestionResult({
+      leagueKey: "epl",
+      status: "failed",
+      reason: "schedule-provider-error-near-canonical-projection-stale",
+      pages: 0,
+      quotaCost: 0,
+    }),
+    true,
+  );
 });
 
 test("environment smoke is a clear non-mutating skip unless explicitly enabled", async () => {
