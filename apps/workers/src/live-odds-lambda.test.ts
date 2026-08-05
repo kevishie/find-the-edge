@@ -29,6 +29,18 @@ describe("live odds Lambda invocation", () => {
     ).toBe("near-canonical-projection-stale");
     expect(
       boundedLiveOddsInvocationError(
+        new Error("generic wrapper", {
+          cause: new Error("continuation-transition-conflict"),
+        }),
+      ),
+    ).toBe("continuation-transition-conflict");
+    const providerFailure = new Error("invalid-response");
+    providerFailure.name = "SharpApiError";
+    expect(boundedLiveOddsInvocationError(providerFailure)).toBe(
+      "sharpapi-invalid-response",
+    );
+    expect(
+      boundedLiveOddsInvocationError(
         new TypeError("Cannot read properties of a licensed response"),
       ),
     ).toBe("live-odds-runtime-type-error");

@@ -280,18 +280,43 @@ const safeLiveOddsInvocationCodes = new Set([
   "stale-identity-aggregate",
 ]);
 
-export const boundedLiveOddsInvocationError = (error: unknown) => {
+const boundedSingleLiveOddsInvocationError = (error: unknown) => {
   if (error instanceof Error) {
     const safeReconciliationCode =
       /^(?:invalid-event-reconciliation-lock|event-reconciliation-(?:lock-timeout|ownership-lost|failed|(?:acquisition|execution|renewal|cleanup)-(?:failed|storage-(?:validation|resource-missing|access-denied|transaction-cancelled|unavailable)))|dynamo-(?:conditional|transaction)-conflict)$/;
     if (safeReconciliationCode.test(error.message)) return error.message;
     if (safeLiveOddsInvocationCodes.has(error.message)) return error.message;
+    if (
+      error.name === "SharpApiError" &&
+      [
+        "configuration",
+        "unauthorized",
+        "not-entitled",
+        "rate-limited",
+        "provider-request-ambiguous",
+        "provider-unavailable",
+        "invalid-response",
+      ].includes(error.message)
+    )
+      return `sharpapi-${error.message}`;
   }
   if (error instanceof TypeError) return "live-odds-runtime-type-error";
   if (error instanceof RangeError) return "live-odds-runtime-range-error";
   if (error instanceof SyntaxError) return "live-odds-runtime-syntax-error";
   if (error instanceof Error && error.name === "AbortError")
     return "live-odds-runtime-abort";
+  return "live-odds-runtime-error";
+};
+
+export const boundedLiveOddsInvocationError = (error: unknown) => {
+  let current = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 6 && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const bounded = boundedSingleLiveOddsInvocationError(current);
+    if (bounded !== "live-odds-runtime-error") return bounded;
+    current = current instanceof Error ? current.cause : undefined;
+  }
   return "live-odds-runtime-error";
 };
 
