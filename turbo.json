@@ -16,6 +16,9 @@
       "dependsOn": ["^build"],
       "outputs": ["coverage/**"]
     },
+    "phase1-reset-feed#test": {
+      "cache": false
+    },
     "typecheck": {
       "dependsOn": ["^typecheck"]
     }

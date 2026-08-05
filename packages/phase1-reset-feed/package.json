@@ -1,0 +1,7 @@
+{
+  "name": "phase1-reset-feed",
+  "private": true,
+  "scripts": {
+    "test": "node --test ../../scripts/phase1-reset-feed.test.mjs"
+  }
+}

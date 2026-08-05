@@ -3,7 +3,7 @@ import {
   GetSecretValueCommand,
   SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
-import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { ChangeMessageVisibilityCommand, SQSClient } from "@aws-sdk/client-sqs";
 import {
   AwsDynamoGateway,
@@ -46,6 +46,7 @@ export function parseProviderApiSecret(value: string | undefined): string {
 
 export function parseLiveOddsInvocation(event: unknown): {
   readonly forceRefresh: boolean;
+  readonly maintenanceToken?: string;
   readonly sqs?: {
     readonly messageId: string;
     readonly receiveCount: number;
@@ -119,10 +120,58 @@ export function parseLiveOddsInvocation(event: unknown): {
   }
   if (!Object.prototype.hasOwnProperty.call(record, "forceRefresh"))
     return { forceRefresh: false };
-  if (Reflect.ownKeys(record).length !== 1 || record["forceRefresh"] !== true)
+  const maintenanceToken = record["maintenanceToken"];
+  if (
+    ![1, 2].includes(Reflect.ownKeys(record).length) ||
+    Reflect.ownKeys(record).some(
+      (key) => key !== "forceRefresh" && key !== "maintenanceToken",
+    ) ||
+    record["forceRefresh"] !== true ||
+    (maintenanceToken !== undefined &&
+      (typeof maintenanceToken !== "string" ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+          maintenanceToken,
+        )))
+  )
     throw new Error("live-odds-invocation-invalid");
-  return { forceRefresh: true };
+  return {
+    forceRefresh: true,
+    ...(maintenanceToken ? { maintenanceToken } : {}),
+  };
 }
+
+export const assertLiveOddsMaintenanceOwnership = async (
+  client: DynamoDBDocumentClient,
+  tableName: string,
+  token: string | undefined,
+  now = new Date(),
+) => {
+  const result = await client.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { pk: "ODDS_CONTROL#MAINTENANCE#feed-reset", sk: "CURRENT" },
+      ConsistentRead: true,
+    }),
+  );
+  if (!result.Item) {
+    if (token) throw new Error("live-odds-maintenance-token-invalid");
+    return;
+  }
+  const value = result.Item["value"] as Record<string, unknown> | undefined;
+  const owner = value?.["token"];
+  const expiresAt = value?.["expiresAt"];
+  if (
+    typeof owner !== "string" ||
+    typeof expiresAt !== "string" ||
+    !Number.isFinite(Date.parse(expiresAt))
+  )
+    throw new Error("live-odds-maintenance-active");
+  if (Date.parse(expiresAt) <= now.getTime()) {
+    if (token) throw new Error("live-odds-maintenance-token-invalid");
+    return;
+  }
+  if (token !== owner) throw new Error("live-odds-maintenance-active");
+};
 
 export const liveOddsSummaryRetryDecision = (summary: unknown) => {
   const pending: unknown[] = [summary];
@@ -249,6 +298,8 @@ const safeLiveOddsInvocationCodes = new Set([
   "mapping-canonical-missing",
   "mapping-canonical-scope-mismatch",
   "mapping-scope-mismatch",
+  "live-odds-maintenance-active",
+  "live-odds-maintenance-token-invalid",
   "multiple-current-event-projections",
   "near-canonical-projection-stale",
   "odds-metric-invalid",
@@ -344,6 +395,11 @@ const runLiveOddsHandler = async (event?: unknown) => {
     throw new Error("live-odds-configuration-invalid");
   const secrets = new SecretsManagerClient({});
   const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  await assertLiveOddsMaintenanceOwnership(
+    client,
+    tableName,
+    invocation.maintenanceToken,
+  );
   const eventStore = new DynamoEventIngestionStore(
     new AwsDynamoGateway(client, tableName),
   );

@@ -104,6 +104,73 @@ The versioned control-plane policy keeps a 100-request SharpAPI reserve. Schedul
 
 Manual refresh is only a scheduler hint. It does not bypass provider activation, cadence/quota decisions, cooldown, exact canonical mappings, scheduled/pregame fences or immutable history. Missing, partial, stale, suspended, closed and unsupported evidence is stored as an explicit gap rather than inferred.
 
+### Guarded development feed reset
+
+Use a feed reset only when the development environment contains stale or
+partially ingested provider data that a normal forced refresh cannot repair.
+The operation is permanently restricted to account `228246988391`, region
+`us-east-1`, and stack `FindTheEdge-dev-Foundation`. It resolves the retained
+table and live-ingestion Lambda from CloudFormation and proves that both use the
+same table before doing anything.
+
+Run the dry run first. It scans only `pk` and `sk`, classifies every key, aborts
+on an unknown family, and prints an allowlisted record count plus a SHA-256
+manifest digest. It does not pause ingestion, create a backup, delete records,
+or call SharpAPI.
+
+```sh
+export AWS_ACCOUNT_ID=228246988391
+export AWS_REGION=us-east-1
+pnpm phase1:reset-feed
+```
+
+For apply, use the **Reset Phase 1 SharpAPI feed** GitHub Action, choose `apply`,
+and type `RESET`. The manual workflow uses the short-lived repository OIDC role
+and the same environment-mutation lock as deployment. Apply is intentionally
+rejected outside that workflow so a local process cannot overlap a deploy or a
+second reset.
+
+Apply records the same dry-run plan, disables the live and legacy producer
+rules, all three feed event-source mappings, and the live, legacy, projection,
+and producer Lambdas. It waits the longest deployed writer timeout, purges each
+source queue exactly once, and requires three complete stable empty-queue reads.
+It then requires point-in-time recovery and creates an on-demand backup named
+`find-the-edge-dev-feed-reset-<UTC timestamp>`. It waits until the backup is
+`AVAILABLE` before deleting only canonical schedule, mapping/reconciliation,
+current odds/availability, split, and SharpAPI control-plane records. Immutable
+fixture-odds snapshots, their exact-ID/history indexes, results, users, paper
+bets, evaluations, performance data, strategies, experiments, and
+retrospectives are preserved. Every preserved key present at the stable reset
+boundary must still exist after deletion and re-ingestion; concurrent additions
+to preserved product families are allowed. Unprocessed
+DynamoDB batch items are retried only when every returned key belongs to the
+submitted batch, and the operation proves that no allowlisted feed rows remain.
+
+With every event source still disabled, the operation temporarily gives only
+the live Lambda exactly one unit of concurrency for one synchronous forced
+SharpAPI ingest. A short-lived DynamoDB maintenance lease is checked by the
+Lambda before it reads the provider secret, so any unrelated direct invocation
+is rejected during that window; the reset releases the lease after refencing
+the Lambda, and a crashed lease expires after 20 minutes. Every
+enabled league must complete before it validates the public MLB games and splits
+endpoints for the current Eastern calendar day. Success requires unique
+matchups, fresh valid American odds, fresh SharpAPI split percentages, and at
+least one same-game odds-plus-splits decision surface. All rules, mappings, and
+Lambda concurrencies are restored to their exact prior states in success and
+normal failure paths, including provider failure. Apply has a 75-minute internal
+deadline inside the 90-minute workflow timeout, leaving a bounded cleanup
+reserve; termination signals request the same restoration path.
+
+The output includes the backup name and ARN but never credentials or licensed
+provider payloads. Empty or unavailable UI data can be transient while the
+hosted API converges, so verification retries boundedly. If ingestion or
+verification still fails after deletion, the script restores every writer's
+prior state, exits nonzero with an allowlisted failure code, and requires
+operator follow-up; do not assume the clean feed will repair itself. Restore the
+prior table into a new table from the reported on-demand backup (or use DynamoDB
+point-in-time recovery), inspect it, and perform a reviewed data copy; never
+replace or delete the retained stack table during recovery.
+
 ### Migration and rollback
 
 Deploy the retained-table schema and disabled FIFO path first, verify the `LiveOddsControlPlaneDlqAlarm` notification target, then enable the scheduler. Existing odds rows remain readable; new rows add optional provider/policy provenance. Roll back by disabling `FTE_UPCOMING_SCHEDULER_ENABLED` and redeploying the prior worker bundle. Do not delete the retained table, queues, secrets or immutable snapshots. Before re-enabling, inspect failed run/page/attempt records and redrive only the failed league command.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertLiveOddsMaintenanceOwnership,
   boundedLiveOddsInvocationError,
   boundedRetryVisibilitySeconds,
   liveOddsErrorRetryDecision,
@@ -144,6 +145,10 @@ describe("live odds Lambda invocation", () => {
     expect(parseLiveOddsInvocation({ forceRefresh: true })).toEqual({
       forceRefresh: true,
     });
+    const maintenanceToken = "123e4567-e89b-42d3-a456-426614174000";
+    expect(
+      parseLiveOddsInvocation({ forceRefresh: true, maintenanceToken }),
+    ).toEqual({ forceRefresh: true, maintenanceToken });
     expect(
       parseLiveOddsInvocation({
         mode: "focused",
@@ -175,10 +180,44 @@ describe("live odds Lambda invocation", () => {
     { forceRefresh: false },
     { forceRefresh: "true" },
     { forceRefresh: true, extra: true },
+    { forceRefresh: true, maintenanceToken: "not-a-token" },
     [],
   ])("rejects an invalid or expanded invocation payload", (event) => {
     expect(() => parseLiveOddsInvocation(event)).toThrow(
       "live-odds-invocation-invalid",
     );
+  });
+
+  it("lets only the active feed-reset lease owner run provider ingestion", async () => {
+    const token = "123e4567-e89b-42d3-a456-426614174000";
+    const client = (item?: Record<string, unknown>) =>
+      ({
+        send: () => Promise.resolve({ ...(item ? { Item: item } : {}) }),
+      }) as never;
+    await expect(
+      assertLiveOddsMaintenanceOwnership(client(), "table", undefined),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertLiveOddsMaintenanceOwnership(client(), "table", token),
+    ).rejects.toThrow("maintenance-token-invalid");
+    const active = {
+      value: { token, expiresAt: "2026-08-05T21:00:00.000Z" },
+    };
+    await expect(
+      assertLiveOddsMaintenanceOwnership(
+        client(active),
+        "table",
+        token,
+        new Date("2026-08-05T20:00:00.000Z"),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertLiveOddsMaintenanceOwnership(
+        client(active),
+        "table",
+        undefined,
+        new Date("2026-08-05T20:00:00.000Z"),
+      ),
+    ).rejects.toThrow("maintenance-active");
   });
 });

@@ -1,0 +1,80 @@
+name: Reset Phase 1 SharpAPI feed
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Dry run reports the scope; apply backs up, resets, and re-ingests
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - apply
+      confirmation:
+        description: Type RESET only when mode is apply
+        required: false
+        type: string
+
+concurrency:
+  group: phase1-development-environment
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  reset:
+    name: Guarded dev feed reset
+    if: github.repository == 'kevishie/find-the-edge' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # The script enforces a 75-minute apply deadline; the remaining
+    # reserve lets its finally block restore writer state before job timeout.
+    timeout-minutes: 90
+    steps:
+      - name: Validate manual request
+        env:
+          RESET_MODE: ${{ inputs.mode }}
+          RESET_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          test "$RESET_MODE" = "dry-run" -o "$RESET_MODE" = "apply"
+          if test "$RESET_MODE" = "apply"; then
+            test "$RESET_CONFIRMATION" = "RESET"
+          else
+            test -z "$RESET_CONFIRMATION"
+          fi
+
+      - name: Check out dispatched main revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.12"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify reset safety tests
+        run: pnpm test:phase1-reset-feed
+
+      - name: Assume AWS deployment role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::228246988391:role/github-actions-find-the-edge-deploy
+          aws-region: us-east-1
+
+      - name: Run guarded reset
+        env:
+          AWS_ACCOUNT_ID: "228246988391"
+          AWS_REGION: us-east-1
+          FTE_PHASE1_RESET_MODE: ${{ inputs.mode }}
+          FTE_PHASE1_RESET_APPLY: ${{ inputs.confirmation }}
+        run: pnpm phase1:reset-feed

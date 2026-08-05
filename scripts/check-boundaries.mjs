@@ -9,6 +9,7 @@ export const packageRules = {
   domain: [],
   observability: ["config"],
   odds: ["domain"],
+  "phase1-reset-feed": [],
   providers: ["config", "domain", "observability"],
   scouting: ["domain", "odds", "sports"],
   sports: ["domain", "odds"],

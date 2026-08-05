@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: deploy-phase1
-  cancel-in-progress: true
+  group: phase1-development-environment
+  cancel-in-progress: false
 
 permissions:
   contents: read
