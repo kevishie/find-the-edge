@@ -218,11 +218,51 @@ const extendRetryVisibility = async (
   );
 };
 
+const safeLiveOddsInvocationCodes = new Set([
+  "account-attempt-reservation-conflict",
+  "attempt-transition-conflict",
+  "continuation-transition-conflict",
+  "coverage-missing",
+  "evidence-transition-conflict",
+  "focused-event-binding-unavailable",
+  "focused-request-invalid",
+  "health-transition-conflict",
+  "metric-transition-conflict",
+  "odds-metric-invalid",
+  "page-limit-exceeded",
+  "page-transition-conflict",
+  "provider-page-material-mismatch",
+  "provider-request-ambiguous",
+  "provider-response-unsealed",
+  "provider-unavailable",
+  "quota-reserve",
+  "run-owned",
+  "run-transition-conflict",
+  "schedule-attempt-reservation-conflict",
+  "schedule-conflict-disposition-invalid",
+  "schedule-conflict-gap-invalid",
+  "schedule-conflict-metric-pending",
+  "schedule-conflict-page-commit-missing",
+  "schedule-page-commit-missing",
+  "schedule-stored-event-conflict",
+  "sealed-page-conflict",
+  "sealed-page-missing",
+  "sharpapi-event-binding-unavailable",
+  "sharpapi-pagination-invalid",
+  "sharpapi-pagination-limit",
+  "sharpapi-schedule-pagination-invalid",
+  "sharpapi-schedule-pagination-limit",
+  "sharpapi-splits-pagination-invalid",
+  "sharpapi-splits-pagination-limit",
+  "split-attempt-reservation-conflict",
+]);
+
 export const boundedLiveOddsInvocationError = (error: unknown) => {
   if (error instanceof Error) {
     const safeReconciliationCode =
       /^(?:invalid-event-reconciliation-lock|event-reconciliation-(?:lock-timeout|ownership-lost|failed|(?:acquisition|execution|renewal|cleanup)-(?:failed|storage-(?:validation|resource-missing|access-denied|transaction-cancelled|unavailable)))|dynamo-(?:conditional|transaction)-conflict)$/;
     if (safeReconciliationCode.test(error.message)) return error.message;
+    if (safeLiveOddsInvocationCodes.has(error.message)) return error.message;
   }
   if (error instanceof TypeError) return "live-odds-runtime-type-error";
   if (error instanceof RangeError) return "live-odds-runtime-range-error";

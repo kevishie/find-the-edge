@@ -19,6 +19,11 @@ describe("live odds Lambda invocation", () => {
     ).toBe("event-reconciliation-ownership-lost");
     expect(
       boundedLiveOddsInvocationError(
+        new Error("continuation-transition-conflict"),
+      ),
+    ).toBe("continuation-transition-conflict");
+    expect(
+      boundedLiveOddsInvocationError(
         new TypeError("Cannot read properties of a licensed response"),
       ),
     ).toBe("live-odds-runtime-type-error");
