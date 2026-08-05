@@ -307,13 +307,18 @@ const sanitizedDiagnosticText = (value: string, fallback: string) => {
   return redacted || fallback;
 };
 
-export const oddsFailureDiagnostic = (error: unknown) =>
-  error instanceof Error
-    ? {
-        errorName: sanitizedDiagnosticText(error.name, "Error"),
-        errorMessage: sanitizedDiagnosticText(error.message, "unknown"),
-      }
-    : { errorName: "NonError", errorMessage: "unknown" };
+export const oddsFailureDiagnostic = (error: unknown) => {
+  if (!(error instanceof Error))
+    return { errorName: "NonError", errorMessage: "unknown" };
+  const stage = Reflect.get(error, "stage") as unknown;
+  return {
+    errorName: sanitizedDiagnosticText(error.name, "Error"),
+    errorMessage: sanitizedDiagnosticText(error.message, "unknown"),
+    ...(typeof stage === "string"
+      ? { errorStage: sanitizedDiagnosticText(stage, "unknown") }
+      : {}),
+  };
+};
 const ambiguousTransport = (error: unknown) =>
   error instanceof Error &&
   (error.name === "AbortError" ||
@@ -1200,10 +1205,13 @@ export async function runOddsLeague(input: {
       };
     } catch (error) {
       const reason = classifyOddsControlPlaneFailure(error);
-      if (reason === "internal-failure")
+      if (["internal-failure", "invalid-response"].includes(reason))
         console.error(
           JSON.stringify({
-            event: "odds-league-internal-failure",
+            event:
+              reason === "internal-failure"
+                ? "odds-league-internal-failure"
+                : "odds-league-provider-contract-failure",
             league: policy.leagueKey,
             provider: candidate.providerId,
             ...oddsFailureDiagnostic(error),
@@ -1304,10 +1312,13 @@ export async function runDueOddsLeagues(
         return await runOddsLeague(input);
       } catch (error) {
         const reason = classifyOddsControlPlaneFailure(error);
-        if (reason === "internal-failure")
+        if (["internal-failure", "invalid-response"].includes(reason))
           console.error(
             JSON.stringify({
-              event: "odds-league-boundary-failure",
+              event:
+                reason === "internal-failure"
+                  ? "odds-league-boundary-failure"
+                  : "odds-league-provider-contract-boundary-failure",
               league: input.policy.leagueKey,
               ...oddsFailureDiagnostic(error),
             }),

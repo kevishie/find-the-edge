@@ -356,6 +356,7 @@ export class SharpApiError extends Error {
       | "invalid-response",
     readonly retryable = false,
     readonly retryAt?: IsoTimestamp,
+    readonly stage?: string,
   ) {
     super(code);
   }
@@ -450,7 +451,12 @@ export function parseSharpApiAccount(input: unknown): SharpApiAccount {
     !record(streaming) ||
     typeof streaming["enabled"] !== "boolean"
   )
-    throw new SharpApiError("invalid-response");
+    throw new SharpApiError(
+      "invalid-response",
+      false,
+      undefined,
+      "odds-page-envelope",
+    );
   return {
     tier: data["tier"],
     features: [...data["features"]] as string[],
@@ -944,10 +950,20 @@ export function parseSharpApiOddsPage(
     grouped.set(eventId, books);
   }
   if (!record(pagination) || typeof pagination["has_more"] !== "boolean")
-    throw new SharpApiError("invalid-response");
+    throw new SharpApiError(
+      "invalid-response",
+      false,
+      undefined,
+      "odds-pagination-envelope",
+    );
   const nextCursor = pagination["next_cursor"];
   if (pagination["has_more"] && !canonical(nextCursor, 4096))
-    throw new SharpApiError("invalid-response");
+    throw new SharpApiError(
+      "invalid-response",
+      false,
+      undefined,
+      "odds-pagination-cursor",
+    );
   return {
     events: [...identities].map(([eventId, identity]) => ({
       ...identity,

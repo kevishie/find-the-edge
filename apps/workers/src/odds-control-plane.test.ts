@@ -204,8 +204,10 @@ describe("odds collection control plane", () => {
       `Validation failed token=do-not-log ${"x".repeat(300)}`,
     );
     error.name = "TypeError";
+    Object.assign(error, { stage: "odds-page-envelope" });
     const diagnostic = oddsFailureDiagnostic(error);
     expect(diagnostic.errorName).toBe("TypeError");
+    expect(diagnostic.errorStage).toBe("odds-page-envelope");
     expect(diagnostic.errorMessage).toMatch(
       /^Validation failed token=\[redacted\] x+$/,
     );
