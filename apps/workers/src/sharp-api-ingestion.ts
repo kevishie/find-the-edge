@@ -336,6 +336,7 @@ export async function persistSharpApiOddsPage(
     const genericClubTokens = new Set([
       "afc",
       "cf",
+      "city",
       "club",
       "fc",
       "fk",
@@ -343,6 +344,7 @@ export async function persistSharpApiOddsPage(
       "pfc",
       "sc",
       "sk",
+      "united",
     ]);
     return (
       value

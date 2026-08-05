@@ -405,6 +405,31 @@ describe("SharpAPI primary ingestion", () => {
         { pinnacle: "collected" },
       ),
     ).rejects.toThrow("sharpapi-odds-mapping-participant-mismatch");
+    await expect(
+      persistSharpApiOddsPage(
+        {
+          ingestEvent,
+          resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
+            ...canonical,
+            participantIds: ["alpha-id", "beta-id"],
+            participantLabels: ["Alpha United", "Beta City"],
+          }),
+        } as unknown as EventIngestionStore,
+        { persist },
+        league,
+        {
+          retrievedAt: "2026-08-05T16:00:01.000Z" as IsoTimestamp,
+          events: [
+            {
+              ...rawEvent,
+              awayTeam: "Gamma United",
+              homeTeam: "Delta City",
+            },
+          ],
+        },
+        { pinnacle: "collected" },
+      ),
+    ).rejects.toThrow("sharpapi-odds-mapping-participant-mismatch");
   });
 
   it("binds suffixless consensus splits to the exact suffixed MLB event", async () => {
