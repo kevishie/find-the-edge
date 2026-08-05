@@ -354,8 +354,7 @@ const runLiveOddsHandler = async (event?: unknown) => {
   const provider = "odds-control-plane";
   const sharpSecret = await withBoundedInvocationStage(
     "live-odds-secret-read-failed",
-    () =>
-      secrets.send(new GetSecretValueCommand({ SecretId: sharpSecretId })),
+    () => secrets.send(new GetSecretValueCommand({ SecretId: sharpSecretId })),
   );
   const sharpApiKey = parseProviderApiSecret(sharpSecret.SecretString);
   const common = {
@@ -369,22 +368,18 @@ const runLiveOddsHandler = async (event?: unknown) => {
   try {
     const focused = invocation.focused;
     summary = focused
-      ? await withBoundedInvocationStage(
-          "live-odds-control-plane-failed",
-          () =>
-            runFocusedSharpOddsIngestion({
-              ...common,
-              request: focused,
-            }),
+      ? await withBoundedInvocationStage("live-odds-control-plane-failed", () =>
+          runFocusedSharpOddsIngestion({
+            ...common,
+            request: focused,
+          }),
         )
-      : await withBoundedInvocationStage(
-          "live-odds-control-plane-failed",
-          () =>
-            runProductionOddsControlPlane({
-              ...common,
-              splits: new DynamoBettingSplitRepository(client, tableName),
-              ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
-            }),
+      : await withBoundedInvocationStage("live-odds-control-plane-failed", () =>
+          runProductionOddsControlPlane({
+            ...common,
+            splits: new DynamoBettingSplitRepository(client, tableName),
+            ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
+          }),
         );
   } catch (error) {
     if (!invocation.sqs) throw error;
