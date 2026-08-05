@@ -16,6 +16,23 @@ import {
   type ScheduleEventConflictReason,
 } from "./schedule-reconciliation";
 
+export async function fetchSharpOddsPageWithRetry(
+  fetchPage: () => Promise<SharpApiOddsPage>,
+  onRetry: () => void = () => undefined,
+): Promise<{ readonly page: SharpApiOddsPage; readonly quotaCost: 1 | 2 }> {
+  try {
+    return { page: await fetchPage(), quotaCost: 1 };
+  } catch (error) {
+    if (
+      !(error instanceof SharpApiError) ||
+      error.code !== "invalid-response"
+    )
+      throw error;
+    onRetry();
+    return { page: await fetchPage(), quotaCost: 2 };
+  }
+}
+
 const nonEmptyRateWindow = <
   T extends {
     readonly limit?: number;
@@ -1689,21 +1706,26 @@ export async function runProductionOddsControlPlane(input: {
                 markets: "main",
                 quota: "reserved",
               });
-              const page = input.fetchSharpOdds
-                ? await input.fetchSharpOdds(
-                    sharpLeague,
-                    input.sharpApiKey,
-                    pageToken === "start" ? undefined : pageToken,
-                  )
-                : (
-                    await (
-                      input.fetchSharpFeatured ?? fetchSharpApiFeaturedOdds
-                    )(
+              const fetchPage = () =>
+                input.fetchSharpOdds
+                  ? input.fetchSharpOdds(
                       sharpLeague,
                       input.sharpApiKey,
                       pageToken === "start" ? undefined : pageToken,
                     )
-                  ).page;
+                  : (input.fetchSharpFeatured ?? fetchSharpApiFeaturedOdds)(
+                      sharpLeague,
+                      input.sharpApiKey,
+                      pageToken === "start" ? undefined : pageToken,
+                    ).then(({ page }) => page);
+              const fetched = await fetchSharpOddsPageWithRetry(fetchPage, () =>
+                input.metrics?.emit("OddsProviderInvalidResponseRetry", 1, {
+                  provider: SHARP_API_PROVIDER_ID,
+                  league: policy.leagueKey,
+                  endpoint: "featured",
+                }),
+              );
+              const { page } = fetched;
               const observedBooks = new Set(
                 page.events.flatMap((event) =>
                   event.bookmakers
@@ -1748,7 +1770,7 @@ export async function runProductionOddsControlPlane(input: {
                     policy.providers[0]?.books ?? {},
                   ),
                 ],
-                quotaCost: 1,
+                quotaCost: fetched.quotaCost,
                 ...(pageRateWindow
                   ? {
                       rateWindow: pageRateWindow,

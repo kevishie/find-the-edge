@@ -15,6 +15,7 @@ import {
   capabilityFailure,
   scheduleCapabilityFailure,
   evidenceGaps,
+  fetchSharpOddsPageWithRetry,
   runFocusedSharpOddsIngestion,
   runProductionOddsControlPlane,
   scheduleEventConflictReason,
@@ -32,6 +33,36 @@ const expectedMarketCount = (leagueKey: string) =>
   ).reduce((count, markets) => count + markets.length, 0);
 
 describe("production odds control-plane composition", () => {
+  it("retries one transient invalid SharpAPI odds page and accounts for both requests", async () => {
+    const page = {
+      events: [],
+      hasMore: false,
+      retrievedAt: at,
+    };
+    const fetchPage = vi
+      .fn()
+      .mockRejectedValueOnce(new SharpApiError("invalid-response"))
+      .mockResolvedValueOnce(page);
+    const onRetry = vi.fn();
+
+    await expect(
+      fetchSharpOddsPageWithRetry(fetchPage, onRetry),
+    ).resolves.toEqual({ page, quotaCost: 2 });
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry non-contract SharpAPI failures", async () => {
+    const fetchPage = vi
+      .fn()
+      .mockRejectedValue(new SharpApiError("unauthorized"));
+
+    await expect(fetchSharpOddsPageWithRetry(fetchPage)).rejects.toThrow(
+      "unauthorized",
+    );
+    expect(fetchPage).toHaveBeenCalledOnce();
+  });
+
   it("deduplicates focused event refreshes by durable polling-window identity", async () => {
     const control = new MemoryOddsControlPlaneStore();
     const events = new MemoryEventIngestionStore();
