@@ -551,20 +551,35 @@ export function parseSharpApiOddsPage(
   retrievedAt: IsoTimestamp,
   maximumRows = 200,
 ): SharpApiOddsPage {
+  const payload = record(input) ? input : undefined;
+  const pagination = payload?.["pagination"];
+  const explicitlyEmpty =
+    record(pagination) &&
+    payload?.["data"] === null &&
+    pagination["has_more"] === false &&
+    pagination["count"] === 0;
   if (
-    !record(input) ||
-    !Array.isArray(input["data"]) ||
-    input["data"].length > maximumRows
+    !payload ||
+    (!explicitlyEmpty && !Array.isArray(payload["data"])) ||
+    (Array.isArray(payload["data"]) && payload["data"].length > maximumRows)
   )
     throw new SharpApiError("invalid-response");
+  const data = explicitlyEmpty ? [] : (payload["data"] as unknown[]);
   const deduplicatedRows: (Record<string, unknown> | null)[] = [];
   const rejections: SharpApiNormalizationRejection[] = [];
   const priceIdentities = new Map<
     string,
     { readonly signature: string; readonly index: number }
   >();
-  for (const candidate of input["data"]) {
-    if (!record(candidate)) throw new SharpApiError("invalid-response");
+  for (const candidate of data) {
+    if (!record(candidate)) {
+      rejections.push({
+        providerId: SHARP_API_PROVIDER_ID,
+        reason: "incomplete-market",
+        auditId: "non-record-row",
+      });
+      continue;
+    }
     let value: Record<string, unknown> = candidate;
     const bookResult = normalizeSportsbook(
       typeof value["sportsbook"] === "string" ? value["sportsbook"] : "",
@@ -751,8 +766,17 @@ export function parseSharpApiOddsPage(
     ]);
     const previous = priceIdentities.get(value["id"]);
     if (previous) {
-      if (previous.signature !== signature)
-        throw new SharpApiError("invalid-response");
+      if (previous.signature !== signature) {
+        deduplicatedRows[previous.index] = null;
+        rejections.push({
+          providerId: SHARP_API_PROVIDER_ID,
+          reason: "incomplete-market",
+          auditId: auditId(value["id"]),
+          providerEventId: value["event_id"],
+          sportsbookId: value["sportsbook"],
+        });
+        continue;
+      }
       // SharpAPI snapshots can repeat a stable price id after repricing it.
       // Provider order is authoritative when timestamps have only coarse precision.
       deduplicatedRows[previous.index] = value;
@@ -919,7 +943,6 @@ export function parseSharpApiOddsPage(
     books.set(book, prices);
     grouped.set(eventId, books);
   }
-  const pagination = input["pagination"];
   if (!record(pagination) || typeof pagination["has_more"] !== "boolean")
     throw new SharpApiError("invalid-response");
   const nextCursor = pagination["next_cursor"];

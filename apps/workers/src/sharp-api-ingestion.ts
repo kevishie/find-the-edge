@@ -4,6 +4,7 @@ import type {
   FixtureOddsIngestInput,
   FixtureOddsPersistResult,
 } from "@find-the-edge/database";
+import { FixtureOddsBindingConflictError } from "@find-the-edge/database";
 import type {
   CanonicalEvent,
   FixtureOddsAvailabilityEvidence,
@@ -732,6 +733,16 @@ export async function persistSharpApiOddsPage(
             error.message === "exact-snapshot-index-write-failed"
           )
             onPersistenceOutcome?.({ mirrorFailure: true });
+          // A source event can cross its pregame fence, be rescheduled, or be
+          // rebound while a large provider page is being committed. Quarantine
+          // that observation without discarding valid sibling games from the
+          // same page. The immutable adapter remains the authority: no
+          // conflicted snapshot is written.
+          if (error instanceof FixtureOddsBindingConflictError) {
+            rejectionCounts["participant-unavailable"] =
+              (rejectionCounts["participant-unavailable"] ?? 0) + 1;
+            continue;
+          }
           throw error;
         }
         onPersistenceOutcome?.({

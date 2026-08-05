@@ -795,11 +795,44 @@ describe("SharpAPI activation boundary", () => {
     expect(repriced.events[0]?.bookmakers[0]?.prices[0]?.americanOdds).toBe(
       -115,
     );
+    const conflicted = parseSharpApiOddsPage(
+      {
+        data: [price, { ...price, selection_id: "different-selection" }],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagues[0]!,
+      "2026-08-03T21:42:01.000Z" as never,
+    );
+    expect(conflicted.events).toHaveLength(0);
+    expect(conflicted.rejections).toContainEqual(
+      expect.objectContaining({
+        reason: "incomplete-market",
+        auditId: "price-1",
+      }),
+    );
+  });
+
+  it("accepts an explicitly empty terminal odds page", () => {
+    expect(
+      parseSharpApiOddsPage(
+        {
+          data: null,
+          pagination: {
+            has_more: false,
+            count: 0,
+            total: 0,
+            next_cursor: null,
+          },
+        },
+        sharpApiLeagues[0]!,
+        "2026-08-03T21:42:01.000Z" as never,
+      ),
+    ).toMatchObject({ events: [], hasMore: false });
     expect(() =>
       parseSharpApiOddsPage(
         {
-          data: [price, { ...price, selection_id: "different-selection" }],
-          pagination: { has_more: false, next_cursor: null },
+          data: null,
+          pagination: { has_more: true, count: 0, next_cursor: "next" },
         },
         sharpApiLeagues[0]!,
         "2026-08-03T21:42:01.000Z" as never,

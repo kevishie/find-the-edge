@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DynamoConditionalConflict,
   DynamoEventIngestionStore,
+  FixtureOddsBindingConflictError,
   type BettingSplitRepository,
   type DynamoGateway,
   type DynamoItem,
@@ -426,6 +427,93 @@ describe("SharpAPI primary ingestion", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("quarantines a stale event binding without aborting valid sibling odds", async () => {
+    const canonical = (id: string): CanonicalEvent =>
+      ({
+        id,
+        version: 1,
+        sportKey: "mlb",
+        leagueKey: "mlb",
+        status: "scheduled",
+        startsAt: "2026-08-06T00:00:00.000Z",
+        participantIds: [`${id}-away`, `${id}-home`],
+        participantLabels: ["Boston Red Sox", "New York Yankees"],
+      }) as unknown as CanonicalEvent;
+    const store = {
+      getExactMapping: vi.fn().mockResolvedValue({ bindingKind: "source" }),
+      resolveExactCanonicalBinding: vi.fn(
+        (binding: { readonly providerEventId: string }) =>
+          Promise.resolve(canonical(binding.providerEventId)),
+      ),
+    } as unknown as EventIngestionStore;
+    const price = (id: string, selectionKey: "away" | "home") => ({
+      providerPriceId: id,
+      marketKey: "moneyline" as const,
+      outcomeStructure: "two-way" as const,
+      providerMarketType: "moneyline",
+      providerMarketId: `${id}-market`,
+      selectionKey,
+      selectionLabel:
+        selectionKey === "away" ? "Boston Red Sox" : "New York Yankees",
+      providerSelectionId: `${id}-selection`,
+      americanOdds: selectionKey === "away" ? 110 : -120,
+      decimalOdds: selectionKey === "away" ? 2.1 : 1.83,
+      impliedProbability: selectionKey === "away" ? 0.476 : 0.545,
+      isLive: false,
+      isMainLine: true,
+      isAlternateLine: false,
+      isPlayerProp: false,
+      isStalePregamePrice: false,
+      observedAt: "2026-08-05T20:00:00.000Z" as IsoTimestamp,
+    });
+    const rawEvent = (providerEventId: string) => ({
+      providerEventId,
+      providerEventUuid: `${providerEventId}-uuid`,
+      awayTeam: "Boston Red Sox",
+      homeTeam: "New York Yankees",
+      startsAt: "2026-08-06T00:00:00.000Z" as IsoTimestamp,
+      bookmakers: [
+        {
+          id: "draftkings",
+          label: "DraftKings",
+          prices: [
+            price(`${providerEventId}-away`, "away"),
+            price(`${providerEventId}-home`, "home"),
+          ],
+        },
+      ],
+    });
+    const persist = vi.fn(
+      (input: Parameters<SharpApiOddsPersister["persist"]>[0]) =>
+        input.providerEventId === "stale"
+          ? Promise.reject(
+              new FixtureOddsBindingConflictError("binding changed"),
+            )
+          : Promise.resolve({
+              snapshot: "created" as const,
+              current: "advanced" as const,
+              value: input.observation as never,
+            }),
+    );
+
+    await expect(
+      persistSharpApiOddsPage(
+        store,
+        { persist },
+        { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
+        {
+          retrievedAt: "2026-08-05T20:00:01.000Z" as IsoTimestamp,
+          events: [rawEvent("stale"), rawEvent("current")],
+        },
+        { draftkings: "offered" },
+      ),
+    ).resolves.toMatchObject({
+      events: 1,
+      observations: 2,
+      rejectionCounts: { "participant-unavailable": 2 },
+    });
   });
 
   it("reports completed persistence decisions before a later write fails", async () => {
