@@ -1449,6 +1449,21 @@ describe("dynamo reconciliation ownership fencing", () => {
     },
   );
 
+  it("preserves closed reconciliation integrity diagnostics", async () => {
+    const conflict = new Error("near-canonical-projection-stale");
+    class IntegrityFailureGateway extends ContractGateway {
+      override queryAll() {
+        return Promise.reject(conflict);
+      }
+    }
+    const failure: unknown = await new DynamoEventIngestionStore(
+      new IntegrityFailureGateway(),
+    )
+      .reconcileScheduledEvent(reconciliationInput("integrity-failure"))
+      .catch((error: unknown) => error);
+    expect(failure).toBe(conflict);
+  });
+
   it("serializes bootstrap writes with heartbeat renewal for the same lease", async () => {
     class SerializedGateway extends ContractGateway {
       activeLockTransactions = 0;

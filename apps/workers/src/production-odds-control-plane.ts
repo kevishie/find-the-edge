@@ -269,6 +269,8 @@ const boundedScheduleInternalFailures = new Set([
   "reconciliation-participants-required",
   "invalid-provider-event-mapping",
   "invalid-provider-revision",
+  "invalid-provider-revision-row",
+  "provider-revision-scope-mismatch",
   "invalid-canonical-event",
   "invalid-identity-claim",
   "identity-version-exhausted",

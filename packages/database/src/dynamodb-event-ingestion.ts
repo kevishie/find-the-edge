@@ -185,6 +185,31 @@ const reconciliationStorageFailure = (
     { cause: error },
   );
 };
+const boundedReconciliationExecutionFailures = new Set([
+  "bootstrap-failed",
+  "bootstrap-identity-already-exists",
+  "bootstrap-identity-snapshot-mismatch",
+  "bootstrap-response-conflict",
+  "bootstrap-stale",
+  "canonical-revision-provider-limit",
+  "dangling-identity-aggregate",
+  "event-projection-active-corrupt",
+  "event-projection-active-missing",
+  "event-projection-pointer-corrupt",
+  "event-projection-pointer-missing",
+  "identity-conflict-count-exhausted",
+  "identity-register-conflict",
+  "identity-snapshot-mismatch",
+  "identity-snapshot-unstable",
+  "invalid-provider-revision-row",
+  "mapping-canonical-missing",
+  "mapping-canonical-scope-mismatch",
+  "mapping-scope-mismatch",
+  "multiple-current-event-projections",
+  "near-canonical-projection-stale",
+  "provider-revision-scope-mismatch",
+  "stale-identity-aggregate",
+]);
 export interface DynamoGateway {
   get(pk: string, sk: string): Promise<DynamoItem | null>;
   batchGet(
@@ -972,12 +997,13 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         error instanceof DynamoConditionalConflict ||
         error instanceof DynamoTransactionConflict ||
         (error instanceof Error &&
-          [
-            "invalid-scheduled-reconciliation",
-            "mapped-canonical-participants-missing",
-            "near-canonical-participants-missing",
-            "event-reconciliation-ownership-lost",
-          ].includes(error.message))
+          (boundedReconciliationExecutionFailures.has(error.message) ||
+            [
+              "invalid-scheduled-reconciliation",
+              "mapped-canonical-participants-missing",
+              "near-canonical-participants-missing",
+              "event-reconciliation-ownership-lost",
+            ].includes(error.message)))
           ? error
           : reconciliationStorageFailure("execution", error);
     }
