@@ -250,9 +250,30 @@ const SAFE_FAILURES = [
   "transition-conflict",
   "stored-event-conflict",
   "conflict-metric-pending",
+  "storage-validation",
+  "storage-resource-missing",
+  "storage-access-denied",
+  "storage-throttled",
+  "storage-transaction-cancelled",
+  "storage-transaction-in-progress",
+  "storage-unavailable",
 ] as const;
+const SAFE_STORAGE_FAILURES = new Map<string, string>([
+  ["ValidationException", "storage-validation"],
+  ["ResourceNotFoundException", "storage-resource-missing"],
+  ["AccessDeniedException", "storage-access-denied"],
+  ["ProvisionedThroughputExceededException", "storage-throttled"],
+  ["ThrottlingException", "storage-throttled"],
+  ["RequestLimitExceeded", "storage-throttled"],
+  ["TransactionCanceledException", "storage-transaction-cancelled"],
+  ["TransactionInProgressException", "storage-transaction-in-progress"],
+  ["InternalServerError", "storage-unavailable"],
+  ["ServiceUnavailable", "storage-unavailable"],
+]);
 export const classifyOddsControlPlaneFailure = (error: unknown) => {
   if (!(error instanceof Error)) return "internal-failure";
+  const storageFailure = SAFE_STORAGE_FAILURES.get(error.name);
+  if (storageFailure) return storageFailure;
   if (error.message === "run-owned") return "provider-recovering";
   if (error.message === "page-limit-exceeded") return "pagination-invalid";
   if (error.message === "sealed-page-conflict")

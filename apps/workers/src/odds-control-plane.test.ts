@@ -145,6 +145,11 @@ describe("odds collection control plane", () => {
     expect(
       classifyOddsControlPlaneFailure(new Error("sealed-page-conflict")),
     ).toBe("provider-response-unsealed");
+    const storageFailure = new Error("redacted provider storage detail");
+    storageFailure.name = "ValidationException";
+    expect(classifyOddsControlPlaneFailure(storageFailure)).toBe(
+      "storage-validation",
+    );
     expect(
       classifyOddsControlPlaneFailure(new Error("sensitive unknown detail")),
     ).toBe("internal-failure");
