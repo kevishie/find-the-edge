@@ -13,7 +13,10 @@ import type {
   IsoTimestamp,
   SportKey,
 } from "@find-the-edge/domain";
-import type { SharpApiLeague } from "@find-the-edge/providers";
+import type {
+  SharpApiLeague,
+  SharpApiOddsPage,
+} from "@find-the-edge/providers";
 
 import {
   ingestSharpApi,
@@ -264,70 +267,72 @@ describe("SharpAPI primary ingestion", () => {
     await expect(
       store.resolveExactCanonicalBinding(binding),
     ).resolves.toBeNull();
+    const oddsPage: SharpApiOddsPage = {
+      retrievedAt: "2026-08-05T12:00:01.000Z" as IsoTimestamp,
+      hasMore: false,
+      events: [
+        {
+          providerEventId: binding.providerEventId,
+          providerEventUuid: `${binding.providerEventId}:uuid`,
+          awayTeam: "Miami Marlins",
+          homeTeam: "Atlanta Braves",
+          awayClubKey: "marlins",
+          homeClubKey: "braves",
+          startsAt: "2026-08-05T19:00:00.000Z" as IsoTimestamp,
+          bookmakers: [
+            {
+              id: "pinnacle",
+              label: "Pinnacle",
+              prices: [
+                {
+                  providerPriceId: "odds-only-away",
+                  marketKey: "moneyline",
+                  outcomeStructure: "two-way",
+                  providerMarketType: "moneyline",
+                  providerMarketId: "odds-only-moneyline",
+                  selectionKey: "away",
+                  selectionLabel: "Miami Marlins",
+                  providerSelectionId: "marlins",
+                  americanOdds: 118,
+                  decimalOdds: 2.18,
+                  impliedProbability: 0.4587,
+                  isLive: false,
+                  isMainLine: true,
+                  isAlternateLine: false,
+                  isPlayerProp: false,
+                  isStalePregamePrice: false,
+                  observedAt: "2026-08-05T12:00:00.000Z" as IsoTimestamp,
+                },
+                {
+                  providerPriceId: "odds-only-home",
+                  marketKey: "moneyline",
+                  outcomeStructure: "two-way",
+                  providerMarketType: "moneyline",
+                  providerMarketId: "odds-only-moneyline",
+                  selectionKey: "home",
+                  selectionLabel: "Atlanta Braves",
+                  providerSelectionId: "braves",
+                  americanOdds: -128,
+                  decimalOdds: 1.78125,
+                  impliedProbability: 0.5614,
+                  isLive: false,
+                  isMainLine: true,
+                  isAlternateLine: false,
+                  isPlayerProp: false,
+                  isStalePregamePrice: false,
+                  observedAt: "2026-08-05T12:00:00.000Z" as IsoTimestamp,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
     const result = await persistSharpApiOddsPage(
       store,
       { persist },
       league,
-      {
-        retrievedAt: "2026-08-05T12:00:01.000Z" as IsoTimestamp,
-        events: [
-          {
-            providerEventId: binding.providerEventId,
-            providerEventUuid: `${binding.providerEventId}:uuid`,
-            awayTeam: "Miami Marlins",
-            homeTeam: "Atlanta Braves",
-            awayClubKey: "marlins",
-            homeClubKey: "braves",
-            startsAt: "2026-08-05T19:00:00.000Z" as IsoTimestamp,
-            bookmakers: [
-              {
-                id: "pinnacle",
-                label: "Pinnacle",
-                prices: [
-                  {
-                    providerPriceId: "odds-only-away",
-                    marketKey: "moneyline",
-                    outcomeStructure: "two-way",
-                    providerMarketType: "moneyline",
-                    providerMarketId: "odds-only-moneyline",
-                    selectionKey: "away",
-                    selectionLabel: "Miami Marlins",
-                    providerSelectionId: "marlins",
-                    americanOdds: 118,
-                    decimalOdds: 2.18,
-                    impliedProbability: 0.4587,
-                    isLive: false,
-                    isMainLine: true,
-                    isAlternateLine: false,
-                    isPlayerProp: false,
-                    isStalePregamePrice: false,
-                    observedAt: "2026-08-05T12:00:00.000Z" as IsoTimestamp,
-                  },
-                  {
-                    providerPriceId: "odds-only-home",
-                    marketKey: "moneyline",
-                    outcomeStructure: "two-way",
-                    providerMarketType: "moneyline",
-                    providerMarketId: "odds-only-moneyline",
-                    selectionKey: "home",
-                    selectionLabel: "Atlanta Braves",
-                    providerSelectionId: "braves",
-                    americanOdds: -128,
-                    decimalOdds: 1.78125,
-                    impliedProbability: 0.5614,
-                    isLive: false,
-                    isMainLine: true,
-                    isAlternateLine: false,
-                    isPlayerProp: false,
-                    isStalePregamePrice: false,
-                    observedAt: "2026-08-05T12:00:00.000Z" as IsoTimestamp,
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      },
+      oddsPage,
       { pinnacle: "collected" },
     );
 
@@ -339,7 +344,45 @@ describe("SharpAPI primary ingestion", () => {
       participantLabels: ["Miami Marlins", "Atlanta Braves"],
     });
     expect(result).toMatchObject({ events: 1, observations: 2 });
-    expect(persist).toHaveBeenCalledTimes(2);
+    const correctedPage: SharpApiOddsPage = {
+      ...oddsPage,
+      retrievedAt: "2026-08-05T12:05:01.000Z" as IsoTimestamp,
+      events: oddsPage.events.map((event) => ({
+        ...event,
+        startsAt: "2026-08-05T19:30:00.000Z" as IsoTimestamp,
+      })),
+    };
+    await expect(
+      persistSharpApiOddsPage(store, { persist }, league, correctedPage, {
+        pinnacle: "collected",
+      }),
+    ).resolves.toMatchObject({ events: 1, observations: 2 });
+    await expect(
+      store.resolveExactCanonicalBinding(binding),
+    ).resolves.toMatchObject({ startsAt: "2026-08-05T19:30:00.000Z" });
+
+    await expect(
+      persistSharpApiOddsPage(
+        store,
+        { persist },
+        league,
+        {
+          ...correctedPage,
+          retrievedAt: "2026-08-05T12:10:01.000Z" as IsoTimestamp,
+          events: correctedPage.events.map((event) => ({
+            ...event,
+            awayTeam: "Unrelated Away",
+            homeTeam: "Unrelated Home",
+            startsAt: "2026-08-05T20:00:00.000Z" as IsoTimestamp,
+          })),
+        },
+        { pinnacle: "collected" },
+      ),
+    ).rejects.toThrow("sharpapi-odds-mapping-participant-mismatch");
+    await expect(
+      store.resolveExactCanonicalBinding(binding),
+    ).resolves.toMatchObject({ startsAt: "2026-08-05T19:30:00.000Z" });
+    expect(persist).toHaveBeenCalledTimes(4);
     expect(
       gateway.commits.some((writes) =>
         writes.some((write) => write.includes('insert:["EVENT#')),
@@ -377,10 +420,8 @@ describe("SharpAPI primary ingestion", () => {
     const store = {
       ingestEvent,
       reconcileScheduledEvent,
-      resolveExactCanonicalBinding: vi
-        .fn()
-        .mockResolvedValueOnce(null)
-        .mockResolvedValue(canonical),
+      getExactMapping: vi.fn().mockResolvedValue(null),
+      resolveExactCanonicalBinding: vi.fn().mockResolvedValue(canonical),
     } as unknown as EventIngestionStore;
     const persist = vi
       .fn()
@@ -559,6 +600,7 @@ describe("SharpAPI primary ingestion", () => {
     };
     const store = {
       ingestEvent,
+      getExactMapping: vi.fn().mockResolvedValue({ bindingKind: "alias" }),
       resolveExactCanonicalBinding: vi.fn().mockResolvedValue(canonical),
     } as unknown as EventIngestionStore;
     const league = {
@@ -603,6 +645,7 @@ describe("SharpAPI primary ingestion", () => {
     await persistSharpApiOddsPage(
       {
         ingestEvent,
+        getExactMapping: vi.fn().mockResolvedValue({ bindingKind: "alias" }),
         resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
           ...canonical,
           participantIds: ["agf-id", "sabah-id"],
@@ -633,6 +676,7 @@ describe("SharpAPI primary ingestion", () => {
       persistSharpApiOddsPage(
         {
           ingestEvent,
+          getExactMapping: vi.fn().mockResolvedValue({ bindingKind: "alias" }),
           resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
             ...canonical,
             participantIds: ["union-id", "bodo-id"],
@@ -662,6 +706,7 @@ describe("SharpAPI primary ingestion", () => {
       persistSharpApiOddsPage(
         {
           ingestEvent,
+          getExactMapping: vi.fn().mockResolvedValue({ bindingKind: "alias" }),
           resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
             ...canonical,
             participantIds: ["ararat-id", "celje-id"],
@@ -688,6 +733,7 @@ describe("SharpAPI primary ingestion", () => {
       persistSharpApiOddsPage(
         {
           ingestEvent,
+          getExactMapping: vi.fn().mockResolvedValue({ bindingKind: "alias" }),
           resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
             ...canonical,
             participantIds: ["olympiacos-id", "nijmegen-id"],
@@ -749,6 +795,7 @@ describe("SharpAPI primary ingestion", () => {
       persistSharpApiOddsPage(
         {
           ingestEvent,
+          getExactMapping: vi.fn().mockResolvedValue({ bindingKind: "alias" }),
           resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
             ...canonical,
             participantIds: ["alpha-id", "beta-id"],
@@ -870,6 +917,14 @@ describe("SharpAPI primary ingestion", () => {
     );
     const store = {
       resolveExactCanonicalBinding,
+      getExactMapping: vi.fn(
+        ({ providerEventId }: { readonly providerEventId: string }) =>
+          Promise.resolve(
+            bindings.has(providerEventId)
+              ? { bindingKind: "source" as const }
+              : null,
+          ),
+      ),
       bootstrapCanonicalEvent,
       ingestEvent,
       findNearCanonicalCandidates: vi.fn(() => Promise.resolve([])),

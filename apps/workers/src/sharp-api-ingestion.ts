@@ -5,6 +5,7 @@ import type {
   FixtureOddsPersistResult,
 } from "@find-the-edge/database";
 import type {
+  CanonicalEvent,
   FixtureOddsAvailabilityEvidence,
   IsoTimestamp,
   OddsNormalizationReason,
@@ -383,6 +384,34 @@ export async function persistSharpApiOddsPage(
       sharesDistinctiveToken
     );
   };
+  const participantIndexes = (
+    raw: SharpApiOddsPage["events"][number],
+    canonical: CanonicalEvent,
+    requireCompleteMatch = false,
+  ) => {
+    if (canonical.participantLabels?.length !== 2)
+      throw new Error("sharpapi-odds-mapping-participant-mismatch");
+    const rawLabels = [raw.awayTeam, raw.homeTeam] as const;
+    const candidates = rawLabels.map((rawLabel) =>
+      canonical.participantLabels!.flatMap((canonicalLabel, index) =>
+        credibleParticipantAlias(rawLabel, canonicalLabel) ? [index] : [],
+      ),
+    );
+    const away = candidates[0]!;
+    const home = candidates[1]!;
+    // Schedule and odds endpoints can use different aliases for the same
+    // exact provider event. One unique participant match safely determines
+    // the other side; ambiguous or unrelated pairs fail closed.
+    if (away.length === 1 && home.length === 1 && away[0] !== home[0])
+      return [away[0]!, home[0]!] as const;
+    if (requireCompleteMatch)
+      throw new Error("sharpapi-odds-mapping-participant-mismatch");
+    if (away.length === 1 && home.length === 0)
+      return [away[0]!, 1 - away[0]!] as const;
+    if (away.length === 0 && home.length === 1)
+      return [1 - home[0]!, home[0]!] as const;
+    throw new Error("sharpapi-odds-mapping-participant-mismatch");
+  };
   const canonicalOddsEvents: {
     readonly raw: SharpApiOddsPage["events"][number];
     readonly canonical: NonNullable<
@@ -412,7 +441,10 @@ export async function persistSharpApiOddsPage(
       sportKey: league.sportKey,
       leagueKey: league.leagueKey,
     } as const;
-    let canonical = await store.resolveExactCanonicalBinding(binding);
+    const exactMapping = await store.getExactMapping(binding);
+    let canonical = exactMapping
+      ? await store.resolveExactCanonicalBinding(binding)
+      : null;
     if (!canonical) {
       let ingested = await store.ingestEvent({
         ...event,
@@ -436,6 +468,27 @@ export async function persistSharpApiOddsPage(
       canonical = await store.resolveExactCanonicalBinding(binding);
     }
     if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
+    const initialStartDrift = Math.abs(
+      Date.parse(raw.startsAt) - Date.parse(canonical.startsAt),
+    );
+    if (
+      exactMapping?.bindingKind === "source" &&
+      Number.isFinite(initialStartDrift) &&
+      initialStartDrift > 15 * 60_000
+    ) {
+      // SharpAPI can correct a postponed or delayed start between its schedule
+      // and odds endpoints. Only the exact source event ID may move the
+      // canonical event, and only after the two-team matchup still matches.
+      participantIndexes(raw, canonical, true);
+      await reconcileScheduledProviderEvent(
+        store,
+        SHARP_API_PROVIDER_ID,
+        event,
+        page.retrievedAt,
+      );
+      canonical = await store.resolveExactCanonicalBinding(binding);
+      if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
+    }
     canonicalOddsEvents.push({ raw, canonical });
     const providerParticipantIndexes = (() => {
       const startDrift = Math.abs(
@@ -443,26 +496,7 @@ export async function persistSharpApiOddsPage(
       );
       if (!Number.isFinite(startDrift) || startDrift > 15 * 60_000)
         throw new Error("sharpapi-odds-mapping-start-mismatch");
-      if (canonical.participantLabels?.length !== 2)
-        throw new Error("sharpapi-odds-mapping-participant-mismatch");
-      const rawLabels = [raw.awayTeam, raw.homeTeam] as const;
-      const candidates = rawLabels.map((rawLabel) =>
-        canonical.participantLabels!.flatMap((canonicalLabel, index) =>
-          credibleParticipantAlias(rawLabel, canonicalLabel) ? [index] : [],
-        ),
-      );
-      const away = candidates[0]!;
-      const home = candidates[1]!;
-      // Schedule and odds endpoints can use different aliases for the same
-      // exact provider event. One unique participant match safely determines
-      // the other side; ambiguous or unrelated pairs fail closed.
-      if (away.length === 1 && home.length === 1 && away[0] !== home[0])
-        return [away[0]!, home[0]!] as const;
-      if (away.length === 1 && home.length === 0)
-        return [away[0]!, 1 - away[0]!] as const;
-      if (away.length === 0 && home.length === 1)
-        return [1 - home[0]!, home[0]!] as const;
-      throw new Error("sharpapi-odds-mapping-participant-mismatch");
+      return participantIndexes(raw, canonical);
     })();
     let eventObservations = 0;
     for (const book of raw.bookmakers) {
