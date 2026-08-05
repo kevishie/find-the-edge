@@ -53,6 +53,20 @@ describe("live odds Lambda invocation", () => {
     expect(boundedLiveOddsInvocationError(null)).toBe(
       "live-odds-runtime-error",
     );
+    expect(
+      boundedLiveOddsInvocationError(
+        new Error("live-odds-control-plane-failed", {
+          cause: new Error("credential-like value: abc"),
+        }),
+      ),
+    ).toBe("live-odds-control-plane-failed");
+    expect(
+      boundedLiveOddsInvocationError(
+        new Error("live-odds-secret-read-failed", {
+          cause: new Error("secret-key-abc"),
+        }),
+      ),
+    ).toBe("live-odds-secret-read-failed");
   });
   it("retains SQS retry ownership for transient summaries but acknowledges terminal work", () => {
     expect(

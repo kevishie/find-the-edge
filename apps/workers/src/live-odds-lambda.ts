@@ -243,6 +243,8 @@ const safeLiveOddsInvocationCodes = new Set([
   "identity-snapshot-mismatch",
   "identity-snapshot-unstable",
   "invalid-provider-revision-row",
+  "live-odds-control-plane-failed",
+  "live-odds-secret-read-failed",
   "metric-transition-conflict",
   "mapping-canonical-missing",
   "mapping-canonical-scope-mismatch",
@@ -320,6 +322,19 @@ export const boundedLiveOddsInvocationError = (error: unknown) => {
   return "live-odds-runtime-error";
 };
 
+const withBoundedInvocationStage = async <T>(
+  stage: "live-odds-secret-read-failed" | "live-odds-control-plane-failed",
+  operation: () => Promise<T>,
+) => {
+  try {
+    return await operation();
+  } catch (error) {
+    if (boundedLiveOddsInvocationError(error) !== "live-odds-runtime-error")
+      throw error;
+    throw new Error(stage, { cause: error });
+  }
+};
+
 const runLiveOddsHandler = async (event?: unknown) => {
   const invocation = parseLiveOddsInvocation(event);
   const tableName = process.env["FTE_EVENT_TABLE"];
@@ -337,8 +352,10 @@ const runLiveOddsHandler = async (event?: unknown) => {
     new DynamoExactOddsSnapshotRepository(client, tableName),
   );
   const provider = "odds-control-plane";
-  const sharpSecret = await secrets.send(
-    new GetSecretValueCommand({ SecretId: sharpSecretId }),
+  const sharpSecret = await withBoundedInvocationStage(
+    "live-odds-secret-read-failed",
+    () =>
+      secrets.send(new GetSecretValueCommand({ SecretId: sharpSecretId })),
   );
   const sharpApiKey = parseProviderApiSecret(sharpSecret.SecretString);
   const common = {
@@ -350,16 +367,25 @@ const runLiveOddsHandler = async (event?: unknown) => {
   };
   let summary;
   try {
-    summary = invocation.focused
-      ? await runFocusedSharpOddsIngestion({
-          ...common,
-          request: invocation.focused,
-        })
-      : await runProductionOddsControlPlane({
-          ...common,
-          splits: new DynamoBettingSplitRepository(client, tableName),
-          ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
-        });
+    const focused = invocation.focused;
+    summary = focused
+      ? await withBoundedInvocationStage(
+          "live-odds-control-plane-failed",
+          () =>
+            runFocusedSharpOddsIngestion({
+              ...common,
+              request: focused,
+            }),
+        )
+      : await withBoundedInvocationStage(
+          "live-odds-control-plane-failed",
+          () =>
+            runProductionOddsControlPlane({
+              ...common,
+              splits: new DynamoBettingSplitRepository(client, tableName),
+              ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
+            }),
+        );
   } catch (error) {
     if (!invocation.sqs) throw error;
     const decision = liveOddsErrorRetryDecision(
