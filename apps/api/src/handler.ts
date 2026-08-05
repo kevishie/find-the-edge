@@ -531,6 +531,15 @@ export const createEventHandler =
       )
         return response((status = 409), { error: "conflict" });
       status = 500;
+      log({
+        event: "event-api-internal-failure",
+        route: request.route,
+        errorName: error instanceof Error ? error.name.slice(0, 80) : "Unknown",
+        errorMessage:
+          error instanceof Error
+            ? error.message.slice(0, 240)
+            : "non-error-thrown",
+      });
       return response(500, { error: "internal-error" });
     } finally {
       const retrospectiveRoute = request.route.startsWith("retrospective-");

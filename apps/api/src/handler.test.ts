@@ -41,6 +41,34 @@ const historyEventRepository: EventRepository = {
   },
 };
 describe("event API", () => {
+  it("logs bounded diagnostics for unexpected failures", async () => {
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const broken: EventRepository = {
+      ...repository,
+      list: () => Promise.reject(new Error("projection-row-invalid")),
+    };
+    const result = await createEventHandler(broken, (entry) =>
+      logs.push(entry),
+    )({
+      route: "list",
+      subject: "u",
+      scopes: ["events/events:read"],
+      query: {
+        sport: "mlb",
+        status: "scheduled",
+        day: "2026-08-05",
+      },
+    });
+
+    expect(result.statusCode).toBe(500);
+    expect(logs).toContainEqual({
+      event: "event-api-internal-failure",
+      route: "list",
+      errorName: "Error",
+      errorMessage: "projection-row-invalid",
+    });
+  });
+
   it.each([
     ["scheduled", "2026-08-01T13:00:00.000Z", "complete", "current"],
     ["scheduled", "2026-08-01T10:00:00.000Z", "complete", "stale"],
@@ -732,8 +760,13 @@ describe("event API", () => {
       scopes: ["events/events:read"],
       query: { sport: "mlb", status: "scheduled", day: "2026-08-01" },
     });
-    expect(logs).toHaveLength(1);
-    const serialized = JSON.stringify(logs[0]);
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toMatchObject({
+      event: "event-api-internal-failure",
+      route: "list",
+      errorName: "Error",
+    });
+    const serialized = JSON.stringify(logs[1]);
     expect(serialized).toContain('"Namespace":"FindTheEdge/EventApi"');
     expect(serialized).toContain('"Dimensions":[["Route"]]');
     expect(serialized).toContain('"Name":"Caught5xx","Unit":"Count"');
