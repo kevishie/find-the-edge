@@ -24,6 +24,11 @@ describe("live odds Lambda invocation", () => {
     ).toBe("continuation-transition-conflict");
     expect(
       boundedLiveOddsInvocationError(
+        new Error("near-canonical-projection-stale"),
+      ),
+    ).toBe("near-canonical-projection-stale");
+    expect(
+      boundedLiveOddsInvocationError(
         new TypeError("Cannot read properties of a licensed response"),
       ),
     ).toBe("live-odds-runtime-type-error");
