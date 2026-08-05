@@ -204,13 +204,12 @@ describe("odds collection control plane", () => {
       `Validation failed token=do-not-log ${"x".repeat(300)}`,
     );
     error.name = "TypeError";
-    expect(oddsFailureDiagnostic(error)).toEqual({
-      errorName: "TypeError",
-      errorMessage: expect.stringMatching(
-        /^Validation failed token=\[redacted\] x+$/,
-      ),
-    });
-    expect(oddsFailureDiagnostic(error).errorMessage).toHaveLength(240);
+    const diagnostic = oddsFailureDiagnostic(error);
+    expect(diagnostic.errorName).toBe("TypeError");
+    expect(diagnostic.errorMessage).toMatch(
+      /^Validation failed token=\[redacted\] x+$/,
+    );
+    expect(diagnostic.errorMessage).toHaveLength(240);
   });
   it("waits for an in-flight heartbeat before accepting a paid response", async () => {
     let releaseHeartbeat!: () => void;
