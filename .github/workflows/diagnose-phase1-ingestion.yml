@@ -39,9 +39,9 @@ jobs:
             | tr '\t' '\n' \
             | tail -300
 
-          api_function_name="$(aws lambda list-functions \
-            --query "Functions[?contains(FunctionName, 'EventApi')].FunctionName | [0]" \
-            --output text)"
+          api_function_name="$(aws lambda list-functions --output json \
+            | jq -r '.Functions[] | select(.FunctionName | contains("EventApi")) | .FunctionName' \
+            | head -1)"
           if [[ -n "$api_function_name" && "$api_function_name" != "None" ]]; then
             api_log_group="/aws/lambda/${api_function_name}"
             aws logs filter-log-events \
