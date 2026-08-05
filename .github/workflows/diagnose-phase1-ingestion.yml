@@ -38,3 +38,17 @@ jobs:
             --output text \
             | tr '\t' '\n' \
             | tail -300
+
+          api_function_name="$(aws lambda list-functions \
+            --query "Functions[?contains(FunctionName, 'EventApi')].FunctionName | [0]" \
+            --output text)"
+          if [[ -n "$api_function_name" && "$api_function_name" != "None" ]]; then
+            api_log_group="/aws/lambda/${api_function_name}"
+            aws logs filter-log-events \
+              --log-group-name "$api_log_group" \
+              --start-time "$start_time" \
+              --query 'events[].message' \
+              --output text \
+              | tr '\t' '\n' \
+              | tail -300
+          fi
