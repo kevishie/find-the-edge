@@ -29,6 +29,12 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='LiveOddsIngestionFunctionName'].OutputValue | [0]" \
             --output text)"
           log_group="/aws/lambda/${function_name}"
-          aws logs tail "$log_group" --since 45m --format short \
-            | grep -E 'sharpapi|SharpAPI|mlb|MLB|error|Error|failed|failure|quarantine|mapping' \
-            | tail -200
+          start_time="$(( $(date +%s) - 3600 ))000"
+          aws logs filter-log-events \
+            --log-group-name "$log_group" \
+            --start-time "$start_time" \
+            --filter-pattern '"mlb"' \
+            --query 'events[].message' \
+            --output text \
+            | tr '\t' '\n' \
+            | tail -300
