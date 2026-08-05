@@ -1374,7 +1374,9 @@ describe("dynamo reconciliation ownership fencing", () => {
   it("classifies acquisition service failures without exposing their detail", async () => {
     class AcquisitionFailureGateway extends ContractGateway {
       override insert() {
-        return Promise.reject(new Error("sensitive-acquisition-detail"));
+        const error = new Error("sensitive-acquisition-detail");
+        error.name = "ValidationException";
+        return Promise.reject(error);
       }
     }
     const failure: unknown = await new DynamoEventIngestionStore(
@@ -1384,7 +1386,7 @@ describe("dynamo reconciliation ownership fencing", () => {
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toBe(
-      "event-reconciliation-acquisition-failed",
+      "event-reconciliation-acquisition-storage-validation",
     );
     expect((failure as Error).cause).toMatchObject({
       message: "sensitive-acquisition-detail",

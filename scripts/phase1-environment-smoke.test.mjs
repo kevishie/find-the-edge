@@ -316,6 +316,8 @@ test("live ingestion proof accepts only the closed reconciliation diagnostic set
     "event-reconciliation-execution-failed",
     "event-reconciliation-renewal-failed",
     "event-reconciliation-cleanup-failed",
+    "event-reconciliation-acquisition-storage-validation",
+    "event-reconciliation-cleanup-storage-transaction-cancelled",
     "identity-snapshot-unstable",
     "dangling-identity-aggregate",
     "stale-identity-aggregate",

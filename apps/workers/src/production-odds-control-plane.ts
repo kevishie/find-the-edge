@@ -280,6 +280,17 @@ const boundedScheduleInternalFailures = new Set([
   "event-reconciliation-renewal-failed",
   "event-reconciliation-cleanup-failed",
 ]);
+for (const phase of ["acquisition", "execution", "renewal", "cleanup"])
+  for (const storageClass of [
+    "storage-validation",
+    "storage-resource-missing",
+    "storage-access-denied",
+    "storage-transaction-cancelled",
+    "storage-unavailable",
+  ])
+    boundedScheduleInternalFailures.add(
+      `event-reconciliation-${phase}-${storageClass}`,
+    );
 
 const boundedScheduleStorageExceptions = new Map<string, string>([
   ["ValidationException", "storage-validation"],

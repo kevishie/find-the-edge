@@ -165,6 +165,26 @@ export class DynamoTransactionConflict extends Error {
   }
 }
 class IdentitySnapshotRetry extends Error {}
+const reconciliationStorageFailure = (
+  phase: "acquisition" | "execution" | "renewal" | "cleanup",
+  error: unknown,
+) => {
+  const storageClass =
+    error instanceof Error
+      ? new Map([
+          ["ValidationException", "storage-validation"],
+          ["ResourceNotFoundException", "storage-resource-missing"],
+          ["AccessDeniedException", "storage-access-denied"],
+          ["TransactionCanceledException", "storage-transaction-cancelled"],
+          ["InternalServerError", "storage-unavailable"],
+          ["ServiceUnavailable", "storage-unavailable"],
+        ]).get(error.name)
+      : undefined;
+  return new Error(
+    `event-reconciliation-${phase}-${storageClass ?? "failed"}`,
+    { cause: error },
+  );
+};
 export interface DynamoGateway {
   get(pk: string, sk: string): Promise<DynamoItem | null>;
   batchGet(
@@ -863,9 +883,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         ].includes(error.message)
       )
         throw error;
-      throw new Error("event-reconciliation-acquisition-failed", {
-        cause: error,
-      });
+      throw reconciliationStorageFailure("acquisition", error);
     }
     if (!acquired) throw new Error("event-reconciliation-lock-timeout");
     const ownedLease = this.reconciliationLeases.get(token);
@@ -932,10 +950,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
             error.message === "event-reconciliation-ownership-lost"
           )
             ownershipLost = error;
-          else
-            renewalFailure = new Error("event-reconciliation-renewal-failed", {
-              cause: error,
-            });
+          else renewalFailure = reconciliationStorageFailure("renewal", error);
         }
       });
     };
@@ -961,9 +976,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
             "event-reconciliation-ownership-lost",
           ].includes(error.message))
           ? error
-          : new Error("event-reconciliation-execution-failed", {
-              cause: error,
-            });
+          : reconciliationStorageFailure("execution", error);
     }
     clearInterval(heartbeat);
     await renewal;
@@ -985,9 +998,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
           if (error instanceof DynamoConditionalConflict)
             throw new Error("event-reconciliation-ownership-lost");
           if (!(error instanceof DynamoTransactionConflict) || attempt >= 5)
-            throw new Error("event-reconciliation-cleanup-failed", {
-              cause: error,
-            });
+            throw reconciliationStorageFailure("cleanup", error);
           await new Promise<void>((resolve) => {
             setTimeout(resolve, 5 * 2 ** attempt);
           });
@@ -997,7 +1008,7 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
         error instanceof Error &&
         error.message === "event-reconciliation-ownership-lost"
           ? error
-          : new Error("event-reconciliation-cleanup-failed", { cause: error });
+          : reconciliationStorageFailure("cleanup", error);
     } finally {
       this.reconciliationLeases.delete(token);
     }
