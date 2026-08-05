@@ -560,7 +560,10 @@ export class FoundationStack extends Stack {
         resources: [table.tableArn],
         conditions: {
           "ForAllValues:StringLike": {
-            "dynamodb:LeadingKeys": ["EVENT_RECONCILIATION#*"],
+            "dynamodb:LeadingKeys": [
+              "EVENT_RECONCILIATION#*",
+              "ODDS_CONTROL#CONTINUATION#*",
+            ],
           },
         },
       }),

@@ -1557,10 +1557,10 @@ export async function runProductionOddsControlPlane(input: {
               quotaRemaining: authoritativeScheduleHealth.quotaRemaining,
             }),
       });
-      sharpScheduleHealthy.add(sharpLeague.leagueKey);
-      scheduleReady.add(`${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`);
       scheduleStage = "ownership-clear";
       await clearOwned(checkpointKey, runId);
+      sharpScheduleHealthy.add(sharpLeague.leagueKey);
+      scheduleReady.add(`${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`);
     } catch (error) {
       const reason = scheduleCapabilityFailure(error, scheduleStage);
       const scheduleHealthKey = `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`;

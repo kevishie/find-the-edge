@@ -703,6 +703,62 @@ describe("production odds control-plane composition", () => {
     expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
     expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
   });
+  it("withholds fresh schedule readiness when continuation cleanup fails", async () => {
+    class CleanupFailingControl extends MemoryOddsControlPlaneStore {
+      override async clearContinuation(
+        ...args: Parameters<MemoryOddsControlPlaneStore["clearContinuation"]>
+      ) {
+        if (args[0].startsWith("schedule:sharpapi:")) {
+          const error = new Error("denied");
+          error.name = "AccessDeniedException";
+          throw error;
+        }
+        return super.clearContinuation(...args);
+      }
+    }
+    const control = new CleanupFailingControl();
+    const fetchSharpOdds = vi.fn();
+    const results = await runProductionOddsControlPlane({
+      events: new MemoryEventIngestionStore(),
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      forceRefresh: true,
+      fetchSharpSchedule: (league) =>
+        Promise.resolve({
+          events: [
+            {
+              providerEventId: `${league.leagueKey}-event`,
+              awayTeam: "Away",
+              homeTeam: "Home",
+              startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+              status: "scheduled" as const,
+            },
+          ],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+      fetchSharpOdds,
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 15,
+        streamingEnabled: false,
+      }),
+    });
+
+    expect(fetchSharpOdds).not.toHaveBeenCalled();
+    expect(results).toHaveLength(5);
+    expect(results.every(({ pages }) => pages === 0)).toBe(true);
+  });
   it("fails closed without a secondary schedule and isolates account setup failure", async () => {
     const events = new MemoryEventIngestionStore();
     const control = new MemoryOddsControlPlaneStore();

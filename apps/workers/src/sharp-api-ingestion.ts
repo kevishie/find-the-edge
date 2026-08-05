@@ -325,7 +325,23 @@ export async function persistSharpApiOddsPage(
     value
       .normalize("NFKD")
       .toLowerCase()
+      .replace(/ø/g, "o")
+      .replace(/ł/g, "l")
+      .replace(/[đð]/g, "d")
+      .replace(/þ/g, "th")
+      .replace(/æ/g, "ae")
+      .replace(/œ/g, "oe")
       .replace(/[^a-z0-9]/g, "");
+  const credibleParticipantAlias = (left: string, right: string) => {
+    const comparableLeft = comparableParticipant(left);
+    const comparableRight = comparableParticipant(right);
+    return (
+      comparableLeft === comparableRight ||
+      (Math.min(comparableLeft.length, comparableRight.length) >= 4 &&
+        (comparableLeft.includes(comparableRight) ||
+          comparableRight.includes(comparableLeft)))
+    );
+  };
   const canonicalOddsEvents: {
     readonly raw: SharpApiOddsPage["events"][number];
     readonly canonical: NonNullable<
@@ -349,33 +365,64 @@ export async function persistSharpApiOddsPage(
   for (const raw of page.events) {
     if (isSharpDerivativeMatchup(raw.awayTeam, raw.homeTeam)) continue;
     const event = providerEvent(league, raw, page.retrievedAt);
-    let ingested = await store.ingestEvent({
-      ...event,
-      providerId: SHARP_API_PROVIDER_ID,
-      normalizedIdentity: normalizedUpcomingEventIdentity(event),
-      observedAt: page.retrievedAt,
-    });
-    // Featured odds may legitimately expose an entitled event before it has
-    // appeared on the paginated schedule scan. Bootstrap only the exact
-    // no-candidate case through the same fenced reconciliation boundary used
-    // by schedule ingestion. Ambiguous candidates remain quarantined.
-    if (ingested.kind === "unresolved" && ingested.reason === "no-candidate")
-      ingested = await reconcileScheduledProviderEvent(
-        store,
-        SHARP_API_PROVIDER_ID,
-        event,
-        page.retrievedAt,
-      );
-    if (ingested.kind === "unresolved")
-      throw new Error(`sharpapi-odds-mapping-${ingested.reason}`);
-    const canonical = await store.resolveExactCanonicalBinding({
+    const binding = {
       providerId: SHARP_API_PROVIDER_ID,
       providerEventId: raw.providerEventId,
       sportKey: league.sportKey,
       leagueKey: league.leagueKey,
-    });
+    } as const;
+    let canonical = await store.resolveExactCanonicalBinding(binding);
+    if (!canonical) {
+      let ingested = await store.ingestEvent({
+        ...event,
+        providerId: SHARP_API_PROVIDER_ID,
+        normalizedIdentity: normalizedUpcomingEventIdentity(event),
+        observedAt: page.retrievedAt,
+      });
+      // Featured odds may legitimately expose an entitled event before it has
+      // appeared on the paginated schedule scan. Bootstrap only the exact
+      // no-candidate case through the same fenced reconciliation boundary used
+      // by schedule ingestion. Ambiguous candidates remain quarantined.
+      if (ingested.kind === "unresolved" && ingested.reason === "no-candidate")
+        ingested = await reconcileScheduledProviderEvent(
+          store,
+          SHARP_API_PROVIDER_ID,
+          event,
+          page.retrievedAt,
+        );
+      if (ingested.kind === "unresolved")
+        throw new Error(`sharpapi-odds-mapping-${ingested.reason}`);
+      canonical = await store.resolveExactCanonicalBinding(binding);
+    }
     if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
     canonicalOddsEvents.push({ raw, canonical });
+    const providerParticipantIndexes = (() => {
+      const startDrift = Math.abs(
+        Date.parse(raw.startsAt) - Date.parse(canonical.startsAt),
+      );
+      if (!Number.isFinite(startDrift) || startDrift > 15 * 60_000)
+        throw new Error("sharpapi-odds-mapping-start-mismatch");
+      if (canonical.participantLabels?.length !== 2)
+        throw new Error("sharpapi-odds-mapping-participant-mismatch");
+      const rawLabels = [raw.awayTeam, raw.homeTeam] as const;
+      const candidates = rawLabels.map((rawLabel) =>
+        canonical.participantLabels!.flatMap((canonicalLabel, index) =>
+          credibleParticipantAlias(rawLabel, canonicalLabel) ? [index] : [],
+        ),
+      );
+      const away = candidates[0]!;
+      const home = candidates[1]!;
+      // Schedule and odds endpoints can use different aliases for the same
+      // exact provider event. One unique participant match safely determines
+      // the other side; ambiguous or unrelated pairs fail closed.
+      if (away.length === 1 && home.length === 1 && away[0] !== home[0])
+        return [away[0]!, home[0]!] as const;
+      if (away.length === 1 && home.length === 0)
+        return [away[0]!, 1 - away[0]!] as const;
+      if (away.length === 0 && home.length === 1)
+        return [1 - home[0]!, home[0]!] as const;
+      throw new Error("sharpapi-odds-mapping-participant-mismatch");
+    })();
     let eventObservations = 0;
     for (const book of raw.bookmakers) {
       const normalizedBook = normalizeSportsbook(book.id);
@@ -410,15 +457,11 @@ export async function persistSharpApiOddsPage(
                     ? 1
                     : -1;
           let participantIndex = providerParticipantIndex;
-          if (providerParticipantIndex >= 0 && canonical.participantLabels) {
-            const providerLabel =
-              providerParticipantIndex === 0 ? raw.awayTeam : raw.homeTeam;
-            participantIndex = canonical.participantLabels.findIndex(
-              (label) =>
-                comparableParticipant(label) ===
-                comparableParticipant(providerLabel),
-            );
-          }
+          if (providerParticipantIndex >= 0)
+            participantIndex =
+              providerParticipantIndex === 0
+                ? providerParticipantIndexes[0]
+                : providerParticipantIndexes[1];
           const participantId =
             participantIndex >= 0
               ? canonical.participantIds[participantIndex]
@@ -549,20 +592,11 @@ export async function persistSharpApiOddsPage(
                 ? 1
                 : -1;
         let participantIndex = providerParticipantIndex;
-        if (providerParticipantIndex >= 0 && canonical.participantLabels) {
-          const providerLabel =
-            providerParticipantIndex === 0 ? raw.awayTeam : raw.homeTeam;
-          participantIndex = canonical.participantLabels.findIndex(
-            (label) =>
-              comparableParticipant(label) ===
-              comparableParticipant(providerLabel),
-          );
-          if (participantIndex < 0) {
-            rejectionCounts["participant-unavailable"] =
-              (rejectionCounts["participant-unavailable"] ?? 0) + 1;
-            continue;
-          }
-        }
+        if (providerParticipantIndex >= 0)
+          participantIndex =
+            providerParticipantIndex === 0
+              ? providerParticipantIndexes[0]
+              : providerParticipantIndexes[1];
         const participantId =
           participantIndex >= 0
             ? canonical.participantIds[participantIndex]

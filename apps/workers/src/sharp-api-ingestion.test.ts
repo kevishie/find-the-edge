@@ -37,7 +37,10 @@ describe("SharpAPI primary ingestion", () => {
     const store = {
       ingestEvent,
       reconcileScheduledEvent,
-      resolveExactCanonicalBinding: vi.fn().mockResolvedValue(canonical),
+      resolveExactCanonicalBinding: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(canonical),
     } as unknown as EventIngestionStore;
     const persist = vi
       .fn()
@@ -143,6 +146,215 @@ describe("SharpAPI primary ingestion", () => {
     expect(ingested.normalizedIdentity).toContain("redsox");
   });
 
+  it("uses an exact schedule binding when odds metadata uses team aliases", async () => {
+    const canonical = {
+      id: "event-uefa-1",
+      version: 3,
+      sportKey: "soccer",
+      startsAt: "2026-08-11T18:00:00.000Z",
+      participantIds: ["sabah-id", "agf-id"],
+      participantLabels: ["Sabah Masazir", "AGF Aarhus"],
+    } as unknown as CanonicalEvent;
+    const ingestEvent = vi.fn(() => {
+      throw new Error("exact binding must bypass identity reconciliation");
+    });
+    const persist = vi.fn(
+      (input: Parameters<SharpApiOddsPersister["persist"]>[0]) => {
+        void input;
+        return Promise.resolve({}) as ReturnType<
+          SharpApiOddsPersister["persist"]
+        >;
+      },
+    );
+    const base = {
+      marketKey: "moneyline" as const,
+      outcomeStructure: "three-way" as const,
+      providerMarketType: "moneyline_3-way",
+      providerMarketId: "market-uefa-1",
+      americanOdds: 120,
+      decimalOdds: 2.2,
+      impliedProbability: 0.4545,
+      isLive: false,
+      isMainLine: true,
+      isAlternateLine: false,
+      isPlayerProp: false,
+      isStalePregamePrice: false,
+      observedAt: "2026-08-05T16:00:00.000Z" as IsoTimestamp,
+    };
+    const rawEvent = {
+      providerEventId: "uefa-event-1",
+      providerEventUuid: "uefa-event-uuid-1",
+      awayTeam: "FC Sabah Masazir",
+      homeTeam: "AGF Aarhus",
+      startsAt: "2026-08-11T18:05:00.000Z" as IsoTimestamp,
+      bookmakers: [
+        {
+          id: "pinnacle",
+          label: "Pinnacle",
+          prices: [
+            {
+              ...base,
+              providerPriceId: "away-price",
+              selectionKey: "away" as const,
+              selectionLabel: "FC Sabah Masazir",
+              providerSelectionId: "away-selection",
+            },
+            {
+              ...base,
+              providerPriceId: "home-price",
+              selectionKey: "home" as const,
+              selectionLabel: "AGF Aarhus",
+              providerSelectionId: "home-selection",
+            },
+            {
+              ...base,
+              providerPriceId: "draw-price",
+              selectionKey: "draw" as const,
+              selectionLabel: "Draw",
+              providerSelectionId: "draw-selection",
+            },
+          ],
+        },
+      ],
+    };
+    const store = {
+      ingestEvent,
+      resolveExactCanonicalBinding: vi.fn().mockResolvedValue(canonical),
+    } as unknown as EventIngestionStore;
+    const league = {
+      sportKey: "soccer",
+      leagueKey: "uefa-champions-league",
+    } as SharpApiLeague;
+    const result = await persistSharpApiOddsPage(
+      store,
+      { persist },
+      league,
+      {
+        retrievedAt: "2026-08-05T16:00:01.000Z" as IsoTimestamp,
+        events: [rawEvent],
+      },
+      { pinnacle: "collected" },
+    );
+
+    expect(ingestEvent).not.toHaveBeenCalled();
+    expect(result.observations).toBe(3);
+    expect(persist.mock.calls.map(([input]) => input.observation)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          selectionKey: "participant:sabah-id",
+          selectionLabel: "Sabah Masazir",
+        }),
+        expect.objectContaining({
+          selectionKey: "participant:agf-id",
+          selectionLabel: "AGF Aarhus",
+        }),
+        expect.objectContaining({ selectionKey: "draw" }),
+      ]),
+    );
+
+    const reversedPersist = vi.fn(
+      (input: Parameters<SharpApiOddsPersister["persist"]>[0]) => {
+        void input;
+        return Promise.resolve({}) as ReturnType<
+          SharpApiOddsPersister["persist"]
+        >;
+      },
+    );
+    await persistSharpApiOddsPage(
+      {
+        ingestEvent,
+        resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
+          ...canonical,
+          participantIds: ["agf-id", "sabah-id"],
+          participantLabels: ["AGF Aarhus", "Sabah Masazir"],
+        }),
+      } as unknown as EventIngestionStore,
+      { persist: reversedPersist },
+      league,
+      {
+        retrievedAt: "2026-08-05T16:00:01.000Z" as IsoTimestamp,
+        events: [rawEvent],
+      },
+      { pinnacle: "collected" },
+    );
+    expect(
+      reversedPersist.mock.calls.map(
+        ([input]) => input.observation.selectionKey,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        "participant:sabah-id",
+        "participant:agf-id",
+        "draw",
+      ]),
+    );
+
+    await expect(
+      persistSharpApiOddsPage(
+        {
+          ingestEvent,
+          resolveExactCanonicalBinding: vi.fn().mockResolvedValue({
+            ...canonical,
+            participantIds: ["union-id", "bodo-id"],
+            participantLabels: [
+              "Royale Union Saint-Gilloise",
+              "FK Bodø / Glimt",
+            ],
+          }),
+        } as unknown as EventIngestionStore,
+        { persist },
+        league,
+        {
+          retrievedAt: "2026-08-05T16:00:01.000Z" as IsoTimestamp,
+          events: [
+            {
+              ...rawEvent,
+              awayTeam: "Union St.-Gilloise",
+              homeTeam: "Bodo/Glimt",
+            },
+          ],
+        },
+        { pinnacle: "collected" },
+      ),
+    ).resolves.toMatchObject({ observations: 3 });
+
+    await expect(
+      persistSharpApiOddsPage(
+        store,
+        { persist },
+        league,
+        {
+          retrievedAt: "2026-08-05T16:00:01.000Z" as IsoTimestamp,
+          events: [
+            {
+              ...rawEvent,
+              startsAt: "2026-08-12T18:05:00.000Z" as IsoTimestamp,
+            },
+          ],
+        },
+        { pinnacle: "collected" },
+      ),
+    ).rejects.toThrow("sharpapi-odds-mapping-start-mismatch");
+    await expect(
+      persistSharpApiOddsPage(
+        store,
+        { persist },
+        league,
+        {
+          retrievedAt: "2026-08-05T16:00:01.000Z" as IsoTimestamp,
+          events: [
+            {
+              ...rawEvent,
+              awayTeam: "Unrelated Away",
+              homeTeam: "Unrelated Home",
+            },
+          ],
+        },
+        { pinnacle: "collected" },
+      ),
+    ).rejects.toThrow("sharpapi-odds-mapping-participant-mismatch");
+  });
+
   it("binds suffixless consensus splits to the exact suffixed MLB event", async () => {
     const canonical = {
       id: "event:mlb:cardinals-yankees",
@@ -224,6 +436,7 @@ describe("SharpAPI primary ingestion", () => {
           id: bootstrap.id,
           version: 1,
           sportKey: bootstrap.sportKey,
+          startsAt: "2026-08-04T00:00:00.000Z",
           participantIds: ["away-club", "home-club"],
           participantLabels: ["Away Club", "Home Club"],
         } as unknown as CanonicalEvent);

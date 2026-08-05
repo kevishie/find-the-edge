@@ -44,6 +44,39 @@ describe("foundation CDK app", () => {
     expect(sharpRendered).toContain("sqs:ChangeMessageVisibility");
     expect(sharpRendered).toContain("dynamodb:DeleteItem");
     expect(sharpRendered).toContain("EVENT_RECONCILIATION#*");
+    expect(sharpRendered).toContain("ODDS_CONTROL#CONTINUATION#*");
+    const liveOddsPolicy = Object.entries(
+      template.toJSON().Resources as Record<
+        string,
+        { Type: string; Properties?: Record<string, unknown> }
+      >,
+    ).find(
+      ([key, value]) =>
+        key.startsWith("LiveOddsIngestionServiceRoleDefaultPolicy") &&
+        value.Type === "AWS::IAM::Policy",
+    );
+    const liveOddsPolicyText = JSON.stringify(liveOddsPolicy?.[1]);
+    expect(liveOddsPolicyText).toContain("EVENT_RECONCILIATION#*");
+    expect(liveOddsPolicyText).toContain("ODDS_CONTROL#CONTINUATION#*");
+    expect(liveOddsPolicyText).not.toContain('"Action":"dynamodb:*"');
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "dynamodb:DeleteItem",
+            Effect: "Allow",
+            Condition: {
+              "ForAllValues:StringLike": {
+                "dynamodb:LeadingKeys": [
+                  "EVENT_RECONCILIATION#*",
+                  "ODDS_CONTROL#CONTINUATION#*",
+                ],
+              },
+            },
+          }),
+        ]),
+      },
+    });
     expect(sharpRendered).not.toContain("sk_live_");
     template.hasOutput("FixtureOddsSeedFunctionName", {});
     template.hasResourceProperties("AWS::IAM::Policy", {
