@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  boundedLiveOddsInvocationError,
   boundedRetryVisibilitySeconds,
   liveOddsErrorRetryDecision,
   liveOddsSummaryRetryDecision,
@@ -10,6 +11,27 @@ import {
 import { SharpApiError } from "@find-the-edge/providers";
 
 describe("live odds Lambda invocation", () => {
+  it("preserves closed diagnostics and bounds unexpected runtime failures", () => {
+    expect(
+      boundedLiveOddsInvocationError(
+        new Error("event-reconciliation-ownership-lost"),
+      ),
+    ).toBe("event-reconciliation-ownership-lost");
+    expect(
+      boundedLiveOddsInvocationError(
+        new TypeError("Cannot read properties of a licensed response"),
+      ),
+    ).toBe("live-odds-runtime-type-error");
+    expect(
+      boundedLiveOddsInvocationError(new Error("credential-like value: abc")),
+    ).toBe("live-odds-runtime-error");
+    expect(boundedLiveOddsInvocationError(new Error("secret-key-abc"))).toBe(
+      "live-odds-runtime-error",
+    );
+    expect(boundedLiveOddsInvocationError(null)).toBe(
+      "live-odds-runtime-error",
+    );
+  });
   it("retains SQS retry ownership for transient summaries but acknowledges terminal work", () => {
     expect(
       liveOddsSummaryRetryReason({

@@ -218,7 +218,21 @@ const extendRetryVisibility = async (
   );
 };
 
-export const handler = async (event?: unknown) => {
+export const boundedLiveOddsInvocationError = (error: unknown) => {
+  if (error instanceof Error) {
+    const safeReconciliationCode =
+      /^(?:invalid-event-reconciliation-lock|event-reconciliation-(?:lock-timeout|ownership-lost|failed|(?:acquisition|execution|renewal|cleanup)-(?:failed|storage-(?:validation|resource-missing|access-denied|transaction-cancelled|unavailable)))|dynamo-(?:conditional|transaction)-conflict)$/;
+    if (safeReconciliationCode.test(error.message)) return error.message;
+  }
+  if (error instanceof TypeError) return "live-odds-runtime-type-error";
+  if (error instanceof RangeError) return "live-odds-runtime-range-error";
+  if (error instanceof SyntaxError) return "live-odds-runtime-syntax-error";
+  if (error instanceof Error && error.name === "AbortError")
+    return "live-odds-runtime-abort";
+  return "live-odds-runtime-error";
+};
+
+const runLiveOddsHandler = async (event?: unknown) => {
   const invocation = parseLiveOddsInvocation(event);
   const tableName = process.env["FTE_EVENT_TABLE"];
   const sharpSecretId = process.env["FTE_SHARP_API_SECRET_ID"];
@@ -303,4 +317,12 @@ export const handler = async (event?: unknown) => {
     return { batchItemFailures: [] as readonly never[] };
   }
   return summary;
+};
+
+export const handler = async (event?: unknown) => {
+  try {
+    return await runLiveOddsHandler(event);
+  } catch (error) {
+    throw new Error(boundedLiveOddsInvocationError(error), { cause: error });
+  }
 };

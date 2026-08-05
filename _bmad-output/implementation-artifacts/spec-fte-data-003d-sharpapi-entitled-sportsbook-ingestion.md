@@ -3,7 +3,7 @@ title: 'FTE-DATA-003D SharpAPI Entitled Sportsbook Ingestion'
 type: 'feature'
 created: '2026-08-04T00:00:00-04:00'
 status: 'in-progress'
-baseline_revision: '73aa13e'
+baseline_revision: '8cfa464'
 approval_required_before_merge: true
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/spec-fte-data-003b-sharpapi-redundant-odds-and-betting-splits.md'
