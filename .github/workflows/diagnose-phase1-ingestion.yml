@@ -1,0 +1,34 @@
+name: Diagnose Phase 1 ingestion
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  logs:
+    name: Read recent ingestion failures
+    if: github.repository == 'kevishie/find-the-edge' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assume AWS deployment role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::228246988391:role/github-actions-find-the-edge-deploy
+          aws-region: us-east-1
+
+      - name: Read bounded recent Lambda diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          function_name="$(aws cloudformation describe-stacks \
+            --stack-name FindTheEdge-dev-Foundation \
+            --query "Stacks[0].Outputs[?OutputKey=='LiveOddsIngestionFunctionName'].OutputValue | [0]" \
+            --output text)"
+          log_group="/aws/lambda/${function_name}"
+          aws logs tail "$log_group" --since 45m --format short \
+            | grep -E 'sharpapi|SharpAPI|mlb|MLB|error|Error|failed|failure|quarantine|mapping' \
+            | tail -200
