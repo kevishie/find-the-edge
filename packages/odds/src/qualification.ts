@@ -1,8 +1,14 @@
-import { americanToDecimal, impliedProbability, removeVig } from "./index";
+import {
+  americanToDecimal,
+  calculateWeightedConsensus,
+  impliedProbability,
+  removeVig,
+} from "./index";
 
 export const QUALIFICATION_VERSION = "deterministic-qualification-v1";
 
 export interface QualificationPolicy {
+  readonly comparisonWeights: Readonly<Record<string, number>>;
   readonly minimumComparisonBooks: number;
   readonly maximumPriceAgeMinutes: number;
   readonly outlierThreshold: number;
@@ -14,11 +20,11 @@ export interface QualificationPolicy {
 }
 export interface QualificationBook {
   readonly sportsbookId: string;
-  readonly weight: number;
   readonly ageMinutes: number;
   readonly americanOdds: readonly number[];
 }
 export interface QualificationInput {
+  readonly targetSportsbookId: string;
   readonly offeredAmerican: number;
   readonly offeredAgeMinutes: number;
   readonly candidateIndex: number;
@@ -54,50 +60,56 @@ export function qualifyEvaluation(
   if (input.candidateIndex < 0 || input.candidateIndex >= input.outcomeCount)
     throw new RangeError("candidate-index-invalid");
   if (
-    new Set(input.books.map(({ sportsbookId }) => sportsbookId)).size !==
-    input.books.length
+    new Set(
+      input.books.map(({ sportsbookId }) => sportsbookId.trim().toLowerCase()),
+    ).size !== input.books.length
   )
     throw new RangeError("duplicate-comparison-book");
+  const canonicalTargetSportsbookId = input.targetSportsbookId
+    .trim()
+    .toLowerCase();
   for (const book of input.books) {
+    const canonicalSportsbookId = book.sportsbookId.trim().toLowerCase();
+    if (canonicalSportsbookId === canonicalTargetSportsbookId) continue;
     if (
       !book.sportsbookId ||
       book.americanOdds.length !== input.outcomeCount ||
-      !Number.isFinite(book.weight) ||
-      book.weight <= 0 ||
+      !Number.isFinite(input.policy.comparisonWeights[canonicalSportsbookId]) ||
+      input.policy.comparisonWeights[canonicalSportsbookId]! <= 0 ||
       !Number.isFinite(book.ageMinutes) ||
       book.ageMinutes < 0
     )
       throw new RangeError("comparison-vector-invalid");
     removeVig(book.americanOdds);
   }
-  const eligible = input.books.filter(
-    (book) =>
-      book.ageMinutes <= input.policy.maximumPriceAgeMinutes && book.weight > 0,
+  const selectionKeys = Array.from(
+    { length: input.outcomeCount },
+    (_, index) => `outcome-${index}`,
   );
-  const vectors = eligible.map((book) => removeVig(book.americanOdds));
-  const medians = Array.from({ length: input.outcomeCount }, (_, outcome) => {
-    const values = vectors
-      .map((vector) => vector[outcome]!)
-      .sort((a, b) => a - b);
-    return values[Math.floor(values.length / 2)];
+  const consensus = calculateWeightedConsensus({
+    targetSportsbookId: input.targetSportsbookId,
+    selectionKeys,
+    policy: {
+      comparisonWeights: input.policy.comparisonWeights,
+      minimumBooks: input.policy.minimumComparisonBooks,
+      maximumAgeMinutes: input.policy.maximumPriceAgeMinutes,
+      outlierThreshold: input.policy.outlierThreshold,
+    },
+    books: input.books.map((book) => ({
+      sportsbookId: book.sportsbookId,
+      ageMinutes: book.ageMinutes,
+      status: "active",
+      selections: selectionKeys.map((selectionKey, index) => ({
+        selectionKey,
+        americanOdds: book.americanOdds[index]!,
+      })),
+    })),
   });
-  const included = eligible.filter((_, index) =>
-    medians.every(
-      (median, outcome) =>
-        median === undefined ||
-        Math.abs(vectors[index]![outcome]! - median) <=
-          input.policy.outlierThreshold,
-    ),
-  );
-  const includedVectors = included.map((book) => removeVig(book.americanOdds));
-  const totalWeight = included.reduce((sum, book) => sum + book.weight, 0);
-  const noVigProbability = totalWeight
-    ? included.reduce(
-        (sum, book, index) =>
-          sum + includedVectors[index]![input.candidateIndex]! * book.weight,
-        0,
-      ) / totalWeight
-    : 0;
+  const noVigProbability = consensus.probabilities?.[input.candidateIndex] ?? 0;
+  const includedVectors =
+    consensus.status === "available"
+      ? consensus.contributions.map(({ probabilities }) => probabilities)
+      : [];
   const marketDisagreement = Array.from(
     { length: input.outcomeCount },
     (_, outcome) => {
@@ -114,9 +126,9 @@ export function qualifyEvaluation(
   if (input.offeredAgeMinutes > input.policy.maximumPriceAgeMinutes)
     reasons.push("stale-offered-price");
   if (input.analysisMaturity === "reduced") reasons.push("analysis-reduced");
-  if (included.length < input.policy.minimumComparisonBooks)
+  if (consensus.status !== "available")
     reasons.push("insufficient-comparison-books");
-  if (included.length < eligible.length)
+  if (consensus.exclusions.some(({ reason }) => reason === "outlier"))
     reasons.push("comparison-outlier-excluded");
   if (input.modelProbability.uncertainty > input.policy.maximumUncertainty)
     reasons.push("uncertainty-above-threshold");
@@ -144,13 +156,11 @@ export function qualifyEvaluation(
     expectedValue,
     edge,
     marketDisagreement,
-    includedSportsbookIds: Object.freeze(
-      included.map((book) => book.sportsbookId).sort(),
-    ),
+    includedSportsbookIds: Object.freeze([...consensus.includedSportsbookIds]),
     includedWeights: Object.freeze(
       Object.fromEntries(
-        included
-          .map((book) => [book.sportsbookId, book.weight] as const)
+        consensus.contributions
+          .map(({ sportsbookId, weight }) => [sportsbookId, weight] as const)
           .sort(([left], [right]) => left.localeCompare(right)),
       ),
     ),

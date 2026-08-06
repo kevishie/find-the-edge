@@ -356,6 +356,7 @@ export class PickEvaluationService {
       return attempt("invalid", ["candidate-selection-missing"]);
     const offeredSnapshot = offeredEvidence.snapshots[candidateIndex]!;
     const qualification = qualifyEvaluation({
+      targetSportsbookId: input.evaluationPolicy.targetSportsbookId,
       offeredAmerican: offeredSnapshot.americanOdds,
       offeredAgeMinutes:
         (Date.parse(input.request.asOf) -
@@ -365,7 +366,6 @@ export class PickEvaluationService {
       modelProbability: analysis.probability,
       books: comparisonEvidence.map((book) => ({
         sportsbookId: book.sportsbookId,
-        weight: input.evaluationPolicy.comparisonWeights[book.sportsbookId]!,
         ageMinutes: Math.max(
           ...book.snapshots.map(
             (snapshot: NormalizedFixtureOddsSnapshot) =>

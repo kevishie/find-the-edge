@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { qualifyEvaluation } from "./qualification";
 
 const input = () => ({
+  targetSportsbookId: "hardrock",
   offeredAmerican: 120,
   offeredAgeMinutes: 2,
   candidateIndex: 0,
@@ -14,19 +15,18 @@ const input = () => ({
   books: [
     {
       sportsbookId: "circa",
-      weight: 1.25,
       ageMinutes: 2,
       americanOdds: [110, -120],
     },
     {
       sportsbookId: "pinnacle",
-      weight: 1,
       ageMinutes: 3,
       americanOdds: [105, -115],
     },
   ],
   outcomeCount: 2 as const,
   policy: {
+    comparisonWeights: { circa: 1.25, pinnacle: 1 },
     minimumComparisonBooks: 2,
     maximumPriceAgeMinutes: 15,
     outlierThreshold: 0.12,
@@ -44,6 +44,20 @@ describe("deterministic qualification", () => {
     expect(result.decision).toBe("play");
     expect(result.conservativeProbability).toBe(0.52);
     expect(result.expectedValue).toBeCloseTo(0.144);
+    const directNoVig = (odds: readonly number[]) => {
+      const raw = odds.map((american) =>
+        american > 0 ? 100 / (american + 100) : -american / (-american + 100),
+      );
+      const total = raw.reduce((sum, probability) => sum + probability, 0);
+      return raw.map((probability) => probability / total);
+    };
+    const expected =
+      (directNoVig(input().books[0]!.americanOdds)[0]! * 1.25 +
+        directNoVig(input().books[1]!.americanOdds)[0]!) /
+      2.25;
+    expect(result.noVigProbability).toBeCloseTo(expected, 12);
+    expect(result.includedSportsbookIds).toEqual(["circa", "pinnacle"]);
+    expect(result.includedWeights).toEqual({ circa: 1.25, pinnacle: 1 });
   });
   it.each([
     [
@@ -88,22 +102,81 @@ describe("deterministic qualification", () => {
       offeredAmerican: 250,
       candidateIndex: 1,
       outcomeCount: 3,
+      policy: {
+        ...input().policy,
+        comparisonWeights: { a: 1, b: 1 },
+      },
       books: [
         {
           sportsbookId: "a",
-          weight: 1,
           ageMinutes: 1,
           americanOdds: [140, 250, 210],
         },
         {
           sportsbookId: "b",
-          weight: 1,
           ageMinutes: 1,
           americanOdds: [145, 245, 205],
         },
       ],
     });
     expect(result.noVigProbability).toBeGreaterThan(0);
+  });
+  it("keeps sparse qualification fail-closed and exposes no partial consensus", () => {
+    const result = qualifyEvaluation({
+      ...input(),
+      policy: {
+        ...input().policy,
+        comparisonWeights: {
+          ...input().policy.comparisonWeights,
+          missing: 1,
+        },
+        minimumComparisonBooks: 3,
+      },
+    });
+    expect(result).toMatchObject({
+      decision: "no-bet",
+      noVigProbability: 0,
+      marketDisagreement: 0,
+      includedSportsbookIds: ["circa", "pinnacle"],
+    });
+    expect(result.reasons).toContain("insufficient-comparison-books");
+    expect(result.reasons).not.toContain("market-disagreement-warning");
+    expect(result.reasons).not.toContain("market-disagreement-blocked");
+  });
+  it("is invariant to comparison-book ordering", () => {
+    const left = qualifyEvaluation(input());
+    const right = qualifyEvaluation({
+      ...input(),
+      books: [...input().books].reverse(),
+    });
+    expect(right).toEqual(left);
+  });
+  it("preserves the versioned upper median for an even comparison roster", () => {
+    const result = qualifyEvaluation({
+      ...input(),
+      policy: {
+        ...input().policy,
+        comparisonWeights: { a: 1, b: 1 },
+        outlierThreshold: 0.14,
+        disagreementWarningThreshold: 0.5,
+        disagreementBlockThreshold: 0.6,
+      },
+      books: [
+        {
+          sportsbookId: "a",
+          ageMinutes: 1,
+          americanOdds: [100, 100],
+        },
+        {
+          sportsbookId: "b",
+          ageMinutes: 1,
+          americanOdds: [-400, 300],
+        },
+      ],
+    });
+
+    expect(result.includedSportsbookIds).toEqual([]);
+    expect(result.reasons).toContain("comparison-outlier-excluded");
   });
   it("rejects duplicate books and malformed vectors", () => {
     expect(() =>
@@ -118,12 +191,44 @@ describe("deterministic qualification", () => {
         books: [{ ...input().books[0]!, americanOdds: [110] }],
       }),
     ).toThrow("comparison-vector-invalid");
+    expect(() =>
+      qualifyEvaluation({
+        ...input(),
+        books: [
+          { ...input().books[0]!, sportsbookId: "CIRCA" },
+          input().books[0]!,
+        ],
+      }),
+    ).toThrow("duplicate-comparison-book");
+  });
+  it("never includes the target sportsbook in qualification consensus", () => {
+    const baseline = qualifyEvaluation(input());
+    const contaminated = qualifyEvaluation({
+      ...input(),
+      books: [
+        ...input().books,
+        {
+          sportsbookId: "HARDROCK",
+          ageMinutes: Number.NaN,
+          americanOdds: [-50],
+        },
+      ],
+    });
+
+    expect(contaminated.noVigProbability).toBe(baseline.noVigProbability);
+    expect(contaminated.includedSportsbookIds).toEqual(
+      baseline.includedSportsbookIds,
+    );
   });
   it("reports outlier exclusion without disqualifying enough remaining books", () => {
     const result = qualifyEvaluation({
       ...input(),
       policy: {
         ...input().policy,
+        comparisonWeights: {
+          ...input().policy.comparisonWeights,
+          outlier: 1,
+        },
         minimumComparisonBooks: 2,
         outlierThreshold: 0.03,
       },
@@ -131,7 +236,6 @@ describe("deterministic qualification", () => {
         ...input().books,
         {
           sportsbookId: "outlier",
-          weight: 1,
           ageMinutes: 1,
           americanOdds: [-400, 300],
         },
@@ -148,25 +252,23 @@ describe("deterministic qualification", () => {
       outcomeCount: 3,
       policy: {
         ...input().policy,
+        comparisonWeights: { a: 1, b: 1, "divergent-home": 1 },
         minimumComparisonBooks: 2,
         outlierThreshold: 0.08,
       },
       books: [
         {
           sportsbookId: "a",
-          weight: 1,
           ageMinutes: 1,
           americanOdds: [140, 250, 210],
         },
         {
           sportsbookId: "b",
-          weight: 1,
           ageMinutes: 1,
           americanOdds: [145, 245, 205],
         },
         {
           sportsbookId: "divergent-home",
-          weight: 1,
           ageMinutes: 1,
           americanOdds: [-400, 250, 210],
         },
@@ -185,6 +287,7 @@ describe("deterministic qualification", () => {
         ...input(),
         policy: {
           ...input().policy,
+          comparisonWeights: { a: 1, b: 1 },
           outlierThreshold: 0.5,
           disagreementWarningThreshold: 0.05,
           disagreementBlockThreshold: 0.1,
@@ -194,13 +297,11 @@ describe("deterministic qualification", () => {
         books: [
           {
             sportsbookId: "a",
-            weight: 1,
             ageMinutes: 1,
             americanOdds: [100, 100],
           },
           {
             sportsbookId: "b",
-            weight: 1,
             ageMinutes: 1,
             americanOdds: odds,
           },

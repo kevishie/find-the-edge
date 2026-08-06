@@ -9,6 +9,7 @@ import {
   impliedProbability,
   probabilityToAmerican,
   removeVig,
+  type ConsensusPolicy,
 } from "./index";
 
 describe("odds conversion", () => {
@@ -95,115 +96,320 @@ describe("fair price and EV", () => {
 });
 
 describe("weighted consensus", () => {
-  const twoWayBooks = [
-    {
-      sportsbookId: "offered",
-      americanOdds: [180, -220],
-      weight: 10,
-      ageMinutes: 1,
-      status: "active" as const,
-    },
-    {
-      sportsbookId: "a",
-      americanOdds: [-110, -110],
-      weight: 2,
-      ageMinutes: 2,
-      status: "active" as const,
-    },
-    {
-      sportsbookId: "b",
-      americanOdds: [-120, 100],
-      weight: 1,
-      ageMinutes: 3,
-      status: "active" as const,
-    },
-    {
-      sportsbookId: "c",
-      americanOdds: [-115, -105],
-      weight: 1,
-      ageMinutes: 4,
-      status: "active" as const,
-    },
+  const twoWayPolicy = {
+    comparisonWeights: { a: 2, b: 1, c: 1, target: 10 },
+    minimumBooks: 3,
+    maximumAgeMinutes: 15,
+    outlierThreshold: 0.08,
+  } as const;
+  const book = (
+    sportsbookId: string,
+    odds: readonly number[],
+    overrides: Partial<{
+      ageMinutes: number;
+      status: "active" | "suspended" | "closed" | "unavailable";
+    }> = {},
+  ) => ({
+    sportsbookId,
+    ageMinutes: overrides.ageMinutes ?? 1,
+    status: overrides.status ?? ("active" as const),
+    selections: odds.map((americanOdds, index) => ({
+      selectionKey: index === 0 ? "away" : index === 1 ? "home" : "draw",
+      americanOdds,
+    })),
+  });
+  const baseBooks = [
+    book("target", [180, -220]),
+    book("a", [-110, -110]),
+    book("b", [-120, 100]),
+    book("c", [-115, -105]),
   ];
 
-  it("weights two-way no-vig prices and excludes the offered sportsbook", () => {
+  it("matches the golden two-way formula and excludes Hard Rock case-insensitively", () => {
     const result = calculateWeightedConsensus({
-      books: twoWayBooks,
-      offeredSportsbookId: "offered",
-      outcomeCount: 2,
+      books: [
+        { ...baseBooks[0]!, sportsbookId: "HARDROCK" },
+        ...baseBooks.slice(1),
+      ],
+      targetSportsbookId: "hardrock",
+      selectionKeys: ["away", "home"],
+      policy: twoWayPolicy,
     });
 
     expect(result.status).toBe("available");
     expect(result.includedSportsbookIds).toEqual(["a", "b", "c"]);
     expect(result.exclusions).toContainEqual({
-      sportsbookId: "offered",
-      reason: "offered-sportsbook",
+      sportsbookId: "hardrock",
+      reason: "target-sportsbook",
     });
-    expect(
-      result.probabilities?.reduce((sum, value) => sum + value, 0),
-    ).toBeCloseTo(1);
+    expect(result.probabilities?.[0]).toBeCloseTo(0.508_143_341_7, 8);
+    expect(result.probabilities?.[1]).toBeCloseTo(0.491_856_658_3, 8);
+    expect(result.probabilities?.reduce((sum, value) => sum + value, 0)).toBe(
+      1,
+    );
   });
 
-  it("supports weighted three-way no-vig consensus", () => {
+  it("supports a selection-aligned weighted three-way consensus", () => {
     const result = calculateWeightedConsensus({
-      offeredSportsbookId: "target",
-      outcomeCount: 3,
+      targetSportsbookId: "target",
+      selectionKeys: ["home", "draw", "away"],
+      policy: twoWayPolicy,
       books: [
-        ["a", [140, 230, 240], 2],
-        ["b", [150, 220, 235], 1],
-        ["c", [145, 225, 245], 1],
-      ].map(([sportsbookId, americanOdds, weight]) => ({
-        sportsbookId: sportsbookId as string,
-        americanOdds: americanOdds as number[],
-        weight: weight as number,
-        ageMinutes: 3,
-        status: "active",
+        book("a", [140, 230, 240]),
+        book("b", [150, 220, 235]),
+        book("c", [145, 225, 245]),
+      ].map((entry) => ({
+        ...entry,
+        selections: [...entry.selections].reverse(),
       })),
     });
 
     expect(result.status).toBe("available");
-    expect(result.probabilities).toHaveLength(3);
-    expect(
-      result.probabilities?.reduce((sum, value) => sum + value, 0),
-    ).toBeCloseTo(1);
+    expect(result.probabilities).toEqual([
+      expect.closeTo(0.303_211_245_155_705_74, 12),
+      expect.closeTo(0.290_921_604_906_368_87, 12),
+      expect.closeTo(0.405_867_149_937_925_4, 12),
+    ]);
+    expect(result.probabilities?.reduce((sum, value) => sum + value, 0)).toBe(
+      1,
+    );
   });
 
-  it("returns explicit stale, suspended, sparse, and outlier states", () => {
+  it("excludes every ordinary bad observation with one explicit reason", () => {
     const result = calculateWeightedConsensus({
-      offeredSportsbookId: "target",
-      outcomeCount: 2,
+      targetSportsbookId: "target",
+      selectionKeys: ["away", "home"],
+      policy: {
+        ...twoWayPolicy,
+        comparisonWeights: {
+          ...twoWayPolicy.comparisonWeights,
+          stale: 1,
+          suspended: 1,
+          missing: 1,
+          invalid: 1,
+          "invalid-age": 1,
+          duplicate: 1,
+          closed: 1,
+          unavailable: 1,
+          zero: 0,
+          boundary: 1,
+          "invalid-status": 1,
+        },
+      },
       books: [
-        ...twoWayBooks.slice(1, 3),
+        ...baseBooks.slice(1),
+        book("stale", [-110, -110], { ageMinutes: 16 }),
+        book("suspended", [-110, -110], { status: "suspended" }),
         {
-          sportsbookId: "stale",
-          americanOdds: [-110, -110],
-          weight: 1,
-          ageMinutes: 30,
-          status: "active",
+          ...book("missing", [-110]),
+          selections: [{ selectionKey: "away", americanOdds: -110 }],
         },
+        book("invalid", [-50, -110]),
+        book("invalid-age", [-110, -110], { ageMinutes: Number.NaN }),
         {
-          sportsbookId: "suspended",
-          americanOdds: [-110, -110],
-          weight: 1,
-          ageMinutes: 1,
-          status: "suspended",
+          ...book("duplicate", [-110, -110]),
+          selections: [
+            { selectionKey: "away", americanOdds: -110 },
+            { selectionKey: "away", americanOdds: -105 },
+          ],
         },
-        {
-          sportsbookId: "outlier",
-          americanOdds: [-900, 500],
-          weight: 1,
-          ageMinutes: 1,
-          status: "active",
-        },
+        book("closed", [-110, -110], { status: "closed" }),
+        book("unavailable", [-110, -110], { status: "unavailable" }),
+        book("zero", [-110, -110]),
+        book("unknown", [-110, -110]),
+        book("boundary", [-110, -110], { ageMinutes: 15 }),
+        book("invalid-status", [-110, -110], {
+          status: "settled" as never,
+        }),
       ],
     });
 
-    expect(result.status).toBe("unavailable");
-    expect(result.issues).toEqual(
-      expect.arrayContaining(["stale", "suspended", "sparse", "outlier"]),
+    expect(result.status).toBe("available");
+    expect(result.includedSportsbookIds).toContain("boundary");
+    expect(result.exclusions).toEqual([
+      { sportsbookId: "closed", reason: "closed" },
+      { sportsbookId: "duplicate", reason: "duplicate-selection" },
+      { sportsbookId: "invalid", reason: "invalid-odds" },
+      { sportsbookId: "invalid-age", reason: "invalid-age" },
+      { sportsbookId: "invalid-status", reason: "invalid-status" },
+      { sportsbookId: "missing", reason: "missing-selection" },
+      { sportsbookId: "stale", reason: "stale" },
+      { sportsbookId: "suspended", reason: "suspended" },
+      { sportsbookId: "unavailable", reason: "unavailable" },
+      { sportsbookId: "unknown", reason: "unconfigured" },
+      { sportsbookId: "zero", reason: "zero-weight" },
+    ]);
+  });
+
+  it("excludes any-outcome outliers, keeps the exact boundary, and fails closed when sparse", () => {
+    const boundaryOdds = [-108.33333333333333, 108.33333333333333] as const;
+    const boundaryThreshold = removeVig(boundaryOdds)[0]! - 0.5;
+    const common = {
+      targetSportsbookId: "target",
+      selectionKeys: ["away", "home"],
+      policy: {
+        comparisonWeights: { a: 1, b: 1, c: 1 },
+        minimumBooks: 3,
+        maximumAgeMinutes: 15,
+        outlierThreshold: boundaryThreshold,
+      },
+    } as const;
+    const boundary = calculateWeightedConsensus({
+      ...common,
+      books: [
+        book("a", [100, 100]),
+        book("b", [100, 100]),
+        book("c", boundaryOdds),
+      ],
+    });
+    expect(boundary.status).toBe("available");
+
+    const sparse = calculateWeightedConsensus({
+      ...common,
+      books: [
+        book("a", [100, 100]),
+        book("b", [100, 100]),
+        book("c", [-900, 500]),
+      ],
+    });
+    expect(sparse).toMatchObject({
+      status: "unavailable",
+      probabilities: null,
+      requiredBookCount: 3,
+      eligibleBookCount: 2,
+      issues: ["insufficient-books", "outlier"],
+    });
+  });
+
+  it("returns typed invalid results for malformed markets and duplicate books", () => {
+    const invalidMarket = calculateWeightedConsensus({
+      books: baseBooks,
+      targetSportsbookId: "target",
+      selectionKeys: ["home", "home"],
+      policy: twoWayPolicy,
+    });
+    expect(invalidMarket).toMatchObject({
+      status: "invalid",
+      probabilities: null,
+      issues: ["invalid-market"],
+    });
+
+    const duplicateBooks = calculateWeightedConsensus({
+      books: [book("A", [-110, -110]), book("a", [-105, -115])],
+      targetSportsbookId: "target",
+      selectionKeys: ["away", "home"],
+      policy: twoWayPolicy,
+    });
+    expect(duplicateBooks).toMatchObject({
+      status: "invalid",
+      probabilities: null,
+      issues: ["duplicate-sportsbook"],
+      exclusions: [
+        { sportsbookId: "a", reason: "duplicate-sportsbook" },
+        { sportsbookId: "a", reason: "duplicate-sportsbook" },
+      ],
+    });
+
+    const whitespaceSelection = calculateWeightedConsensus({
+      books: baseBooks,
+      targetSportsbookId: "target",
+      selectionKeys: ["home", " "],
+      policy: twoWayPolicy,
+    });
+    expect(whitespaceSelection).toMatchObject({
+      status: "invalid",
+      probabilities: null,
+      issues: ["invalid-market"],
+    });
+  });
+
+  it("is deterministic across input permutations and does not mutate inputs", () => {
+    const books = baseBooks.slice(1).map((entry) => ({
+      ...entry,
+      selections: [...entry.selections].reverse(),
+    }));
+    const before = structuredClone(books);
+    const left = calculateWeightedConsensus({
+      books,
+      targetSportsbookId: "target",
+      selectionKeys: ["away", "home"],
+      policy: twoWayPolicy,
+    });
+    const right = calculateWeightedConsensus({
+      books: [...books].reverse(),
+      targetSportsbookId: "target",
+      selectionKeys: ["away", "home"],
+      policy: twoWayPolicy,
+    });
+    expect(right).toEqual(left);
+    expect(books).toEqual(before);
+    expect(Object.isFrozen(left)).toBe(true);
+    expect(Object.isFrozen(left.probabilities)).toBe(true);
+    expect(Object.isFrozen(left.contributions[0]?.probabilities)).toBe(true);
+  });
+
+  it("throws deterministic programmer errors for malformed policy", () => {
+    const run = (policy: ConsensusPolicy) =>
+      calculateWeightedConsensus({
+        books: baseBooks,
+        targetSportsbookId: "target",
+        selectionKeys: ["away", "home"],
+        policy,
+      });
+    expect(() => run({ ...twoWayPolicy, minimumBooks: 0 })).toThrow(RangeError);
+    expect(() =>
+      run({ ...twoWayPolicy, maximumAgeMinutes: Number.NaN }),
+    ).toThrow(RangeError);
+    expect(() => run({ ...twoWayPolicy, outlierThreshold: 1 })).toThrow(
+      RangeError,
     );
-    expect(result.exclusions.map(({ reason }) => reason)).toEqual(
-      expect.arrayContaining(["stale", "suspended", "outlier"]),
+    expect(() =>
+      run({
+        ...twoWayPolicy,
+        comparisonWeights: [] as unknown as Readonly<Record<string, number>>,
+      }),
+    ).toThrow("Consensus comparison weights must be a record");
+    expect(() =>
+      run({
+        ...twoWayPolicy,
+        comparisonWeights: { a: 1 },
+      }),
+    ).toThrow("cannot satisfy its minimum comparison books");
+    expect(() =>
+      calculateWeightedConsensus({
+        books: baseBooks,
+        targetSportsbookId: " ",
+        selectionKeys: ["away", "home"],
+        policy: twoWayPolicy,
+      }),
+    ).toThrow("target sportsbook is required");
+  });
+
+  it("normalizes extreme finite weights before aggregation", () => {
+    const result = calculateWeightedConsensus({
+      targetSportsbookId: "hardrock",
+      selectionKeys: ["away", "home"],
+      policy: {
+        comparisonWeights: {
+          a: Number.MAX_VALUE,
+          b: Number.MAX_VALUE,
+          c: Number.MAX_VALUE,
+        },
+        minimumBooks: 3,
+        maximumAgeMinutes: 15,
+        outlierThreshold: 0.08,
+      },
+      books: [
+        book("a", [-110, -110]),
+        book("b", [-120, 100]),
+        book("c", [-115, -105]),
+      ],
+    });
+
+    expect(result.status).toBe("available");
+    expect(result.probabilities?.every(Number.isFinite)).toBe(true);
+    expect(result.probabilities?.reduce((sum, value) => sum + value, 0)).toBe(
+      1,
     );
   });
 });

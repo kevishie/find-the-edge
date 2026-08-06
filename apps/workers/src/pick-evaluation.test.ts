@@ -222,10 +222,16 @@ describe("pick evaluation service", () => {
     expect(
       first.pair.evaluation.manifest.comparisonOutcomeEvidence,
     ).toHaveLength(6);
+    expect(first.pair.evaluation.decision).toBe("play");
+    expect(first.pair.evaluation.manifest.noVigProbability).toBeCloseTo(
+      0.471_159_935_342_345_2,
+      12,
+    );
     expect(first.pair.evaluation.manifest.consensusProvenance).toMatchObject({
       includedSportsbookIds: ["betmgm", "draftkings", "fanduel"],
       conservativeProbability: "interval-low",
     });
+    expect(first.pair.evaluation.manifest.comparisonEvidence).toHaveLength(3);
   });
   it("changes failed-attempt identity when exact evidence materially changes", async () => {
     let reads = 0;
