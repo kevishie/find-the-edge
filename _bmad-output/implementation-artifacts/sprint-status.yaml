@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-030
+nextReadyStory: FTE-031
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -646,7 +646,7 @@ stories:
   - id: FTE-030
     title: Movement, CLV, Outlier, and Market Disagreement Functions
     epic: Deterministic betting engine
-    status: backlog
+    status: done
     dependencies: [FTE-027, FTE-032]
     risk: High
     approvalRequiredBeforeMerge: false

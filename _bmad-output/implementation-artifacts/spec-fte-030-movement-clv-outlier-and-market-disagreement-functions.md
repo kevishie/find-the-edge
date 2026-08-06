@@ -2,8 +2,9 @@
 title: 'FTE-030 Movement, CLV, Outlier, and Market Disagreement Functions'
 type: 'feature'
 created: '2026-08-06'
-status: 'in-review'
+status: 'done'
 baseline_revision: '2dc03b08c91773e695e4be1d9efb9fb207844120'
+final_revision: 'd254a6a0bd66adc5570bea8e245c062d60bd6e81'
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
