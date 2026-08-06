@@ -105,7 +105,7 @@ const validated = (query: OddsHistoryQuery) => {
 };
 
 const cursorScope = (query: OddsHistoryQuery) =>
-  `${oddsHistoryPartition(query.eventId)}#V${query.canonicalEventVersion}#${query.from}#${query.to}`;
+  `${oddsHistoryPartition(query.eventId)}#${query.from}#${query.to}`;
 
 const rowSnapshot = (
   row: OddsHistoryStoredRow,
@@ -169,14 +169,18 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
   async list(rawQuery: OddsHistoryQuery): Promise<OddsHistoryPage> {
     const query = validated(rawQuery);
     const pk = oddsHistoryPartition(query.eventId);
+    const requestNow = this.now();
+    let paginationAsOf = requestNow.toISOString();
     let startSk: string | undefined;
     if (query.cursor)
       try {
-        startSk = this.cursor.decode(
+        const decoded = this.cursor.decode(
           query.cursor,
           cursorScope(query),
-          this.now(),
-        ).lastSk;
+          requestNow,
+        );
+        startSk = decoded.lastSk;
+        paginationAsOf = decoded.asOf;
       } catch (error) {
         if (error instanceof EventCursorError)
           throw new OddsHistoryInputError("odds-history-cursor-invalid");
@@ -199,17 +203,16 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
     }
     if (result.items.length > query.limit + 1)
       throw new OddsHistoryStorageError("odds-history-page-oversized");
-    const visibleRows = result.items.slice(0, query.limit);
-    const snapshots = visibleRows.map((row) =>
-      rowSnapshot(row, pk, query.eventId),
-    );
-    for (let index = 1; index < visibleRows.length; index++)
-      if (visibleRows[index - 1]!.sk >= visibleRows[index]!.sk)
+    const consumedRows = result.items.slice(0, query.limit);
+    const snapshots = consumedRows
+      .map((row) => rowSnapshot(row, pk, query.eventId))
+      .filter((snapshot) => snapshot.retrievedAt <= paginationAsOf);
+    for (let index = 1; index < consumedRows.length; index++)
+      if (consumedRows[index - 1]!.sk >= consumedRows[index]!.sk)
         throw new OddsHistoryStorageError("odds-history-order-invalid");
     const bySeries = new Map<string, OddsHistorySeries>();
+    const newestLabelEvidence = new Map<string, string>();
     for (const snapshot of snapshots) {
-      if (snapshot.canonicalEventVersion !== query.canonicalEventVersion)
-        continue;
       const sportsbookLabel = this.approvedSportsbooks[snapshot.sportsbookId];
       if (!sportsbookLabel || !MAIN_MARKETS.has(snapshot.marketKey)) continue;
       const key = seriesKey(snapshot);
@@ -220,7 +223,19 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
         retrievedAt: snapshot.retrievedAt,
       };
       const existing = bySeries.get(key);
-      if (existing) (existing.points as OddsHistoryPoint[]).push(point);
+      const labelEvidence = `${snapshot.observedAt}|${snapshot.retrievedAt}|${snapshot.snapshotId}`;
+      const useLabel =
+        !newestLabelEvidence.has(key) ||
+        labelEvidence >= newestLabelEvidence.get(key)!;
+      if (useLabel) newestLabelEvidence.set(key, labelEvidence);
+      if (existing)
+        bySeries.set(key, {
+          ...existing,
+          selectionLabel: useLabel
+            ? (snapshot.selectionLabel ?? snapshot.selectionKey)
+            : existing.selectionLabel,
+          points: [...existing.points, point],
+        });
       else
         bySeries.set(key, {
           marketKey: snapshot.marketKey,
@@ -232,8 +247,8 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
         });
     }
     const hasMore = result.hasMore || result.items.length > query.limit;
-    const last = visibleRows.at(-1);
-    const generatedAt = this.now().toISOString();
+    const last = consumedRows.at(-1);
+    const generatedAt = paginationAsOf;
     return {
       eventId: query.eventId,
       generatedAt,
@@ -249,7 +264,7 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
               cursorScope(query),
               last.sk,
               generatedAt,
-              this.now(),
+              requestNow,
             )
           : null,
     };

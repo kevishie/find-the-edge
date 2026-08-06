@@ -466,6 +466,8 @@ export class DynamoFixtureOddsAdapter {
     readonly gateway: FixtureOddsDynamoGateway,
     private readonly exactSnapshotIndex?: {
       put(snapshot: NormalizedFixtureOddsSnapshot): Promise<void>;
+      prepare?(snapshot: NormalizedFixtureOddsSnapshot): Promise<void>;
+      commitHistory?(snapshot: NormalizedFixtureOddsSnapshot): Promise<void>;
     },
   ) {}
 
@@ -563,8 +565,12 @@ export class DynamoFixtureOddsAdapter {
       snapshotDecision = "existing";
     }
 
+    // Establish the immutable snapshot-id identity before publication so an
+    // identity conflict can never be discovered after CURRENT advances.
     try {
-      await this.exactSnapshotIndex?.put(snapshot);
+      if (this.exactSnapshotIndex?.prepare)
+        await this.exactSnapshotIndex.prepare(snapshot);
+      else await this.exactSnapshotIndex?.put(snapshot);
     } catch (error) {
       if (error instanceof FixtureOddsStateCorruptionError) throw error;
       throw new FixtureOddsStorageError(
@@ -572,6 +578,7 @@ export class DynamoFixtureOddsAdapter {
         error,
       );
     }
+
     let current: "advanced" | "retained" = "advanced";
     try {
       await this.gateway.putCurrent({
@@ -653,6 +660,18 @@ export class DynamoFixtureOddsAdapter {
         evidenceId: snapshot.snapshotId,
         reason: "active-price",
       });
+    }
+    // The event-scoped history row is a repairable mirror. Advance the live
+    // projection first so a history outage cannot hold CURRENT back; a retry
+    // revalidates the primary identity and repairs this mirror idempotently.
+    try {
+      await this.exactSnapshotIndex?.commitHistory?.(snapshot);
+    } catch (error) {
+      if (error instanceof FixtureOddsStateCorruptionError) throw error;
+      throw new FixtureOddsStorageError(
+        "exact-snapshot-index-write-failed",
+        error,
+      );
     }
     return { snapshot: snapshotDecision, current, value: snapshot };
   }

@@ -1716,19 +1716,24 @@ function LineMovementChart({
   const width = 960;
   const height = 320;
   const inset = { top: 20, right: 24, bottom: 42, left: 62 };
-  const samples = series.flatMap((item) =>
+  const renderSeries = series.filter((item) =>
+    item.points.some(
+      (point) => movementValue(item, point, metric) !== undefined,
+    ),
+  );
+  const hasMovement = renderSeries.some(
+    (item) =>
+      item.points.filter(
+        (point) => movementValue(item, point, metric) !== undefined,
+      ).length >= 2,
+  );
+  const samples = renderSeries.flatMap((item) =>
     item.points.flatMap((point) => {
       const value = movementValue(item, point, metric);
       return value === undefined
         ? []
         : [{ at: Date.parse(point.observedAt), value }];
     }),
-  );
-  const hasMovement = series.some(
-    (item) =>
-      item.points.filter(
-        (point) => movementValue(item, point, metric) !== undefined,
-      ).length > 1,
   );
   if (!hasMovement)
     return (
@@ -1768,7 +1773,7 @@ function LineMovementChart({
         className="movement-chart"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={`${metric === "line" ? "Line" : "Implied probability"} movement across ${series.length} sportsbooks`}
+        aria-label={`${metric === "line" ? "Line" : "Implied probability"} movement across ${renderSeries.length} sportsbooks`}
       >
         {ticks.map((tick) => (
           <g key={tick}>
@@ -1814,27 +1819,46 @@ function LineMovementChart({
             minute: "2-digit",
           })}
         </text>
-        {series.map((item) => {
-          const coordinates = item.points.flatMap((point) => {
+        {renderSeries.map((item) => {
+          const segments: {
+            x: number;
+            y: number;
+            point: OddsHistorySeriesDto["points"][number];
+          }[][] = [];
+          let segment: (typeof segments)[number] = [];
+          for (const point of item.points) {
             const value = movementValue(item, point, metric);
-            return value === undefined
-              ? []
-              : [{ x: x(Date.parse(point.observedAt)), y: y(value), point }];
-          });
+            if (value === undefined) {
+              if (segment.length) segments.push(segment);
+              segment = [];
+            } else
+              segment.push({
+                x: x(Date.parse(point.observedAt)),
+                y: y(value),
+                point,
+              });
+          }
+          if (segment.length) segments.push(segment);
+          const coordinates = segments.flat();
           if (!coordinates.length) return null;
           const color = seriesColor(item.sportsbookId);
           return (
             <g key={item.sportsbookId}>
-              <polyline
-                points={coordinates
-                  .map(({ x: xPoint, y: yPoint }) => `${xPoint},${yPoint}`)
-                  .join(" ")}
-                fill="none"
-                stroke={color}
-                strokeWidth="3"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-              />
+              {segments
+                .filter((coordinates) => coordinates.length > 1)
+                .map((coordinates, segmentIndex) => (
+                  <polyline
+                    key={segmentIndex}
+                    points={coordinates
+                      .map(({ x: xPoint, y: yPoint }) => `${xPoint},${yPoint}`)
+                      .join(" ")}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth="3"
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                ))}
               {coordinates.map(({ x: xPoint, y: yPoint, point }, index) => (
                 <circle
                   key={`${xPoint}-${yPoint}-${index}`}
@@ -1914,14 +1938,25 @@ function DecisionWorkbench({
   const history = historyState.kind === "ready" ? historyState.value : null;
   const marketSeries =
     history?.series.filter((item) => item.marketKey === marketKey) ?? [];
-  const selections = [
-    ...new Map(
-      marketSeries.map((item) => [
-        item.selectionKey,
-        { key: item.selectionKey, label: item.selectionLabel },
-      ]),
-    ).values(),
-  ];
+  const selectionsByKey = new Map<
+    string,
+    {
+      readonly key: string;
+      readonly label: string;
+      readonly observedAt: string;
+    }
+  >();
+  for (const item of marketSeries) {
+    const observedAt = item.points.at(-1)?.observedAt ?? "";
+    const current = selectionsByKey.get(item.selectionKey);
+    if (!current || observedAt >= current.observedAt)
+      selectionsByKey.set(item.selectionKey, {
+        key: item.selectionKey,
+        label: item.selectionLabel,
+        observedAt,
+      });
+  }
+  const selections = [...selectionsByKey.values()];
   const activeSelection = selections.some(({ key }) => key === selectionKey)
     ? selectionKey
     : (selections[0]?.key ?? "");
@@ -1954,9 +1989,9 @@ function DecisionWorkbench({
           <p className="eyebrow">DECISION WORKBENCH</p>
           <h2 id="movement-title">Line movement &amp; public money</h2>
           <p>
-            Compare immutable first-to-latest movement in the retained window
-            across every observed book, then contrast Pinnacle/Circa with
-            DraftKings betting splits.
+            Compare immutable first-to-latest movement in the loaded retained
+            history across every observed book, then contrast Pinnacle/Circa
+            with DraftKings betting splits.
           </p>
         </div>
         <span className="provider-chip">SharpAPI evidence</span>
@@ -2017,6 +2052,12 @@ function DecisionWorkbench({
         <p role="status">Line movement is temporarily unavailable.</p>
       ) : (
         <>
+          {historyState.value.nextCursor !== null && (
+            <p className="movement-history-notice" role="status">
+              Showing a bounded portion of retained history. More observations
+              exist; movement below uses only the loaded evidence.
+            </p>
+          )}
           <LineMovementChart series={selectedSeries} metric={effectiveMetric} />
           <div
             className="movement-legend"
@@ -2064,7 +2105,9 @@ function DecisionWorkbench({
               ? "Not enough history"
               : `${averageDelta(sharpSeries)! > 0 ? "+" : ""}${averageDelta(sharpSeries)!.toFixed(1)} pp`}
           </strong>
-          <small>Pinnacle and Circa first-to-latest probability move</small>
+          <small>
+            Pinnacle and Circa first-to-latest loaded probability move
+          </small>
         </article>
         <article>
           <span>Public reference</span>
@@ -2073,7 +2116,7 @@ function DecisionWorkbench({
               ? "Not enough history"
               : `${averageDelta(publicSeries)! > 0 ? "+" : ""}${averageDelta(publicSeries)!.toFixed(1)} pp`}
           </strong>
-          <small>DraftKings first-to-latest probability move</small>
+          <small>DraftKings first-to-latest loaded probability move</small>
         </article>
         {selectedSplits.length ? (
           selectedSplits.map((split) => (

@@ -2134,10 +2134,12 @@ export function createGamesClient(
           cursors.add(page.nextCursor);
           cursor = page.nextCursor;
         }
-        throw new GamesClientError(
-          "invalid-response",
-          "The odds history response exceeded the page limit.",
-        );
+        return {
+          eventId,
+          generatedAt: generatedAt ?? new Date(0).toISOString(),
+          series: [...series.values()],
+          nextCursor: cursor ?? null,
+        };
       },
       async listSplits(filter, signal) {
         return exhaustPages({

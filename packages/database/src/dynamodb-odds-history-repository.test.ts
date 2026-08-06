@@ -59,6 +59,9 @@ describe("Dynamo odds history repository", () => {
       ScanIndexForward: true,
       Limit: 26,
       KeyConditionExpression: "pk = :pk AND sk BETWEEN :from AND :to",
+      ExpressionAttributeValues: {
+        ":pk": `ODDS_HISTORY#${value.canonicalEventId}`,
+      },
     });
   });
 });

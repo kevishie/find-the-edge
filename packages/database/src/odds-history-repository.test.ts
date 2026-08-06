@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { normalizeFixtureOddsObservation } from "@find-the-edge/domain";
 import { EventCursorCodec } from "./event-repository";
 import {
+  JoinedOddsHistoryRepository,
   MemoryOddsHistoryRepository,
   OddsHistoryInputError,
+  oddsHistoryPartition,
+  type OddsHistoryStoredRow,
 } from "./odds-history-repository";
 
 const eventId = "event:mlb:history";
@@ -37,7 +40,7 @@ const snapshot = (
   });
 
 describe("odds history repository", () => {
-  it("projects chronological all-book series for only the requested canonical event version", async () => {
+  it("projects continuous chronological all-book series across canonical event versions", async () => {
     const repository = new MemoryOddsHistoryRepository(
       [
         snapshot("draftkings", "2026-08-05T12:10:00.000Z", -115, {
@@ -76,9 +79,29 @@ describe("odds history repository", () => {
           sportsbookLabel: "DraftKings",
           points: [
             {
+              americanOdds: -110,
+              observedAt: "2026-08-05T12:00:00.000Z",
+              retrievedAt: "2026-08-05T12:00:00.000Z",
+            },
+            {
               americanOdds: -115,
               observedAt: "2026-08-05T12:10:00.000Z",
               retrievedAt: "2026-08-05T12:10:00.000Z",
+            },
+          ],
+        },
+        {
+          marketKey: "spread",
+          selectionKey: "participant:away",
+          selectionLabel: "Away",
+          sportsbookId: "pinnacle",
+          sportsbookLabel: "Pinnacle",
+          points: [
+            {
+              point: 1.5,
+              americanOdds: 105,
+              observedAt: "2026-08-05T12:05:00.000Z",
+              retrievedAt: "2026-08-05T12:05:00.000Z",
             },
           ],
         },
@@ -112,6 +135,7 @@ describe("odds history repository", () => {
     expect(first.nextCursor).toBeTypeOf("string");
     const second = await repository.list({
       ...range,
+      canonicalEventVersion: 2,
       cursor: first.nextCursor!,
     });
     expect(second.series[0]?.points.map((point) => point.americanOdds)).toEqual(
@@ -125,6 +149,159 @@ describe("odds history repository", () => {
         cursor: first.nextCursor!,
       }),
     ).rejects.toBeInstanceOf(OddsHistoryInputError);
+  });
+
+  it("fences later mirror writes out of an in-progress traversal", async () => {
+    let now = new Date("2026-08-05T13:00:00.000Z");
+    const rows: OddsHistoryStoredRow[] = [
+      snapshot("draftkings", "2026-08-05T12:00:00.000Z", -110),
+      snapshot("draftkings", "2026-08-05T12:01:00.000Z", -112),
+      snapshot("draftkings", "2026-08-05T12:02:00.000Z", -115),
+    ].map((value) => ({
+      pk: oddsHistoryPartition(value.canonicalEventId),
+      sk: value.sortKey,
+      value,
+    }));
+    const repository = new JoinedOddsHistoryRepository(
+      {
+        query: async (input) => {
+          await Promise.resolve();
+          const matching = rows
+            .filter(
+              (row) =>
+                row.pk === input.pk &&
+                row.sk >= input.fromSk &&
+                row.sk <= input.toSk &&
+                (!input.startSk || row.sk > input.startSk),
+            )
+            .sort((left, right) => left.sk.localeCompare(right.sk));
+          return {
+            items: matching.slice(0, input.limit),
+            hasMore: matching.length > input.limit,
+          };
+        },
+      },
+      cursor,
+      { draftkings: "DraftKings" },
+      () => now,
+    );
+    const range = {
+      eventId,
+      canonicalEventVersion: 1,
+      from: "2026-08-05T12:00:00.000Z",
+      to: "2026-08-05T13:00:00.000Z",
+      limit: 2,
+    } as const;
+    const first = await repository.list(range);
+    expect(
+      first.series[0]?.points.map(({ americanOdds }) => americanOdds),
+    ).toEqual([-110, -112]);
+
+    now = new Date("2026-08-05T13:01:00.000Z");
+    const lateMirror = normalizeFixtureOddsObservation({
+      canonicalEventId: eventId,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "participant:away",
+      selectionLabel: "Away",
+      sportsbookId: "draftkings",
+      americanOdds: -113,
+      observedAt: "2026-08-05T12:01:30.000Z",
+      retrievedAt: "2026-08-05T13:01:00.000Z",
+    });
+    rows.push({
+      pk: oddsHistoryPartition(eventId),
+      sk: lateMirror.sortKey,
+      value: lateMirror,
+    });
+
+    const second = await repository.list({
+      ...range,
+      cursor: first.nextCursor!,
+    });
+    expect(second.generatedAt).toBe(first.generatedAt);
+    expect(
+      second.series[0]?.points.map(({ americanOdds }) => americanOdds),
+    ).toEqual([-115]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("uses the newest selection label within one history page", async () => {
+    const original = snapshot("draftkings", "2026-08-05T12:00:00.000Z", -110);
+    const corrected = normalizeFixtureOddsObservation({
+      canonicalEventId: eventId,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "participant:away",
+      selectionLabel: "Away corrected",
+      sportsbookId: "draftkings",
+      americanOdds: -112,
+      observedAt: "2026-08-05T12:01:00.000Z",
+      retrievedAt: "2026-08-05T12:01:01.000Z",
+    });
+    const repository = new MemoryOddsHistoryRepository(
+      [original, corrected],
+      cursor,
+      { draftkings: "DraftKings" },
+      () => new Date("2026-08-05T13:00:00.000Z"),
+    );
+
+    const page = await repository.list({
+      eventId,
+      canonicalEventVersion: 1,
+      from: "2026-08-05T12:00:00.000Z",
+      to: "2026-08-05T13:00:00.000Z",
+      limit: 10,
+    });
+
+    expect(page.series).toHaveLength(1);
+    expect(page.series[0]?.selectionLabel).toBe("Away corrected");
+    expect(page.series[0]?.points).toHaveLength(2);
+  });
+
+  it("uses retrieval time to break same-observation label corrections", async () => {
+    const original = normalizeFixtureOddsObservation({
+      canonicalEventId: eventId,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "participant:away",
+      selectionLabel: "Away old",
+      sportsbookId: "draftkings",
+      americanOdds: -110,
+      observedAt: "2026-08-05T12:00:00.000Z",
+      retrievedAt: "2026-08-05T12:00:01.000Z",
+    });
+    const corrected = normalizeFixtureOddsObservation({
+      canonicalEventId: eventId,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "participant:away",
+      selectionLabel: "Away corrected",
+      sportsbookId: "draftkings",
+      americanOdds: -112,
+      observedAt: "2026-08-05T12:00:00.000Z",
+      retrievedAt: "2026-08-05T12:00:02.000Z",
+    });
+    const repository = new MemoryOddsHistoryRepository(
+      [original, corrected],
+      cursor,
+      { draftkings: "DraftKings" },
+      () => new Date("2026-08-05T13:00:00.000Z"),
+    );
+
+    const page = await repository.list({
+      eventId,
+      canonicalEventVersion: 1,
+      from: "2026-08-05T12:00:00.000Z",
+      to: "2026-08-05T13:00:00.000Z",
+      limit: 10,
+    });
+
+    expect(page.series[0]?.selectionLabel).toBe("Away corrected");
   });
 
   it("rejects malformed, oversized, reversed, and unsupported requests", async () => {

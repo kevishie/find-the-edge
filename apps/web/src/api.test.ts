@@ -256,6 +256,7 @@ describe("games client", () => {
             series: [
               {
                 ...history.series[0],
+                selectionLabel: "Boston Red Sox (corrected)",
                 points: [
                   {
                     americanOdds: 115,
@@ -278,6 +279,7 @@ describe("games client", () => {
       series: [
         {
           sportsbookId: "pinnacle",
+          selectionLabel: "Boston Red Sox (corrected)",
           points: [{ americanOdds: 125 }, { americanOdds: 115 }],
         },
       ],
@@ -295,6 +297,46 @@ describe("games client", () => {
         "cursor",
       ),
     ).toBe("page-two");
+  });
+
+  it("accepts the full cursor contract and returns bounded history instead of discarding it", async () => {
+    const eventId = payload.items[0]!.id;
+    const longCursor = "c".repeat(4_096);
+    const page = (nextCursor: string | null) => ({
+      eventId,
+      generatedAt: "2026-08-01T12:30:00.000Z",
+      series: [],
+      nextCursor,
+    });
+    let call = 0;
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify(page(call++ === 0 ? longCursor : `cursor-${call}`)),
+          ),
+        ),
+      );
+    const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!client.ok) throw client.error;
+
+    const result = await client.value.oddsHistory!(
+      eventId,
+      new AbortController().signal,
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(512);
+    expect(
+      new URL(requestHref(fetcher.mock.calls[1]![0])).searchParams.get(
+        "cursor",
+      ),
+    ).toBe(longCursor);
+    expect(result).toMatchObject({
+      eventId,
+      series: [],
+      nextCursor: "cursor-512",
+    });
   });
 
   it.each([

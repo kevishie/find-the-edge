@@ -10,6 +10,8 @@ import { oddsHistoryPartition } from "./odds-history-repository.js";
 
 export interface ExactOddsSnapshotIndex {
   put(snapshot: NormalizedFixtureOddsSnapshot): Promise<void>;
+  prepare?(snapshot: NormalizedFixtureOddsSnapshot): Promise<void>;
+  commitHistory?(snapshot: NormalizedFixtureOddsSnapshot): Promise<void>;
   get(snapshotId: string): Promise<ClosingCandidate | null>;
 }
 
@@ -20,11 +22,17 @@ export class DynamoExactOddsSnapshotRepository implements ExactOddsSnapshotIndex
     private readonly tableName: string,
   ) {}
   async put(snapshot: NormalizedFixtureOddsSnapshot) {
+    await this.prepare(snapshot);
+    await this.commitHistory(snapshot);
+  }
+  async prepare(snapshot: NormalizedFixtureOddsSnapshot) {
     await this.putImmutable(
       "ODDS_SNAPSHOTS_BY_ID",
       snapshot.snapshotId,
       snapshot,
     );
+  }
+  async commitHistory(snapshot: NormalizedFixtureOddsSnapshot) {
     await this.putImmutable(
       oddsHistoryPartition(snapshot.canonicalEventId),
       snapshot.sortKey,

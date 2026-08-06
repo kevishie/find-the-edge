@@ -401,7 +401,8 @@ export const createEventHandler =
           Date.parse(from) > Date.parse(to) ||
           Date.parse(to) - Date.parse(from) > 31 * 24 * 60 * 60 * 1_000 ||
           !/^(?:[1-9]|[1-9][0-9]|1[0-9]{2}|200)$/.test(limitText) ||
-          query["cursor"] === ""
+          (query["cursor"] !== undefined &&
+            (query["cursor"].length < 1 || query["cursor"].length > 4096))
         )
           throw new EventInputError("invalid-odds-history-query");
         const eventId = request.eventId ?? "";

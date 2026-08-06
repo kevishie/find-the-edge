@@ -384,8 +384,22 @@ it("renders independent accessible lifecycle and freshness badges on games and d
             },
           ],
         },
+        {
+          marketKey: "moneyline",
+          selectionKey: "away",
+          selectionLabel: "Old Boston label",
+          sportsbookId: "draftkings",
+          sportsbookLabel: "DraftKings",
+          points: [
+            {
+              americanOdds: 120,
+              observedAt: "2026-08-01T10:00:00.000Z",
+              retrievedAt: "2026-08-01T10:00:01.000Z",
+            },
+          ],
+        },
       ],
-      nextCursor: null,
+      nextCursor: "more-history",
     }),
   );
   render(
@@ -416,13 +430,25 @@ it("renders independent accessible lifecycle and freshness badges on games and d
   ).toHaveAttribute("datetime", "2026-08-01T12:15:00.000Z");
   expect(
     await screen.findByRole("img", {
-      name: "Implied probability movement across 1 sportsbooks",
+      name: "Implied probability movement across 2 sportsbooks",
     }),
   ).toBeVisible();
   expect(
-    screen.getByText("Pinnacle and Circa first-to-latest probability move"),
+    screen.getByText(
+      "Pinnacle and Circa first-to-latest loaded probability move",
+    ),
   ).toBeVisible();
   expect(screen.getByText("-4.8 probability points")).toBeVisible();
+  expect(screen.getByRole("combobox", { name: "Selection" })).toHaveValue(
+    "away",
+  );
+  expect(screen.getByRole("option", { name: "Boston" })).toBeVisible();
+  expect(
+    screen.queryByRole("option", { name: "Old Boston label" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByText(/Showing a bounded portion of retained history/),
+  ).toBeVisible();
 });
 
 it("does not declare movement from isolated points in separate sportsbook series", async () => {

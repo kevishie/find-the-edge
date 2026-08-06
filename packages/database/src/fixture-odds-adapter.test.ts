@@ -338,23 +338,34 @@ describe("DynamoFixtureOddsAdapter", () => {
 
   it("repairs an interrupted exact-id mirror on retry without duplicating history", async () => {
     const gateway = boundHarness();
-    let failMirror = true;
-    let mirrored: Record<string, unknown> | undefined;
+    let failHistory = true;
+    const mirrored = new Map<string, Record<string, unknown>>();
     const send = vi.fn((raw: unknown) => {
       const command = raw as {
         constructor: { name: string };
         input: Record<string, unknown>;
       };
       if (command.constructor.name === "PutCommand") {
-        if (failMirror) {
-          failMirror = false;
+        const item = command.input["Item"] as Record<string, unknown>;
+        const identity = `${String(item["pk"])}|${String(item["sk"])}`;
+        if (String(item["pk"]).startsWith("ODDS_HISTORY#") && failHistory) {
+          failHistory = false;
           return Promise.reject(new Error("mirror-unavailable"));
         }
-        mirrored = command.input["Item"] as Record<string, unknown>;
+        if (mirrored.has(identity)) {
+          const error = new Error("already exists");
+          error.name = "ConditionalCheckFailedException";
+          return Promise.reject(error);
+        }
+        mirrored.set(identity, item);
         return Promise.resolve({});
       }
-      if (command.constructor.name === "GetCommand")
-        return Promise.resolve({ Item: mirrored });
+      if (command.constructor.name === "GetCommand") {
+        const key = command.input["Key"] as Record<string, unknown>;
+        return Promise.resolve({
+          Item: mirrored.get(`${String(key["pk"])}|${String(key["sk"])}`),
+        });
+      }
       return Promise.reject(new Error("unexpected-command"));
     });
     const mirror = new DynamoExactOddsSnapshotRepository(
@@ -365,17 +376,20 @@ describe("DynamoFixtureOddsAdapter", () => {
     await expect(adapter.persist(input())).rejects.toBeInstanceOf(
       FixtureOddsStorageError,
     );
+    const normalized = normalizeFixtureOddsObservation(input().observation);
+    expect(
+      (await gateway.getExact(normalized.partitionKey, "CURRENT"))?.value
+        .snapshotId,
+    ).toBe(normalized.snapshotId);
     await expect(adapter.persist(input())).resolves.toMatchObject({
       snapshot: "existing",
-      current: "advanced",
+      current: "retained",
     });
-    const normalized = normalizeFixtureOddsObservation(input().observation);
     expect(
       [...gateway.items.values()].filter(
         (item) => item.pk === normalized.partitionKey && item.sk !== "CURRENT",
       ),
     ).toHaveLength(1);
-    expect(send).toHaveBeenCalledTimes(3);
     expect(
       send.mock.calls
         .map(
@@ -385,6 +399,7 @@ describe("DynamoFixtureOddsAdapter", () => {
         .filter(Boolean),
     ).toEqual([
       "ODDS_SNAPSHOTS_BY_ID",
+      `ODDS_HISTORY#${normalized.canonicalEventId}`,
       "ODDS_SNAPSHOTS_BY_ID",
       `ODDS_HISTORY#${normalized.canonicalEventId}`,
     ]);
@@ -399,7 +414,8 @@ describe("DynamoFixtureOddsAdapter", () => {
   });
 
   it("does not translate an exact-index content conflict into retryable storage", async () => {
-    const adapter = new DynamoFixtureOddsAdapter(boundHarness(), {
+    const gateway = boundHarness();
+    const adapter = new DynamoFixtureOddsAdapter(gateway, {
       put: () =>
         Promise.reject(
           new FixtureOddsStateCorruptionError("snapshot-index-conflict"),
@@ -408,6 +424,10 @@ describe("DynamoFixtureOddsAdapter", () => {
     await expect(adapter.persist(input())).rejects.toBeInstanceOf(
       FixtureOddsStateCorruptionError,
     );
+    const normalized = normalizeFixtureOddsObservation(input().observation);
+    await expect(
+      gateway.getExact(normalized.partitionKey, "CURRENT"),
+    ).resolves.toBeNull();
   });
 
   it("detects immutable snapshot content collisions", async () => {

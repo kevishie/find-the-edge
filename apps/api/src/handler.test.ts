@@ -476,6 +476,11 @@ describe("event API", () => {
         to: "2026-08-05T13:00:00.000Z",
         unknown: "x",
       },
+      {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        cursor: "x".repeat(4097),
+      },
     ]) {
       const result = await handler({
         route: "odds-history",
