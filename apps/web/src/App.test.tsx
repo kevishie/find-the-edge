@@ -1032,8 +1032,19 @@ describe("Betting splits", () => {
     expect(screen.getByText("+1.5")).toBeInTheDocument();
     expect(screen.getByText("O 8.5")).toBeInTheDocument();
     expect(screen.getByText("U 8.5")).toBeInTheDocument();
-    expect(screen.getByText("+26 pts more money")).toBeInTheDocument();
-    expect(screen.getByText("−26 pts more bets")).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", {
+        name: "Spread for Boston: 64% handle, 38% bets, 26 percentage points money-heavy",
+      }),
+    ).toHaveAttribute("data-direction", "money-heavy");
+    expect(
+      screen.getByRole("img", {
+        name: "Spread for New York: 36% handle, 62% bets, 26 percentage points ticket-heavy",
+      }),
+    ).toHaveAttribute("data-direction", "ticket-heavy");
+    expect(screen.getByText("+26")).toBeInTheDocument();
+    expect(screen.getByText("−26")).toBeInTheDocument();
+    expect(screen.getAllByText("No line")).toHaveLength(2);
     expect(screen.getByText("DK + Circa Consensus")).toBeInTheDocument();
     expect(screen.getByText("One signal, not the answer.")).toBeInTheDocument();
     expect(
@@ -1047,13 +1058,25 @@ describe("Betting splits", () => {
   });
 
   it("preserves missing provider values without manufacturing a percentage", async () => {
+    const { betPercent: removedBetPercent, ...handleOnlyBase } =
+      splitGame.splits[0]!;
+    void removedBetPercent;
+    const handleOnly = {
+      ...handleOnlyBase,
+      id: "split-away-spread-handle-only",
+    };
+    const betsOnly = {
+      ...splitGame.splits[3]!,
+      id: "split-under-total-bets-only",
+      scope: "consensus",
+    };
     const listSplits = vi
       .fn<NonNullable<GamesClient["listSplits"]>>()
       .mockResolvedValue(
         splitsPage([
           {
             ...splitGame,
-            splits: [splitGame.splits[3]!],
+            splits: [handleOnly, betsOnly],
           },
         ]),
       );
@@ -1068,6 +1091,129 @@ describe("Betting splits", () => {
     expect(screen.queryByText("—%")).not.toBeInTheDocument();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     expect(screen.getByText("49%")).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", {
+        name: "Total for New York: handle unavailable, 49% bets",
+      }),
+    ).toHaveAttribute("data-direction", "partial");
+    expect(screen.queryByText("−49")).not.toBeInTheDocument();
+    expect(screen.queryByText("+49")).not.toBeInTheDocument();
+    const handleOnlyBar = screen.getByRole("img", {
+      name: "Spread for Boston: 64% handle, bets unavailable",
+    });
+    expect(handleOnlyBar).toHaveAttribute("data-direction", "partial");
+    expect(handleOnlyBar.querySelector(".split-bar-handle")).toHaveStyle({
+      width: "64%",
+    });
+  });
+
+  it("keeps endpoint notches visible and labels even splits without relying on color", async () => {
+    const endpointGame = {
+      ...splitGame,
+      splits: [
+        {
+          ...splitGame.splits[0]!,
+          id: "endpoint-away",
+          moneyPercent: 0,
+          betPercent: 100,
+          scope: "consensus",
+        },
+        {
+          ...splitGame.splits[1]!,
+          id: "endpoint-home",
+          moneyPercent: 100,
+          betPercent: 0,
+          scope: "consensus",
+        },
+        {
+          ...splitGame.splits[2]!,
+          id: "endpoint-even",
+          moneyPercent: 50,
+          betPercent: 50,
+          scope: "consensus",
+        },
+        {
+          ...splitGame.splits[4]!,
+          id: "endpoint-sub-hundredth",
+          moneyPercent: 50.004,
+          betPercent: 50.001,
+          scope: "consensus",
+        },
+      ],
+    } satisfies SplitsPageDto["items"][number];
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage([endpointGame]));
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    const endpoint = await screen.findByRole("img", {
+      name: "Spread for Boston: 0% handle, 100% bets, 100 percentage points ticket-heavy",
+    });
+    expect(endpoint).toHaveAttribute("data-direction", "ticket-heavy");
+    expect(endpoint.querySelector(".split-bar-handle")).toHaveStyle({
+      width: "0%",
+    });
+    expect(endpoint.querySelector(".split-bar-bets")).toHaveStyle({
+      left: "calc(100% - 2px)",
+    });
+    const zeroNotch = screen.getByRole("img", {
+      name: "Spread for New York: 100% handle, 0% bets, 100 percentage points money-heavy",
+    });
+    expect(zeroNotch).toHaveAttribute("data-direction", "money-heavy");
+    expect(zeroNotch.querySelector(".split-bar-bets")).toHaveStyle({
+      left: "0",
+    });
+    expect(
+      screen.getByRole("img", {
+        name: "Total for Boston: 50% handle, 50% bets, 0 percentage points even",
+      }),
+    ).toHaveAttribute("data-direction", "even");
+    expect(
+      screen.getByRole("img", {
+        name: "Moneyline for Boston: 50.004% handle, 50.001% bets, 0.003 percentage points money-heavy",
+      }),
+    ).toHaveAttribute("data-direction", "money-heavy");
+    expect(screen.getByText("−100")).toBeInTheDocument();
+    expect(screen.getByText("+100")).toBeInTheDocument();
+    expect(screen.getByText("0")).toBeInTheDocument();
+    expect(screen.getByText("+<0.01")).toBeInTheDocument();
+  });
+
+  it("does not count records without either split percentage as coverage", async () => {
+    const {
+      moneyPercent: removedMoneyPercent,
+      betPercent: removedBetPercent,
+      ...unusableBase
+    } = splitGame.splits[0]!;
+    void removedMoneyPercent;
+    void removedBetPercent;
+    const unusable = {
+      ...unusableBase,
+      id: "line-only-split",
+      scope: "line-only-book",
+    };
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage([{ ...splitGame, splits: [unusable] }]));
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("1 games · 0 with data · 0 observations"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("No split data")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Show line-only-book splits" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps filters usable for empty results and reports failures", async () => {

@@ -11,6 +11,7 @@ import {
 import { createEventHandler } from "../../apps/api/src/index.js";
 import {
   EventCursorCodec,
+  MemoryBettingSplitRepository,
   MemoryEventIngestionStore,
   MemoryEventRepository,
   MemoryGamesRepository,
@@ -140,6 +141,47 @@ export interface LocalGamesApi {
   close(): Promise<void>;
 }
 
+const splitSelections = [
+  {
+    marketKey: "spread",
+    selectionKey: "away",
+    point: 1.5,
+    money: 64,
+    bets: 38,
+  },
+  {
+    marketKey: "spread",
+    selectionKey: "home",
+    point: -1.5,
+    money: 36,
+    bets: 62,
+  },
+  { marketKey: "total", selectionKey: "over", point: 8.5, money: 55, bets: 51 },
+  {
+    marketKey: "total",
+    selectionKey: "under",
+    point: 8.5,
+    money: 45,
+    bets: 49,
+  },
+  { marketKey: "moneyline", selectionKey: "away", money: 58, bets: 45 },
+  { marketKey: "moneyline", selectionKey: "home", money: 42, bets: 55 },
+] as const;
+
+const splitSelectionsFor = (sportKey: string) => [
+  ...splitSelections,
+  ...(sportKey === "soccer"
+    ? ([
+        {
+          marketKey: "moneyline",
+          selectionKey: "draw",
+          money: 33,
+          bets: 31,
+        },
+      ] as const)
+    : []),
+];
+
 export async function startLocalGamesApi(): Promise<LocalGamesApi> {
   const store = new MemoryEventIngestionStore();
   const odds = new MemoryOdds();
@@ -163,6 +205,25 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
     projectionItems(postponed, "2026-08-01T12:31:00.000Z" as never),
   ))
     store.eventReadItems.set(`${item.pk}\0${item.sk}`, item);
+  const splits = new MemoryBettingSplitRepository();
+  for (const event of store.events.values())
+    for (const split of splitSelectionsFor(event.sportKey))
+      await splits.persist({
+        providerId: "sharpapi",
+        providerEventId: `sharp-${encodeURIComponent(event.id)}`,
+        canonicalEventId: event.id,
+        canonicalEventVersion: event.version,
+        sportKey: event.sportKey,
+        leagueKey: event.leagueKey,
+        marketKey: split.marketKey,
+        selectionKey: split.selectionKey,
+        ...("point" in split ? { point: split.point } : {}),
+        moneyPercent: split.money,
+        betPercent: split.bets,
+        providerTimestamp: "2026-08-01T12:25:00.000Z" as never,
+        retrievedAt: "2026-08-01T12:26:00.000Z" as never,
+        scope: "consensus",
+      });
   const events = new MemoryEventRepository(
     store,
     new EventCursorCodec({
@@ -184,6 +245,7 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
       ],
     ),
     () => undefined,
+    splits,
   );
   const respond = async (
     request: IncomingMessage,
@@ -204,6 +266,7 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
       request.method !== "GET" ||
       (!requestUrl.pathname.startsWith("/events/") &&
         requestUrl.pathname !== "/games" &&
+        requestUrl.pathname !== "/splits" &&
         !/^\/games\/[^/]+\/odds-history$/.test(requestUrl.pathname))
     ) {
       response
@@ -234,7 +297,7 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
           ),
         })
       : await handler({
-          route: "games",
+          route: requestUrl.pathname === "/splits" ? "splits" : "games",
           query: Object.fromEntries(requestUrl.searchParams),
         });
     const body =

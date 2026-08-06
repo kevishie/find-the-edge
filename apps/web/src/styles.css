@@ -743,14 +743,71 @@ footer {
   max-width: 100%;
 }
 
+.split-bar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  padding: 11px 14px;
+  border-bottom: 1px solid #25212c;
+  color: #aaa2b5;
+  background: #100e14;
+  font:
+    9px "IBM Plex Mono",
+    monospace;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.split-bar-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.split-bar-legend i {
+  position: relative;
+  display: inline-block;
+  width: 24px;
+  height: 9px;
+  border-radius: 2px;
+  background: #4c4459;
+}
+
+.split-bar-legend .split-legend-bets {
+  width: 2px;
+  height: 13px;
+  border-radius: 0;
+  background: #f3f1f8;
+}
+
+.split-bar-legend .split-legend-money {
+  background: rgba(168, 85, 247, 0.65);
+}
+
+.split-bar-legend .split-legend-ticket {
+  background: rgba(251, 191, 36, 0.65);
+}
+
 .split-board {
   width: 100%;
-  min-width: 1040px;
+  min-width: 900px;
   border-collapse: collapse;
   table-layout: fixed;
   font:
     11px "IBM Plex Mono",
     monospace;
+}
+
+.split-team-col {
+  width: 230px;
+}
+
+.split-line-col {
+  width: 58px;
+}
+
+.split-bar-col {
+  width: 165px;
 }
 
 .split-board th,
@@ -766,7 +823,7 @@ footer {
   position: sticky;
   left: 0;
   z-index: 2;
-  width: 250px;
+  width: 230px;
   border-left: 0;
   text-align: left;
 }
@@ -875,31 +932,109 @@ footer {
   font-weight: 600;
 }
 
-.split-percent {
+.split-bar-cell {
+  padding-right: 12px !important;
+  padding-left: 12px !important;
+}
+
+.split-bar-visual {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.split-bar-reading {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.split-bar-track {
+  position: relative;
   display: block;
-  color: #f2edf7;
-  font-size: 13px;
+  width: 100%;
+  height: 14px;
+  overflow: visible;
+  border-radius: 3px;
+  background: #191720;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+}
+
+.split-bar-handle,
+.split-bar-divergence,
+.split-bar-bets {
+  position: absolute;
+  display: block;
+}
+
+.split-bar-handle {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 3px 0 0 3px;
+  background: #4c4459;
+}
+
+.split-bar-divergence {
+  top: 0;
+  bottom: 0;
+}
+
+.split-bar-bets {
+  z-index: 2;
+  top: -1px;
+  width: 2px;
+  height: 16px;
+  background: #f3f1f8;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.85);
+}
+
+.split-bar-values {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: #aaa2b5;
+  font-size: 8px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.split-bar-values strong {
+  color: #bdb6c8;
+  font-weight: 600;
+}
+
+.split-bar-delta {
+  flex: 0 0 32px;
+  width: 32px;
+  text-align: right;
+  color: #aaa2b5;
+  font-size: 11px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
 
-.split-gap {
+.split-bar-delta-money-heavy {
+  color: #c9a4fb;
+}
+
+.split-bar-delta-ticket-heavy {
+  color: #fbd076;
+}
+
+.split-bar-delta-even {
+  color: #aaa2b5;
+}
+
+.split-bar-unavailable {
   display: block;
-  min-height: 11px;
-  margin-top: 3px;
-  color: #756e80;
+  color: #aaa2b5;
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.1px;
-  white-space: nowrap;
-}
-
-.split-gap-notable {
-  color: #d7a95b;
-}
-
-.split-gap-strong {
-  color: #ef8f8f;
+  font-weight: 500;
 }
 
 .sr-only {
@@ -1276,6 +1411,14 @@ footer {
   .split-board .split-team-heading,
   .split-board .split-team {
     width: 190px;
+  }
+
+  .split-team-col {
+    width: 190px;
+  }
+
+  .split-bar-col {
+    width: 158px;
   }
 }
 

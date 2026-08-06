@@ -135,6 +135,63 @@ test("uses an explicit second MLB Eastern day", async ({ page }) => {
   await expect(page.getByText("-105").first()).toBeVisible();
 });
 
+test("renders compact accessible split bars on desktop and mobile", async ({
+  page,
+}) => {
+  await page.goto("/splits");
+  await page.getByLabel("Eastern calendar day").fill("2026-08-01");
+
+  await expect(page.getByText("Boston Red Sox").first()).toBeVisible();
+  await expect(
+    page.getByRole("columnheader", { name: "Spread" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("columnheader", { name: "Handle vs bets" }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("img", {
+      name: "Spread for Boston Red Sox: 64% handle, 38% bets, 26 percentage points money-heavy",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("img", {
+      name: "Spread for New York Yankees: 36% handle, 62% bets, 26 percentage points ticket-heavy",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("No line")).toHaveCount(2);
+  await page.getByRole("button", { name: "MLS" }).click();
+  await expect(
+    page.getByRole("img", {
+      name: "Moneyline for Draw: 33% handle, 31% bets, 2 percentage points money-heavy",
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "MLB" }).click();
+  await expect(page.getByText("Boston Red Sox").first()).toBeVisible();
+
+  const board = page.getByRole("region", {
+    name: /Betting splits comparison table/,
+  });
+  await expect(board).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(board).toBeVisible();
+  expect(
+    await board.evaluate(
+      (element) => element.scrollWidth > element.clientWidth,
+    ),
+  ).toBe(true);
+  const stickyTeam = page.locator(".split-team").first();
+  await expect(stickyTeam).toHaveCSS("position", "sticky");
+  const beforeScroll = await stickyTeam.boundingBox();
+  expect(beforeScroll).not.toBeNull();
+  await board.evaluate((element) => {
+    element.scrollLeft = 420;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect
+    .poll(async () => (await stickyTeam.boundingBox())?.x)
+    .toBeCloseTo(beforeScroll!.x, 0);
+});
+
 test("opens multi-book comparison directly and keeps Hard Rock first", async ({
   page,
 }) => {
