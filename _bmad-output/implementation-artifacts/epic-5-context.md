@@ -4,7 +4,7 @@
 
 ## Goal
 
-Provide a pure, reproducible, and auditable betting-math foundation that converts offered odds into probabilities, removes vig, builds weighted market consensus, derives fair prices and expected value, measures movement and closing-line value, and exposes uncertainty without unsupported causal claims. This engine supplies trusted calculation outputs to opportunity qualification, event analysis, scouting reports, bet tracking, and performance measurement while keeping all authoritative math outside provider adapters, storage, UI code, AWS services, and LLM output.
+Provide a pure, sport-agnostic, reproducible betting-math foundation that converts offered odds into probabilities, removes vig, builds weighted consensus, derives fair prices and expected value, and measures movement and closing-line value. This engine makes downstream opportunities, reports, picks, bet tracking, and performance analysis auditable while keeping authoritative calculations outside providers, persistence, applications, and AI.
 
 ## Stories
 
@@ -17,30 +17,30 @@ Provide a pure, reproducible, and auditable betting-math foundation that convert
 
 ## Requirements & Constraints
 
-- Convert valid positive and negative American odds and decimal odds, calculate implied probability, and reject zero, malformed, missing, or impossible inputs rather than silently coercing them.
-- Support complete two-outcome and three-outcome markets. Three-way consensus requires home, draw, and away; incomplete markets return an explicit insufficient-data or disqualified state instead of a fabricated probability.
-- Apply configurable comparison-book weights and minimum-book requirements. Zero-weight, stale, suspended, incomplete, disabled, and invalid prices cannot contribute. Unknown books do not enter consensus without explicit configuration, and the target sportsbook is excluded from the consensus used to evaluate its own offer.
-- Produce fair American and decimal odds, EV, and expected profit from reproducible inputs. Expected profit requires an explicit stake and must never be presented as certain profit.
-- Kelly and configurable fractional Kelly are informational only. They must not trigger autonomous wager sizing, bankroll management, or bet placement.
-- Quantify movement in both odds and implied-probability terms, calculate CLV against a configurable benchmark, detect outliers, and score market disagreement. Sparse history or a missing closing price produces an unavailable or insufficient-data result.
-- Movement and disagreement outputs describe observed price behavior only. They must not claim sharp action, public action, or steam without verified supporting evidence.
-- Every calculation validates inputs and returns typed success/failure states for normal bad market data. Missing, stale, suspended, or excluded inputs remain explainable to downstream qualification and UI consumers.
-- Calculation outputs preserve enough inputs, source snapshot identity, algorithm version, precision, and a stable non-sensitive input hash to reproduce the result. Stored precision exceeds display precision; rounding occurs only at display or defined output boundaries.
-- Automated correctness is the primary success measure: known examples, invalid and boundary cases, two-way and three-way vig removal, weighted consensus, EV, profit, Kelly, movement, CLV, outliers, disagreement, version propagation, hash stability, and rounding edges require unit coverage. Conversion round trips require property-style coverage, and golden fixtures must detect algorithm drift.
+- Convert valid American and decimal odds and calculate implied probability deterministically. Reject zero, malformed, missing, or impossible inputs rather than coercing them.
+- Accept generic market definitions and selections. Support complete two-outcome and three-outcome markets; a three-way calculation requires all required selections. Sport modules define possible markets, while versioned strategies decide which markets are approved.
+- Build no-vig consensus from configured comparison sportsbooks and weights. Disabled, zero-weight, stale, suspended, incomplete, outlier-excluded, and invalid prices cannot contribute. The configured target sportsbook must never contribute to the consensus used to evaluate its own offer.
+- Return explicit typed states for insufficient books, missing selections, stale data, suspended markets, invalid odds, unavailable closing prices, and sparse history. Never fabricate a value or use ordinary bad market data as exceptional control flow.
+- Produce fair odds in American and decimal formats, EV, and expected profit from reproducible inputs. Expected profit requires an explicit stake and is not certain profit.
+- Kelly and configurable fractional Kelly are informational only; they cannot drive autonomous stake sizing, bankroll management, or sportsbook bet placement.
+- Quantify movement in odds and implied-probability terms, calculate CLV against the configured benchmark, detect outliers, and score market disagreement. Results describe observed prices only and must not infer sharp, public, or causal movement without evidence.
+- Preserve calculation inputs, source snapshot identity, a stable non-sensitive input hash, and applicable sport-module, strategy, and calculation versions so derived results can be reproduced after configuration or algorithm changes.
+- Preserve greater internal precision than display precision. Apply a shared decimal policy and round only at defined output or display boundaries; rounded values must never feed later calculations.
+- Cover known formulas, invalid and boundary inputs, two-way and three-way vig removal, weighted consensus, EV, expected profit, Kelly, movement, CLV, outliers, disagreement, version propagation, hash stability, and rounding edges with unit tests. Use property-style conversion round trips and golden fixtures to expose algorithm drift.
 
 ## Technical Decisions
 
-- `packages/odds` owns authoritative betting calculations and may depend only on domain value types. It must remain deterministic and free of React, AWS, database, provider DTO, network, and LLM dependencies.
-- Use pure functions for conversion, implied probability, no-vig normalization, weighted consensus, fair odds, EV, expected profit, Kelly, movement, CLV, outlier detection, and disagreement scoring. Normal invalid market states are data results, not exceptional control flow.
-- Consensus, EV, opportunity, CLV, and report records carry the calculation version. Derived consensus records also retain the input-snapshot hash so historical results remain explainable after algorithm changes.
-- Internal calculations use a shared decimal-precision policy. UI formatting is a separate boundary concern and cannot feed rounded values back into calculations.
-- Comparison books, weights, minimum EV, maximum odds age, minimum contributing books, outlier rules, disagreement thresholds, fractional Kelly percentage, CLV benchmark, and snapshot retention are configurable defaults, not irreversible constants. Their initial values require an approved decision record before production qualification ships.
-- Deterministic outputs may be supplied to AI-assisted narratives, but an LLM cannot calculate, replace, or alter odds conversion, vig removal, consensus, EV, Kelly, movement, or CLV.
+- `packages/odds` owns all authoritative betting calculations. It may depend only on generic domain value types and must contain no AWS, database, provider DTO, network, React, or LLM dependencies.
+- Implement calculations as pure functions with typed success/failure results. Core pricing must not branch on sport; registered modules and versioned strategy configuration supply market policy, thresholds, and target sportsbook.
+- Consensus, EV, opportunity, CLV, report, evaluation, and pick records carry the versions and provenance relevant to their reproduction. Derived consensus records retain the calculation version and input-snapshot hash.
+- Comparison sportsbooks, weights, minimum EV, maximum odds age, minimum contributing books, outlier policy, disagreement thresholds, fractional-Kelly percentage, CLV benchmark, and retention are configuration rather than constants.
+- Current approved defaults are DraftKings, FanDuel, BetMGM, and Caesars when entitled, initially equal weighted; a 15-minute maximum odds age; at least three eligible independent comparison books; exclusion of a book when any outcome deviates eight probability points from the cross-book median; and closing comparison consensus excluding the target as the CLV benchmark. EV thresholds remain sport-strategy-specific. Immutable MVP snapshots have no TTL. Changes require versioned evidence and an updated decision record.
+- AI may consume deterministic outputs for narrative synthesis but cannot calculate or alter odds conversion, vig removal, consensus, EV, qualification, payout, Kelly, movement, grading, or CLV.
 
 ## UX & Interaction Patterns
 
-Consumers show fair odds, implied and consensus probability, EV, contributing-book count, freshness, warnings, and explicit qualification or disqualification reasons. Fractional Kelly is visibly labeled informational. Unavailable calculations display a reason rather than a placeholder number. Display formatting may use American or decimal odds while preserving the same underlying calculation. Movement indicators distinguish price direction, stale gaps, suspension, and missing history, and never imply an unsupported cause.
+Consumers must be able to show the underlying odds format, implied and fair probability, fair odds, EV, contributing-book count, freshness, algorithm/version details, and explicit unavailable or disqualification reasons. Fractional Kelly is labeled informational. Movement output distinguishes price direction, stale gaps, suspension, and missing history without implying an unsupported cause.
 
 ## Cross-Story Dependencies
 
-FTE-027 is the mathematical base for every later story. FTE-028 requires conversion plus the approved configurable defaults from FTE-032; FTE-029 builds on conversion and consensus. FTE-030 uses conversion and the thresholds or benchmark selected by FTE-032. FTE-031 standardizes versioning and precision across all earlier functions. FTE-032 depends on provider capabilities and the approved competition scope, and it must resolve the initial consensus, outlier, freshness, disagreement, Kelly, retention, and CLV defaults before final opportunity qualification. Downstream opportunity, scouting, bet-settlement, and performance stories consume these outputs but do not redefine the formulas.
+The completed sport-agnostic domain, versioned strategy configuration, and weighted-consensus state foundations are prerequisites that Epic 5 consumes rather than duplicates. FTE-027 is the mathematical base for FTE-028 through FTE-030. FTE-028 uses the configurable defaults governed by FTE-032; FTE-029 builds on conversion and consensus; FTE-030 uses configured thresholds and the CLV benchmark. FTE-031 standardizes precision, hashing, and version propagation across all calculations. Downstream opportunity qualification, scouting, paper-pick evaluation, bet settlement, and performance stories consume these outputs and must not redefine the formulas.

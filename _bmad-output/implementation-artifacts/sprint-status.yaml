@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-028
+nextReadyStory: FTE-029
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -632,7 +632,7 @@ stories:
   - id: FTE-028
     title: Two-Way and Three-Way No-Vig Consensus
     epic: Deterministic betting engine
-    status: backlog
+    status: done
     dependencies: [FTE-027, FTE-032]
     risk: High
     approvalRequiredBeforeMerge: false
