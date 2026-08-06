@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import {
   americanToDecimal,
+  calculateFairValue,
   calculateWeightedConsensus,
   decimalToAmerican,
   evaluateEdge,
+  expectedProfit,
   expectedValue,
+  fairOdds,
+  fractionalKelly,
   impliedProbability,
+  kellyFraction,
   probabilityToAmerican,
   removeVig,
   type ConsensusPolicy,
@@ -92,6 +97,419 @@ describe("fair price and EV", () => {
 
   it("calculates expected value", () => {
     expect(expectedValue(0.48, 120)).toBeCloseTo(0.056);
+  });
+
+  it.each([
+    [0.48, 2.083_333_333_333_333_5, 108.333_333_333_333_34],
+    [0.5, 2, 100],
+    [0.65, 1.538_461_538_461_538_3, -185.714_285_714_285_67],
+  ])(
+    "calculates fair decimal and American prices for probability %s",
+    (probability, decimalOdds, americanOdds) => {
+      const result = fairOdds(probability);
+      expect(result.decimalOdds).toBeCloseTo(decimalOdds, 12);
+      expect(result.americanOdds).toBeCloseTo(americanOdds, 12);
+      expect(impliedProbability(result.americanOdds)).toBeCloseTo(
+        probability,
+        12,
+      );
+      expect(Object.isFrozen(result)).toBe(true);
+    },
+  );
+
+  it("calculates expected profit and raw and fractional Kelly", () => {
+    expect(expectedProfit(100, 0.48, 120)).toBeCloseTo(5.6, 12);
+    expect(kellyFraction(0.48, 120)).toBeCloseTo(0.046_666_666_666_666_67, 12);
+    expect(fractionalKelly(0.48, 120, 0.25)).toBeCloseTo(
+      0.011_666_666_666_666_667,
+      12,
+    );
+  });
+
+  it("keeps negative raw Kelly truthful but never returns a negative fractional stake", () => {
+    expect(expectedValue(0.5, -110)).toBeCloseTo(-0.045_454_545_454_545_414);
+    expect(expectedProfit(100, 0.5, -110)).toBeCloseTo(-4.545_454_545_454_541);
+    expect(kellyFraction(0.5, -110)).toBeCloseTo(-0.05);
+    expect(fractionalKelly(0.5, -110, 0.25)).toBe(0);
+  });
+
+  it("preserves zero-edge and zero-stake boundaries", () => {
+    expect(expectedValue(0.4, 150)).toBe(0);
+    expect(expectedProfit(0, 0.4, 150)).toBe(0);
+    expect(kellyFraction(0.4, 150)).toBe(0);
+    expect(fractionalKelly(0.4, 150, 1)).toBe(0);
+  });
+
+  it("rejects invalid strict-helper inputs", () => {
+    expect(() => fairOdds(0)).toThrow(RangeError);
+    expect(() => fairOdds(1)).toThrow(RangeError);
+    expect(() => fairOdds(Number.NaN)).toThrow(RangeError);
+    expect(() => expectedProfit(-1, 0.5, 100)).toThrow(RangeError);
+    expect(() => expectedProfit(Number.POSITIVE_INFINITY, 0.5, 100)).toThrow(
+      RangeError,
+    );
+    expect(() => kellyFraction(0.5, -Number.MAX_VALUE)).toThrow(RangeError);
+    expect(() => fractionalKelly(0.5, 100, 0)).toThrow(RangeError);
+    expect(() => fractionalKelly(0.5, 100, 1.01)).toThrow(RangeError);
+    expect(() => expectedProfit(Number.MIN_VALUE, 0.48, 120)).toThrow(
+      "collapsed below numeric precision",
+    );
+    expect(() => fractionalKelly(0.48, 120, Number.MIN_VALUE)).toThrow(
+      "collapsed below numeric precision",
+    );
+  });
+});
+
+describe("fair-value result", () => {
+  it("returns the positive-EV golden result with immutable raw and display values", () => {
+    const input = {
+      fairProbability: 0.48,
+      offeredAmerican: 120,
+      stake: 100,
+      fractionalKellyMultiplier: 0.25,
+    } as const;
+    const result = calculateFairValue(input);
+
+    expect(result).toMatchObject({
+      calculationVersion: "fair-value-v1",
+      displayVersion: "fair-value-display-v1",
+      status: "available",
+      issues: [],
+      inputs: input,
+      labels: {
+        expectedProfit: "Expected profit, not guaranteed profit",
+        kelly: "Informational only",
+      },
+      display: {
+        fairDecimalOdds: 2.083,
+        fairAmericanOdds: 108,
+        expectedValuePercent: 5.6,
+        expectedProfit: 5.6,
+        rawKellyPercent: 4.67,
+        informationalKellyPercent: 4.67,
+        fractionalKellyPercent: 1.17,
+      },
+    });
+    if (result.status !== "available") throw new Error("expected available");
+    expect(result.values.expectedValue).toBeCloseTo(0.056, 12);
+    expect(result.values.expectedProfit).toBeCloseTo(5.6, 12);
+    expect(result.values.rawKellyFraction).toBeCloseTo(
+      0.046_666_666_666_666_67,
+      12,
+    );
+    expect(result.values.fractionalKellyFraction).toBeCloseTo(
+      0.011_666_666_666_666_667,
+      12,
+    );
+    expect(result.values.expectedValue).not.toBe(
+      result.display.expectedValuePercent,
+    );
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.inputs)).toBe(true);
+    expect(Object.isFrozen(result.values)).toBe(true);
+    expect(Object.isFrozen(result.display)).toBe(true);
+    expect(Object.isFrozen(result.labels)).toBe(true);
+    expect(Object.isFrozen(result.issues)).toBe(true);
+  });
+
+  it.each([
+    [
+      "favorite positive EV",
+      { fairProbability: 0.65, offeredAmerican: -150, stake: 100 },
+      0.083_333_333_333_333_26,
+      0.125,
+    ],
+    [
+      "even break-even",
+      { fairProbability: 0.5, offeredAmerican: 100, stake: 100 },
+      0,
+      0,
+    ],
+    [
+      "underdog break-even",
+      { fairProbability: 0.4, offeredAmerican: 150, stake: 0 },
+      0,
+      0,
+    ],
+  ])("supports %s", (_, fixture, ev, rawKelly) => {
+    const result = calculateFairValue({
+      ...fixture,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(result.status).toBe("available");
+    if (result.status !== "available") throw new Error("expected available");
+    expect(result.values.expectedValue).toBeCloseTo(ev, 12);
+    expect(result.values.rawKellyFraction).toBeCloseTo(rawKelly, 12);
+    if (fixture.stake === 0) expect(result.values.expectedProfit).toBe(0);
+  });
+
+  it("exposes negative EV and raw Kelly while clamping informational Kelly", () => {
+    const result = calculateFairValue({
+      fairProbability: 0.5,
+      offeredAmerican: -110,
+      stake: 100,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(result.status).toBe("available");
+    if (result.status !== "available") throw new Error("expected available");
+    expect(result.values.expectedValue).toBeLessThan(0);
+    expect(result.values.expectedProfit).toBeLessThan(0);
+    expect(result.values.rawKellyFraction).toBeCloseTo(-0.05, 12);
+    expect(result.values.informationalKellyFraction).toBe(0);
+    expect(result.values.fractionalKellyFraction).toBe(0);
+    expect(result.display.informationalKellyPercent).toBe(0);
+    expect(result.display.fractionalKellyPercent).toBe(0);
+  });
+
+  it("returns every invalid scalar as a stable typed issue without partial values", () => {
+    const result = calculateFairValue({
+      fairProbability: Number.NaN,
+      offeredAmerican: 99,
+      stake: -1,
+      fractionalKellyMultiplier: 0,
+    });
+    expect(result).toMatchObject({
+      status: "invalid",
+      issues: [
+        "invalid-fair-probability",
+        "invalid-offered-odds",
+        "invalid-stake",
+        "invalid-fractional-kelly-multiplier",
+      ],
+      values: null,
+      display: null,
+    });
+    expect(Object.isFrozen(result.inputs)).toBe(true);
+    expect(Object.isFrozen(result.issues)).toBe(true);
+  });
+
+  it.each([
+    { fairProbability: 0 },
+    { fairProbability: 1 },
+    { fairProbability: Number.NEGATIVE_INFINITY },
+    { offeredAmerican: 0 },
+    { offeredAmerican: -99 },
+    { offeredAmerican: Number.POSITIVE_INFINITY },
+    { stake: Number.NaN },
+    { stake: Number.POSITIVE_INFINITY },
+    { fractionalKellyMultiplier: Number.NaN },
+    { fractionalKellyMultiplier: 1.01 },
+  ])("rejects the invalid boundary $0", (change) => {
+    const result = calculateFairValue({
+      fairProbability: 0.48,
+      offeredAmerican: 120,
+      stake: 100,
+      fractionalKellyMultiplier: 0.25,
+      ...change,
+    });
+    expect(result.status).toBe("invalid");
+    expect(result.values).toBeNull();
+    expect(result.display).toBeNull();
+  });
+
+  it("fails closed when finite inputs collapse or overflow numeric precision", () => {
+    const collapsed = calculateFairValue({
+      fairProbability: 0.5,
+      offeredAmerican: -Number.MAX_VALUE,
+      stake: 100,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(collapsed).toMatchObject({
+      status: "invalid",
+      issues: ["numeric-overflow"],
+      values: null,
+      display: null,
+    });
+
+    const overflowed = calculateFairValue({
+      fairProbability: 0.5,
+      offeredAmerican: Number.MAX_VALUE,
+      stake: Number.MAX_VALUE,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(overflowed).toMatchObject({
+      status: "invalid",
+      issues: ["numeric-overflow"],
+      values: null,
+      display: null,
+    });
+
+    const profitUnderflow = calculateFairValue({
+      fairProbability: 0.48,
+      offeredAmerican: 120,
+      stake: Number.MIN_VALUE,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(profitUnderflow).toMatchObject({
+      status: "invalid",
+      issues: ["numeric-overflow"],
+      values: null,
+      display: null,
+    });
+
+    const kellyUnderflow = calculateFairValue({
+      fairProbability: 0.48,
+      offeredAmerican: 120,
+      stake: 100,
+      fractionalKellyMultiplier: Number.MIN_VALUE,
+    });
+    expect(kellyUnderflow).toMatchObject({
+      status: "invalid",
+      issues: ["numeric-overflow"],
+      values: null,
+      display: null,
+    });
+
+    const evCancellation = calculateFairValue({
+      fairProbability: 0.490_196_078_431_372_6,
+      offeredAmerican: 104,
+      stake: 100,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(evCancellation).toMatchObject({
+      status: "invalid",
+      issues: ["numeric-overflow"],
+      values: null,
+      display: null,
+    });
+
+    const exactBreakEven = calculateFairValue({
+      fairProbability: 100 / 207,
+      offeredAmerican: 107,
+      stake: 100,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(exactBreakEven.status).toBe("available");
+    if (exactBreakEven.status !== "available")
+      throw new Error("expected available");
+    expect(exactBreakEven.values.expectedValue).toBe(0);
+
+    const helperBreakEven = calculateFairValue({
+      fairProbability: impliedProbability(107),
+      offeredAmerican: 107,
+      stake: 100,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(helperBreakEven.status).toBe("available");
+    if (helperBreakEven.status !== "available")
+      throw new Error("expected available");
+    expect(helperBreakEven.values.expectedValue).toBe(0);
+  });
+
+  it("rounds display half-boundaries away from zero and normalizes negative zero", () => {
+    const positive = calculateFairValue({
+      fairProbability: 0.5,
+      offeredAmerican: 100,
+      stake: 1.125,
+      fractionalKellyMultiplier: 0.25,
+    });
+    const negative = calculateFairValue({
+      fairProbability: 0.25,
+      offeredAmerican: 100,
+      stake: 2.25,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(positive.status).toBe("available");
+    expect(negative.status).toBe("available");
+    if (positive.status !== "available" || negative.status !== "available")
+      throw new Error("expected available");
+    expect(positive.display.expectedProfit).toBe(0);
+    expect(Object.is(positive.display.expectedProfit, -0)).toBe(false);
+    expect(negative.values.expectedProfit).toBeCloseTo(-1.125, 12);
+    expect(negative.display.expectedProfit).toBe(-1.13);
+
+    const positiveHalf = calculateFairValue({
+      fairProbability: 0.75,
+      offeredAmerican: 100,
+      stake: 2.25,
+      fractionalKellyMultiplier: 0.25,
+    });
+    const positiveBelowHalf = calculateFairValue({
+      fairProbability: 0.75,
+      offeredAmerican: 100,
+      stake: 2.249_999_999_999_999_6,
+      fractionalKellyMultiplier: 0.25,
+    });
+    const canonicalDecimalHalf = calculateFairValue({
+      fairProbability: 0.75,
+      offeredAmerican: 100,
+      stake: 2.01,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(positiveHalf.status).toBe("available");
+    expect(positiveBelowHalf.status).toBe("available");
+    expect(canonicalDecimalHalf.status).toBe("available");
+    if (
+      positiveHalf.status !== "available" ||
+      positiveBelowHalf.status !== "available" ||
+      canonicalDecimalHalf.status !== "available"
+    )
+      throw new Error("expected available");
+    expect(positiveHalf.display.expectedProfit).toBe(1.13);
+    expect(positiveBelowHalf.values.expectedProfit).toBeLessThan(1.125);
+    expect(positiveBelowHalf.display.expectedProfit).toBe(1.12);
+    expect(canonicalDecimalHalf.values.expectedProfit).toBe(1.005);
+    expect(canonicalDecimalHalf.display.expectedProfit).toBe(1.01);
+  });
+
+  it("keeps large finite raw and display values available without rounding drift", () => {
+    const integral = calculateFairValue({
+      fairProbability: 0.75,
+      offeredAmerican: 100,
+      stake: 2e15,
+      fractionalKellyMultiplier: 0.25,
+    });
+    const huge = calculateFairValue({
+      fairProbability: 0.75,
+      offeredAmerican: 100,
+      stake: 1e307,
+      fractionalKellyMultiplier: 0.25,
+    });
+    expect(integral.status).toBe("available");
+    expect(huge.status).toBe("available");
+    if (integral.status !== "available" || huge.status !== "available")
+      throw new Error("expected available");
+    expect(integral.display.expectedProfit).toBe(1e15);
+    expect(huge.values.expectedProfit).toBe(5e306);
+    expect(huge.display.expectedProfit).toBe(5e306);
+  });
+
+  it("preserves algebraic invariants across representative inputs", () => {
+    for (const [fairProbability, offeredAmerican] of [
+      [0.2, 500],
+      [0.48, 120],
+      [0.5, 100],
+      [0.65, -150],
+      [0.9, -500],
+    ] as const) {
+      const result = calculateFairValue({
+        fairProbability,
+        offeredAmerican,
+        stake: 73.21,
+        fractionalKellyMultiplier: 0.25,
+      });
+      expect(result.status).toBe("available");
+      if (result.status !== "available") throw new Error("expected available");
+      expect(1 / result.values.fairDecimalOdds).toBeCloseTo(
+        fairProbability,
+        12,
+      );
+      expect(result.values.expectedValue).toBeCloseTo(
+        fairProbability * result.values.offeredDecimalOdds - 1,
+        12,
+      );
+      expect(result.values.expectedProfit).toBeCloseTo(
+        73.21 * result.values.expectedValue,
+        12,
+      );
+      expect(result.values.rawKellyFraction).toBeCloseTo(
+        result.values.expectedValue / (result.values.offeredDecimalOdds - 1),
+        12,
+      );
+      expect(result.values.fractionalKellyFraction).toBeLessThanOrEqual(
+        result.values.informationalKellyFraction,
+      );
+    }
   });
 });
 

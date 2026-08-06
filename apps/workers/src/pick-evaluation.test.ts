@@ -207,6 +207,11 @@ describe("pick evaluation service", () => {
       participants: ["away", "home"],
       market: { kind: "moneyline", outcomeCount: 2, resultScope: "full-event" },
     });
+    expect(first.pair.evaluation.manifest.expectedValue).toBeCloseTo(0.21, 12);
+    expect(first.pair.evaluation.manifest.versions.calculation).toEqual({
+      id: "qualification",
+      version: "deterministic-qualification-v1",
+    });
   });
   it("canonicalizes selection order and binds the complete evidence vectors", async () => {
     const fixture = service();

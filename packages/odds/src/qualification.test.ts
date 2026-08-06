@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { expectedValue } from "./index";
 import { qualifyEvaluation } from "./qualification";
 
 const input = () => ({
@@ -44,6 +45,10 @@ describe("deterministic qualification", () => {
     expect(result.decision).toBe("play");
     expect(result.conservativeProbability).toBe(0.52);
     expect(result.expectedValue).toBeCloseTo(0.144);
+    expect(result.expectedValue).toBe(
+      expectedValue(result.conservativeProbability, input().offeredAmerican),
+    );
+    expect(result.calculationVersion).toBe("deterministic-qualification-v1");
     const directNoVig = (odds: readonly number[]) => {
       const raw = odds.map((american) =>
         american > 0 ? 100 / (american + 100) : -american / (-american + 100),
@@ -59,6 +64,23 @@ describe("deterministic qualification", () => {
     expect(result.includedSportsbookIds).toEqual(["circa", "pinnacle"]);
     expect(result.includedWeights).toEqual({ circa: 1.25, pinnacle: 1 });
   });
+  it.each([
+    [0, -1],
+    [1, 1.2],
+  ])(
+    "preserves qualification-v1 arithmetic at probability boundary %s",
+    (conservativeProbability, expected) => {
+      const result = qualifyEvaluation({
+        ...input(),
+        modelProbability: {
+          ...input().modelProbability,
+          low: conservativeProbability,
+        },
+      });
+      expect(result.calculationVersion).toBe("deterministic-qualification-v1");
+      expect(result.expectedValue).toBeCloseTo(expected, 12);
+    },
+  );
   it.each([
     [
       "negative EV",

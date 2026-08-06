@@ -1,6 +1,7 @@
 import {
   americanToDecimal,
   calculateWeightedConsensus,
+  expectedValue as calculateExpectedValue,
   impliedProbability,
   removeVig,
 } from "./index";
@@ -120,7 +121,12 @@ export function qualifyEvaluation(
   const conservativeProbability = input.modelProbability.low;
   const decimalOdds = americanToDecimal(input.offeredAmerican);
   const marketImpliedProbability = impliedProbability(input.offeredAmerican);
-  const expectedValue = conservativeProbability * decimalOdds - 1;
+  const expectedValue =
+    Number.isFinite(conservativeProbability) &&
+    conservativeProbability > 0 &&
+    conservativeProbability < 1
+      ? calculateExpectedValue(conservativeProbability, input.offeredAmerican)
+      : conservativeProbability * decimalOdds - 1;
   const edge = conservativeProbability - noVigProbability;
   const reasons: string[] = [];
   if (input.offeredAgeMinutes > input.policy.maximumPriceAgeMinutes)

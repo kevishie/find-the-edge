@@ -1,5 +1,7 @@
 export const CALCULATION_VERSION = "edge-calculation-v1" as const;
 export const CONSENSUS_CALCULATION_VERSION = "weighted-consensus-v1" as const;
+export const FAIR_VALUE_CALCULATION_VERSION = "fair-value-v1" as const;
+export const FAIR_VALUE_DISPLAY_VERSION = "fair-value-display-v1" as const;
 
 export type ConsensusExclusionReason =
   | "target-sportsbook"
@@ -105,6 +107,73 @@ export interface EdgeEvaluation {
   expectedValue: number;
   reasons: QualificationReason[];
 }
+
+export type FairValueIssue =
+  | "invalid-fair-probability"
+  | "invalid-offered-odds"
+  | "invalid-stake"
+  | "invalid-fractional-kelly-multiplier"
+  | "numeric-overflow";
+
+export interface FairValueInput {
+  readonly fairProbability: number;
+  readonly offeredAmerican: number;
+  readonly stake: number;
+  readonly fractionalKellyMultiplier: number;
+}
+
+export interface FairOdds {
+  readonly decimalOdds: number;
+  readonly americanOdds: number;
+}
+
+export interface FairValueValues {
+  readonly fairDecimalOdds: number;
+  readonly fairAmericanOdds: number;
+  readonly offeredDecimalOdds: number;
+  readonly expectedValue: number;
+  readonly expectedProfit: number;
+  readonly rawKellyFraction: number;
+  readonly informationalKellyFraction: number;
+  readonly fractionalKellyFraction: number;
+}
+
+export interface FairValueDisplayValues {
+  readonly fairDecimalOdds: number;
+  readonly fairAmericanOdds: number;
+  readonly expectedValuePercent: number;
+  readonly expectedProfit: number;
+  readonly rawKellyPercent: number;
+  readonly informationalKellyPercent: number;
+  readonly fractionalKellyPercent: number;
+}
+
+export interface FairValueLabels {
+  readonly expectedProfit: "Expected profit, not guaranteed profit";
+  readonly kelly: "Informational only";
+}
+
+interface FairValueResultBase {
+  readonly calculationVersion: typeof FAIR_VALUE_CALCULATION_VERSION;
+  readonly displayVersion: typeof FAIR_VALUE_DISPLAY_VERSION;
+  readonly inputs: Readonly<FairValueInput>;
+  readonly issues: readonly FairValueIssue[];
+  readonly labels: Readonly<FairValueLabels>;
+}
+
+export interface AvailableFairValueResult extends FairValueResultBase {
+  readonly status: "available";
+  readonly values: Readonly<FairValueValues>;
+  readonly display: Readonly<FairValueDisplayValues>;
+}
+
+export interface InvalidFairValueResult extends FairValueResultBase {
+  readonly status: "invalid";
+  readonly values: null;
+  readonly display: null;
+}
+
+export type FairValueResult = AvailableFairValueResult | InvalidFairValueResult;
 
 function assertFinite(value: number, label: string): void {
   if (!Number.isFinite(value)) {
@@ -458,6 +527,250 @@ export function expectedValue(
     );
   }
   return fairProbability * americanToDecimal(offeredAmerican) - 1;
+}
+
+export function fairOdds(fairProbability: number): FairOdds {
+  assertFinite(fairProbability, "Fair probability");
+  if (fairProbability <= 0 || fairProbability >= 1) {
+    throw new RangeError(
+      "Fair probability must be greater than 0 and less than 1",
+    );
+  }
+  const decimalOdds = 1 / fairProbability;
+  const americanOdds = probabilityToAmerican(fairProbability);
+  if (
+    !Number.isFinite(decimalOdds) ||
+    decimalOdds <= 1 ||
+    !Number.isFinite(americanOdds)
+  ) {
+    throw new RangeError("Fair odds exceed numeric precision");
+  }
+  return Object.freeze({ decimalOdds, americanOdds });
+}
+
+export function expectedProfit(
+  stake: number,
+  fairProbability: number,
+  offeredAmerican: number,
+): number {
+  assertFinite(stake, "Stake");
+  if (stake < 0) throw new RangeError("Stake must be nonnegative");
+  const ev = expectedValue(fairProbability, offeredAmerican);
+  const profit = stake * ev;
+  if (!Number.isFinite(profit)) {
+    throw new RangeError("Expected profit exceeds numeric precision");
+  }
+  if (stake !== 0 && ev !== 0 && profit === 0) {
+    throw new RangeError("Expected profit collapsed below numeric precision");
+  }
+  return Object.is(profit, -0) ? 0 : profit;
+}
+
+export function kellyFraction(
+  fairProbability: number,
+  offeredAmerican: number,
+): number {
+  const decimalOdds = americanToDecimal(offeredAmerican);
+  const profitMultiple = decimalOdds - 1;
+  if (!Number.isFinite(profitMultiple) || profitMultiple <= 0) {
+    throw new RangeError("Offered odds exceed numeric precision");
+  }
+  const ev = expectedValue(fairProbability, offeredAmerican);
+  const fraction = ev / profitMultiple;
+  if (!Number.isFinite(fraction)) {
+    throw new RangeError("Kelly fraction exceeds numeric precision");
+  }
+  if (fraction === 0 && ev !== 0) {
+    throw new RangeError("Kelly fraction collapsed below numeric precision");
+  }
+  return Object.is(fraction, -0) ? 0 : fraction;
+}
+
+export function fractionalKelly(
+  fairProbability: number,
+  offeredAmerican: number,
+  multiplier: number,
+): number {
+  assertFinite(multiplier, "Fractional Kelly multiplier");
+  if (multiplier <= 0 || multiplier > 1) {
+    throw new RangeError(
+      "Fractional Kelly multiplier must be greater than 0 and at most 1",
+    );
+  }
+  const fraction = Math.max(0, kellyFraction(fairProbability, offeredAmerican));
+  const fractional = fraction * multiplier;
+  if (!Number.isFinite(fractional)) {
+    throw new RangeError("Fractional Kelly exceeds numeric precision");
+  }
+  if (fraction > 0 && fractional === 0) {
+    throw new RangeError("Fractional Kelly collapsed below numeric precision");
+  }
+  return Object.is(fractional, -0) ? 0 : fractional;
+}
+
+const FAIR_VALUE_LABELS = Object.freeze({
+  expectedProfit: "Expected profit, not guaranteed profit",
+  kelly: "Informational only",
+} as const satisfies FairValueLabels);
+
+function displayRound(value: number, decimalPlaces: number): number {
+  const absoluteText = Math.abs(value).toString();
+  const [coefficient = "0", exponentText] = absoluteText.split("e");
+  const decimalPoint = coefficient.indexOf(".");
+  const fractionalDigits =
+    decimalPoint === -1 ? 0 : coefficient.length - decimalPoint - 1;
+  const digitsText = coefficient.replace(".", "").replace(/^0+/, "") || "0";
+  const decimalExponent = Number(exponentText ?? 0) - fractionalDigits;
+  const shift = decimalExponent + decimalPlaces;
+  if (shift >= 0) return Object.is(value, -0) ? 0 : value;
+
+  const divisor = 10n ** BigInt(-shift);
+  const digits = BigInt(digitsText);
+  const quotient = digits / divisor;
+  const remainder = digits % divisor;
+  const roundedMagnitude = remainder * 2n >= divisor ? quotient + 1n : quotient;
+  const rounded =
+    (Math.sign(value) * Number(roundedMagnitude)) / 10 ** decimalPlaces;
+  if (!Number.isFinite(rounded)) {
+    throw new RangeError("Display value exceeds numeric precision");
+  }
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function breakEvenProbability(american: number): number {
+  return american > 0
+    ? 100 / (100 + american)
+    : Math.abs(american) / (Math.abs(american) + 100);
+}
+
+function freezeFairValueInputs(
+  input: FairValueInput,
+): Readonly<FairValueInput> {
+  return Object.freeze({
+    fairProbability: input.fairProbability,
+    offeredAmerican: input.offeredAmerican,
+    stake: input.stake,
+    fractionalKellyMultiplier: input.fractionalKellyMultiplier,
+  });
+}
+
+function invalidFairValueResult(
+  inputs: Readonly<FairValueInput>,
+  issues: readonly FairValueIssue[],
+): InvalidFairValueResult {
+  return Object.freeze({
+    calculationVersion: FAIR_VALUE_CALCULATION_VERSION,
+    displayVersion: FAIR_VALUE_DISPLAY_VERSION,
+    status: "invalid",
+    inputs,
+    issues: Object.freeze([...issues]),
+    labels: FAIR_VALUE_LABELS,
+    values: null,
+    display: null,
+  });
+}
+
+export function calculateFairValue(input: FairValueInput): FairValueResult {
+  const inputs = freezeFairValueInputs(input);
+  const issues: FairValueIssue[] = [];
+  if (
+    !Number.isFinite(input.fairProbability) ||
+    input.fairProbability <= 0 ||
+    input.fairProbability >= 1
+  ) {
+    issues.push("invalid-fair-probability");
+  }
+  if (
+    !Number.isFinite(input.offeredAmerican) ||
+    (input.offeredAmerican > -100 && input.offeredAmerican < 100)
+  ) {
+    issues.push("invalid-offered-odds");
+  }
+  if (!Number.isFinite(input.stake) || input.stake < 0) {
+    issues.push("invalid-stake");
+  }
+  if (
+    !Number.isFinite(input.fractionalKellyMultiplier) ||
+    input.fractionalKellyMultiplier <= 0 ||
+    input.fractionalKellyMultiplier > 1
+  ) {
+    issues.push("invalid-fractional-kelly-multiplier");
+  }
+  if (issues.length > 0) return invalidFairValueResult(inputs, issues);
+
+  try {
+    const fair = fairOdds(input.fairProbability);
+    const offeredDecimalOdds = americanToDecimal(input.offeredAmerican);
+    const ev = expectedValue(input.fairProbability, input.offeredAmerican);
+    if (
+      ev === 0 &&
+      input.fairProbability !== breakEvenProbability(input.offeredAmerican) &&
+      input.fairProbability !== impliedProbability(input.offeredAmerican)
+    ) {
+      return invalidFairValueResult(inputs, ["numeric-overflow"]);
+    }
+    const profit = expectedProfit(
+      input.stake,
+      input.fairProbability,
+      input.offeredAmerican,
+    );
+    const rawKellyFraction = kellyFraction(
+      input.fairProbability,
+      input.offeredAmerican,
+    );
+    const informationalKellyFraction = Math.max(0, rawKellyFraction);
+    const fractionalKellyFraction = fractionalKelly(
+      input.fairProbability,
+      input.offeredAmerican,
+      input.fractionalKellyMultiplier,
+    );
+    const values = {
+      fairDecimalOdds: fair.decimalOdds,
+      fairAmericanOdds: fair.americanOdds,
+      offeredDecimalOdds,
+      expectedValue: ev,
+      expectedProfit: profit,
+      rawKellyFraction,
+      informationalKellyFraction,
+      fractionalKellyFraction,
+    } satisfies FairValueValues;
+    if (
+      offeredDecimalOdds <= 1 ||
+      !Object.values(values).every(Number.isFinite)
+    ) {
+      return invalidFairValueResult(inputs, ["numeric-overflow"]);
+    }
+    const display = Object.freeze({
+      fairDecimalOdds: displayRound(values.fairDecimalOdds, 3),
+      fairAmericanOdds: displayRound(values.fairAmericanOdds, 0),
+      expectedValuePercent: displayRound(values.expectedValue * 100, 2),
+      expectedProfit: displayRound(values.expectedProfit, 2),
+      rawKellyPercent: displayRound(values.rawKellyFraction * 100, 2),
+      informationalKellyPercent: displayRound(
+        values.informationalKellyFraction * 100,
+        2,
+      ),
+      fractionalKellyPercent: displayRound(
+        values.fractionalKellyFraction * 100,
+        2,
+      ),
+    } satisfies FairValueDisplayValues);
+    if (!Object.values(display).every(Number.isFinite)) {
+      return invalidFairValueResult(inputs, ["numeric-overflow"]);
+    }
+    return Object.freeze({
+      calculationVersion: FAIR_VALUE_CALCULATION_VERSION,
+      displayVersion: FAIR_VALUE_DISPLAY_VERSION,
+      status: "available",
+      inputs,
+      issues: Object.freeze([]),
+      labels: FAIR_VALUE_LABELS,
+      values: Object.freeze(values),
+      display,
+    });
+  } catch {
+    return invalidFairValueResult(inputs, ["numeric-overflow"]);
+  }
 }
 
 export function evaluateEdge(input: EdgeInput): EdgeEvaluation {
