@@ -33,7 +33,7 @@ jobs:
           aws logs filter-log-events \
             --log-group-name "$log_group" \
             --start-time "$start_time" \
-            --filter-pattern '{ ($.league = "mlb") || ($.league = "mls") || ($.event = "live-odds-ingestion-complete") }' \
+            --filter-pattern '{ ($.league = "mlb") || ($.league = "mls") || ($.league = "epl") || ($.league = "liga-mx") || ($.league = "uefa-champions-league") || ($.event = "live-odds-ingestion-complete") }' \
             --query 'events[].message' \
             --output text \
             | tr '\t' '\n' \
