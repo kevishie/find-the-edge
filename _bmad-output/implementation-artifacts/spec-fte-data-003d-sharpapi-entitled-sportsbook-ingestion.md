@@ -184,10 +184,12 @@ GPT-5 Codex
   cannot consume the one structural-response retry.
 - Expected-book coverage reconstructs and merges the authoritative normalized
   SharpAPI event material from every durable sealed page in cursor order before
-  final persistence and missing-evidence reconciliation. Cross-page event
-  identity, orientation, and price conflicts fail closed; selection siblings
-  split across pages complete as one market, while suspended, stale, and
-  incomplete evidence cannot be downgraded to missing.
+  final persistence and missing-evidence reconciliation. Cross-page provider
+  UUID, participant, orientation, and price-identity conflicts fail closed;
+  sportsbook-row start times are non-authoritative because the reconciled
+  schedule owns canonical event time. Selection siblings split across pages
+  complete as one market, while suspended, stale, and incomplete evidence
+  cannot be downgraded to missing.
 - Schedule-expected events omitted from all odds pages bind through the exact
   provider-event mapping and receive deterministic group-level missing
   evidence without fabricating provider events or UUIDs. Distinct approved-book
@@ -205,9 +207,27 @@ GPT-5 Codex
   `coverage-unverified`; the broader authorized catalog scan remains the bounded
   evidence that the entitlement returns Pinnacle. No deployment was used for
   validation.
+- A second authorized local contract traversed every production league through
+  its terminal odds page and persisted real aggregate observations. The rollout
+  failure was isolated to expired durable cursors from earlier terminal runs and
+  a valid stable-price repricing repeated across EPL pages, not to the credential
+  or the current SharpAPI endpoint contract.
+- Terminal SharpAPI cursor runs now restart at page one only after the owner lease
+  expires, only for the explicitly opted-in final-persistence provider, and only
+  when a sealed first page proves that an opaque cursor existed. The failed run
+  remains immutable audit evidence, while a claim-and-clear handoff prevents a
+  concurrent restart.
+- Cross-page stable price IDs select the newest `observedAt` evidence (later page
+  wins timestamp ties) while any changed provider UUID, participant, sportsbook,
+  market, or selection identity remains a bounded contract failure. Delayed or
+  postponed sportsbook rows for that exact event retain the schedule-authoritative
+  start time instead of splitting one game into duplicates.
+- The exact production control-plane path now passes locally against live
+  SharpAPI for all five enabled leagues, including cursor pagination,
+  reconstruction, normalization, and persistence, without deploying to test.
 - `pnpm check`, credential-safe `pnpm synth`, `pnpm phase1:preflight`, and
   `git diff --check` passed after the terminal-page and sealed-replay changes.
-- Remaining live proof before merge: execute one explicitly authorized
+- Remaining live proof before story completion: execute one explicitly authorized
   ingestion canary that persists and reads back a normalized Pinnacle snapshot;
   record only bounded counts and observed/coverage-unverified status.
 
@@ -222,6 +242,8 @@ GPT-5 Codex
 - `apps/workers/src/sharp-api-ingestion.ts`
 - `apps/workers/src/live-odds-lambda.ts`
 - `apps/workers/src/sharp-api-live-contract.test.ts`
+- `scripts/phase1-environment-smoke.mjs`
+- `scripts/phase1-environment-smoke.test.mjs`
 - `docs/runbooks/sharpapi.md`
 - `packages/database/src/odds-control-plane.ts`
 - `packages/domain/src/fixture-odds.ts`
@@ -328,3 +350,38 @@ GPT-5 Codex
   - `[high]` `[defer]` Production Pinnacle persist/readback remains the sole live
     acceptance item and will be completed only after this reviewed commit is
     deployed.
+
+#### 2026-08-06 — Post-deployment cursor and repricing review
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 8 (high: 3, medium: 5, low: 0)
+- defer: 1
+- reject: 3
+- addressed_findings:
+  - `[high]` `[patch]` Replaced unconditional terminal-run continuation deletion
+    with an explicit provider opt-in, sealed-cursor proof, expired-lease boundary,
+    exclusive ownership claim, and audited fresh run from page one.
+  - `[high]` `[patch]` Accepted stable price IDs repriced across provider pages by
+    monotonic observation time while retaining strict event/book/market/selection
+    identity conflicts.
+  - `[high]` `[patch]` Required live all-league pagination to reach a terminal page
+    and increased the explicitly paid test timeout without weakening its page cap.
+  - `[medium]` `[patch]` Preserved an evidence-intent recovery update in the local
+    durable run before evaluating cursor restart eligibility.
+  - `[medium]` `[patch]` Covered both provider rejection and invalid-response cursor
+    recovery while proving the old failed run is retained.
+  - `[medium]` `[patch]` Added deterministic later-repricing and changed-identity
+    cross-page reconstruction tests.
+  - `[medium]` `[patch]` Enforced completed/result-reason coherence in release
+    diagnostics and retained failed provider outcomes as smoke failures rather than
+    successes.
+  - `[medium]` `[patch]` Added the bounded schedule provider-rejection reason to the
+    closed diagnostic vocabulary.
+  - `[high]` `[patch]` Made the reconciled schedule authoritative for start time
+    after a live local production-path test proved the same exact provider event
+    UUID can retain different pre-delay times on sportsbook pages. Provider UUID
+    and participant identity remain strict.
+- deferred_findings:
+  - `[high]` `[defer]` The production canary must still persist and read back one
+    Pinnacle snapshot before this story can be marked done.

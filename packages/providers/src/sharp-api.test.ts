@@ -875,6 +875,38 @@ describe("SharpAPI activation boundary", () => {
     );
   });
 
+  it("merges sportsbook rows for the same event UUID when their start times differ", () => {
+    const page = parseSharpApiOddsPage(
+      {
+        data: [
+          oddsRow({
+            id: "draftkings-price",
+            sportsbook: "draftkings",
+          }),
+          oddsRow({
+            id: "pinnacle-price",
+            sportsbook: "pinnacle",
+            event_start_time: "2026-08-04T23:00:00.000Z",
+          }),
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagueByKey("mls"),
+      "2026-08-04T20:00:01.000Z" as never,
+    );
+
+    expect(page.events).toHaveLength(1);
+    expect(page.events[0]).toMatchObject({
+      providerEventId: "mls-away-home-2026-08-04",
+      providerEventUuid: "event-normalization-1",
+      startsAt: "2026-08-04T22:00:00.000Z",
+    });
+    expect(page.events[0]?.bookmakers.map(({ id }) => id)).toEqual([
+      "draftkings",
+      "pinnacle",
+    ]);
+  });
+
   it("accepts an explicitly empty terminal odds page", () => {
     expect(
       parseSharpApiOddsPage(

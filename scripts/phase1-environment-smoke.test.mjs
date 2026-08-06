@@ -423,6 +423,35 @@ test("live ingestion proof accepts only the closed reconciliation diagnostic set
     isSafeLiveIngestionResult(result("sharpapi-odds-mapping-secret-detail")),
     false,
   );
+  for (const reason of [
+    "provider-rejected",
+    "unauthorized",
+    "invalid-response",
+  ])
+    assert.equal(isSafeLiveIngestionResult(result(reason)), true);
+  assert.equal(
+    isSafeLiveIngestionResult({
+      leagueKey: "mlb",
+      status: "completed",
+      reason: "unauthorized",
+      pages: 1,
+      quotaCost: 1,
+    }),
+    false,
+  );
+  assert.equal(
+    isSafeLiveIngestionResult({
+      leagueKey: "mlb",
+      status: "failed",
+      pages: 0,
+      quotaCost: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    isSafeLiveIngestionResult(result("schedule-provider-rejected")),
+    true,
+  );
 });
 
 test("live ingestion retries bounded schedule and provider recovery", () => {

@@ -197,12 +197,18 @@ export function isSafeLiveIngestionResult(result) {
     typeof result === "object" &&
     RELEASE_REFRESH_LEAGUES.has(result.leagueKey) &&
     ["completed", "skipped", "failed"].includes(result.status) &&
+    (result.status === "completed"
+      ? result.reason === undefined
+      : typeof result.reason === "string") &&
     (result.reason === undefined ||
       [
         "provider-error",
         "provider-unavailable",
+        "provider-rejected",
         "rate-limited",
+        "unauthorized",
         "not-entitled",
+        "invalid-response",
         "coverage-missing",
         "provider-request-ambiguous",
         "provider-response-unsealed",
@@ -223,7 +229,7 @@ export function isSafeLiveIngestionResult(result) {
         "internal-failure",
         "cadence-not-due",
       ].includes(result.reason) ||
-      /^schedule-(stored-event-conflict|conflict-metric-pending|provider-error(?:-(?:initialize|health-read|checkpoint-read|ownership-claim|run-start|schedule-fetch|event-reconcile|schedule-page-commit|conflict-page-seal|conflict-page-commit|schedule-metrics|conflict-metrics|conflict-checkpoint|checkpoint-write|health-write|ownership-clear|invalid-event-reconciliation-lock|event-reconciliation-lock-timeout|event-reconciliation-ownership-lost|event-reconciliation-(?:acquisition|execution|renewal|cleanup)-(?:failed|storage-validation|storage-resource-missing|storage-access-denied|storage-transaction-cancelled|storage-unavailable)|identity-snapshot-unstable|dangling-identity-aggregate|stale-identity-aggregate|mapping-canonical-missing|mapping-canonical-scope-mismatch|mapping-scope-mismatch|multiple-current-event-projections|near-canonical-projection-stale|event-projection-pointer-missing|event-projection-pointer-corrupt|event-projection-active-missing|event-projection-active-corrupt|bootstrap-stale|bootstrap-failed|bootstrap-identity-already-exists|bootstrap-identity-snapshot-mismatch|bootstrap-response-conflict|identity-register-conflict|identity-snapshot-mismatch|identity-conflict-count-exhausted|canonical-revision-provider-limit|invalid-provider-revision-row|provider-revision-scope-mismatch))?|provider-unavailable|rate-limited|unauthorized|not-entitled|invalid-response|coverage-missing|provider-request-ambiguous|provider-response-unsealed|quota-reserve|provider-cooldown|provider-recovering|schedule-dependency-failed|mapping-quarantine|pagination-invalid|transition-conflict|internal-failure)$/.test(
+      /^schedule-(stored-event-conflict|conflict-metric-pending|provider-error(?:-(?:initialize|health-read|checkpoint-read|ownership-claim|run-start|schedule-fetch|event-reconcile|schedule-page-commit|conflict-page-seal|conflict-page-commit|schedule-metrics|conflict-metrics|conflict-checkpoint|checkpoint-write|health-write|ownership-clear|invalid-event-reconciliation-lock|event-reconciliation-lock-timeout|event-reconciliation-ownership-lost|event-reconciliation-(?:acquisition|execution|renewal|cleanup)-(?:failed|storage-validation|storage-resource-missing|storage-access-denied|storage-transaction-cancelled|storage-unavailable)|identity-snapshot-unstable|dangling-identity-aggregate|stale-identity-aggregate|mapping-canonical-missing|mapping-canonical-scope-mismatch|mapping-scope-mismatch|multiple-current-event-projections|near-canonical-projection-stale|event-projection-pointer-missing|event-projection-pointer-corrupt|event-projection-active-missing|event-projection-active-corrupt|bootstrap-stale|bootstrap-failed|bootstrap-identity-already-exists|bootstrap-identity-snapshot-mismatch|bootstrap-response-conflict|identity-register-conflict|identity-snapshot-mismatch|identity-conflict-count-exhausted|canonical-revision-provider-limit|invalid-provider-revision-row|provider-revision-scope-mismatch))?|provider-unavailable|provider-rejected|rate-limited|unauthorized|not-entitled|invalid-response|coverage-missing|provider-request-ambiguous|provider-response-unsealed|quota-reserve|provider-cooldown|provider-recovering|schedule-dependency-failed|mapping-quarantine|pagination-invalid|transition-conflict|internal-failure)$/.test(
         result.reason,
       )) &&
     (isOwnershipOverlapResult(result) ||

@@ -981,15 +981,14 @@ export function parseSharpApiOddsPage(
       const reversedOrientation =
         existing.awayTeam === identity.homeTeam &&
         existing.homeTeam === identity.awayTeam;
-      const startDelta = Math.abs(
-        Date.parse(existing.startsAt) - Date.parse(identity.startsAt),
-      );
       if (
         existing.providerEventUuid !== identity.providerEventUuid ||
-        (!sameOrientation && !reversedOrientation) ||
-        startDelta > 120_000
+        (!sameOrientation && !reversedOrientation)
       )
         continue;
+      // The schedule endpoint is authoritative for event time. Sportsbook rows
+      // for the same exact event UUID can retain an older pre-delay start.
+      // Keep the first normalized identity and merge only its compatible books.
       // A minority of SharpAPI sportsbook rows reverse soccer participants.
       // Dropping the outlier is safer than assigning its prices to the wrong side.
       if (reversedOrientation) continue;

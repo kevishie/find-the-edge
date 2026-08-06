@@ -105,6 +105,10 @@ export interface ControlPlaneProvider {
   readonly providerId: string;
   readonly requestCost?: number;
   readonly probeRequestCost?: number;
+  /** Opt in only when page commits do not publish consumer-visible evidence.
+   * A terminal failure after a sealed first page may then abandon an expired
+   * opaque cursor and begin a new audited run from page one. */
+  readonly restartTerminalCursorRun?: boolean;
   failureRequestCost?(error: unknown): number | undefined;
   fetchPage(input: {
     readonly runId: string;
@@ -524,6 +528,7 @@ export async function runOddsLeague(input: {
 }): Promise<OddsLeagueRunResult> {
   const { policy, store, now } = input;
   const clock = input.clock ?? (() => now);
+  const ownerId = randomUUID();
   if (input.dependencyFailure) {
     const ownershipOverlap =
       input.dependencyFailure === "schedule-provider-recovering";
@@ -550,24 +555,75 @@ export async function runOddsLeague(input: {
       quotaCost: 0,
     };
   }
-  const continuation = await store.getContinuation(policy.leagueKey);
+  let continuation = await store.getContinuation(policy.leagueKey);
   if (continuation) {
-    const durableRun = await store.getRun(continuation.runId);
+    let durableRun = await store.getRun(continuation.runId);
+    let sealedFirstPage: Awaited<ReturnType<typeof store.getPage>> = null;
     if (durableRun && !durableRun.evidenceCommitted) {
       let token: string | undefined = "start";
       let foundIntent = false;
       for (let guard = 0; token && guard < 100; guard += 1) {
         const page = await store.getPage(continuation.runId, token);
         if (!page) break;
+        if (token === "start") sealedFirstPage = page;
         foundIntent ||= page.evidenceIntentAt !== undefined;
         token = page.nextPageToken;
       }
-      if (foundIntent)
-        await store.putRun({
+      if (foundIntent) {
+        durableRun = {
           ...durableRun,
           evidenceCommitted: true,
           updatedAt: iso(clock()),
-        });
+        };
+        await store.putRun(durableRun);
+      }
+    }
+    sealedFirstPage ??= await store.getPage(continuation.runId, "start");
+    const explicitLeaseUntil = Date.parse(continuation.leaseUntil ?? "");
+    const continuationUpdatedAt = Date.parse(continuation.updatedAt);
+    const restartBoundary = Number.isFinite(explicitLeaseUntil)
+      ? explicitLeaseUntil
+      : Number.isFinite(continuationUpdatedAt)
+        ? continuationUpdatedAt + 300_000
+        : Number.NaN;
+    const leaseExpired =
+      Number.isFinite(restartBoundary) && restartBoundary <= clock().getTime();
+    const continuationProvider = input.providers.get(continuation.providerId);
+    if (
+      leaseExpired &&
+      !continuation.ambiguousUntil &&
+      durableRun?.status === "failed" &&
+      continuationProvider?.restartTerminalCursorRun === true &&
+      sealedFirstPage?.nextPageToken !== undefined &&
+      ["provider-rejected", "invalid-response"].includes(
+        durableRun.failureReason ?? "",
+      )
+    ) {
+      // Provider cursors are short-lived. A terminal cursor/page contract
+      // failure cannot be resumed safely after its worker lease expires;
+      // retain the failed run for audit and start the next attempt at page one.
+      const restartNow = clock();
+      const restartOwner = await store.claimContinuation({
+        ...continuation,
+        updatedAt: iso(restartNow),
+        ownerId,
+        leaseUntil: attemptLeaseUntil(restartNow),
+      });
+      if (restartOwner.ownerId !== ownerId)
+        return {
+          leagueKey: policy.leagueKey,
+          status: "skipped",
+          reason: "provider-recovering",
+          pages: 0,
+          quotaCost: restartOwner.quotaCost ?? 0,
+        };
+      await clearOwnedContinuation(
+        store,
+        policy.leagueKey,
+        continuation.runId,
+        ownerId,
+      );
+      continuation = null;
     }
   }
   if (continuation?.ambiguousUntil)
@@ -619,7 +675,6 @@ export async function runOddsLeague(input: {
   let lastReason = "provider-unavailable";
   let lastPages = 0;
   let lastQuotaCost = 0;
-  const ownerId = randomUUID();
   for (const candidate of candidates) {
     if (continuation && continuation.providerId !== candidate.providerId)
       continue;

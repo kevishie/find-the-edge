@@ -600,13 +600,20 @@ const mergeSharpOddsPages = (
       })),
     })),
   });
-  const priceSignature = (
+  const priceIdentitySignature = (
     price: SharpApiOddsPage["events"][number]["bookmakers"][number]["prices"][number],
-  ) => {
-    const { retrievedAt: ignored, ...providerEvidence } = price;
-    void ignored;
-    return JSON.stringify(providerEvidence);
-  };
+  ) =>
+    JSON.stringify([
+      price.providerPriceId,
+      price.marketKey,
+      price.providerMarketType,
+      price.providerMarketId,
+      price.selectionKey,
+      price.participantSide,
+      price.outcomeStructure,
+      price.selectionLabel,
+      price.providerSelectionId,
+    ]);
   const retrievedAt = pages
     .map((page) => page.retrievedAt)
     .sort()
@@ -630,21 +637,27 @@ const mergeSharpOddsPages = (
       const reversed =
         current.awayTeam === candidate.homeTeam &&
         current.homeTeam === candidate.awayTeam;
+      if (current.providerEventUuid !== candidate.providerEventUuid)
+        throw new SharpApiError(
+          "invalid-response",
+          false,
+          undefined,
+          "odds:cross-page-event-uuid",
+        );
       if (
-        current.providerEventUuid !== candidate.providerEventUuid ||
-        (!reversed &&
-          (current.awayTeam !== candidate.awayTeam ||
-            current.homeTeam !== candidate.homeTeam)) ||
-        Math.abs(
-          Date.parse(current.startsAt) - Date.parse(candidate.startsAt),
-        ) > 120_000
+        !reversed &&
+        (current.awayTeam !== candidate.awayTeam ||
+          current.homeTeam !== candidate.homeTeam)
       )
         throw new SharpApiError(
           "invalid-response",
           false,
           undefined,
-          "odds:cross-page-event-identity",
+          "odds:cross-page-event-participants",
         );
+      // Schedule reconciliation owns canonical start time. Odds pages for the
+      // same exact provider event UUID can disagree after a delay or
+      // postponement, so retain the first normalized start and merge books.
       const bookmakers = new Map(
         current.bookmakers.map((book) => [book.id, book]),
       );
@@ -676,20 +689,24 @@ const mergeSharpOddsPages = (
         const prices = new Map(
           existing.prices.map((price) => [
             price.providerPriceId,
-            { price, signature: priceSignature(price) },
+            { price, identity: priceIdentitySignature(price) },
           ]),
         );
         for (const price of incoming.prices) {
           const prior = prices.get(price.providerPriceId);
-          const signature = priceSignature(price);
-          if (prior && prior.signature !== signature)
+          const identity = priceIdentitySignature(price);
+          if (prior && prior.identity !== identity)
             throw new SharpApiError(
               "invalid-response",
               false,
               undefined,
               "odds:cross-page-price-conflict",
             );
-          if (!prior) prices.set(price.providerPriceId, { price, signature });
+          if (
+            !prior ||
+            Date.parse(price.observedAt) >= Date.parse(prior.price.observedAt)
+          )
+            prices.set(price.providerPriceId, { price, identity });
         }
         bookmakers.set(incoming.id, {
           ...existing,
@@ -1871,6 +1888,7 @@ export async function runProductionOddsControlPlane(input: {
             // back to one on the common first-call success path.
             requestCost: 2,
             probeRequestCost: 1,
+            restartTerminalCursorRun: true,
             failureRequestCost: sharpOddsFailureRequestCost,
             reconcileMissing: async ({ runId, seenProviderEventIds }) => {
               const expectedEvents =

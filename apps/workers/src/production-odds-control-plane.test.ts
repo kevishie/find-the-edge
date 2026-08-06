@@ -1252,7 +1252,7 @@ describe("production odds control-plane composition", () => {
         material(
           "away",
           "2026-08-03T12:01:00.000Z",
-          "2026-08-03T20:01:00.000Z" as IsoTimestamp,
+          "2026-08-03T21:00:00.000Z" as IsoTimestamp,
           true,
         ),
       ],
@@ -1294,6 +1294,125 @@ describe("production odds control-plane composition", () => {
         stage: "odds:sealed-page-missing",
       }),
     );
+  });
+
+  it("keeps the latest repricing for a stable cross-page price identity", async () => {
+    const pageMaterial = (
+      americanOdds: number,
+      observedAt: IsoTimestamp,
+      providerMarketId = "market-1",
+    ) => ({
+      kind: "sharpapi",
+      page: {
+        events: [
+          {
+            providerEventId: "repriced-event",
+            providerEventUuid: "repriced-event-uuid",
+            awayTeam: "Away",
+            homeTeam: "Home",
+            startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+            bookmakers: [
+              {
+                id: "pinnacle",
+                label: "Pinnacle",
+                prices: [
+                  {
+                    providerPriceId: "stable-price-id",
+                    marketKey: "moneyline" as const,
+                    providerMarketType: "moneyline",
+                    providerMarketId,
+                    selectionKey: "away" as const,
+                    outcomeStructure: "two-way" as const,
+                    selectionLabel: "Away",
+                    providerSelectionId: "away-selection",
+                    americanOdds,
+                    decimalOdds:
+                      americanOdds > 0
+                        ? 1 + americanOdds / 100
+                        : 1 + 100 / -americanOdds,
+                    impliedProbability:
+                      americanOdds > 0
+                        ? 100 / (americanOdds + 100)
+                        : -americanOdds / (-americanOdds + 100),
+                    isLive: false,
+                    isMainLine: true,
+                    isAlternateLine: false,
+                    isPlayerProp: false,
+                    isStalePregamePrice: false,
+                    observedAt,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        hasMore: false,
+        retrievedAt: observedAt,
+      },
+    });
+    const seal = async (
+      control: MemoryOddsControlPlaneStore,
+      runId: string,
+      pageToken: string,
+      material: ReturnType<typeof pageMaterial>,
+      nextPageToken?: string,
+    ) =>
+      control.sealPage({
+        runId,
+        pageToken,
+        ...(nextPageToken ? { nextPageToken } : {}),
+        responseDigest: `${runId}:${pageToken}`,
+        normalizedItems: [material],
+        gaps: [],
+        quotaCost: 1,
+        sealedAt: at,
+      });
+
+    const control = new MemoryOddsControlPlaneStore();
+    await seal(
+      control,
+      "repriced-run",
+      "start",
+      pageMaterial(110, "2026-08-03T12:00:00.000Z" as IsoTimestamp),
+      "two",
+    );
+    await seal(
+      control,
+      "repriced-run",
+      "two",
+      pageMaterial(125, "2026-08-03T12:01:00.000Z" as IsoTimestamp),
+    );
+    const merged = await reconstructSharpOddsRun(control, "repriced-run");
+    expect(merged.events[0]?.bookmakers[0]?.prices[0]).toMatchObject({
+      providerPriceId: "stable-price-id",
+      americanOdds: 125,
+      observedAt: "2026-08-03T12:01:00.000Z",
+    });
+
+    const conflict = new MemoryOddsControlPlaneStore();
+    await seal(
+      conflict,
+      "identity-conflict-run",
+      "start",
+      pageMaterial(110, "2026-08-03T12:00:00.000Z" as IsoTimestamp),
+      "two",
+    );
+    await seal(
+      conflict,
+      "identity-conflict-run",
+      "two",
+      pageMaterial(
+        125,
+        "2026-08-03T12:01:00.000Z" as IsoTimestamp,
+        "different-market",
+      ),
+    );
+    await expect(
+      reconstructSharpOddsRun(conflict, "identity-conflict-run"),
+    ).rejects.toMatchObject({
+      code: "invalid-response",
+      stage: "odds:cross-page-price-conflict",
+    });
   });
 
   it("persists scoped missing availability for a scheduled event omitted from odds", async () => {
