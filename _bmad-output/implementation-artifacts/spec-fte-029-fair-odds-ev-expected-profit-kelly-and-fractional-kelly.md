@@ -2,8 +2,9 @@
 title: 'FTE-029 Fair Odds, EV, Expected Profit, Kelly, and Fractional Kelly'
 type: 'feature'
 created: '2026-08-06'
-status: 'in-review'
+status: 'done'
 baseline_revision: '4ef29576d1a743402fac7bd17b13d76697412f84'
+final_revision: 'ae1b86537a644337395191750737d78eac644157'
 review_loop_iteration: 0
 followup_review_recommended: false
 context:

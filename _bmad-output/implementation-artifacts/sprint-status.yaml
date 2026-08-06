@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-029
+nextReadyStory: FTE-030
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -639,7 +639,7 @@ stories:
   - id: FTE-029
     title: Fair Odds, EV, Expected Profit, Kelly, and Fractional Kelly
     epic: Deterministic betting engine
-    status: backlog
+    status: done
     dependencies: [FTE-027, FTE-028]
     risk: High
     approvalRequiredBeforeMerge: false
