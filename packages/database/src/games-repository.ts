@@ -178,6 +178,15 @@ const validateCurrent = (
   };
 };
 
+const quarantinableCurrentOddsErrors = new Set([
+  "invalid-current-odds-value",
+  "missing-current-odds-value",
+  "current-odds-binding-mismatch",
+]);
+const isQuarantinableCurrentOddsError = (error: unknown) =>
+  error instanceof EventStorageError &&
+  quarantinableCurrentOddsErrors.has(error.message);
+
 const collapseEventRows = (events: EventPage["items"]) =>
   collapseNearDuplicateGames(
     events.map((event) => ({
@@ -349,7 +358,19 @@ export class JoinedGamesRepository implements GamesRepository {
             };
             continue;
           }
-          const price = validateCurrent(raw, key, event);
+          let price: GameOddsSelectionDto;
+          try {
+            price = validateCurrent(raw, key, event);
+          } catch (error) {
+            if (!isQuarantinableCurrentOddsError(error)) throw error;
+            cells[sportsbookId] = {
+              state: "unavailable",
+              eligible: false,
+              reason: "price-unavailable",
+              evidenceAt: null,
+            };
+            continue;
+          }
           if (
             Date.parse(price.observedAt) > readAt + this.clockSkewToleranceMs ||
             Date.parse(price.retrievedAt) > readAt + this.clockSkewToleranceMs
@@ -498,6 +519,19 @@ export class JoinedGamesRepository implements GamesRepository {
       );
     });
     const requested = requestedByEvent.flat(2).flatMap(({ keys }) => keys);
+    const validationByKey = new Map<
+      string,
+      {
+        readonly expected: ReturnType<typeof currentKey>;
+        readonly event: EventPage["items"][number];
+      }
+    >();
+    requestedByEvent.forEach((books, eventIndex) => {
+      const event = page.items[eventIndex]!;
+      for (const { keys } of books.flat())
+        for (const expected of keys)
+          validationByKey.set(expected.pk, { expected, event });
+    });
     let rows: readonly unknown[];
     try {
       rows = await this.odds.batchGet(requested);
@@ -518,6 +552,15 @@ export class JoinedGamesRepository implements GamesRepository {
         throw new EventStorageError("unexpected-current-odds-row");
       if (byKey.has(row.pk))
         throw new EventStorageError("duplicate-current-odds-row");
+      const validation = validationByKey.get(row.pk);
+      if (!validation)
+        throw new EventStorageError("unexpected-current-odds-row");
+      try {
+        validateCurrent(row, validation.expected, validation.event);
+      } catch (error) {
+        if (isQuarantinableCurrentOddsError(error)) continue;
+        throw error;
+      }
       byKey.set(row.pk, row);
     }
     const joined = page.items.map((event, index) => {

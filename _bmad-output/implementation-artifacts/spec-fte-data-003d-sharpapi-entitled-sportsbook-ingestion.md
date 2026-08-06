@@ -246,6 +246,8 @@ GPT-5 Codex
 - `scripts/phase1-environment-smoke.test.mjs`
 - `docs/runbooks/sharpapi.md`
 - `packages/database/src/odds-control-plane.ts`
+- `packages/database/src/games-repository.test.ts`
+- `packages/database/src/games-repository.ts`
 - `packages/domain/src/fixture-odds.ts`
 - `packages/providers/src/sharp-api.test.ts`
 - `packages/providers/src/sharp-api.ts`
@@ -388,6 +390,11 @@ GPT-5 Codex
   - `[high]` `[patch]` Removed mutable provider presentation labels from stable
     price identity so valid line, price, and rendered-label movement selects the
     newest observation without weakening provider/market/selection ID checks.
+  - `[high]` `[patch]` Production diagnostics proved a complete 26-page MLB run,
+    21 persisted approved sportsbooks, and observed Pinnacle coverage. They also
+    isolated the games/splits 500 to one legacy `invalid-current-odds-value` row;
+    list and detail reads now quarantine that bounded corrupt value and render
+    unavailable odds instead of hiding the entire board.
 - rejected_findings:
   - `[high]` `[reject]` Unbounded odds-row start drift does not control persistence:
     the exact schedule binding supplies canonical start time, post-start pages are

@@ -217,6 +217,41 @@ describe("joined games repository", () => {
     });
   });
 
+  it("renders a corrupt legacy detail price as unavailable", async () => {
+    const eventRepository = events();
+    eventRepository.detail = () =>
+      Promise.resolve({
+        projectionState: "ready",
+        item: event,
+        unavailableReason: null,
+      });
+    const away = current(
+      event,
+      "away",
+      "Boston Red Sox",
+      "moneyline",
+      "hardrock",
+    );
+    const detail = await new JoinedGamesRepository(
+      eventRepository,
+      {
+        batchGet: () =>
+          Promise.resolve([
+            { pk: away.partitionKey, sk: "CURRENT", value: null },
+          ]),
+      },
+      ["hardrock"],
+    ).detail(event.id);
+    expect(
+      detail.item?.oddsComparison.markets[0]?.selections[0]?.cells.hardrock,
+    ).toEqual({
+      state: "unavailable",
+      eligible: false,
+      reason: "price-unavailable",
+      evidenceAt: null,
+    });
+  });
+
   it("keeps missing availability unavailable before staleness and lets retained blockers win", async () => {
     const away = current(
       event,
@@ -589,10 +624,10 @@ describe("joined games repository", () => {
     });
   });
 
-  it("fails closed for partial, malformed, mismatched, duplicate, and unexpected rows", async () => {
+  it("quarantines corrupt legacy values while rejecting duplicate and unexpected rows", async () => {
     const away = current(event, "away", "Boston Red Sox");
     const home = current(event, "home", "New York Yankees");
-    const cases: readonly (readonly unknown[])[] = [
+    const corruptCases: readonly (readonly unknown[])[] = [
       [
         {
           pk: away.partitionKey,
@@ -601,11 +636,19 @@ describe("joined games repository", () => {
         },
         row(home),
       ],
-      [row(away), row(away), row(home)],
-      [row(away), row(home), { pk: "unexpected", sk: "CURRENT", value: away }],
       [{ pk: away.partitionKey, sk: "CURRENT", value: null }, row(home)],
     ];
-    for (const rows of cases) {
+    for (const rows of corruptCases) {
+      const page = await new JoinedGamesRepository(events(), {
+        batchGet: () => Promise.resolve(rows),
+      }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+      expect(page.items[0]?.odds).toEqual({ state: "unavailable" });
+    }
+    const rejectedCases: readonly (readonly unknown[])[] = [
+      [row(away), row(away), row(home)],
+      [row(away), row(home), { pk: "unexpected", sk: "CURRENT", value: away }],
+    ];
+    for (const rows of rejectedCases) {
       await expect(
         new JoinedGamesRepository(events(), {
           batchGet: () => Promise.resolve(rows),
