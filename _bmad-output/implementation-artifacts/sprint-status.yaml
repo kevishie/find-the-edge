@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-031
+nextReadyStory: FTE-033
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -653,7 +653,7 @@ stories:
   - id: FTE-031
     title: Calculation Versioning, Precision, and Display Rounding
     epic: Deterministic betting engine
-    status: backlog
+    status: done
     dependencies: [FTE-027, FTE-028, FTE-029, FTE-030]
     risk: Medium
     approvalRequiredBeforeMerge: false

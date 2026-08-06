@@ -2,8 +2,9 @@
 title: 'FTE-031 Calculation Versioning, Precision, and Display Rounding'
 type: 'feature'
 created: '2026-08-06'
-status: 'in-review'
+status: 'done'
 baseline_revision: '4a0e04ca6f78a8863004acc793790280c2946c0e'
+final_revision: 'f0accb915d452a75a9a23df2f071b975acfb2388'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
