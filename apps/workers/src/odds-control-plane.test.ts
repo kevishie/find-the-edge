@@ -482,6 +482,96 @@ describe("odds collection control plane", () => {
       });
     },
   );
+  it.each([
+    {
+      name: "durable committed evidence",
+      runCommitted: true,
+      pageIntent: false,
+    },
+    {
+      name: "recovered page evidence intent",
+      runCommitted: false,
+      pageIntent: true,
+    },
+  ])(
+    "never restarts a terminal cursor after $name",
+    async ({ runCommitted, pageIntent }) => {
+      const store = new MemoryOddsControlPlaneStore();
+      const staleRunId = "mlb:sharpapi:committed-cursor-run";
+      await store.putRun({
+        runId: staleRunId,
+        leagueKey: policy.leagueKey,
+        providerId: "sharpapi",
+        policyVersion: "test",
+        status: "failed",
+        startedAt: "2026-08-03T10:00:00.000Z",
+        updatedAt: "2026-08-03T10:05:00.000Z",
+        failureReason: "provider-rejected",
+        evidenceCommitted: runCommitted,
+        quotaCost: 7,
+      });
+      await store.claimContinuation({
+        leagueKey: policy.leagueKey,
+        runId: staleRunId,
+        providerId: "sharpapi",
+        updatedAt: "2026-08-03T10:05:00.000Z",
+        startedAt: "2026-08-03T10:00:00.000Z",
+        capability: "odds",
+        evidenceCommitted: runCommitted,
+        quotaCost: 7,
+        ownerId: "finished-worker",
+        leaseUntil: "2026-08-03T10:10:00.000Z",
+      });
+      await store.sealPage({
+        runId: staleRunId,
+        pageToken: "start",
+        nextPageToken: "expired-provider-cursor",
+        responseDigest: "committed-page",
+        normalizedItems: [],
+        gaps: [],
+        quotaCost: 1,
+        sealedAt: "2026-08-03T10:01:00.000Z",
+        ...(pageIntent ? { evidenceIntentAt: "2026-08-03T10:01:00.500Z" } : {}),
+        committedAt: "2026-08-03T10:01:01.000Z",
+      });
+      const fetchPage = vi.fn().mockResolvedValue({
+        items: [],
+        gaps: [],
+        quotaCost: 1,
+        digest: "resumed-terminal-page",
+      });
+
+      const result = await runOddsLeague({
+        policy,
+        store,
+        providers: new Map([
+          [
+            "sharpapi",
+            {
+              ...provider("sharpapi", fetchPage),
+              restartTerminalCursorRun: true,
+            },
+          ],
+        ]),
+        committer: { commit: vi.fn() },
+        now,
+        clock: () => now,
+        forceRefresh: true,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(fetchPage).toHaveBeenCalledWith(
+        expect.objectContaining({ pageToken: "expired-provider-cursor" }),
+      );
+      expect(fetchPage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ pageToken: "start" }),
+      );
+      expect(await store.getRun(staleRunId)).toMatchObject({
+        status: "completed",
+        evidenceCommitted: true,
+      });
+    },
+  );
   it("replays a sealed many-book page after a commit interruption without a second paid call", async () => {
     const store = new MemoryOddsControlPlaneStore();
     const normalizedItems = Object.keys(approvedSportsbookCollection).map(

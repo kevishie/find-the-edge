@@ -382,6 +382,22 @@ GPT-5 Codex
     after a live local production-path test proved the same exact provider event
     UUID can retain different pre-delay times on sportsbook pages. Provider UUID
     and participant identity remain strict.
+  - `[high]` `[patch]` Prohibited terminal cursor abandonment whenever the durable
+    run already records committed evidence, including evidence intent recovered
+    from a sealed page.
+  - `[high]` `[patch]` Removed mutable provider presentation labels from stable
+    price identity so valid line, price, and rendered-label movement selects the
+    newest observation without weakening provider/market/selection ID checks.
+- rejected_findings:
+  - `[high]` `[reject]` Unbounded odds-row start drift does not control persistence:
+    the exact schedule binding supplies canonical start time, post-start pages are
+    discarded against that time, and large drift requires an exact source mapping
+    plus both participants. Existing tests prove delayed rows cannot rewrite the
+    schedule and retrieval at the canonical start persists zero observations.
 - deferred_findings:
+  - `[medium]` `[defer]` An expired running cursor or older policy revision may
+    incur one bounded failed attempt before entering the audited terminal restart
+    path. This delays recovery but does not duplicate or corrupt evidence; policy-
+    version cursor invalidation belongs in the next control-plane hardening story.
   - `[high]` `[defer]` The production canary must still persist and read back one
     Pinnacle snapshot before this story can be marked done.

@@ -1301,6 +1301,8 @@ describe("production odds control-plane composition", () => {
       americanOdds: number,
       observedAt: IsoTimestamp,
       providerMarketId = "market-1",
+      selectionLabel = "Away",
+      point = -1.5,
     ) => ({
       kind: "sharpapi",
       page: {
@@ -1318,13 +1320,14 @@ describe("production odds control-plane composition", () => {
                 prices: [
                   {
                     providerPriceId: "stable-price-id",
-                    marketKey: "moneyline" as const,
-                    providerMarketType: "moneyline",
+                    marketKey: "spread" as const,
+                    providerMarketType: "spread",
                     providerMarketId,
                     selectionKey: "away" as const,
                     outcomeStructure: "two-way" as const,
-                    selectionLabel: "Away",
+                    selectionLabel,
                     providerSelectionId: "away-selection",
+                    point,
                     americanOdds,
                     decimalOdds:
                       americanOdds > 0
@@ -1380,12 +1383,20 @@ describe("production odds control-plane composition", () => {
       control,
       "repriced-run",
       "two",
-      pageMaterial(125, "2026-08-03T12:01:00.000Z" as IsoTimestamp),
+      pageMaterial(
+        125,
+        "2026-08-03T12:01:00.000Z" as IsoTimestamp,
+        "market-1",
+        "Away +2.5",
+        2.5,
+      ),
     );
     const merged = await reconstructSharpOddsRun(control, "repriced-run");
     expect(merged.events[0]?.bookmakers[0]?.prices[0]).toMatchObject({
       providerPriceId: "stable-price-id",
       americanOdds: 125,
+      selectionLabel: "Away +2.5",
+      point: 2.5,
       observedAt: "2026-08-03T12:01:00.000Z",
     });
 

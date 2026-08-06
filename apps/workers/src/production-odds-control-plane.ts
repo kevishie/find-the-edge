@@ -611,7 +611,6 @@ const mergeSharpOddsPages = (
       price.selectionKey,
       price.participantSide,
       price.outcomeStructure,
-      price.selectionLabel,
       price.providerSelectionId,
     ]);
   const retrievedAt = pages

@@ -593,6 +593,7 @@ export async function runOddsLeague(input: {
       leaseExpired &&
       !continuation.ambiguousUntil &&
       durableRun?.status === "failed" &&
+      durableRun.evidenceCommitted === false &&
       continuationProvider?.restartTerminalCursorRun === true &&
       sealedFirstPage?.nextPageToken !== undefined &&
       ["provider-rejected", "invalid-response"].includes(
