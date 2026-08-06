@@ -358,6 +358,10 @@ describe("SharpAPI activation boundary", () => {
       "hardrock",
       "pinnacle",
     ]);
+    expect(
+      page.events[0]?.bookmakers.find(({ id }) => id === "pinnacle")
+        ?.providerSportsbookIds,
+    ).toEqual(["Pinnacle Sports"]);
     expect((page.rejections ?? []).map(({ reason }) => reason)).toEqual([
       "unknown-bookmaker",
       "unsupported-market",

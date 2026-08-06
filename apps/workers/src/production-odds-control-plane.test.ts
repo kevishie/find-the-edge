@@ -228,6 +228,12 @@ describe("production odds control-plane composition", () => {
 
     for (const capability of ["account", "splits"] as const) {
       const { control, metrics } = await run(capability);
+      if (capability === "splits")
+        expect(metrics.emit).toHaveBeenCalledWith(
+          "OddsAccountBookCapacity",
+          25,
+          { provider: "sharpapi" },
+        );
       const stage = `${capability}:provider-error`;
       const attempts = [...control.attempts.values()].filter(
         (attempt) => attempt.capability === capability,
@@ -256,6 +262,53 @@ describe("production odds control-plane composition", () => {
         }),
       );
     }
+  });
+
+  it("rejects invalid replayed account capacity before telemetry", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const metrics = { emit: vi.fn() };
+    await runProductionOddsControlPlane({
+      events: new MemoryEventIngestionStore(),
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      metrics,
+      sharpApiKey: "sharp-key",
+      now,
+      fetchSharpSchedule: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+      fetchSharpOdds: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: ["splits"],
+        requestsPerMinute: 300,
+        maxBooks: -1,
+        streamingEnabled: false,
+      }),
+    });
+
+    expect(metrics.emit).not.toHaveBeenCalledWith(
+      "OddsAccountBookCapacity",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(metrics.emit).toHaveBeenCalledWith(
+      "OddsAccountFailure",
+      1,
+      expect.objectContaining({ provider: "sharpapi" }),
+    );
   });
 
   it("reserves and records the two-call worst case for a failed featured page", async () => {

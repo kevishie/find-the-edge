@@ -1,6 +1,6 @@
 project: FIND THE EDGE
 created: "2026-07-15"
-updated: "2026-08-05"
+updated: "2026-08-06"
 source: "_bmad-output/planning-artifacts/epics-and-stories.md"
 statusValues:
   - backlog
@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-DATA-003D
+nextReadyStory: FTE-026
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -174,7 +174,7 @@ stories:
     league: enabled
     module: odds-ingestion
     priority: P0
-    status: in-progress
+    status: done
     dependencies: [FTE-DATA-001, FTE-DATA-003B, FTE-DATA-003C, FTE-020]
     validationCommands: [pnpm check, pnpm synth, "pnpm phase1:preflight"]
     blockerReason:

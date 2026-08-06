@@ -193,6 +193,8 @@ export interface SharpApiPrice {
 export interface SharpApiBookmaker {
   readonly id: string;
   readonly label: string;
+  /** Bounded provider wire identifiers retained for contract verification. */
+  readonly providerSportsbookIds?: readonly string[];
   readonly prices: readonly SharpApiPrice[];
 }
 
@@ -706,9 +708,9 @@ export function parseSharpApiOddsPage(
       continue;
     }
     let value: Record<string, unknown> = candidate;
-    const bookResult = normalizeSportsbook(
-      typeof value["sportsbook"] === "string" ? value["sportsbook"] : "",
-    );
+    const providerSportsbookId =
+      typeof value["sportsbook"] === "string" ? value["sportsbook"] : "";
+    const bookResult = normalizeSportsbook(providerSportsbookId);
     if (bookResult.kind === "rejected") {
       rejections.push({
         providerId: SHARP_API_PROVIDER_ID,
@@ -720,7 +722,11 @@ export function parseSharpApiOddsPage(
       });
       continue;
     }
-    value = { ...value, sportsbook: bookResult.sportsbook.id };
+    value = {
+      ...value,
+      provider_sportsbook_id: providerSportsbookId,
+      sportsbook: bookResult.sportsbook.id,
+    };
     const marketKey = market(value, league);
     if (!marketKey) {
       rejections.push({
@@ -914,6 +920,7 @@ export function parseSharpApiOddsPage(
     deduplicatedRows.push(value);
   }
   const grouped = new Map<string, Map<string, SharpApiPrice[]>>();
+  const providerSportsbookIds = new Map<string, Map<string, Set<string>>>();
   const identities = new Map<string, Omit<SharpApiEvent, "bookmakers">>();
   for (const value of deduplicatedRows) {
     if (!value) continue;
@@ -1067,6 +1074,13 @@ export function parseSharpApiOddsPage(
     });
     books.set(book, prices);
     grouped.set(eventId, books);
+    const eventProviderIds =
+      providerSportsbookIds.get(eventId) ?? new Map<string, Set<string>>();
+    const bookProviderIds = eventProviderIds.get(book) ?? new Set<string>();
+    if (canonical(value["provider_sportsbook_id"], 128))
+      bookProviderIds.add(value["provider_sportsbook_id"]);
+    eventProviderIds.set(book, bookProviderIds);
+    providerSportsbookIds.set(eventId, eventProviderIds);
   }
   if (!record(pagination) || typeof pagination["has_more"] !== "boolean")
     throw invalidResponse(endpoint, "pagination-envelope");
@@ -1079,6 +1093,11 @@ export function parseSharpApiOddsPage(
       bookmakers: [...(grouped.get(eventId) ?? [])].map(([id, prices]) => ({
         id,
         label: id,
+        providerSportsbookIds: [
+          ...(providerSportsbookIds.get(eventId)?.get(id) ?? []),
+        ]
+          .sort()
+          .slice(0, 16),
         prices,
       })),
     })),

@@ -2356,7 +2356,13 @@ export async function runProductionOddsControlPlane(input: {
       const account = accountPage.normalizedItems[0] as {
         readonly features: readonly string[];
         readonly requestsPerMinute: number;
+        readonly maxBooks: number;
       };
+      if (!Number.isSafeInteger(account.maxBooks) || account.maxBooks < 0)
+        throw new Error("account-capacity-invalid");
+      input.metrics?.emit("OddsAccountBookCapacity", account.maxBooks, {
+        provider: SHARP_API_PROVIDER_ID,
+      });
       const accountHealthKey = `${SHARP_API_PROVIDER_ID}:account:account`;
       await input.control.putHealth(
         healthyOddsProviderState(

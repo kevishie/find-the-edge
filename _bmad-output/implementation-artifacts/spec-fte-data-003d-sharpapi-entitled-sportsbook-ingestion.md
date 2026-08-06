@@ -2,7 +2,7 @@
 title: 'FTE-DATA-003D SharpAPI Entitled Sportsbook Ingestion'
 type: 'feature'
 created: '2026-08-04T00:00:00-04:00'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'acf67c5'
 approval_required_before_merge: true
 context:
@@ -13,7 +13,7 @@ context:
 
 # Story FTE-DATA-003D: SharpAPI Entitled Sportsbook Ingestion
 
-Status: in-review
+Status: done
 
 ## Story
 
@@ -86,9 +86,19 @@ so that the platform retains the full licensed pricing evidence for explicitly v
   - [x] Add bounded metrics/log dimensions from canonical allowlisted IDs only; never emit arbitrary provider labels as metric dimensions.
   - [x] Confirm the existing SharpAPI secret and IAM grant are reused; no new secret or direct Pinnacle network access is introduced.
 
-- [ ] Complete verification (AC: 1-7)
+- [x] Complete verification (AC: 1-7)
   - [x] Run focused config/provider/worker/control-plane tests, `pnpm check`, `pnpm synth`, `pnpm phase1:preflight`, and `git diff --check`.
-  - [ ] With explicit operator authorization, run one paid canary and save only its bounded verification summary. Do not make the default test suite network-dependent.
+  - [x] With explicit operator authorization, run one paid canary and save only its bounded verification summary. Do not make the default test suite network-dependent.
+
+### Review Findings
+
+- [x] [Review][Patch] Scope the paid-canary opt-in to the bounded production-path test so it cannot accidentally enable the three broader live suites. [`apps/workers/src/sharp-api-live-contract.test.ts:157`]
+- [x] [Review][Patch] Carry a bounded exact provider sportsbook identifier through parsing and prove live `pinnacle` wire identity maps to the persisted canonical Pinnacle snapshot. [`packages/providers/src/sharp-api.ts:193`]
+- [x] [Review][Patch] Select a Pinnacle snapshot whose partition resolves to actionable CURRENT instead of assuming the first stored snapshot is the winner. [`apps/workers/src/sharp-api-live-contract.test.ts:382`]
+- [x] [Review][Patch] Make the local transaction gateway resolve and validate the exact requested Dynamo mapping/event keys. [`apps/workers/src/sharp-api-live-contract.test.ts:58`]
+- [x] [Review][Patch] Validate replayed account capacity before emitting bounded telemetry. [`apps/workers/src/production-odds-control-plane.ts:2356`]
+- [x] [Review][Patch] Fail the canary when unknown licensed sportsbook identifiers are rejected instead of only reporting the count. [`apps/workers/src/sharp-api-live-contract.test.ts:392`]
+- [x] [Review][Patch] Record the completed single-league-to-all-leagues rollout sequence explicitly in completion evidence. [`_bmad-output/implementation-artifacts/spec-fte-data-003d-sharpapi-entitled-sportsbook-ingestion.md:230`]
 
 ## Dev Notes
 
@@ -227,9 +237,24 @@ GPT-5 Codex
   reconstruction, normalization, and persistence, without deploying to test.
 - `pnpm check`, credential-safe `pnpm synth`, `pnpm phase1:preflight`, and
   `git diff --check` passed after the terminal-page and sealed-replay changes.
-- Remaining live proof before story completion: execute one explicitly authorized
-  ingestion canary that persists and reads back a normalized Pinnacle snapshot;
-  record only bounded counts and observed/coverage-unverified status.
+- Before final completion, the remaining live proof was an explicitly authorized
+  ingestion canary that persisted and read back a normalized Pinnacle snapshot
+  while recording only bounded counts and observed/coverage-unverified status.
+- The explicitly authorized local production-path canary completed on 2026-08-06
+  without deploying. The bounded result was account capacity `25`, Pinnacle
+  coverage `observed`, exact provider wire identifier `pinnacle` observed,
+  `1,082` normalized snapshots, `54` Pinnacle snapshots, `21` approved books
+  persisted, and `0` unknown-book rejections. The canary
+  used the real fixture-odds adapter and exact snapshot repository, then retrieved
+  the Pinnacle evidence through both exact-snapshot and actionable-current read
+  boundaries. The guarded test remains skipped unless both `SHARP_API_KEY` and
+  `FTE_RUN_SHARP_CANARY=1` are explicitly supplied, and raw provider responses,
+  licensed price rows, and credentials were neither printed nor retained.
+- The staged rollout sequence completed locally: bounded account/catalog proof,
+  MLB-only schedule/odds/splits persistence, and then the full production control
+  plane across all five enabled leagues. No deployment was used as a test step.
+- Final regression verification passed: `pnpm check`, credential-safe
+  `pnpm synth`, `pnpm phase1:preflight`, and `git diff --check`.
 
 ### File List
 
@@ -251,6 +276,14 @@ GPT-5 Codex
 - `packages/domain/src/fixture-odds.ts`
 - `packages/providers/src/sharp-api.test.ts`
 - `packages/providers/src/sharp-api.ts`
+
+### Change Log
+
+- 2026-08-06: Applied the completion review, proved the exact live `pinnacle`
+  wire identifier through canonical persistence, reran the bounded local canary,
+  and marked the story done.
+- 2026-08-06: Completed the explicitly authorized local Pinnacle persistence
+  canary, hardened paid-test opt-in and redaction, and moved the story to review.
 
 ### Review Triage Log
 
@@ -408,3 +441,60 @@ GPT-5 Codex
     version cursor invalidation belongs in the next control-plane hardening story.
   - `[high]` `[defer]` The production canary must still persist and read back one
     Pinnacle snapshot before this story can be marked done.
+
+#### 2026-08-06 — Final local canary review
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 7 (high: 5, medium: 2, low: 0)
+- reject: 1
+- addressed_findings:
+  - `[high]` `[patch]` Required `FTE_RUN_SHARP_CANARY=1` in addition to the
+    credential so default and CI tests cannot spend paid calls accidentally.
+  - `[high]` `[patch]` Replaced the tautological recording map with the real
+    fixture-odds adapter, immutable transaction gateway, exact snapshot index,
+    actionable CURRENT projection, and both repository read boundaries.
+  - `[high]` `[patch]` Emitted the bounded `observed` or `coverage-unverified`
+    result before completion assertions.
+  - `[high]` `[patch]` Replaced live-object equality assertions with fixed-message
+    boolean predicates so failures cannot print licensed rows.
+  - `[medium]` `[patch]` Reported the union of approved books actually persisted
+    across all enabled leagues instead of the maximum single-league count.
+  - `[high]` `[patch]` Removed an unaudited direct account request and emitted
+    account capacity from the production control-plane account run instead.
+  - `[medium]` `[patch]` Made the bounded canary summary inherent to the explicit
+    paid-run opt-in so every authorized execution records its outcome.
+- rejected_findings:
+  - `[medium]` `[reject]` The final persistence canary need not retain raw wire
+    sportsbook labels. The preceding authorized catalog scan already proved the
+    exact `pinnacle` identifier, and parser fixtures preserve that contract; this
+    final canary intentionally receives only normalized allowlisted evidence so
+    raw licensed payloads are not retained.
+
+#### 2026-08-06 — Completion repair review
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 7 (high: 5, medium: 2, low: 0)
+- defer: 0
+- reject: 2
+- addressed_findings:
+  - `[high]` `[patch]` Scoped the paid production-path canary flag to one test;
+    the three broader live suites require a separate opt-in.
+  - `[high]` `[patch]` Preserved bounded raw sportsbook identifiers through the
+    parser and proved live `pinnacle` maps to canonical Pinnacle persistence.
+  - `[high]` `[patch]` Selected readback evidence by an actionable CURRENT match
+    rather than relying on insertion order.
+  - `[high]` `[patch]` Made the local transaction gateway validate the exact
+    requested mapping and canonical-event keys.
+  - `[medium]` `[patch]` Rejected invalid replayed account capacity before
+    telemetry or health success.
+  - `[high]` `[patch]` Made unknown-book rejection a hard canary failure.
+  - `[medium]` `[patch]` Recorded the completed account/catalog, MLB-only, and
+    all-enabled-league rollout sequence.
+- rejected_findings:
+  - `[medium]` `[reject]` Account capacity is not a requirement that all 25
+    sportsbooks appear or persist on every run; coverage is event-dependent.
+  - `[medium]` `[reject]` Deployment is not required to test the canary; the real
+    production adapter/repository logic is exercised locally and deployment
+    wiring is verified separately by synthesis.
