@@ -6,8 +6,12 @@ import {
   removeVig,
 } from "./index";
 import { scoreMarketDisagreement } from "./market-quality";
+import type { CalculationProvenance } from "@find-the-edge/domain";
+import { displayDecimalOdds, displayPercentage } from "./precision";
+import { safeCalculationProvenance } from "./provenance";
+import { QUALIFICATION_VERSION } from "./versions";
 
-export const QUALIFICATION_VERSION = "deterministic-qualification-v1";
+export { QUALIFICATION_VERSION };
 
 export interface QualificationPolicy {
   readonly comparisonWeights: Readonly<Record<string, number>>;
@@ -54,6 +58,82 @@ export interface QualificationResult {
   readonly marketDisagreement: number;
   readonly includedSportsbookIds: readonly string[];
   readonly includedWeights: Readonly<Record<string, number>>;
+  readonly provenance: Readonly<CalculationProvenance> | null;
+  readonly display: Readonly<{
+    readonly conservativeProbability: string;
+    readonly noVigProbability: string;
+    readonly marketImpliedProbability: string;
+    readonly decimalOdds: string;
+    readonly expectedValue: string;
+    readonly edge: string;
+    readonly marketDisagreement: string;
+  }>;
+}
+
+const canonicalText = (value: string) => value.trim().toLowerCase();
+
+const compareText = (left: string, right: string) =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+const compareNumber = (left: number, right: number) => {
+  if (Object.is(left, right) || (left === 0 && right === 0)) return 0;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return compareText(String(left), String(right));
+};
+
+const compareOdds = (left: readonly number[], right: readonly number[]) => {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    if (left[index] === undefined) return -1;
+    if (right[index] === undefined) return 1;
+    const comparison = compareNumber(left[index]!, right[index]!);
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
+};
+
+function qualificationProvenanceInput(input: QualificationInput): unknown {
+  return {
+    targetSportsbookId: canonicalText(input.targetSportsbookId),
+    offeredAmerican: input.offeredAmerican,
+    offeredAgeMinutes: input.offeredAgeMinutes,
+    candidateIndex: input.candidateIndex,
+    modelProbability: {
+      low: input.modelProbability.low,
+      uncertainty: input.modelProbability.uncertainty,
+    },
+    outcomeCount: input.outcomeCount,
+    analysisMaturity: input.analysisMaturity ?? "complete",
+    books: [...input.books]
+      .map((book) => ({
+        sportsbookId: canonicalText(book.sportsbookId),
+        ageMinutes: book.ageMinutes,
+        americanOdds: [...book.americanOdds],
+      }))
+      .sort(
+        (left, right) =>
+          compareText(left.sportsbookId, right.sportsbookId) ||
+          compareNumber(left.ageMinutes, right.ageMinutes) ||
+          compareOdds(left.americanOdds, right.americanOdds),
+      ),
+    policy: {
+      comparisonWeights: Object.entries(input.policy.comparisonWeights)
+        .map(([sportsbookId, weight]) => [canonicalText(sportsbookId), weight])
+        .sort(
+          ([leftId, leftWeight], [rightId, rightWeight]) =>
+            compareText(String(leftId), String(rightId)) ||
+            compareNumber(Number(leftWeight), Number(rightWeight)),
+        ),
+      minimumComparisonBooks: input.policy.minimumComparisonBooks,
+      maximumPriceAgeMinutes: input.policy.maximumPriceAgeMinutes,
+      outlierThreshold: input.policy.outlierThreshold,
+      disagreementWarningThreshold: input.policy.disagreementWarningThreshold,
+      disagreementBlockThreshold: input.policy.disagreementBlockThreshold,
+      maximumUncertainty: input.policy.maximumUncertainty,
+      minimumEdge: input.policy.minimumEdge,
+      minimumExpectedValue: input.policy.minimumExpectedValue,
+    },
+  };
 }
 
 export function qualifyEvaluation(
@@ -88,7 +168,7 @@ export function qualifyEvaluation(
     { length: input.outcomeCount },
     (_, index) => `outcome-${index}`,
   );
-  const consensus = calculateWeightedConsensus({
+  const consensusInput = {
     targetSportsbookId: input.targetSportsbookId,
     selectionKeys,
     policy: {
@@ -97,16 +177,25 @@ export function qualifyEvaluation(
       maximumAgeMinutes: input.policy.maximumPriceAgeMinutes,
       outlierThreshold: input.policy.outlierThreshold,
     },
-    books: input.books.map((book) => ({
-      sportsbookId: book.sportsbookId,
-      ageMinutes: book.ageMinutes,
-      status: "active",
-      selections: selectionKeys.map((selectionKey, index) => ({
-        selectionKey,
-        americanOdds: book.americanOdds[index]!,
-      })),
-    })),
-  });
+    books: input.books
+      .map((book) => ({
+        sportsbookId: book.sportsbookId,
+        ageMinutes: book.ageMinutes,
+        status: "active" as const,
+        selections: selectionKeys.map((selectionKey, index) => ({
+          selectionKey,
+          americanOdds: book.americanOdds[index]!,
+        })),
+      }))
+      .sort((left, right) =>
+        canonicalText(left.sportsbookId) < canonicalText(right.sportsbookId)
+          ? -1
+          : canonicalText(left.sportsbookId) > canonicalText(right.sportsbookId)
+            ? 1
+            : 0,
+      ),
+  } as const;
+  const consensus = calculateWeightedConsensus(consensusInput);
   const noVigProbability = consensus.probabilities?.[input.candidateIndex] ?? 0;
   const disagreementContributions =
     consensus.status === "available" ? consensus.contributions : [];
@@ -118,13 +207,18 @@ export function qualifyEvaluation(
     input.policy.disagreementWarningThreshold <=
       input.policy.disagreementBlockThreshold;
   let marketDisagreement: number;
+  let disagreementInput:
+    Parameters<typeof scoreMarketDisagreement>[0] | undefined;
+  let disagreementProvenance: Readonly<CalculationProvenance> | null = null;
   if (disagreementThresholdsValid) {
-    const disagreement = scoreMarketDisagreement({
+    disagreementInput = {
       selectionKeys,
       contributions: disagreementContributions,
       warningThreshold: input.policy.disagreementWarningThreshold,
       blockThreshold: input.policy.disagreementBlockThreshold,
-    });
+    };
+    const disagreement = scoreMarketDisagreement(disagreementInput);
+    disagreementProvenance = disagreement.provenance;
     marketDisagreement = disagreement.score ?? 0;
   } else {
     marketDisagreement = Array.from(
@@ -178,6 +272,14 @@ export function qualifyEvaluation(
       reason !== "market-disagreement-warning",
   );
   if (!hasBlockingReason) reasons.push("positive-ev-qualified");
+  const provenance = safeCalculationProvenance(
+    "qualification",
+    qualificationProvenanceInput(input),
+    [],
+    [consensus.provenance, disagreementProvenance].filter(
+      (item): item is Readonly<CalculationProvenance> => item !== null,
+    ),
+  );
   return Object.freeze({
     calculationVersion: QUALIFICATION_VERSION,
     decision: hasBlockingReason ? "no-bet" : "play",
@@ -194,8 +296,19 @@ export function qualifyEvaluation(
       Object.fromEntries(
         consensus.contributions
           .map(({ sportsbookId, weight }) => [sportsbookId, weight] as const)
-          .sort(([left], [right]) => left.localeCompare(right)),
+          .sort(([left], [right]) => compareText(left, right)),
       ),
     ),
+    provenance,
+    display: Object.freeze({
+      conservativeProbability: displayPercentage(conservativeProbability).text,
+      noVigProbability: displayPercentage(noVigProbability).text,
+      marketImpliedProbability: displayPercentage(marketImpliedProbability)
+        .text,
+      decimalOdds: displayDecimalOdds(decimalOdds).text,
+      expectedValue: displayPercentage(expectedValue).text,
+      edge: displayPercentage(edge).text,
+      marketDisagreement: displayPercentage(marketDisagreement).text,
+    }),
   });
 }

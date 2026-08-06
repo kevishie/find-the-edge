@@ -95,7 +95,7 @@ describe("selected closing comparison consensus CLV", () => {
         calculationVersion: "closing-line-value-v1",
       },
       consensus: {
-        calculationVersion: "weighted-consensus-v1",
+        calculationVersion: "weighted-consensus-v2",
         status: "available",
         includedSportsbookIds: ["a", "b"],
         exclusions: [{ sportsbookId: "hardrock", reason: "target-sportsbook" }],
@@ -114,6 +114,13 @@ describe("selected closing comparison consensus CLV", () => {
     expect(
       Object.isFrozen(result.consensus.contributions[0]?.probabilities),
     ).toBe(true);
+    expect(result.provenance?.root.algorithm.version).toBe(
+      "closing-consensus-clv-v1",
+    );
+    expect(
+      result.provenance?.components.map(({ algorithm }) => algorithm.id),
+    ).toEqual(["closing-line-value", "market-outlier", "weighted-consensus"]);
+    expect(result.display?.priceClv).toBe("10.00%");
   });
 
   it("is invariant to closing-book ordering", () => {
@@ -194,6 +201,68 @@ describe("selected closing comparison consensus CLV", () => {
       issues: ["numeric-overflow"],
       values: null,
       consensus: null,
+    });
+  });
+
+  it("does not throw while producing invalid placed-odds output for malformed closing input", () => {
+    const result = calculateClosingConsensusClv({
+      placedAmericanOdds: 99,
+      selectionKey: "home",
+      closingConsensusInput:
+        null as unknown as ClosingConsensusClvInput["closingConsensusInput"],
+    });
+
+    expect(result).toMatchObject({
+      status: "invalid",
+      issues: ["invalid-placed-odds"],
+      consensus: null,
+      values: null,
+      provenance: null,
+    });
+  });
+
+  it.each([
+    ["null input", null],
+    [
+      "zero minimum books",
+      {
+        ...input().closingConsensusInput,
+        policy: { ...input().closingConsensusInput.policy, minimumBooks: 0 },
+      },
+    ],
+    [
+      "null comparison weights",
+      {
+        ...input().closingConsensusInput,
+        policy: {
+          ...input().closingConsensusInput.policy,
+          comparisonWeights: null,
+        },
+      },
+    ],
+    [
+      "invalid threshold",
+      {
+        ...input().closingConsensusInput,
+        policy: {
+          ...input().closingConsensusInput.policy,
+          outlierThreshold: Number.NaN,
+        },
+      },
+    ],
+  ])("fails closed for malformed closing consensus: %s", (_, malformed) => {
+    const result = calculateClosingConsensusClv({
+      placedAmericanOdds: 120,
+      selectionKey: "home",
+      closingConsensusInput:
+        malformed as unknown as ClosingConsensusClvInput["closingConsensusInput"],
+    });
+
+    expect(result).toMatchObject({
+      status: "invalid",
+      issues: ["closing-consensus-invalid"],
+      consensus: null,
+      values: null,
     });
   });
 

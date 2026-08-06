@@ -173,7 +173,7 @@ describe("fair-value result", () => {
 
     expect(result).toMatchObject({
       calculationVersion: "fair-value-v1",
-      displayVersion: "fair-value-display-v1",
+      displayVersion: "display-precision-v1",
       status: "available",
       issues: [],
       inputs: input,
@@ -182,13 +182,13 @@ describe("fair-value result", () => {
         kelly: "Informational only",
       },
       display: {
-        fairDecimalOdds: 2.083,
-        fairAmericanOdds: 108,
-        expectedValuePercent: 5.6,
-        expectedProfit: 5.6,
-        rawKellyPercent: 4.67,
-        informationalKellyPercent: 4.67,
-        fractionalKellyPercent: 1.17,
+        fairDecimalOdds: "2.083",
+        fairAmericanOdds: "+108",
+        expectedValuePercent: "5.60%",
+        expectedProfit: "5.60",
+        rawKellyPercent: "4.67%",
+        informationalKellyPercent: "4.67%",
+        fractionalKellyPercent: "1.17%",
       },
     });
     if (result.status !== "available") throw new Error("expected available");
@@ -211,6 +211,11 @@ describe("fair-value result", () => {
     expect(Object.isFrozen(result.display)).toBe(true);
     expect(Object.isFrozen(result.labels)).toBe(true);
     expect(Object.isFrozen(result.issues)).toBe(true);
+    expect(result.provenance?.root.algorithm).toEqual({
+      id: "fair-value",
+      version: "fair-value-v1",
+    });
+    expect(result.provenance?.root.inputHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it.each([
@@ -258,8 +263,8 @@ describe("fair-value result", () => {
     expect(result.values.rawKellyFraction).toBeCloseTo(-0.05, 12);
     expect(result.values.informationalKellyFraction).toBe(0);
     expect(result.values.fractionalKellyFraction).toBe(0);
-    expect(result.display.informationalKellyPercent).toBe(0);
-    expect(result.display.fractionalKellyPercent).toBe(0);
+    expect(result.display.informationalKellyPercent).toBe("0.00%");
+    expect(result.display.fractionalKellyPercent).toBe("0.00%");
   });
 
   it("returns every invalid scalar as a stable typed issue without partial values", () => {
@@ -414,10 +419,9 @@ describe("fair-value result", () => {
     expect(negative.status).toBe("available");
     if (positive.status !== "available" || negative.status !== "available")
       throw new Error("expected available");
-    expect(positive.display.expectedProfit).toBe(0);
-    expect(Object.is(positive.display.expectedProfit, -0)).toBe(false);
+    expect(positive.display.expectedProfit).toBe("0.00");
     expect(negative.values.expectedProfit).toBeCloseTo(-1.125, 12);
-    expect(negative.display.expectedProfit).toBe(-1.13);
+    expect(negative.display.expectedProfit).toBe("-1.13");
 
     const positiveHalf = calculateFairValue({
       fairProbability: 0.75,
@@ -446,11 +450,11 @@ describe("fair-value result", () => {
       canonicalDecimalHalf.status !== "available"
     )
       throw new Error("expected available");
-    expect(positiveHalf.display.expectedProfit).toBe(1.13);
+    expect(positiveHalf.display.expectedProfit).toBe("1.13");
     expect(positiveBelowHalf.values.expectedProfit).toBeLessThan(1.125);
-    expect(positiveBelowHalf.display.expectedProfit).toBe(1.12);
+    expect(positiveBelowHalf.display.expectedProfit).toBe("1.12");
     expect(canonicalDecimalHalf.values.expectedProfit).toBe(1.005);
-    expect(canonicalDecimalHalf.display.expectedProfit).toBe(1.01);
+    expect(canonicalDecimalHalf.display.expectedProfit).toBe("1.01");
   });
 
   it("keeps large finite raw and display values available without rounding drift", () => {
@@ -470,9 +474,9 @@ describe("fair-value result", () => {
     expect(huge.status).toBe("available");
     if (integral.status !== "available" || huge.status !== "available")
       throw new Error("expected available");
-    expect(integral.display.expectedProfit).toBe(1e15);
+    expect(integral.display.expectedProfit).toBe("1000000000000000.00");
     expect(huge.values.expectedProfit).toBe(5e306);
-    expect(huge.display.expectedProfit).toBe(5e306);
+    expect(huge.display.expectedProfit).toMatch(/^5(?:0){306}\.00$/);
   });
 
   it("preserves algebraic invariants across representative inputs", () => {
@@ -566,6 +570,14 @@ describe("weighted consensus", () => {
     expect(result.probabilities?.reduce((sum, value) => sum + value, 0)).toBe(
       1,
     );
+    expect(result.calculationVersion).toBe("weighted-consensus-v2");
+    expect(result.provenance?.root.algorithm.version).toBe(
+      "weighted-consensus-v2",
+    );
+    expect(
+      result.provenance?.components.map(({ algorithm }) => algorithm.id),
+    ).toEqual(["market-outlier"]);
+    expect(result.display.probabilities).toEqual(["50.81%", "49.19%"]);
   });
 
   it("supports a selection-aligned weighted three-way consensus", () => {
@@ -591,6 +603,94 @@ describe("weighted consensus", () => {
     ]);
     expect(result.probabilities?.reduce((sum, value) => sum + value, 0)).toBe(
       1,
+    );
+  });
+
+  it("ignores unused selection metadata and getters in authoritative provenance", () => {
+    const baseline = calculateWeightedConsensus({
+      books: baseBooks,
+      targetSportsbookId: "target",
+      selectionKeys: ["away", "home"],
+      policy: twoWayPolicy,
+    });
+    const decoratedSelections = baseBooks.map((entry) => ({
+      ...entry,
+      selections: entry.selections.map((selection) =>
+        Object.defineProperty(
+          { ...selection, displayLabel: "unused" },
+          "providerPayload",
+          {
+            enumerable: true,
+            get: () => {
+              throw new Error("unused getter must not execute");
+            },
+          },
+        ),
+      ),
+    }));
+    const decorated = calculateWeightedConsensus({
+      books: decoratedSelections,
+      targetSportsbookId: "target",
+      selectionKeys: ["away", "home"],
+      policy: twoWayPolicy,
+    });
+
+    expect(decorated.provenance?.root.inputHash).toBe(
+      baseline.provenance?.root.inputHash,
+    );
+    expect(decorated.probabilities).toEqual(baseline.probabilities);
+  });
+
+  it("canonicalizes duplicate-book and duplicate-selection invalid evidence", () => {
+    const duplicateBooks = [
+      book("A", [-110, -110], { ageMinutes: 2 }),
+      book("a", [-120, 100], { ageMinutes: 1 }),
+    ];
+    const duplicateBookInput = {
+      targetSportsbookId: "target",
+      selectionKeys: ["away", "home"],
+      policy: twoWayPolicy,
+    } as const;
+    const duplicateBookLeft = calculateWeightedConsensus({
+      ...duplicateBookInput,
+      books: duplicateBooks,
+    });
+    const duplicateBookRight = calculateWeightedConsensus({
+      ...duplicateBookInput,
+      books: [...duplicateBooks].reverse(),
+    });
+    expect(duplicateBookLeft.status).toBe("invalid");
+    expect(duplicateBookRight.provenance?.root.inputHash).toBe(
+      duplicateBookLeft.provenance?.root.inputHash,
+    );
+
+    const duplicateSelections = [
+      { selectionKey: "away", americanOdds: -105 },
+      { selectionKey: "away", americanOdds: -115 },
+    ];
+    const duplicateSelectionLeft = calculateWeightedConsensus({
+      ...duplicateBookInput,
+      books: [
+        {
+          ...book("a", [-110, -110]),
+          selections: duplicateSelections,
+        },
+        book("b", [-110, -110]),
+      ],
+    });
+    const duplicateSelectionRight = calculateWeightedConsensus({
+      ...duplicateBookInput,
+      books: [
+        {
+          ...book("a", [-110, -110]),
+          selections: [...duplicateSelections].reverse(),
+        },
+        book("b", [-110, -110]),
+      ],
+    });
+    expect(duplicateSelectionLeft.status).toBe("unavailable");
+    expect(duplicateSelectionRight.provenance?.root.inputHash).toBe(
+      duplicateSelectionLeft.provenance?.root.inputHash,
     );
   });
 
@@ -884,10 +984,24 @@ describe("qualification", () => {
   };
 
   it("qualifies a fresh, supported positive-EV play", () => {
-    expect(evaluateEdge(base)).toMatchObject({
+    const result = evaluateEdge(base);
+    expect(result).toMatchObject({
       decision: "play",
       reasons: ["positive-ev"],
     });
+    const equivalent = evaluateEdge({
+      ...base,
+      approvedMarketKeys: ["moneyline", "moneyline"],
+      publicTicketPercent: 0,
+      overwhelmingAnalyticalEdge: false,
+      minimumEv: 0.02,
+      minimumBooks: 3,
+      maximumPriceAgeMinutes: 15,
+    });
+    expect(equivalent.provenance.root.inputHash).toBe(
+      result.provenance.root.inputHash,
+    );
+    expect(equivalent.display).toEqual(result.display);
   });
 
   it("returns no bet with auditable reasons", () => {

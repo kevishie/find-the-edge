@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createCalculationProvenance } from "./calculation-provenance";
 import {
   createPaperEvaluation,
   normalizeEvaluationManifest,
@@ -54,6 +55,120 @@ export const manifest = (
 });
 
 describe("paper evaluation domain", () => {
+  it("preserves the legacy schema hash exactly and versions only new provenance records", () => {
+    const legacy = normalizeEvaluationManifest(manifest());
+    expect(legacy.inputHash).toBe(
+      "db3a047799bc84640f352d8f5204fe84493901bcdd2473f377bd40344a0f7f57",
+    );
+
+    const calculationProvenance = createCalculationProvenance({
+      algorithm: { id: "edge", version: "1" },
+      input: { offeredAmerican: 120 },
+      precisionPolicyVersion: "display-precision-v1",
+      components: [
+        {
+          algorithm: {
+            id: "weighted-consensus",
+            version: "weighted-consensus-v2",
+          },
+          input: { books: ["b", "c"] },
+        },
+      ],
+    });
+    const versioned = normalizeEvaluationManifest(
+      manifest({
+        versions: {
+          ...manifest().versions,
+          manifestSchema: { id: "paper-evaluation", version: "3" },
+        },
+        calculationProvenance,
+      }),
+    );
+    expect(versioned.inputHash).not.toBe(legacy.inputHash);
+    expect(versioned.calculationProvenance).toEqual(calculationProvenance);
+    expect(Object.isFrozen(versioned.calculationProvenance?.components)).toBe(
+      true,
+    );
+    expect(
+      normalizeEvaluationManifest({
+        ...versioned,
+        inputHash: versioned.inputHash,
+      }),
+    ).toEqual(versioned);
+    const legacyPair = createPaperEvaluation({
+      manifest: manifest(),
+      decision: "play",
+      reasonCodes: ["positive-ev"],
+      createdAt: "2026-08-03T21:00:00.000Z",
+    });
+    expect(legacyPair.evaluation.evaluationId).toBe(
+      `evaluation:${legacy.inputHash}`,
+    );
+    expect(legacyPair.paperBet?.paperBetId).toBe(
+      `paper-bet:${legacy.inputHash}`,
+    );
+  });
+
+  it("requires exact schema-v3 calculation provenance", () => {
+    expect(() =>
+      normalizeEvaluationManifest(
+        manifest({
+          versions: {
+            ...manifest().versions,
+            manifestSchema: { id: "paper-evaluation", version: "3" },
+          },
+        }),
+      ),
+    ).toThrow("calculation-provenance-required");
+    expect(() =>
+      normalizeEvaluationManifest(
+        manifest({
+          calculationProvenance: createCalculationProvenance({
+            algorithm: { id: "qualification", version: "1" },
+            input: {},
+            precisionPolicyVersion: "display-precision-v1",
+          }),
+        }),
+      ),
+    ).toThrow("calculation-provenance-schema-mismatch");
+    expect(() =>
+      normalizeEvaluationManifest(
+        manifest({
+          versions: {
+            ...manifest().versions,
+            manifestSchema: { id: "paper-evaluation", version: "3" },
+          },
+          calculationProvenance: createCalculationProvenance({
+            algorithm: { id: "other", version: "1" },
+            input: {},
+            precisionPolicyVersion: "display-precision-v1",
+          }),
+        }),
+      ),
+    ).toThrow("calculation-provenance-version-mismatch");
+  });
+  it("preserves unrelated schema v3 records and rejects future paper-evaluation schemas", () => {
+    expect(() =>
+      normalizeEvaluationManifest(
+        manifest({
+          versions: {
+            ...manifest().versions,
+            manifestSchema: { id: "partner-manifest", version: "3" },
+          },
+        }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      normalizeEvaluationManifest(
+        manifest({
+          versions: {
+            ...manifest().versions,
+            manifestSchema: { id: "paper-evaluation", version: "4" },
+          },
+        }),
+      ),
+    ).toThrow("manifest-schema-version-unsupported");
+  });
   it("binds participant order, event version, market structure and scope into identity", () => {
     const terms = {
       schemaVersion: "1" as const,

@@ -138,15 +138,6 @@ const initialForm: FormState = {
   lineupConfirmed: true,
 };
 
-function percent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
-}
-
-function american(value: number): string {
-  const rounded = Math.round(value);
-  return rounded > 0 ? `+${String(rounded)}` : String(rounded);
-}
-
 function calculate(form: FormState): EdgeEvaluation {
   const [fairProbability] = removeVig([form.consensusSide, form.opponent]);
   if (fairProbability === undefined)
@@ -613,22 +604,20 @@ function EdgeLab() {
                   <div>
                     <span>Market implied</span>
                     <strong>
-                      {percent(result.evaluation.marketImpliedProbability)}
+                      {result.evaluation.display.marketImpliedProbability}
                     </strong>
                   </div>
                   <div>
                     <span>No-vig fair</span>
-                    <strong>
-                      {percent(result.evaluation.fairProbability)}
-                    </strong>
+                    <strong>{result.evaluation.display.fairProbability}</strong>
                   </div>
                   <div>
                     <span>Fair price</span>
-                    <strong>{american(result.evaluation.fairAmerican)}</strong>
+                    <strong>{result.evaluation.display.fairAmerican}</strong>
                   </div>
                   <div className="ev">
                     <span>Estimated EV</span>
-                    <strong>{percent(result.evaluation.expectedValue)}</strong>
+                    <strong>{result.evaluation.display.expectedValue}</strong>
                   </div>
                 </div>
                 <div className="reasons">
@@ -640,7 +629,7 @@ function EdgeLab() {
                   </ul>
                 </div>
                 <small className="version">
-                  {result.evaluation.calculationVersion}
+                  {result.evaluation.provenance.root.algorithm.version}
                 </small>
               </>
             )

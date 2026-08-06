@@ -1,15 +1,27 @@
 import {
   americanToDecimal,
   calculateWeightedConsensus,
+  consensusProvenanceInput,
   impliedProbability,
   type ConsensusInput,
   type ConsensusResult,
 } from "./index";
+import type { CalculationProvenance } from "@find-the-edge/domain";
+import {
+  displayAmericanOdds,
+  displayDecimalOdds,
+  displayPercentage,
+} from "./precision";
+import { calculationProvenance, safeCalculationProvenance } from "./provenance";
+import {
+  CLOSING_CONSENSUS_CLV_CALCULATION_VERSION,
+  CLOSING_LINE_VALUE_CALCULATION_VERSION,
+} from "./versions";
 
-export const CLOSING_LINE_VALUE_CALCULATION_VERSION =
-  "closing-line-value-v1" as const;
-export const CLOSING_CONSENSUS_CLV_CALCULATION_VERSION =
-  "closing-consensus-clv-v1" as const;
+export {
+  CLOSING_CONSENSUS_CLV_CALCULATION_VERSION,
+  CLOSING_LINE_VALUE_CALCULATION_VERSION,
+};
 
 export interface ClosingLineValue {
   readonly calculationVersion: typeof CLOSING_LINE_VALUE_CALCULATION_VERSION;
@@ -19,6 +31,14 @@ export interface ClosingLineValue {
   readonly closingFairProbability: number;
   readonly priceClv: number;
   readonly probabilityClv: number;
+  readonly provenance: Readonly<CalculationProvenance>;
+  readonly display: Readonly<{
+    readonly placedAmericanOdds: string;
+    readonly placedDecimalOdds: string;
+    readonly closingFairProbability: string;
+    readonly priceClv: string;
+    readonly probabilityClv: string;
+  }>;
 }
 
 export interface ClosingConsensusClvInput {
@@ -41,6 +61,8 @@ export interface ClosingConsensusClvResult {
   readonly selectionKey: string;
   readonly values: Readonly<ClosingLineValue> | null;
   readonly consensus: ConsensusResult | null;
+  readonly provenance: Readonly<CalculationProvenance> | null;
+  readonly display: ClosingLineValue["display"] | null;
 }
 
 function normalizeNegativeZero(value: number): number {
@@ -73,6 +95,10 @@ export function closingLineValue(
   ) {
     throw new RangeError("Closing line value exceeds numeric precision");
   }
+  const provenance = calculationProvenance("closingLineValue", {
+    placedAmericanOdds,
+    closingFairProbability,
+  });
   return Object.freeze({
     calculationVersion: CLOSING_LINE_VALUE_CALCULATION_VERSION,
     placedAmericanOdds,
@@ -81,6 +107,15 @@ export function closingLineValue(
     closingFairProbability,
     priceClv: normalizeNegativeZero(priceClv),
     probabilityClv: normalizeNegativeZero(probabilityClv),
+    provenance,
+    display: Object.freeze({
+      placedAmericanOdds: displayAmericanOdds(placedAmericanOdds).text,
+      placedDecimalOdds: displayDecimalOdds(placedDecimalOdds).text,
+      closingFairProbability: displayPercentage(closingFairProbability).text,
+      priceClv: displayPercentage(normalizeNegativeZero(priceClv)).text,
+      probabilityClv: displayPercentage(normalizeNegativeZero(probabilityClv))
+        .text,
+    }),
   });
 }
 
@@ -91,6 +126,42 @@ function freezeClosingConsensusClvResult(
     calculationVersion: CLOSING_CONSENSUS_CLV_CALCULATION_VERSION,
     ...result,
     issues: Object.freeze([...result.issues]),
+    display:
+      result.display === null ? null : Object.freeze({ ...result.display }),
+  });
+}
+
+function closingConsensusEvidence(
+  input: ClosingConsensusClvInput,
+  result: Omit<
+    ClosingConsensusClvResult,
+    "calculationVersion" | "provenance" | "display"
+  >,
+): ClosingConsensusClvResult {
+  let provenance: Readonly<CalculationProvenance> | null = null;
+  try {
+    provenance = safeCalculationProvenance(
+      "closingConsensusClv",
+      {
+        placedAmericanOdds: input.placedAmericanOdds,
+        selectionKey: input.selectionKey,
+        closingConsensusInput: consensusProvenanceInput(
+          input.closingConsensusInput,
+        ),
+      },
+      [],
+      [result.consensus?.provenance, result.values?.provenance].filter(
+        (item): item is Readonly<CalculationProvenance> => item != null,
+      ),
+    );
+  } catch {
+    // Invalid callers still receive the typed invalid result. Optional
+    // provenance must never turn fail-closed calculation handling into a throw.
+  }
+  return freezeClosingConsensusClvResult({
+    ...result,
+    provenance,
+    display: result.values?.display ?? null,
   });
 }
 
@@ -99,7 +170,7 @@ export function calculateClosingConsensusClv(
 ): ClosingConsensusClvResult {
   try {
     if (americanToDecimal(input.placedAmericanOdds) <= 1) {
-      return freezeClosingConsensusClvResult({
+      return closingConsensusEvidence(input, {
         status: "invalid",
         issues: ["numeric-overflow"],
         selectionKey: input.selectionKey,
@@ -108,7 +179,7 @@ export function calculateClosingConsensusClv(
       });
     }
   } catch {
-    return freezeClosingConsensusClvResult({
+    return closingConsensusEvidence(input, {
       status: "invalid",
       issues: ["invalid-placed-odds"],
       selectionKey: input.selectionKey,
@@ -116,9 +187,20 @@ export function calculateClosingConsensusClv(
       consensus: null,
     });
   }
-  const consensus = calculateWeightedConsensus(input.closingConsensusInput);
+  let consensus: ConsensusResult;
+  try {
+    consensus = calculateWeightedConsensus(input.closingConsensusInput);
+  } catch {
+    return closingConsensusEvidence(input, {
+      status: "invalid",
+      issues: ["closing-consensus-invalid"],
+      selectionKey: input.selectionKey,
+      values: null,
+      consensus: null,
+    });
+  }
   if (consensus.status === "invalid") {
-    return freezeClosingConsensusClvResult({
+    return closingConsensusEvidence(input, {
       status: "invalid",
       issues: ["closing-consensus-invalid"],
       selectionKey: input.selectionKey,
@@ -127,7 +209,7 @@ export function calculateClosingConsensusClv(
     });
   }
   if (consensus.status === "unavailable") {
-    return freezeClosingConsensusClvResult({
+    return closingConsensusEvidence(input, {
       status: "unavailable",
       issues: ["closing-consensus-unavailable"],
       selectionKey: input.selectionKey,
@@ -141,7 +223,7 @@ export function calculateClosingConsensusClv(
   );
   const closingFairProbability = consensus.probabilities?.[selectionIndex];
   if (selectionIndex < 0 || closingFairProbability === undefined) {
-    return freezeClosingConsensusClvResult({
+    return closingConsensusEvidence(input, {
       status: "unavailable",
       issues: ["selection-not-found"],
       selectionKey: input.selectionKey,
@@ -151,7 +233,7 @@ export function calculateClosingConsensusClv(
   }
 
   try {
-    return freezeClosingConsensusClvResult({
+    return closingConsensusEvidence(input, {
       status: "available",
       issues: [],
       selectionKey: input.selectionKey,
@@ -162,7 +244,7 @@ export function calculateClosingConsensusClv(
       consensus,
     });
   } catch {
-    return freezeClosingConsensusClvResult({
+    return closingConsensusEvidence(input, {
       status: "invalid",
       issues: ["numeric-overflow"],
       selectionKey: input.selectionKey,

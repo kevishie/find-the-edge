@@ -1,6 +1,15 @@
-export const MARKET_OUTLIER_CALCULATION_VERSION = "market-outlier-v1" as const;
-export const MARKET_DISAGREEMENT_CALCULATION_VERSION =
-  "market-disagreement-v1" as const;
+import type { CalculationProvenance } from "@find-the-edge/domain";
+import { displayPercentage } from "./precision";
+import { safeCalculationProvenance } from "./provenance";
+import {
+  MARKET_DISAGREEMENT_CALCULATION_VERSION,
+  MARKET_OUTLIER_CALCULATION_VERSION,
+} from "./versions";
+
+export {
+  MARKET_DISAGREEMENT_CALCULATION_VERSION,
+  MARKET_OUTLIER_CALCULATION_VERSION,
+};
 
 export interface MarketProbabilityContribution {
   readonly sportsbookId: string;
@@ -37,6 +46,11 @@ export interface MarketOutlierResult {
   readonly centers: readonly number[] | null;
   readonly books: readonly Readonly<MarketOutlierBookAudit>[];
   readonly outlierSportsbookIds: readonly string[];
+  readonly provenance: Readonly<CalculationProvenance> | null;
+  readonly display: Readonly<{
+    readonly threshold: string;
+    readonly centers: readonly string[] | null;
+  }>;
 }
 
 export type MarketDisagreementClassification = "none" | "warning" | "block";
@@ -66,6 +80,12 @@ export interface MarketDisagreementResult {
   readonly classification: MarketDisagreementClassification | null;
   readonly ranges: readonly Readonly<MarketDisagreementRange>[];
   readonly contributingSportsbookIds: readonly string[];
+  readonly provenance: Readonly<CalculationProvenance> | null;
+  readonly display: Readonly<{
+    readonly warningThreshold: string;
+    readonly blockThreshold: string;
+    readonly score: string | null;
+  }>;
 }
 
 interface NormalizedMarketQualityInput {
@@ -85,6 +105,26 @@ function canonicalSportsbookId(value: string): string {
 
 function compareCanonicalText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function compareCanonicalNumber(left: number, right: number): number {
+  if (Object.is(left, right) || (left === 0 && right === 0)) return 0;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return compareCanonicalText(String(left), String(right));
+}
+
+function compareProbabilityVectors(
+  left: readonly number[],
+  right: readonly number[],
+): number {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    if (left[index] === undefined) return -1;
+    if (right[index] === undefined) return 1;
+    const comparison = compareCanonicalNumber(left[index]!, right[index]!);
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
 }
 
 function upperMedian(values: readonly number[]): number {
@@ -143,8 +183,10 @@ function normalizeMarketQualityInput(
       probabilities: Object.freeze([...contribution.probabilities]),
     };
   });
-  normalized.sort((left, right) =>
-    compareCanonicalText(left.sportsbookId, right.sportsbookId),
+  normalized.sort(
+    (left, right) =>
+      compareCanonicalText(left.sportsbookId, right.sportsbookId) ||
+      compareProbabilityVectors(left.probabilities, right.probabilities),
   );
   return {
     selectionKeys: Object.freeze([...selectionKeys]),
@@ -199,6 +241,38 @@ function freezeOutlierResult(
       ),
     ),
     outlierSportsbookIds: Object.freeze([...result.outlierSportsbookIds]),
+    display: Object.freeze({
+      ...result.display,
+      centers:
+        result.display.centers === null
+          ? null
+          : Object.freeze([...result.display.centers]),
+    }),
+  });
+}
+
+function outlierEvidence(
+  input: MarketOutlierInput,
+  normalized: NormalizedMarketQualityInput,
+  result: Omit<
+    MarketOutlierResult,
+    "calculationVersion" | "provenance" | "display"
+  >,
+): MarketOutlierResult {
+  return freezeOutlierResult({
+    ...result,
+    provenance: safeCalculationProvenance("marketOutlier", {
+      selectionKeys: normalized.selectionKeys,
+      contributions: normalized.contributions,
+      threshold: input.threshold,
+    }),
+    display: {
+      threshold: displayPercentage(input.threshold).text,
+      centers:
+        result.centers === null
+          ? null
+          : result.centers.map((center) => displayPercentage(center).text),
+    },
   });
 }
 
@@ -211,7 +285,7 @@ export function detectMarketOutliers(
     input.contributions,
   );
   if (normalized.issues.length > 0) {
-    return freezeOutlierResult({
+    return outlierEvidence(input, normalized, {
       status: "invalid",
       issues: normalized.issues,
       threshold: input.threshold,
@@ -222,7 +296,7 @@ export function detectMarketOutliers(
     });
   }
   if (normalized.contributions.length === 0) {
-    return freezeOutlierResult({
+    return outlierEvidence(input, normalized, {
       status: "insufficient-data",
       issues: ["insufficient-vectors"],
       threshold: input.threshold,
@@ -258,7 +332,7 @@ export function detectMarketOutliers(
       isOutlier: outlyingSelectionKeys.length > 0,
     } satisfies MarketOutlierBookAudit;
   });
-  return freezeOutlierResult({
+  return outlierEvidence(input, normalized, {
     status: "available",
     issues: [],
     threshold: input.threshold,
@@ -284,6 +358,32 @@ function freezeDisagreementResult(
     contributingSportsbookIds: Object.freeze([
       ...result.contributingSportsbookIds,
     ]),
+    display: Object.freeze({ ...result.display }),
+  });
+}
+
+function disagreementEvidence(
+  input: MarketDisagreementInput,
+  normalized: NormalizedMarketQualityInput,
+  result: Omit<
+    MarketDisagreementResult,
+    "calculationVersion" | "provenance" | "display"
+  >,
+): MarketDisagreementResult {
+  return freezeDisagreementResult({
+    ...result,
+    provenance: safeCalculationProvenance("marketDisagreement", {
+      selectionKeys: normalized.selectionKeys,
+      contributions: normalized.contributions,
+      warningThreshold: input.warningThreshold,
+      blockThreshold: input.blockThreshold,
+    }),
+    display: {
+      warningThreshold: displayPercentage(input.warningThreshold).text,
+      blockThreshold: displayPercentage(input.blockThreshold).text,
+      score:
+        result.score === null ? null : displayPercentage(result.score).text,
+    },
   });
 }
 
@@ -296,7 +396,7 @@ export function scoreMarketDisagreement(
     input.contributions,
   );
   if (normalized.issues.length > 0) {
-    return freezeDisagreementResult({
+    return disagreementEvidence(input, normalized, {
       status: "invalid",
       issues: normalized.issues,
       warningThreshold: input.warningThreshold,
@@ -309,7 +409,7 @@ export function scoreMarketDisagreement(
     });
   }
   if (normalized.contributions.length < 2) {
-    return freezeDisagreementResult({
+    return disagreementEvidence(input, normalized, {
       status: "insufficient-data",
       issues: ["insufficient-vectors"],
       warningThreshold: input.warningThreshold,
@@ -353,7 +453,7 @@ export function scoreMarketDisagreement(
           input.warningThreshold
         ? "warning"
         : "none";
-  return freezeDisagreementResult({
+  return disagreementEvidence(input, normalized, {
     status: "available",
     issues: [],
     warningThreshold: input.warningThreshold,

@@ -1,4 +1,8 @@
 import { sha256Hex } from "./fixture-odds.js";
+import {
+  normalizeCalculationProvenance,
+  type CalculationProvenance,
+} from "./calculation-provenance.js";
 
 const MAX_TEXT = 256;
 const MAX_ARRAY = 64;
@@ -86,6 +90,8 @@ export interface EvaluationManifestInput {
     readonly manifestSchema: PaperVersionRef;
   };
   readonly provenanceReferences: readonly string[];
+  /** Complete calculation graph for schema v3+ records. Legacy schemas omit it. */
+  readonly calculationProvenance?: Readonly<CalculationProvenance>;
 }
 export interface PaperGradingTerms {
   readonly schemaVersion: "1";
@@ -367,6 +373,9 @@ export function normalizeEvaluationManifest(
   const learningKeys = [
     ...(Object.hasOwn(record, "scheduledStartAt") ? ["scheduledStartAt"] : []),
     ...(Object.hasOwn(record, "wagerMode") ? ["wagerMode"] : []),
+    ...(Object.hasOwn(record, "calculationProvenance")
+      ? ["calculationProvenance"]
+      : []),
   ];
   exact(
     record,
@@ -593,6 +602,16 @@ export function normalizeEvaluationManifest(
   const completeness = record.evidenceCompleteness;
   if (!["complete", "partial", "insufficient"].includes(String(completeness)))
     throw new PaperEvaluationInputError("evidence-completeness-invalid");
+  let calculationProvenance: Readonly<CalculationProvenance> | undefined;
+  if (Object.hasOwn(record, "calculationProvenance")) {
+    try {
+      calculationProvenance = normalizeCalculationProvenance(
+        record.calculationProvenance,
+      );
+    } catch {
+      throw new PaperEvaluationInputError("calculation-provenance-invalid");
+    }
+  }
   let gradingTerms: PaperGradingTerms | undefined;
   if (withGrading) {
     const terms = own(record.gradingTerms, "grading-terms");
@@ -783,7 +802,44 @@ export function normalizeEvaluationManifest(
       record.provenanceReferences,
       "provenance-references",
     ),
+    ...(calculationProvenance ? { calculationProvenance } : {}),
   };
+  const manifestSchema = normalizedBase.versions.manifestSchema;
+  const isPaperEvaluationSchema = manifestSchema.id === "paper-evaluation";
+  if (
+    isPaperEvaluationSchema &&
+    manifestSchema.version !== "1" &&
+    manifestSchema.version !== "2" &&
+    manifestSchema.version !== "3"
+  ) {
+    throw new PaperEvaluationInputError("manifest-schema-version-unsupported");
+  }
+  if (
+    calculationProvenance &&
+    (!isPaperEvaluationSchema || manifestSchema.version !== "3")
+  ) {
+    throw new PaperEvaluationInputError(
+      "calculation-provenance-schema-mismatch",
+    );
+  }
+  if (
+    !calculationProvenance &&
+    isPaperEvaluationSchema &&
+    manifestSchema.version === "3"
+  ) {
+    throw new PaperEvaluationInputError("calculation-provenance-required");
+  }
+  if (
+    calculationProvenance &&
+    (normalizedBase.versions.calculation.id !==
+      calculationProvenance.root.algorithm.id ||
+      normalizedBase.versions.calculation.version !==
+        calculationProvenance.root.algorithm.version)
+  ) {
+    throw new PaperEvaluationInputError(
+      "calculation-provenance-version-mismatch",
+    );
+  }
   const expectedDimensions = [
     normalizedBase.eventId,
     normalizedBase.sportKey,

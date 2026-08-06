@@ -74,6 +74,9 @@ export interface SafeEvaluationTelemetry {
     readonly inputTokens?: number;
     readonly outputTokens?: number;
     readonly latencyMs?: number;
+    readonly calculationVersion?: string;
+    readonly calculationInputHash?: string;
+    readonly calculationHashStrategyVersion?: string;
   }): void;
 }
 interface ResolvedEvidenceBook {
@@ -395,6 +398,9 @@ export class PickEvaluationService {
         ? { point: input.request.candidate.point }
         : {}),
     });
+    if (qualification.provenance === null) {
+      return attempt("invalid", ["calculation-provenance-unavailable"]);
+    }
     const evaluationInput: PaperEvaluationInput = {
       manifest: {
         mode: "decision-time",
@@ -488,13 +494,14 @@ export class PickEvaluationService {
             id: input.analysisPolicy.versions.inputSchemaId,
             version: input.analysisPolicy.versions.inputSchemaVersion,
           },
-          manifestSchema: { id: "paper-evaluation", version: "2" },
+          manifestSchema: { id: "paper-evaluation", version: "3" },
         },
         provenanceReferences: [
           `evaluation-policy:${input.evaluationPolicy.id}@${input.evaluationPolicy.version}`,
           `model-deployment:${modelResult.model.deploymentId}`,
           `prompt-hash:${input.promptHash}`,
         ],
+        calculationProvenance: qualification.provenance,
       },
       decision: qualification.decision,
       reasonCodes: qualification.reasons,
@@ -519,6 +526,10 @@ export class PickEvaluationService {
       inputTokens: modelResult.usage.inputTokens,
       outputTokens: modelResult.usage.outputTokens,
       latencyMs: modelResult.usage.latencyMs,
+      calculationVersion: qualification.provenance.root.algorithm.version,
+      calculationInputHash: qualification.provenance.root.inputHash,
+      calculationHashStrategyVersion:
+        qualification.provenance.hashStrategyVersion,
     });
     return {
       terminal: "evaluation",

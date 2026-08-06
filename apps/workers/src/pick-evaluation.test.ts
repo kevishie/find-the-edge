@@ -14,7 +14,10 @@ import {
   type AnalysisPolicyLike,
   type StructuredAnalysisModelAdapter,
 } from "@find-the-edge/scouting";
-import { PickEvaluationService } from "./pick-evaluation";
+import {
+  PickEvaluationService,
+  type SafeEvaluationTelemetry,
+} from "./pick-evaluation";
 
 const policy: AnalysisPolicyLike = {
   enabled: true,
@@ -161,7 +164,7 @@ const service = (
     offered,
     comparisons,
   },
-  telemetry?: { emit(): void },
+  telemetry?: SafeEvaluationTelemetry,
 ) => {
   const attempts = new MemoryEvaluationAttemptRepository();
   const evaluations = new MemoryPaperEvaluationRepository();
@@ -202,7 +205,7 @@ describe("pick evaluation service", () => {
     );
     if (first.terminal !== "evaluation") throw new Error("expected evaluation");
     const expectedInputHash =
-      "8b5dbf20702aa1468a46fc0e50845439108d707c5d5ed984c674030f8e9ec525";
+      "cfe7ec40bc1c66392960953e05df7f91c5bb568e836ecb61648cd57aa3fee5f2";
     expect(first.pair.evaluation).toMatchObject({
       evaluationId: `evaluation:${expectedInputHash}`,
       inputHash: expectedInputHash,
@@ -233,6 +236,32 @@ describe("pick evaluation service", () => {
       id: "qualification",
       version: "deterministic-qualification-v1",
     });
+    expect(first.pair.evaluation.manifest.versions.manifestSchema).toEqual({
+      id: "paper-evaluation",
+      version: "3",
+    });
+    const persistedProvenance =
+      first.pair.evaluation.manifest.calculationProvenance;
+    expect(persistedProvenance).toMatchObject({
+      hashStrategyVersion: "calculation-input-sha256-v1",
+      precisionPolicyVersion: "display-precision-v1",
+      root: {
+        algorithm: {
+          id: "qualification",
+          version: "deterministic-qualification-v1",
+        },
+      },
+    });
+    expect(
+      persistedProvenance?.components.map(({ algorithm }) => algorithm),
+    ).toEqual([
+      { id: "market-disagreement", version: "market-disagreement-v1" },
+      { id: "market-outlier", version: "market-outlier-v1" },
+      { id: "weighted-consensus", version: "weighted-consensus-v2" },
+    ]);
+    for (const component of persistedProvenance?.components ?? []) {
+      expect(component.inputHash).toMatch(/^[a-f0-9]{64}$/);
+    }
   });
   it("canonicalizes selection order and binds the complete evidence vectors", async () => {
     const fixture = service();
@@ -452,6 +481,22 @@ describe("pick evaluation service", () => {
     await expect(fixture.service.evaluate(input)).resolves.toMatchObject({
       terminal: "evaluation",
     });
+  });
+  it("emits only bounded calculation version and hash telemetry", async () => {
+    const events: Parameters<SafeEvaluationTelemetry["emit"]>[0][] = [];
+    const fixture = service(undefined, undefined, {
+      emit: (event) => events.push(event),
+    });
+    await fixture.service.evaluate(input);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.calculationVersion).toBe(
+      "deterministic-qualification-v1",
+    );
+    expect(events[0]?.calculationInputHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(events[0]?.calculationHashStrategyVersion).toBe(
+      "calculation-input-sha256-v1",
+    );
+    expect(JSON.stringify(events[0])).not.toMatch(/api[_-]?key|prompt/i);
   });
   it("prevents fail-then-success from creating conflicting terminals", async () => {
     let calls = 0;

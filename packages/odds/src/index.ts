@@ -1,9 +1,26 @@
 import { detectMarketOutliers } from "./market-quality";
+import type { CalculationProvenance } from "@find-the-edge/domain";
+import {
+  displayAmericanOdds,
+  displayDecimalOdds,
+  displayMoney,
+  displayPercentage,
+  DISPLAY_SCALES,
+} from "./precision";
+import { calculationProvenance, safeCalculationProvenance } from "./provenance";
+import {
+  CALCULATION_VERSION,
+  CONSENSUS_CALCULATION_VERSION,
+  FAIR_VALUE_CALCULATION_VERSION,
+  FAIR_VALUE_DISPLAY_VERSION,
+} from "./versions";
 
-export const CALCULATION_VERSION = "edge-calculation-v1" as const;
-export const CONSENSUS_CALCULATION_VERSION = "weighted-consensus-v1" as const;
-export const FAIR_VALUE_CALCULATION_VERSION = "fair-value-v1" as const;
-export const FAIR_VALUE_DISPLAY_VERSION = "fair-value-display-v1" as const;
+export {
+  CALCULATION_VERSION,
+  CONSENSUS_CALCULATION_VERSION,
+  FAIR_VALUE_CALCULATION_VERSION,
+  FAIR_VALUE_DISPLAY_VERSION,
+};
 
 export type ConsensusExclusionReason =
   | "target-sportsbook"
@@ -72,6 +89,10 @@ export interface ConsensusResult {
   readonly includedSportsbookIds: readonly string[];
   readonly contributions: readonly ConsensusContribution[];
   readonly exclusions: readonly ConsensusExclusion[];
+  readonly provenance: Readonly<CalculationProvenance> | null;
+  readonly display: Readonly<{
+    readonly probabilities: readonly string[] | null;
+  }>;
 }
 
 export type QualificationReason =
@@ -108,6 +129,13 @@ export interface EdgeEvaluation {
   fairAmerican: number;
   expectedValue: number;
   reasons: QualificationReason[];
+  readonly provenance: Readonly<CalculationProvenance>;
+  readonly display: Readonly<{
+    readonly marketImpliedProbability: string;
+    readonly fairProbability: string;
+    readonly fairAmerican: string;
+    readonly expectedValue: string;
+  }>;
 }
 
 export type FairValueIssue =
@@ -141,13 +169,13 @@ export interface FairValueValues {
 }
 
 export interface FairValueDisplayValues {
-  readonly fairDecimalOdds: number;
-  readonly fairAmericanOdds: number;
-  readonly expectedValuePercent: number;
-  readonly expectedProfit: number;
-  readonly rawKellyPercent: number;
-  readonly informationalKellyPercent: number;
-  readonly fractionalKellyPercent: number;
+  readonly fairDecimalOdds: string;
+  readonly fairAmericanOdds: string;
+  readonly expectedValuePercent: string;
+  readonly expectedProfit: string;
+  readonly rawKellyPercent: string;
+  readonly informationalKellyPercent: string;
+  readonly fractionalKellyPercent: string;
 }
 
 export interface FairValueLabels {
@@ -161,6 +189,7 @@ interface FairValueResultBase {
   readonly inputs: Readonly<FairValueInput>;
   readonly issues: readonly FairValueIssue[];
   readonly labels: Readonly<FairValueLabels>;
+  readonly provenance: Readonly<CalculationProvenance> | null;
 }
 
 export interface AvailableFairValueResult extends FairValueResultBase {
@@ -249,11 +278,144 @@ function freezeConsensusResult(
     exclusions: Object.freeze(
       result.exclusions.map((exclusion) => Object.freeze({ ...exclusion })),
     ),
+    display: Object.freeze({
+      probabilities:
+        result.display.probabilities === null
+          ? null
+          : Object.freeze([...result.display.probabilities]),
+    }),
+  });
+}
+
+export function consensusProvenanceInput(input: ConsensusInput): unknown {
+  return {
+    targetSportsbookId: canonicalSportsbookId(input.targetSportsbookId),
+    selectionKeys: [...input.selectionKeys],
+    policy: {
+      comparisonWeights: Object.entries(input.policy.comparisonWeights)
+        .map(([sportsbookId, weight]) => [
+          canonicalSportsbookId(sportsbookId),
+          weight,
+        ])
+        .sort(
+          ([leftId, leftWeight], [rightId, rightWeight]) =>
+            compareCanonicalText(String(leftId), String(rightId)) ||
+            compareCanonicalNumber(Number(leftWeight), Number(rightWeight)),
+        ),
+      minimumBooks: input.policy.minimumBooks,
+      maximumAgeMinutes: input.policy.maximumAgeMinutes,
+      outlierThreshold: input.policy.outlierThreshold,
+    },
+    books: input.books
+      .map((book) => ({
+        sportsbookId: canonicalSportsbookId(book.sportsbookId),
+        ageMinutes: book.ageMinutes,
+        status: book.status,
+        selections: [...book.selections]
+          .map((selection) => ({
+            selectionKey: selection.selectionKey,
+            americanOdds: selection.americanOdds,
+          }))
+          .sort(
+            (left, right) =>
+              compareCanonicalText(left.selectionKey, right.selectionKey) ||
+              compareCanonicalNumber(left.americanOdds, right.americanOdds),
+          ),
+      }))
+      .sort(compareConsensusBookEvidence),
+  };
+}
+
+function consensusEvidence(
+  input: ConsensusInput,
+  result: Omit<
+    ConsensusResult,
+    "calculationVersion" | "provenance" | "display"
+  >,
+  outlierProvenance?: Readonly<CalculationProvenance> | null,
+): ConsensusResult {
+  const provenance = safeCalculationProvenance(
+    "consensus",
+    consensusProvenanceInput(input),
+    [],
+    outlierProvenance ? [outlierProvenance] : [],
+  );
+  return freezeConsensusResult({
+    ...result,
+    provenance,
+    display: {
+      probabilities:
+        result.probabilities === null
+          ? null
+          : result.probabilities.map(
+              (probability) => displayPercentage(probability).text,
+            ),
+    },
   });
 }
 
 function compareCanonicalText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function canonicalNumberIdentity(value: number): string {
+  if (Number.isNaN(value)) return "nan";
+  if (value === Infinity) return "+infinity";
+  if (value === -Infinity) return "-infinity";
+  if (Object.is(value, -0)) return "0";
+  return String(value);
+}
+
+function compareCanonicalNumber(left: number, right: number): number {
+  if (Object.is(left, right) || (left === 0 && right === 0)) return 0;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return compareCanonicalText(
+    canonicalNumberIdentity(left),
+    canonicalNumberIdentity(right),
+  );
+}
+
+function compareConsensusBookEvidence(
+  left: {
+    sportsbookId: string;
+    ageMinutes: number;
+    status: string;
+    selections: readonly ConsensusSelectionInput[];
+  },
+  right: {
+    sportsbookId: string;
+    ageMinutes: number;
+    status: string;
+    selections: readonly ConsensusSelectionInput[];
+  },
+): number {
+  const base =
+    compareCanonicalText(left.sportsbookId, right.sportsbookId) ||
+    compareCanonicalNumber(left.ageMinutes, right.ageMinutes) ||
+    compareCanonicalText(left.status, right.status);
+  if (base !== 0) return base;
+  for (
+    let index = 0;
+    index < Math.max(left.selections.length, right.selections.length);
+    index += 1
+  ) {
+    const leftSelection = left.selections[index];
+    const rightSelection = right.selections[index];
+    if (leftSelection === undefined) return -1;
+    if (rightSelection === undefined) return 1;
+    const comparison =
+      compareCanonicalText(
+        leftSelection.selectionKey,
+        rightSelection.selectionKey,
+      ) ||
+      compareCanonicalNumber(
+        leftSelection.americanOdds,
+        rightSelection.americanOdds,
+      );
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
 }
 
 function validateConsensusPolicy(
@@ -352,7 +514,7 @@ export function calculateWeightedConsensus(
         sportsbookId,
         reason: "duplicate-sportsbook" as const,
       }));
-    return freezeConsensusResult({
+    return consensusEvidence(input, {
       status: "invalid",
       issues: sortedUniqueIssues([
         ...(invalidMarket ? (["invalid-market"] as const) : []),
@@ -438,11 +600,14 @@ export function calculateWeightedConsensus(
     return [{ sportsbookId, probabilities, weight: weight! }];
   });
 
-  const outlierAudit = detectMarketOutliers({
+  const outlierInput = {
     selectionKeys,
-    contributions: eligible,
+    contributions: [...eligible].sort((left, right) =>
+      compareCanonicalText(left.sportsbookId, right.sportsbookId),
+    ),
     threshold: input.policy.outlierThreshold,
-  });
+  } as const;
+  const outlierAudit = detectMarketOutliers(outlierInput);
   const outlierSportsbookIds = new Set(outlierAudit.outlierSportsbookIds);
   const included = eligible.filter((book) => {
     const outlier = outlierSportsbookIds.has(book.sportsbookId);
@@ -490,20 +655,24 @@ export function calculateWeightedConsensus(
       ? weighted.map((probability) => probability / probabilityTotal)
       : null;
 
-  return freezeConsensusResult({
-    status: available ? "available" : "unavailable",
-    issues: sortedUniqueIssues(issues),
-    probabilities,
-    requiredBookCount: input.policy.minimumBooks,
-    eligibleBookCount: included.length,
-    includedSportsbookIds: included.map((book) => book.sportsbookId),
-    contributions: included.map((book) => ({
-      sportsbookId: book.sportsbookId,
-      weight: book.weight,
-      probabilities: book.probabilities,
-    })),
-    exclusions,
-  });
+  return consensusEvidence(
+    input,
+    {
+      status: available ? "available" : "unavailable",
+      issues: sortedUniqueIssues(issues),
+      probabilities,
+      requiredBookCount: input.policy.minimumBooks,
+      eligibleBookCount: included.length,
+      includedSportsbookIds: included.map((book) => book.sportsbookId),
+      contributions: included.map((book) => ({
+        sportsbookId: book.sportsbookId,
+        weight: book.weight,
+        probabilities: book.probabilities,
+      })),
+      exclusions,
+    },
+    outlierAudit.provenance,
+  );
 }
 
 export function expectedValue(
@@ -603,30 +772,6 @@ const FAIR_VALUE_LABELS = Object.freeze({
   kelly: "Informational only",
 } as const satisfies FairValueLabels);
 
-function displayRound(value: number, decimalPlaces: number): number {
-  const absoluteText = Math.abs(value).toString();
-  const [coefficient = "0", exponentText] = absoluteText.split("e");
-  const decimalPoint = coefficient.indexOf(".");
-  const fractionalDigits =
-    decimalPoint === -1 ? 0 : coefficient.length - decimalPoint - 1;
-  const digitsText = coefficient.replace(".", "").replace(/^0+/, "") || "0";
-  const decimalExponent = Number(exponentText ?? 0) - fractionalDigits;
-  const shift = decimalExponent + decimalPlaces;
-  if (shift >= 0) return Object.is(value, -0) ? 0 : value;
-
-  const divisor = 10n ** BigInt(-shift);
-  const digits = BigInt(digitsText);
-  const quotient = digits / divisor;
-  const remainder = digits % divisor;
-  const roundedMagnitude = remainder * 2n >= divisor ? quotient + 1n : quotient;
-  const rounded =
-    (Math.sign(value) * Number(roundedMagnitude)) / 10 ** decimalPlaces;
-  if (!Number.isFinite(rounded)) {
-    throw new RangeError("Display value exceeds numeric precision");
-  }
-  return Object.is(rounded, -0) ? 0 : rounded;
-}
-
 function breakEvenProbability(american: number): number {
   return american > 0
     ? 100 / (100 + american)
@@ -655,6 +800,7 @@ function invalidFairValueResult(
     inputs,
     issues: Object.freeze([...issues]),
     labels: FAIR_VALUE_LABELS,
+    provenance: safeCalculationProvenance("fairValue", inputs),
     values: null,
     display: null,
   });
@@ -731,23 +877,17 @@ export function calculateFairValue(input: FairValueInput): FairValueResult {
       return invalidFairValueResult(inputs, ["numeric-overflow"]);
     }
     const display = Object.freeze({
-      fairDecimalOdds: displayRound(values.fairDecimalOdds, 3),
-      fairAmericanOdds: displayRound(values.fairAmericanOdds, 0),
-      expectedValuePercent: displayRound(values.expectedValue * 100, 2),
-      expectedProfit: displayRound(values.expectedProfit, 2),
-      rawKellyPercent: displayRound(values.rawKellyFraction * 100, 2),
-      informationalKellyPercent: displayRound(
-        values.informationalKellyFraction * 100,
-        2,
-      ),
-      fractionalKellyPercent: displayRound(
-        values.fractionalKellyFraction * 100,
-        2,
-      ),
+      fairDecimalOdds: displayDecimalOdds(values.fairDecimalOdds).text,
+      fairAmericanOdds: displayAmericanOdds(values.fairAmericanOdds).text,
+      expectedValuePercent: displayPercentage(values.expectedValue).text,
+      expectedProfit: displayMoney(values.expectedProfit).text,
+      rawKellyPercent: displayPercentage(values.rawKellyFraction).text,
+      informationalKellyPercent: displayPercentage(
+        values.informationalKellyFraction,
+      ).text,
+      fractionalKellyPercent: displayPercentage(values.fractionalKellyFraction)
+        .text,
     } satisfies FairValueDisplayValues);
-    if (!Object.values(display).every(Number.isFinite)) {
-      return invalidFairValueResult(inputs, ["numeric-overflow"]);
-    }
     return Object.freeze({
       calculationVersion: FAIR_VALUE_CALCULATION_VERSION,
       displayVersion: FAIR_VALUE_DISPLAY_VERSION,
@@ -755,6 +895,7 @@ export function calculateFairValue(input: FairValueInput): FairValueResult {
       inputs,
       issues: Object.freeze([]),
       labels: FAIR_VALUE_LABELS,
+      provenance: calculationProvenance("fairValue", inputs),
       values: Object.freeze(values),
       display,
     });
@@ -788,16 +929,49 @@ export function evaluateEdge(input: EdgeInput): EdgeEvaluation {
   const decision = reasons.length === 0 ? "play" : "no-bet";
   if (decision === "play") reasons.push("positive-ev");
 
-  return {
+  const fairAmerican = probabilityToAmerican(input.fairProbability);
+  const marketImpliedProbability = impliedProbability(input.offeredAmerican);
+  const approvedMarketKeys = [...new Set(input.approvedMarketKeys)].sort(
+    compareCanonicalText,
+  );
+  return Object.freeze({
     calculationVersion: CALCULATION_VERSION,
     decision,
     decimalOdds: americanToDecimal(input.offeredAmerican),
-    marketImpliedProbability: impliedProbability(input.offeredAmerican),
+    marketImpliedProbability,
     fairProbability: input.fairProbability,
-    fairAmerican: probabilityToAmerican(input.fairProbability),
+    fairAmerican,
     expectedValue: ev,
-    reasons,
-  };
+    reasons: Object.freeze(reasons) as QualificationReason[],
+    provenance: calculationProvenance("edge", {
+      offeredAmerican: input.offeredAmerican,
+      fairProbability: input.fairProbability,
+      marketKey: input.marketKey,
+      approvedMarketKeys,
+      comparisonBooks: input.comparisonBooks,
+      priceAgeMinutes: input.priceAgeMinutes,
+      lineupConfirmed: input.lineupConfirmed,
+      minutesToStart: input.minutesToStart,
+      publicTicketPercent: input.publicTicketPercent ?? 0,
+      overwhelmingAnalyticalEdge: input.overwhelmingAnalyticalEdge ?? false,
+      minimumEv,
+      minimumBooks,
+      maximumPriceAgeMinutes: maximumAge,
+    }),
+    display: Object.freeze({
+      marketImpliedProbability: displayPercentage(
+        marketImpliedProbability,
+        DISPLAY_SCALES.edgeLabPercentage,
+      ).text,
+      fairProbability: displayPercentage(
+        input.fairProbability,
+        DISPLAY_SCALES.edgeLabPercentage,
+      ).text,
+      fairAmerican: displayAmericanOdds(fairAmerican).text,
+      expectedValue: displayPercentage(ev, DISPLAY_SCALES.edgeLabPercentage)
+        .text,
+    }),
+  });
 }
 
 export * from "./qualification";
@@ -806,3 +980,6 @@ export * from "./performance";
 export * from "./movement";
 export * from "./market-quality";
 export * from "./clv";
+export * from "./versions";
+export * from "./precision";
+export * from "./provenance";

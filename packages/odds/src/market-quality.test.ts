@@ -41,6 +41,8 @@ describe("market outlier audit", () => {
         expect.closeTo(0.1, 12),
       ],
     });
+    expect(result.provenance?.root.algorithm.version).toBe("market-outlier-v1");
+    expect(result.display.centers).toEqual(["31.00%", "29.00%", "40.00%"]);
   });
 
   it("preserves consensus-v1 upper medians for an even roster", () => {
@@ -149,6 +151,14 @@ describe("market outlier audit", () => {
       centers: null,
       books: [],
     });
+    const invalidReordered = detectMarketOutliers({
+      selectionKeys: ["away", "home"],
+      contributions: [contribution("a", [0.5]), contribution("A", [0.5, 0.5])],
+      threshold: 0.08,
+    });
+    expect(invalidReordered.provenance?.root.inputHash).toBe(
+      invalid.provenance?.root.inputHash,
+    );
 
     expect(
       detectMarketOutliers({
@@ -207,6 +217,10 @@ describe("market disagreement", () => {
       expect.closeTo(0.2, 12),
       expect.closeTo(0.1, 12),
     ]);
+    expect(result.provenance?.root.algorithm.version).toBe(
+      "market-disagreement-v1",
+    );
+    expect(result.display.score).toBe("20.00%");
   });
 
   it("uses inclusive warning/block thresholds and deterministic first-selection ties", () => {

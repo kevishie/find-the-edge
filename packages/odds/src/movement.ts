@@ -1,6 +1,10 @@
 import { impliedProbability } from "./index";
+import type { CalculationProvenance } from "@find-the-edge/domain";
+import { displayAmericanOdds, displayPercentage } from "./precision";
+import { safeCalculationProvenance } from "./provenance";
+import { LINE_MOVEMENT_CALCULATION_VERSION } from "./versions";
 
-export const LINE_MOVEMENT_CALCULATION_VERSION = "line-movement-v1" as const;
+export { LINE_MOVEMENT_CALCULATION_VERSION };
 
 export type MovementObservationState = "active" | "suspended" | "unavailable";
 
@@ -63,6 +67,12 @@ export interface LineMovementResult {
   readonly pointMovement: Readonly<PointMovement> | null;
   readonly priceMovement: Readonly<PriceMovement> | null;
   readonly gap: Readonly<MovementGap> | null;
+  readonly provenance: Readonly<CalculationProvenance> | null;
+  readonly display: Readonly<{
+    readonly openingAmericanOdds: string | null;
+    readonly latestAmericanOdds: string | null;
+    readonly impliedProbabilityDelta: string | null;
+  }>;
 }
 
 interface OrderedObservation {
@@ -97,6 +107,13 @@ function parseCanonicalTimestamp(value: string): number | null {
 
 function compareCanonicalText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function compareCanonicalNumber(left: number, right: number): number {
+  if (Object.is(left, right) || (left === 0 && right === 0)) return 0;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return compareCanonicalText(String(left), String(right));
 }
 
 export function isSignificantProbabilityMovement(
@@ -135,11 +152,70 @@ function freezeMovementResult(
         ? null
         : Object.freeze({ ...result.priceMovement }),
     gap: result.gap === null ? null : Object.freeze({ ...result.gap }),
+    display: Object.freeze({ ...result.display }),
   });
 }
 
-function invalidMovementResult(): LineMovementResult {
+function movementHashInput(input: LineMovementInput): unknown {
+  return {
+    significantProbabilityChange: input.significantProbabilityChange,
+    maximumGapMinutes: input.maximumGapMinutes,
+    observations: [...input.observations]
+      .map((observation) => ({
+        observationId: observation.observationId,
+        state: observation.state,
+        americanOdds: observation.americanOdds,
+        ...(observation.point === undefined
+          ? {}
+          : { point: observation.point }),
+        observedAt: observation.observedAt,
+        retrievedAt: observation.retrievedAt,
+      }))
+      .sort(
+        (left, right) =>
+          compareCanonicalText(left.observedAt, right.observedAt) ||
+          compareCanonicalText(left.retrievedAt, right.retrievedAt) ||
+          compareCanonicalText(left.observationId, right.observationId) ||
+          compareCanonicalText(left.state, right.state) ||
+          compareCanonicalNumber(left.americanOdds, right.americanOdds) ||
+          compareCanonicalNumber(
+            left.point ?? Number.NEGATIVE_INFINITY,
+            right.point ?? Number.NEGATIVE_INFINITY,
+          ),
+      ),
+  };
+}
+
+function movementEvidence(
+  input: LineMovementInput,
+  result: Omit<
+    LineMovementResult,
+    "calculationVersion" | "provenance" | "display"
+  >,
+): LineMovementResult {
   return freezeMovementResult({
+    ...result,
+    provenance: safeCalculationProvenance("movement", movementHashInput(input)),
+    display: {
+      openingAmericanOdds:
+        result.priceMovement === null
+          ? null
+          : displayAmericanOdds(result.priceMovement.openingAmericanOdds).text,
+      latestAmericanOdds:
+        result.priceMovement === null
+          ? null
+          : displayAmericanOdds(result.priceMovement.latestAmericanOdds).text,
+      impliedProbabilityDelta:
+        result.priceMovement === null
+          ? null
+          : displayPercentage(result.priceMovement.impliedProbabilityDelta)
+              .text,
+    },
+  });
+}
+
+function invalidMovementResult(input: LineMovementInput): LineMovementResult {
+  return movementEvidence(input, {
     status: "invalid",
     issues: ["invalid-observation"],
     currentState: null,
@@ -205,7 +281,7 @@ export function calculateLineMovement(
   assertGapValue(input.maximumGapMinutes, "Movement gap threshold");
 
   const ordered = orderObservations(input.observations);
-  if (ordered === null) return invalidMovementResult();
+  if (ordered === null) return invalidMovementResult(input);
 
   const current = ordered.at(-1)?.observation ?? null;
   const active = ordered.filter(
@@ -227,7 +303,7 @@ export function calculateLineMovement(
     opening === null ||
     latest === null
   ) {
-    return freezeMovementResult({
+    return movementEvidence(input, {
       status: "unavailable",
       issues,
       currentState: current?.state ?? null,
@@ -270,7 +346,7 @@ export function calculateLineMovement(
       ? null
       : latestPoint - openingPoint;
   if (pointDelta !== null && !Number.isFinite(pointDelta)) {
-    return invalidMovementResult();
+    return invalidMovementResult(input);
   }
   const pointMovement = {
     opening: openingPoint,
@@ -280,7 +356,7 @@ export function calculateLineMovement(
   } satisfies PointMovement;
   if (pointChanged) {
     issues.unshift("line-changed");
-    return freezeMovementResult({
+    return movementEvidence(input, {
       status: "unavailable",
       issues,
       currentState: current?.state ?? null,
@@ -309,7 +385,7 @@ export function calculateLineMovement(
     !Number.isFinite(latestImpliedProbability) ||
     !Number.isFinite(impliedProbabilityDelta)
   ) {
-    return invalidMovementResult();
+    return invalidMovementResult(input);
   }
   const priceMovement = {
     openingAmericanOdds: opening.observation.americanOdds,
@@ -325,7 +401,7 @@ export function calculateLineMovement(
     ),
   } satisfies PriceMovement;
 
-  return freezeMovementResult({
+  return movementEvidence(input, {
     status: "available",
     issues,
     currentState: current?.state ?? null,

@@ -986,6 +986,8 @@ describe("Edge Lab", () => {
     render(<App initialPath="/" />);
     expect(await screen.findByText("QUALIFIED PLAY")).toBeInTheDocument();
     expect(screen.getByText("Qualified positive EV")).toBeInTheDocument();
+    expect(screen.getByText("41.7%")).toBeInTheDocument();
+    expect(screen.getByText("edge-calculation-v1")).toBeInTheDocument();
   });
 
   it("turns public concentration into an auditable no-bet", async () => {

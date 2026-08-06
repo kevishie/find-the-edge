@@ -74,6 +74,66 @@ describe("deterministic qualification", () => {
     });
     expect(directDisagreement.status).toBe("available");
     expect(result.marketDisagreement).toBe(directDisagreement.score);
+    expect(result.provenance?.root.algorithm.version).toBe(
+      "deterministic-qualification-v1",
+    );
+    expect(
+      result.provenance?.components.map(({ algorithm }) => algorithm.id),
+    ).toEqual(["market-disagreement", "market-outlier", "weighted-consensus"]);
+    expect(result.display.expectedValue).toBe("14.40%");
+    expect(result.expectedValue).toBeCloseTo(0.144, 15);
+  });
+  it("hashes only consumed fields and preserves the exact component graph", () => {
+    const fixture = input();
+    const baseline = qualifyEvaluation(fixture);
+    const policyWithStructuralMetadata = {
+      ...fixture.policy,
+      structuralMetadata: "not-consumed",
+    };
+    const equivalent = qualifyEvaluation({
+      ...fixture,
+      analysisMaturity: "complete",
+      modelProbability: {
+        ...fixture.modelProbability,
+        estimate: 0.99,
+        high: 0.999,
+      },
+      policy: policyWithStructuralMetadata,
+    });
+
+    expect(equivalent.provenance?.root.inputHash).toBe(
+      baseline.provenance?.root.inputHash,
+    );
+    expect(equivalent.provenance?.components).toEqual(
+      baseline.provenance?.components,
+    );
+    expect(
+      equivalent.provenance?.components.map(({ algorithm }) => algorithm.id),
+    ).toEqual(["market-disagreement", "market-outlier", "weighted-consensus"]);
+  });
+  it("orders included weight keys with locale-independent ordinal comparison", () => {
+    const fixture = input();
+    const result = qualifyEvaluation({
+      ...fixture,
+      books: [
+        {
+          sportsbookId: "éclair",
+          ageMinutes: 2,
+          americanOdds: [110, -120],
+        },
+        {
+          sportsbookId: "zeta",
+          ageMinutes: 3,
+          americanOdds: [105, -115],
+        },
+      ],
+      policy: {
+        ...fixture.policy,
+        comparisonWeights: { éclair: 1.25, zeta: 1 },
+      },
+    });
+
+    expect(Object.keys(result.includedWeights)).toEqual(["zeta", "éclair"]);
   });
   it.each([
     [0, -1],

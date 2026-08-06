@@ -61,6 +61,13 @@ describe("line movement", () => {
     if (result.priceMovement === null) throw new Error("expected movement");
     expect(result.priceMovement.impliedProbabilityDelta).toBeGreaterThan(0);
     expect(result.priceMovement.significant).toBe(true);
+    expect(result.provenance?.root.algorithm.version).toBe("line-movement-v1");
+    expect(result.display).toMatchObject({
+      openingAmericanOdds: "+105",
+      latestAmericanOdds: "-105",
+    });
+    expect(result.display).not.toHaveProperty("pointDelta");
+    expect(result.display).not.toHaveProperty("maximumGapMinutes");
   });
 
   it("is invariant to input order, uses observed-time gaps, and freezes nested evidence", () => {
@@ -94,6 +101,39 @@ describe("line movement", () => {
     expect(Object.isFrozen(left.priceMovement)).toBe(true);
     expect(Object.isFrozen(left.pointMovement)).toBe(true);
     expect(Object.isFrozen(left.gap)).toBe(true);
+  });
+
+  it("ignores unused root metadata and getters in authoritative provenance", () => {
+    const observations = [
+      observation("open", 105, "2026-08-06T12:00:00.000Z"),
+      observation("latest", -105, "2026-08-06T12:05:00.000Z"),
+    ];
+    const baseline = calculateLineMovement({
+      observations,
+      significantProbabilityChange: 0.02,
+      maximumGapMinutes: 10,
+    });
+    const decoratedInput = Object.defineProperty(
+      {
+        observations,
+        significantProbabilityChange: 0.02,
+        maximumGapMinutes: 10,
+        displayMetadata: "unused",
+      },
+      "providerResponse",
+      {
+        enumerable: true,
+        get: () => {
+          throw new Error("unused getter must not execute");
+        },
+      },
+    );
+    const decorated = calculateLineMovement(decoratedInput);
+
+    expect(decorated.provenance?.root.inputHash).toBe(
+      baseline.provenance?.root.inputHash,
+    );
+    expect(decorated.priceMovement).toEqual(baseline.priceMovement);
   });
 
   it("reports point movement but does not compare prices across changed lines", () => {
@@ -233,6 +273,32 @@ describe("line movement", () => {
       }),
     ).toThrow(RangeError);
     expect(() => exceedsMovementGap(1, -1)).toThrow(RangeError);
+  });
+
+  it("canonicalizes duplicate observation identities before fail-closed provenance", () => {
+    const duplicate = [
+      observation("same", -110, "2026-08-06T12:00:00.000Z", {
+        point: -1.5,
+      }),
+      observation("same", 120, "2026-08-06T12:00:00.000Z", { point: 1.5 }),
+    ];
+    const settings = {
+      significantProbabilityChange: 0.01,
+      maximumGapMinutes: 5,
+    } as const;
+    const left = calculateLineMovement({
+      observations: duplicate,
+      ...settings,
+    });
+    const right = calculateLineMovement({
+      observations: [...duplicate].reverse(),
+      ...settings,
+    });
+
+    expect(left.status).toBe("invalid");
+    expect(right.provenance?.root.inputHash).toBe(
+      left.provenance?.root.inputHash,
+    );
   });
 
   it.each([
