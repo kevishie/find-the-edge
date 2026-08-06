@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 56" role="img" aria-labelledby="title">
+  <title id="title">Hard Rock Bet</title>
+  <rect width="220" height="56" rx="10" fill="#121212"/>
+  <circle cx="29" cy="28" r="18" fill="none" stroke="#f5b82e" stroke-width="3"/>
+  <path d="M19 36V20m20 16V20M19 28h20" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <text x="55" y="25" fill="#fff" font-family="Arial,Helvetica,sans-serif" font-size="16" font-weight="700" letter-spacing=".6">HARD ROCK</text>
+  <text x="55" y="43" fill="#f5b82e" font-family="Arial,Helvetica,sans-serif" font-size="15" font-weight="800" letter-spacing="2.2">BET</text>
+</svg>

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { normalizeFixtureOddsObservation } from "@find-the-edge/domain";
+import { impliedProbability } from "@find-the-edge/odds";
 import { EventCursorCodec } from "./event-repository";
 import {
   JoinedOddsHistoryRepository,
   MemoryOddsHistoryRepository,
   OddsHistoryInputError,
+  OddsHistoryStorageError,
   oddsHistoryPartition,
   type OddsHistoryStoredRow,
 } from "./odds-history-repository";
@@ -13,6 +15,12 @@ const eventId = "event:mlb:history";
 const cursor = new EventCursorCodec({
   current: { id: "test", secret: new Uint8Array(32).fill(7) },
 });
+const sharpProvenance = {
+  providerId: "sharpapi",
+  policyVersion: "v1",
+  bookRole: "comparison",
+  sourceState: "active",
+} as const;
 const snapshot = (
   sportsbookId: string,
   observedAt: string,
@@ -37,6 +45,7 @@ const snapshot = (
     americanOdds,
     observedAt,
     retrievedAt: observedAt,
+    provenance: sharpProvenance,
   });
 
 describe("odds history repository", () => {
@@ -56,8 +65,10 @@ describe("odds history repository", () => {
       cursor,
       {
         draftkings: "DraftKings",
+        fanduel: "FanDuel",
         pinnacle: "Pinnacle",
       },
+      impliedProbability,
       () => new Date("2026-08-05T13:00:00.000Z"),
     );
     const page = await repository.list({
@@ -66,10 +77,14 @@ describe("odds history repository", () => {
       from: "2026-08-05T12:00:00.000Z",
       to: "2026-08-05T13:00:00.000Z",
       limit: 50,
+      marketKey: "moneyline",
+      selectionKey: "participant:away",
+      sportsbookIds: ["draftkings", "fanduel"],
     });
     expect(page).toEqual({
       eventId,
       generatedAt: "2026-08-05T13:00:00.000Z",
+      markerScope: "page",
       series: [
         {
           marketKey: "moneyline",
@@ -80,35 +95,145 @@ describe("odds history repository", () => {
           points: [
             {
               americanOdds: -110,
+              impliedProbability: 11 / 21,
+              isCurrent: false,
+              isOpening: true,
+              observationId: snapshot(
+                "draftkings",
+                "2026-08-05T12:00:00.000Z",
+                -110,
+              ).snapshotId,
               observedAt: "2026-08-05T12:00:00.000Z",
               retrievedAt: "2026-08-05T12:00:00.000Z",
+              state: "active",
             },
             {
               americanOdds: -115,
+              impliedProbability: 1 / (1 + 100 / 115),
+              isCurrent: true,
+              isOpening: false,
+              observationId: snapshot(
+                "draftkings",
+                "2026-08-05T12:10:00.000Z",
+                -115,
+                { version: 2 },
+              ).snapshotId,
               observedAt: "2026-08-05T12:10:00.000Z",
               retrievedAt: "2026-08-05T12:10:00.000Z",
+              state: "active",
             },
           ],
         },
+      ],
+      coverage: [
         {
-          marketKey: "spread",
-          selectionKey: "participant:away",
-          selectionLabel: "Away",
-          sportsbookId: "pinnacle",
-          sportsbookLabel: "Pinnacle",
-          points: [
-            {
-              point: 1.5,
-              americanOdds: 105,
-              observedAt: "2026-08-05T12:05:00.000Z",
-              retrievedAt: "2026-08-05T12:05:00.000Z",
-            },
-          ],
+          sportsbookId: "draftkings",
+          sportsbookLabel: "DraftKings",
+          status: "available",
+        },
+        {
+          sportsbookId: "fanduel",
+          sportsbookLabel: "FanDuel",
+          status: "unavailable",
         },
       ],
       nextCursor: null,
     });
   });
+
+  it("projects suspended state, stable identity, probability, and line markers", async () => {
+    const suspended = normalizeFixtureOddsObservation({
+      canonicalEventId: eventId,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      marketKey: "spread",
+      selectionKey: "participant:home",
+      selectionLabel: "Home",
+      sportsbookId: "pinnacle",
+      point: -1.5,
+      americanOdds: 120,
+      observedAt: "2026-08-05T12:00:00.000Z",
+      retrievedAt: "2026-08-05T12:00:01.000Z",
+      provenance: {
+        providerId: "sharpapi",
+        policyVersion: "v1",
+        bookRole: "collected",
+        sourceState: "suspended",
+      },
+    });
+    const repository = new MemoryOddsHistoryRepository(
+      [suspended],
+      cursor,
+      { pinnacle: "Pinnacle" },
+      impliedProbability,
+      () => new Date("2026-08-05T13:00:00.000Z"),
+    );
+
+    const page = await repository.list({
+      eventId,
+      canonicalEventVersion: 1,
+      from: "2026-08-05T11:00:00.000Z",
+      to: "2026-08-05T13:00:00.000Z",
+      limit: 10,
+      marketKey: "spread",
+      selectionKey: "participant:home",
+      sportsbookIds: ["pinnacle"],
+    });
+
+    expect(page.series[0]?.points).toEqual([
+      {
+        observationId: suspended.snapshotId,
+        state: "suspended",
+        point: -1.5,
+        americanOdds: 120,
+        impliedProbability: 5 / 11,
+        observedAt: suspended.observedAt,
+        retrievedAt: suspended.retrievedAt,
+        isOpening: false,
+        isCurrent: false,
+      },
+    ]);
+  });
+
+  it.each(["stale", "closed", "partial", "missing", "unsupported"] as const)(
+    "projects %s provenance as unavailable rather than active",
+    async (sourceState) => {
+      const unavailable = normalizeFixtureOddsObservation({
+        canonicalEventId: eventId,
+        canonicalEventVersion: 1,
+        sportKey: "mlb",
+        marketKey: "moneyline",
+        selectionKey: "participant:away",
+        sportsbookId: "draftkings",
+        americanOdds: -110,
+        observedAt: "2026-08-05T12:00:00.000Z",
+        retrievedAt: "2026-08-05T12:00:01.000Z",
+        provenance: {
+          providerId: "sharpapi",
+          policyVersion: "v1",
+          bookRole: "comparison",
+          sourceState,
+        },
+      });
+      const repository = new MemoryOddsHistoryRepository(
+        [unavailable],
+        cursor,
+        { draftkings: "DraftKings" },
+        impliedProbability,
+        () => new Date("2026-08-05T13:00:00.000Z"),
+      );
+
+      const page = await repository.list({
+        eventId,
+        canonicalEventVersion: 1,
+        from: "2026-08-05T11:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        limit: 10,
+      });
+
+      expect(page.series[0]?.points[0]?.state).toBe("unavailable");
+    },
+  );
 
   it("paginates stable immutable observations with no skip or repeat", async () => {
     const repository = new MemoryOddsHistoryRepository(
@@ -119,6 +244,7 @@ describe("odds history repository", () => {
       ],
       cursor,
       { draftkings: "DraftKings" },
+      impliedProbability,
       () => new Date("2026-08-05T13:00:00.000Z"),
     );
     const range = {
@@ -127,10 +253,23 @@ describe("odds history repository", () => {
       from: "2026-08-05T12:00:00.000Z",
       to: "2026-08-05T13:00:00.000Z",
       limit: 2,
+      marketKey: "moneyline",
+      selectionKey: "participant:away",
+      sportsbookIds: ["draftkings"],
     } as const;
     const first = await repository.list(range);
     expect(first.series[0]?.points.map((point) => point.americanOdds)).toEqual([
       -110, -112,
+    ]);
+    expect(first.markerScope).toBe("page");
+    expect(
+      first.series[0]?.points.map(({ isOpening, isCurrent }) => [
+        isOpening,
+        isCurrent,
+      ]),
+    ).toEqual([
+      [true, false],
+      [false, true],
     ]);
     expect(first.nextCursor).toBeTypeOf("string");
     const second = await repository.list({
@@ -141,6 +280,10 @@ describe("odds history repository", () => {
     expect(second.series[0]?.points.map((point) => point.americanOdds)).toEqual(
       [-115],
     );
+    expect(second.series[0]?.points[0]).toMatchObject({
+      isOpening: true,
+      isCurrent: true,
+    });
     expect(second.nextCursor).toBeNull();
     await expect(
       repository.list({
@@ -149,6 +292,18 @@ describe("odds history repository", () => {
         cursor: first.nextCursor!,
       }),
     ).rejects.toBeInstanceOf(OddsHistoryInputError);
+    for (const changedFilter of [
+      { marketKey: "spread" },
+      { selectionKey: "participant:home" },
+      { sportsbookIds: ["pinnacle"] },
+    ])
+      await expect(
+        repository.list({
+          ...range,
+          ...changedFilter,
+          cursor: first.nextCursor!,
+        }),
+      ).rejects.toBeInstanceOf(OddsHistoryInputError);
   });
 
   it("fences later mirror writes out of an in-progress traversal", async () => {
@@ -183,6 +338,7 @@ describe("odds history repository", () => {
       },
       cursor,
       { draftkings: "DraftKings" },
+      impliedProbability,
       () => now,
     );
     const range = {
@@ -209,6 +365,7 @@ describe("odds history repository", () => {
       americanOdds: -113,
       observedAt: "2026-08-05T12:01:30.000Z",
       retrievedAt: "2026-08-05T13:01:00.000Z",
+      provenance: sharpProvenance,
     });
     rows.push({
       pk: oddsHistoryPartition(eventId),
@@ -240,11 +397,13 @@ describe("odds history repository", () => {
       americanOdds: -112,
       observedAt: "2026-08-05T12:01:00.000Z",
       retrievedAt: "2026-08-05T12:01:01.000Z",
+      provenance: sharpProvenance,
     });
     const repository = new MemoryOddsHistoryRepository(
       [original, corrected],
       cursor,
       { draftkings: "DraftKings" },
+      impliedProbability,
       () => new Date("2026-08-05T13:00:00.000Z"),
     );
 
@@ -273,6 +432,7 @@ describe("odds history repository", () => {
       americanOdds: -110,
       observedAt: "2026-08-05T12:00:00.000Z",
       retrievedAt: "2026-08-05T12:00:01.000Z",
+      provenance: sharpProvenance,
     });
     const corrected = normalizeFixtureOddsObservation({
       canonicalEventId: eventId,
@@ -285,11 +445,13 @@ describe("odds history repository", () => {
       americanOdds: -112,
       observedAt: "2026-08-05T12:00:00.000Z",
       retrievedAt: "2026-08-05T12:00:02.000Z",
+      provenance: sharpProvenance,
     });
     const repository = new MemoryOddsHistoryRepository(
       [original, corrected],
       cursor,
       { draftkings: "DraftKings" },
+      impliedProbability,
       () => new Date("2026-08-05T13:00:00.000Z"),
     );
 
@@ -304,10 +466,128 @@ describe("odds history repository", () => {
     expect(page.series[0]?.selectionLabel).toBe("Away corrected");
   });
 
-  it("rejects malformed, oversized, reversed, and unsupported requests", async () => {
-    const repository = new MemoryOddsHistoryRepository([], cursor, {
-      draftkings: "DraftKings",
+  it("accepts encoded canonical selections and rejects inherited book names", async () => {
+    const encoded = snapshot("draftkings", "2026-08-05T12:00:00.000Z", -110, {
+      selectionKey: "participant:club%3A42",
     });
+    const repository = new MemoryOddsHistoryRepository(
+      [encoded],
+      cursor,
+      { draftkings: "DraftKings" },
+      impliedProbability,
+      () => new Date("2026-08-05T13:00:00.000Z"),
+    );
+    await expect(
+      repository.list({
+        eventId,
+        canonicalEventVersion: 1,
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        limit: 10,
+        selectionKey: "participant:club%3A42",
+      }),
+    ).resolves.toMatchObject({
+      series: [{ selectionKey: "participant:club%3A42" }],
+    });
+    expect(() => repository.validateSportsbookIds(["constructor"])).toThrow(
+      OddsHistoryInputError,
+    );
+  });
+
+  it("excludes missing or foreign provider provenance", async () => {
+    const unverified = normalizeFixtureOddsObservation({
+      canonicalEventId: eventId,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "participant:away",
+      sportsbookId: "draftkings",
+      americanOdds: -110,
+      observedAt: "2026-08-05T12:00:00.000Z",
+      retrievedAt: "2026-08-05T12:00:01.000Z",
+    });
+    const foreign = normalizeFixtureOddsObservation({
+      canonicalEventId: eventId,
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "participant:away",
+      sportsbookId: "draftkings",
+      americanOdds: -110,
+      observedAt: "2026-08-05T12:01:00.000Z",
+      retrievedAt: "2026-08-05T12:01:01.000Z",
+      provenance: { ...sharpProvenance, providerId: "other-provider" },
+    });
+    const repository = new MemoryOddsHistoryRepository(
+      [unverified, foreign],
+      cursor,
+      { draftkings: "DraftKings" },
+      impliedProbability,
+      () => new Date("2026-08-05T13:00:00.000Z"),
+    );
+    await expect(
+      repository.list({
+        eventId,
+        canonicalEventVersion: 1,
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        limit: 10,
+      }),
+    ).resolves.toMatchObject({
+      series: [],
+      coverage: [{ sportsbookId: "draftkings", status: "unavailable" }],
+    });
+  });
+
+  it("rejects malformed market points and deduplicates version mirrors", async () => {
+    const malformed = snapshot("draftkings", "2026-08-05T12:00:00.000Z", -110, {
+      marketKey: "spread",
+    });
+    const malformedRepository = new MemoryOddsHistoryRepository(
+      [malformed],
+      cursor,
+      { draftkings: "DraftKings" },
+      impliedProbability,
+      () => new Date("2026-08-05T13:00:00.000Z"),
+    );
+    await expect(
+      malformedRepository.list({
+        eventId,
+        canonicalEventVersion: 1,
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        limit: 10,
+      }),
+    ).rejects.toBeInstanceOf(OddsHistoryStorageError);
+
+    const first = snapshot("draftkings", "2026-08-05T12:00:00.000Z", -110);
+    const mirror = snapshot("draftkings", "2026-08-05T12:00:00.000Z", -110, {
+      version: 2,
+    });
+    const repository = new MemoryOddsHistoryRepository(
+      [first, mirror],
+      cursor,
+      { draftkings: "DraftKings" },
+      impliedProbability,
+      () => new Date("2026-08-05T13:00:00.000Z"),
+    );
+    const page = await repository.list({
+      eventId,
+      canonicalEventVersion: 2,
+      from: "2026-08-05T12:00:00.000Z",
+      to: "2026-08-05T13:00:00.000Z",
+      limit: 10,
+    });
+    expect(page.series[0]?.points).toHaveLength(1);
+  });
+
+  it("rejects malformed, oversized, reversed, and unsupported requests", async () => {
+    const repository = new MemoryOddsHistoryRepository(
+      [],
+      cursor,
+      { draftkings: "DraftKings" },
+      impliedProbability,
+    );
     const base = {
       eventId,
       canonicalEventVersion: 1,
@@ -324,6 +604,15 @@ describe("odds history repository", () => {
       { ...base, limit: 0 },
       { ...base, limit: 201 },
       { ...base, cursor: "not-a-cursor" },
+      { ...base, marketKey: "" },
+      { ...base, marketKey: "player-prop" },
+      { ...base, selectionKey: "bad value" },
+      { ...base, selectionKey: "participant:%away" },
+      { ...base, selectionKey: "participant:away,home" },
+      { ...base, sportsbookIds: [] },
+      { ...base, sportsbookIds: ["DraftKings"] },
+      { ...base, sportsbookIds: ["draftkings", "draftkings"] },
+      { ...base, sportsbookIds: ["unknown"] },
     ])
       await expect(repository.list(input)).rejects.toBeInstanceOf(
         OddsHistoryInputError,

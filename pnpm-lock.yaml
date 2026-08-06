@@ -65,6 +65,9 @@ importers:
       '@find-the-edge/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@find-the-edge/odds':
+        specifier: workspace:*
+        version: link:../../packages/odds
     devDependencies:
       '@find-the-edge/domain':
         specifier: workspace:*

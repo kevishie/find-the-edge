@@ -212,15 +212,54 @@ test("opens multi-book comparison directly and keeps Hard Rock first", async ({
     page.getByRole("heading", { name: "Line movement & public money" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("img", {
+    page.getByRole("group", {
       name: /Implied probability movement across 3 sportsbooks/,
     }),
   ).toBeVisible();
   await expect(page.getByLabel("Sportsbook movement legend")).toContainText(
     "Pinnacle",
   );
+  const lineFilters = page.getByLabel("Sportsbook line filters");
   await expect(
-    page.getByText("Sharp reference", { exact: true }),
+    lineFilters.getByRole("button", { name: "Hide DraftKings line" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    lineFilters.getByRole("button", {
+      name: "Caesars Sportsbook: No history",
+    }),
+  ).toBeDisabled();
+  await expect(
+    page.locator('[data-series="draftkings"]').first(),
+  ).toHaveAttribute("data-interpolation", "step-after");
+  await expect(
+    page.locator('[data-series="draftkings"]').first(),
+  ).toHaveAttribute("d", / H .* V /);
+  await page
+    .getByRole("button", { name: "American odds", exact: true })
+    .click();
+  await expect(
+    page.getByRole("group", {
+      name: /American odds movement across 3 sportsbooks/,
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /DraftKings current/i }).focus();
+  await expect(page.getByLabel("Focused observation details")).toContainText(
+    "Collected",
+  );
+  await page.getByText("Accessible history table").click();
+  await expect(
+    page.getByRole("table", { name: "Plotted line history" }),
+  ).toContainText("DraftKings");
+  await lineFilters
+    .getByRole("button", { name: "Hide DraftKings line" })
+    .click();
+  await expect(
+    page.getByRole("group", {
+      name: /American odds movement across 2 sportsbooks/,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Market-making reference", { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("Public reference", { exact: true }),
@@ -234,6 +273,15 @@ test("opens multi-book comparison directly and keeps Hard Rock first", async ({
   );
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole("tab", { name: "Moneyline" })).toBeVisible();
+  const chartRegion = page.getByRole("region", {
+    name: "Scrollable movement chart",
+  });
+  await expect(chartRegion).toBeVisible();
+  expect(
+    await chartRegion.evaluate(
+      (element) => element.scrollWidth > element.clientWidth,
+    ),
+  ).toBe(true);
 });
 
 test("shows target-missing and suspended evidence without treating it as active", async ({

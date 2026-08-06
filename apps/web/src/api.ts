@@ -11,6 +11,7 @@ import {
   validateEventMetadataAssessment,
   participantSelectionKey,
 } from "@find-the-edge/domain";
+import { impliedProbability } from "@find-the-edge/odds";
 
 import type {
   Result,
@@ -85,10 +86,15 @@ export interface SplitsPageDto extends Omit<GamesPageDto, "items"> {
 }
 
 export interface OddsHistoryPointDto {
+  readonly observationId: string;
+  readonly state: "active" | "suspended" | "unavailable";
   readonly point?: number;
   readonly americanOdds: number;
+  readonly impliedProbability: number;
   readonly observedAt: string;
   readonly retrievedAt: string;
+  readonly isOpening: boolean;
+  readonly isCurrent: boolean;
 }
 
 export interface OddsHistorySeriesDto {
@@ -103,6 +109,12 @@ export interface OddsHistorySeriesDto {
 export interface OddsHistoryDto {
   readonly eventId: string;
   readonly generatedAt: string;
+  readonly markerScope: "page" | "loaded";
+  readonly coverage: readonly {
+    readonly sportsbookId: string;
+    readonly sportsbookLabel: string;
+    readonly status: "available" | "unavailable";
+  }[];
   readonly series: readonly OddsHistorySeriesDto[];
   readonly nextCursor: string | null;
 }
@@ -995,10 +1007,19 @@ const validOddsComparison = (
 const parseOddsHistory = (value: unknown, eventId: string): OddsHistoryDto => {
   if (
     !plain(value) ||
-    !exact(value, ["eventId", "generatedAt", "series", "nextCursor"]) ||
+    !exact(value, [
+      "eventId",
+      "generatedAt",
+      "markerScope",
+      "series",
+      "coverage",
+      "nextCursor",
+    ]) ||
     value["eventId"] !== eventId ||
     !iso(value["generatedAt"]) ||
     !Array.isArray(value["series"]) ||
+    value["series"].length > 200 ||
+    value["markerScope"] !== "page" ||
     (value["nextCursor"] !== null && !boundedString(value["nextCursor"], 4_096))
   )
     throw new GamesClientError(
@@ -1024,6 +1045,7 @@ const parseOddsHistory = (value: unknown, eventId: string): OddsHistoryDto => {
       !boundedString(candidate["sportsbookId"], 128) ||
       !boundedString(candidate["sportsbookLabel"], 160) ||
       !Array.isArray(candidate["points"]) ||
+      candidate["points"].length < 1 ||
       candidate["points"].length > 10_000
     )
       throw new GamesClientError(
@@ -1034,17 +1056,40 @@ const parseOddsHistory = (value: unknown, eventId: string): OddsHistoryDto => {
       if (
         !plain(point) ||
         !exact(point, [
+          "observationId",
+          "state",
           "americanOdds",
+          "impliedProbability",
           "observedAt",
           "retrievedAt",
+          "isOpening",
+          "isCurrent",
           ...(Object.hasOwn(point, "point") ? ["point"] : []),
         ]) ||
+        !boundedString(point["observationId"], 256) ||
+        !["active", "suspended", "unavailable"].includes(
+          String(point["state"]),
+        ) ||
         !validAmericanOdds(point["americanOdds"]) ||
+        typeof point["impliedProbability"] !== "number" ||
+        !Number.isFinite(point["impliedProbability"]) ||
+        point["impliedProbability"] <= 0 ||
+        point["impliedProbability"] >= 1 ||
+        Math.abs(
+          point["impliedProbability"] -
+            impliedProbability(Number(point["americanOdds"])),
+        ) > 1e-12 ||
         !iso(point["observedAt"]) ||
         !iso(point["retrievedAt"]) ||
         (point["point"] !== undefined &&
           (typeof point["point"] !== "number" ||
-            !Number.isFinite(point["point"])))
+            !Number.isFinite(point["point"]))) ||
+        (candidate["marketKey"] === "moneyline") ===
+          (point["point"] !== undefined) ||
+        typeof point["isOpening"] !== "boolean" ||
+        typeof point["isCurrent"] !== "boolean" ||
+        (point["state"] !== "active" &&
+          (point["isOpening"] || point["isCurrent"]))
       )
         throw new GamesClientError(
           "invalid-response",
@@ -1052,10 +1097,14 @@ const parseOddsHistory = (value: unknown, eventId: string): OddsHistoryDto => {
         );
       return point as unknown as OddsHistoryPointDto;
     });
+    const pointOrder = (point: OddsHistoryPointDto) =>
+      `${point.observedAt}|${point.retrievedAt}|${point.observationId}`;
     if (
+      new Set(points.map((point) => point.observationId)).size !==
+        points.length ||
       points.some(
         (point, index) =>
-          index > 0 && point.observedAt < (points[index - 1]?.observedAt ?? ""),
+          index > 0 && pointOrder(point) < pointOrder(points[index - 1]!),
       )
     )
       throw new GamesClientError(
@@ -1064,16 +1113,67 @@ const parseOddsHistory = (value: unknown, eventId: string): OddsHistoryDto => {
       );
     return { ...candidate, points } as unknown as OddsHistorySeriesDto;
   });
-  const identities = series.map(
-    ({ marketKey, selectionKey, sportsbookId }) =>
-      `${marketKey}|${selectionKey}|${sportsbookId}`,
+  const identities = series.map(({ marketKey, selectionKey, sportsbookId }) =>
+    JSON.stringify([marketKey, selectionKey, sportsbookId]),
   );
   if (new Set(identities).size !== identities.length)
     throw new GamesClientError(
       "invalid-response",
       "The odds history response was invalid.",
     );
-  return { ...value, series } as unknown as OddsHistoryDto;
+  let coverage: OddsHistoryDto["coverage"];
+  {
+    if (!Array.isArray(value["coverage"]) || value["coverage"].length > 100)
+      throw new GamesClientError(
+        "invalid-response",
+        "The odds history response was invalid.",
+      );
+    coverage = value["coverage"].map((item) => {
+      if (
+        !plain(item) ||
+        !exact(item, ["sportsbookId", "sportsbookLabel", "status"]) ||
+        !boundedString(item["sportsbookId"], 128) ||
+        !boundedString(item["sportsbookLabel"], 160) ||
+        !["available", "unavailable"].includes(String(item["status"]))
+      )
+        throw new GamesClientError(
+          "invalid-response",
+          "The odds history response was invalid.",
+        );
+      return item as unknown as NonNullable<OddsHistoryDto["coverage"]>[number];
+    });
+    if (
+      new Set(coverage.map(({ sportsbookId }) => sportsbookId)).size !==
+      coverage.length
+    )
+      throw new GamesClientError(
+        "invalid-response",
+        "The odds history response was invalid.",
+      );
+  }
+  return {
+    ...(value as unknown as OddsHistoryDto),
+    coverage,
+    series,
+  };
+};
+
+const markActiveHistoryEndpoints = (
+  item: OddsHistorySeriesDto,
+): OddsHistorySeriesDto => {
+  const activeIndexes = item.points.flatMap((point, index) =>
+    point.state === "active" ? [index] : [],
+  );
+  const openingIndex = activeIndexes[0];
+  const currentIndex = activeIndexes.at(-1);
+  return {
+    ...item,
+    points: item.points.map((point, index) => ({
+      ...point,
+      isOpening: index === openingIndex,
+      isCurrent: index === currentIndex,
+    })),
+  };
 };
 
 export const isCanonicalEventStatus = (value: unknown): value is EventStatus =>
@@ -2040,6 +2140,10 @@ export function createGamesClient(
       },
       async oddsHistory(eventId, signal) {
         const series = new Map<string, OddsHistorySeriesDto>();
+        const coverage = new Map<
+          string,
+          NonNullable<OddsHistoryDto["coverage"]>[number]
+        >();
         const cursors = new Set<string>();
         let cursor: string | undefined;
         let generatedAt: string | undefined;
@@ -2081,21 +2185,52 @@ export function createGamesClient(
             eventId,
           );
           if (generatedAt === undefined) generatedAt = page.generatedAt;
+          else if (page.generatedAt !== generatedAt)
+            throw new GamesClientError(
+              "invalid-response",
+              "The odds history pagination fence changed.",
+            );
+          for (const item of page.coverage ?? []) {
+            const existing = coverage.get(item.sportsbookId);
+            if (existing && existing.sportsbookLabel !== item.sportsbookLabel)
+              throw new GamesClientError(
+                "invalid-response",
+                "The odds history coverage identity changed during pagination.",
+              );
+            coverage.set(item.sportsbookId, {
+              ...item,
+              status:
+                existing?.status === "available" || item.status === "available"
+                  ? "available"
+                  : "unavailable",
+            });
+          }
           for (const item of page.series) {
-            const key = `${item.marketKey}|${item.selectionKey}|${item.sportsbookId}`;
+            const key = JSON.stringify([
+              item.marketKey,
+              item.selectionKey,
+              item.sportsbookId,
+            ]);
             const existing = series.get(key);
             if (!existing) series.set(key, item);
             else {
+              if (existing.sportsbookLabel !== item.sportsbookLabel)
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The odds history sportsbook identity changed during pagination.",
+                );
               const points = [...existing.points, ...item.points];
               const identities = new Set<string>();
               if (
                 points.some((point) => {
-                  const identity = JSON.stringify([
-                    point.point ?? null,
-                    point.americanOdds,
-                    point.observedAt,
-                    point.retrievedAt,
-                  ]);
+                  const identity =
+                    point.observationId ??
+                    JSON.stringify([
+                      point.point ?? null,
+                      point.americanOdds,
+                      point.observedAt,
+                      point.retrievedAt,
+                    ]);
                   if (identities.has(identity)) return true;
                   identities.add(identity);
                   return false;
@@ -2105,11 +2240,13 @@ export function createGamesClient(
                   "invalid-response",
                   "The odds history response repeated an observation.",
                 );
+              const pointOrder = (point: OddsHistoryPointDto) =>
+                `${point.observedAt}|${point.retrievedAt}|${point.observationId}`;
               if (
                 points.some(
                   (point, index) =>
                     index > 0 &&
-                    point.observedAt < (points[index - 1]?.observedAt ?? ""),
+                    pointOrder(point) < pointOrder(points[index - 1]!),
                 )
               )
                 throw new GamesClientError(
@@ -2123,7 +2260,9 @@ export function createGamesClient(
             return {
               eventId,
               generatedAt: generatedAt ?? new Date(0).toISOString(),
-              series: [...series.values()],
+              markerScope: "loaded",
+              coverage: [...coverage.values()],
+              series: [...series.values()].map(markActiveHistoryEndpoints),
               nextCursor: null,
             };
           if (cursors.has(page.nextCursor))
@@ -2137,7 +2276,9 @@ export function createGamesClient(
         return {
           eventId,
           generatedAt: generatedAt ?? new Date(0).toISOString(),
-          series: [...series.values()],
+          markerScope: "loaded",
+          coverage: [...coverage.values()],
+          series: [...series.values()].map(markActiveHistoryEndpoints),
           nextCursor: cursor ?? null,
         };
       },

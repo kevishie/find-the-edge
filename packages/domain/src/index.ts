@@ -1,5 +1,6 @@
 export type SportKey = string & { readonly __sportKey: unique symbol };
 export * from "./fixture-odds.js";
+export * from "./odds-history.js";
 export * from "./paper-evaluation.js";
 export * from "./cohort.js";
 export * from "./retrospective.js";

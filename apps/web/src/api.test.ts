@@ -225,6 +225,14 @@ describe("games client", () => {
     const history = {
       eventId,
       generatedAt: "2026-08-01T12:30:00.000Z",
+      markerScope: "page",
+      coverage: [
+        {
+          sportsbookId: "pinnacle",
+          sportsbookLabel: "Pinnacle",
+          status: "available",
+        },
+      ],
       series: [
         {
           marketKey: "moneyline",
@@ -236,9 +244,14 @@ describe("games client", () => {
           sportsbookLabel: "Pinnacle",
           points: [
             {
+              observationId: "observation-one",
+              state: "active",
               americanOdds: 125,
+              impliedProbability: 100 / 225,
               observedAt: "2026-08-01T11:00:00.000Z",
               retrievedAt: "2026-08-01T11:00:01.000Z",
+              isOpening: true,
+              isCurrent: false,
             },
           ],
         },
@@ -252,16 +265,20 @@ describe("games client", () => {
         new Response(
           JSON.stringify({
             ...history,
-            generatedAt: "2026-08-01T12:30:01.000Z",
             series: [
               {
                 ...history.series[0],
                 selectionLabel: "Boston Red Sox (corrected)",
                 points: [
                   {
+                    observationId: "observation-two",
+                    state: "active",
                     americanOdds: 115,
+                    impliedProbability: 100 / 215,
                     observedAt: "2026-08-01T12:00:00.000Z",
                     retrievedAt: "2026-08-01T12:00:01.000Z",
+                    isOpening: false,
+                    isCurrent: true,
                   },
                 ],
               },
@@ -276,11 +293,15 @@ describe("games client", () => {
       client.value.oddsHistory!(eventId, new AbortController().signal),
     ).resolves.toMatchObject({
       eventId,
+      markerScope: "loaded",
       series: [
         {
           sportsbookId: "pinnacle",
           selectionLabel: "Boston Red Sox (corrected)",
-          points: [{ americanOdds: 125 }, { americanOdds: 115 }],
+          points: [
+            { observationId: "observation-one", isOpening: true },
+            { observationId: "observation-two", isCurrent: true },
+          ],
         },
       ],
     });
@@ -299,12 +320,191 @@ describe("games client", () => {
     ).toBe("page-two");
   });
 
+  it("rejects contradictory American-odds and implied-probability evidence", async () => {
+    const eventId = payload.items[0]!.id;
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            eventId,
+            generatedAt: "2026-08-01T12:30:00.000Z",
+            markerScope: "page",
+            coverage: [
+              {
+                sportsbookId: "pinnacle",
+                sportsbookLabel: "Pinnacle",
+                status: "available",
+              },
+            ],
+            series: [
+              {
+                marketKey: "moneyline",
+                selectionKey: "away",
+                selectionLabel: "Boston",
+                sportsbookId: "pinnacle",
+                sportsbookLabel: "Pinnacle",
+                points: [
+                  {
+                    observationId: "contradictory",
+                    state: "active",
+                    americanOdds: 125,
+                    impliedProbability: 0.9,
+                    observedAt: "2026-08-01T11:00:00.000Z",
+                    retrievedAt: "2026-08-01T11:00:01.000Z",
+                    isOpening: true,
+                    isCurrent: true,
+                  },
+                ],
+              },
+            ],
+            nextCursor: null,
+          }),
+        ),
+      ),
+    );
+    const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!client.ok) throw client.error;
+
+    await expect(
+      client.value.oddsHistory!(eventId, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it("rejects duplicate observations and malformed market points", async () => {
+    const eventId = payload.items[0]!.id;
+    const point = {
+      observationId: "same-observation",
+      state: "active",
+      americanOdds: -110,
+      impliedProbability: 11 / 21,
+      observedAt: "2026-08-01T11:00:00.000Z",
+      retrievedAt: "2026-08-01T11:00:01.000Z",
+      isOpening: true,
+      isCurrent: true,
+    };
+    for (const series of [
+      {
+        marketKey: "moneyline",
+        selectionKey: "away",
+        selectionLabel: "Boston",
+        sportsbookId: "pinnacle",
+        sportsbookLabel: "Pinnacle",
+        points: [point, point],
+      },
+      {
+        marketKey: "spread",
+        selectionKey: "away",
+        selectionLabel: "Boston",
+        sportsbookId: "pinnacle",
+        sportsbookLabel: "Pinnacle",
+        points: [point],
+      },
+    ]) {
+      const fetcher = vi.fn<typeof fetch>(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              eventId,
+              generatedAt: "2026-08-01T12:30:00.000Z",
+              markerScope: "page",
+              coverage: [],
+              series: [series],
+              nextCursor: null,
+            }),
+          ),
+        ),
+      );
+      const client = createGamesClient(
+        { ok: true, value: bootstrap() },
+        fetcher,
+      );
+      if (!client.ok) throw client.error;
+      await expect(
+        client.value.oddsHistory!(eventId, new AbortController().signal),
+      ).rejects.toMatchObject({ code: "invalid-response" });
+    }
+  });
+
+  it("rejects pagination fence and sportsbook identity changes", async () => {
+    const eventId = payload.items[0]!.id;
+    const page = (
+      observationId: string,
+      generatedAt: string,
+      sportsbookLabel: string,
+      nextCursor: string | null,
+    ) => ({
+      eventId,
+      generatedAt,
+      markerScope: "page",
+      coverage: [
+        {
+          sportsbookId: "pinnacle",
+          sportsbookLabel,
+          status: "available",
+        },
+      ],
+      series: [
+        {
+          marketKey: "moneyline",
+          selectionKey: "away",
+          selectionLabel: "Boston",
+          sportsbookId: "pinnacle",
+          sportsbookLabel,
+          points: [
+            {
+              observationId,
+              state: "active",
+              americanOdds: -110,
+              impliedProbability: 11 / 21,
+              observedAt:
+                observationId === "one"
+                  ? "2026-08-01T11:00:00.000Z"
+                  : "2026-08-01T12:00:00.000Z",
+              retrievedAt:
+                observationId === "one"
+                  ? "2026-08-01T11:00:01.000Z"
+                  : "2026-08-01T12:00:01.000Z",
+              isOpening: true,
+              isCurrent: true,
+            },
+          ],
+        },
+      ],
+      nextCursor,
+    });
+    for (const second of [
+      page("two", "2026-08-01T12:31:00.000Z", "Pinnacle", null),
+      page("two", "2026-08-01T12:30:00.000Z", "Changed Pinnacle", null),
+    ]) {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify(
+              page("one", "2026-08-01T12:30:00.000Z", "Pinnacle", "next"),
+            ),
+          ),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify(second)));
+      const client = createGamesClient(
+        { ok: true, value: bootstrap() },
+        fetcher,
+      );
+      if (!client.ok) throw client.error;
+      await expect(
+        client.value.oddsHistory!(eventId, new AbortController().signal),
+      ).rejects.toMatchObject({ code: "invalid-response" });
+    }
+  });
+
   it("accepts the full cursor contract and returns bounded history instead of discarding it", async () => {
     const eventId = payload.items[0]!.id;
     const longCursor = "c".repeat(4_096);
     const page = (nextCursor: string | null) => ({
       eventId,
       generatedAt: "2026-08-01T12:30:00.000Z",
+      markerScope: "page",
+      coverage: [],
       series: [],
       nextCursor,
     });

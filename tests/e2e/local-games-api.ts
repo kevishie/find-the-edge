@@ -15,8 +15,10 @@ import {
   MemoryEventIngestionStore,
   MemoryEventRepository,
   MemoryGamesRepository,
+  MemoryOddsHistoryRepository,
   projectionItems,
 } from "../../packages/database/src/index.js";
+import { impliedProbability } from "../../packages/odds/src/index.js";
 import {
   seedFixtureOdds,
   type FixtureOddsPersister,
@@ -44,18 +46,36 @@ class MemoryOdds implements FixtureOddsPersister {
       ...input.observation,
       sportsbookId: "hardrock",
       sportsbookLabel: "Hard Rock Bet",
+      provenance: {
+        providerId: "sharpapi",
+        policyVersion: "e2e",
+        bookRole: "comparison",
+        sourceState: "active",
+      },
     });
     const comparison = normalizeFixtureOddsObservation({
       ...input.observation,
       sportsbookId: "draftkings",
       sportsbookLabel: "DraftKings",
       americanOdds: input.observation.americanOdds + 5,
+      provenance: {
+        providerId: "sharpapi",
+        policyVersion: "e2e",
+        bookRole: "comparison",
+        sourceState: "active",
+      },
     });
     const sharp = normalizeFixtureOddsObservation({
       ...input.observation,
       sportsbookId: "pinnacle",
       sportsbookLabel: "Pinnacle",
       americanOdds: input.observation.americanOdds - 4,
+      provenance: {
+        providerId: "sharpapi",
+        policyVersion: "e2e",
+        bookRole: "collected",
+        sourceState: "active",
+      },
     });
     const existing = this.snapshots.has(value.snapshotId);
     this.snapshots.set(value.snapshotId, value);
@@ -96,18 +116,36 @@ class MemoryOdds implements FixtureOddsPersister {
         sportsbookLabel: snapshot.sportsbookLabel,
         points: [
           {
+            observationId: `${snapshot.snapshotId}-opening`,
+            state: "active" as const,
             ...(snapshot.point === undefined
               ? {}
               : { point: snapshot.point + 0.5 }),
             americanOdds: snapshot.americanOdds + 10,
+            impliedProbability:
+              snapshot.americanOdds + 10 > 0
+                ? 100 / (snapshot.americanOdds + 110)
+                : Math.abs(snapshot.americanOdds + 10) /
+                  (Math.abs(snapshot.americanOdds + 10) + 100),
             observedAt: "2026-08-01T11:30:00.000Z",
             retrievedAt: "2026-08-01T11:30:01.000Z",
+            isOpening: true,
+            isCurrent: false,
           },
           {
+            observationId: `${snapshot.snapshotId}-current`,
+            state: "active" as const,
             ...(snapshot.point === undefined ? {} : { point: snapshot.point }),
             americanOdds: snapshot.americanOdds,
+            impliedProbability:
+              snapshot.americanOdds > 0
+                ? 100 / (snapshot.americanOdds + 100)
+                : Math.abs(snapshot.americanOdds) /
+                  (Math.abs(snapshot.americanOdds) + 100),
             observedAt: snapshot.observedAt,
             retrievedAt: snapshot.retrievedAt,
+            isOpening: false,
+            isCurrent: true,
           },
         ],
       }));
@@ -231,6 +269,50 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
     }),
     () => new Date("2026-08-01T12:31:00.000Z"),
   );
+  const historySnapshots = [...odds.snapshots.values()].flatMap((current) => [
+    normalizeFixtureOddsObservation({
+      canonicalEventId: current.canonicalEventId,
+      canonicalEventVersion: current.canonicalEventVersion,
+      sportKey: current.sportKey,
+      marketKey: current.marketKey,
+      selectionKey: current.selectionKey,
+      ...(current.selectionLabel === undefined
+        ? {}
+        : { selectionLabel: current.selectionLabel }),
+      sportsbookId: current.sportsbookId,
+      ...(current.sportsbookLabel === undefined
+        ? {}
+        : { sportsbookLabel: current.sportsbookLabel }),
+      ...(current.point === undefined ? {} : { point: current.point + 0.5 }),
+      americanOdds:
+        current.americanOdds > 0
+          ? current.americanOdds + 10
+          : current.americanOdds - 10,
+      observedAt: "2026-08-01T11:30:00.000Z",
+      retrievedAt: "2026-08-01T11:30:01.000Z",
+      provenance: current.provenance ?? {
+        providerId: "sharpapi",
+        policyVersion: "e2e",
+        bookRole: "comparison",
+        sourceState: "active",
+      },
+    }),
+    current,
+  ]);
+  const history = new MemoryOddsHistoryRepository(
+    historySnapshots,
+    new EventCursorCodec({
+      current: { id: "e2e-history", secret: Buffer.alloc(32, 9) },
+    }),
+    {
+      hardrock: "Hard Rock Bet",
+      draftkings: "DraftKings",
+      pinnacle: "Pinnacle",
+      caesars: "Caesars Sportsbook",
+    },
+    impliedProbability,
+    () => new Date("2026-08-01T12:31:00.000Z"),
+  );
   const handler = createEventHandler(
     events,
     new MemoryGamesRepository(
@@ -246,6 +328,10 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
     ),
     () => undefined,
     splits,
+    undefined,
+    undefined,
+    undefined,
+    history,
   );
   const respond = async (
     request: IncomingMessage,
@@ -277,29 +363,23 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
     const historyMatch = /^\/games\/([^/]+)\/odds-history$/.exec(
       requestUrl.pathname,
     );
-    if (historyMatch) {
-      const eventId = decodeURIComponent(historyMatch[1]!);
-      response.writeHead(200, headers).end(
-        JSON.stringify({
-          eventId,
-          generatedAt: "2026-08-01T12:31:00.000Z",
-          series: odds.history(eventId),
-          nextCursor: null,
-        }),
-      );
-      return;
-    }
-    const result = requestUrl.pathname.startsWith("/events/")
+    const result = historyMatch
       ? await handler({
-          route: "detail",
-          eventId: decodeURIComponent(
-            requestUrl.pathname.slice("/events/".length),
-          ),
-        })
-      : await handler({
-          route: requestUrl.pathname === "/splits" ? "splits" : "games",
+          route: "odds-history",
+          eventId: decodeURIComponent(historyMatch[1]!),
           query: Object.fromEntries(requestUrl.searchParams),
-        });
+        })
+      : requestUrl.pathname.startsWith("/events/")
+        ? await handler({
+            route: "detail",
+            eventId: decodeURIComponent(
+              requestUrl.pathname.slice("/events/".length),
+            ),
+          })
+        : await handler({
+            route: requestUrl.pathname === "/splits" ? "splits" : "games",
+            query: Object.fromEntries(requestUrl.searchParams),
+          });
     const body =
       requestUrl.pathname === "/games" &&
       requestUrl.searchParams.get("status") === "postponed" &&

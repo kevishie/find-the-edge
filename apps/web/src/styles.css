@@ -1269,23 +1269,58 @@ footer {
   color: #f7f4fb;
   background: #0b0910;
 }
-.metric-toggle {
+.metric-toggle,
+.time-window-toggle {
   display: flex;
+  flex-wrap: wrap;
   padding: 3px;
   border: 1px solid #443852;
   border-radius: 9px;
   background: #0b0910;
 }
-.metric-toggle button {
+.metric-toggle button,
+.time-window-toggle button {
   padding: 7px 12px;
   border: 0;
   border-radius: 6px;
   color: #aaa3b5;
   background: transparent;
 }
-.metric-toggle button.active {
+.metric-toggle button.active,
+.time-window-toggle button[aria-pressed="true"] {
   color: #fff;
   background: #6d3bd1;
+}
+.metric-toggle button:focus-visible,
+.time-window-toggle button:focus-visible {
+  outline: 2px solid #c4b5fd;
+  outline-offset: 2px;
+}
+.movement-book-filters {
+  margin: 0 0 12px;
+  padding: 10px;
+  border: 1px solid #2d2637;
+  border-radius: 10px;
+  background: rgba(7, 6, 10, 0.5);
+}
+.movement-book-filters button {
+  min-width: 76px;
+}
+.movement-book-filters .sportsbook-logo {
+  width: 96px;
+}
+.movement-book-filters button.unavailable {
+  display: grid;
+  height: auto;
+  min-height: 42px;
+  gap: 2px;
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+.movement-book-filters button.unavailable span {
+  font:
+    9px "IBM Plex Mono",
+    monospace;
 }
 .movement-chart-scroll {
   overflow-x: auto;
@@ -1309,6 +1344,34 @@ footer {
     11px "IBM Plex Mono",
     monospace;
 }
+.movement-series-label,
+.movement-marker-label {
+  paint-order: stroke;
+  stroke: #09080d;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  font:
+    600 10px "IBM Plex Mono",
+    monospace;
+}
+.movement-marker-label {
+  fill: #ded8e8;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.movement-gap-cross {
+  pointer-events: none;
+  stroke: #f4c46b;
+  stroke-width: 2px;
+}
+.movement-chart [role="button"] {
+  cursor: pointer;
+}
+.movement-chart [role="button"]:focus {
+  outline: none;
+  stroke: #fff;
+  stroke-width: 4px;
+}
 .movement-empty {
   min-height: 220px;
   display: grid;
@@ -1327,7 +1390,7 @@ footer {
 }
 .movement-legend article {
   display: grid;
-  grid-template-columns: 8px 24px minmax(0, 1fr) auto;
+  grid-template-columns: 34px 26px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 10px;
@@ -1335,14 +1398,79 @@ footer {
   border-radius: 8px;
   background: rgba(13, 10, 18, 0.8);
 }
+.movement-legend .sportsbook-logo {
+  width: 24px;
+  height: 24px;
+}
 .movement-legend article small {
   grid-column: 3 / 5;
   color: #8f879b;
 }
 .series-swatch {
-  width: 8px;
-  height: 28px;
-  border-radius: 999px;
+  width: 32px;
+  height: 16px;
+}
+.movement-observation-detail {
+  display: grid;
+  min-height: 66px;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 11px 13px;
+  border: 1px solid #332b40;
+  border-radius: 8px;
+  background: rgba(139, 92, 246, 0.06);
+  color: #aaa3b5;
+  font-size: 12px;
+}
+.movement-observation-detail strong {
+  color: #f7f4fb;
+}
+.movement-table-details {
+  margin-top: 14px;
+  border: 1px solid #332b40;
+  border-radius: 9px;
+  background: rgba(7, 6, 10, 0.55);
+}
+.movement-table-details summary {
+  padding: 12px 14px;
+  color: #d8cced;
+  cursor: pointer;
+  font:
+    600 12px "IBM Plex Mono",
+    monospace;
+}
+.movement-table-details summary:focus-visible {
+  outline: 2px solid #c4b5fd;
+  outline-offset: 2px;
+}
+.movement-table-scroll {
+  max-height: 420px;
+  overflow: auto;
+  border-top: 1px solid #332b40;
+}
+.movement-table-scroll table {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.movement-table-scroll caption {
+  padding: 10px 12px;
+  color: #918b9e;
+  text-align: left;
+}
+.movement-table-scroll th,
+.movement-table-scroll td {
+  padding: 9px 10px;
+  border-top: 1px solid #292331;
+  text-align: left;
+  white-space: nowrap;
+}
+.movement-table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #17121f;
 }
 .signal-grid {
   display: grid;
@@ -1388,6 +1516,36 @@ footer {
   }
   .decision-workbench {
     padding: 16px;
+  }
+  .movement-controls > label,
+  .movement-controls select,
+  .metric-toggle,
+  .time-window-toggle {
+    width: 100%;
+  }
+  .metric-toggle button,
+  .time-window-toggle button {
+    flex: 1 1 auto;
+  }
+  .movement-book-filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .movement-chart {
+    min-width: 680px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .movement-chart-scroll,
+  .movement-table-scroll {
+    scroll-behavior: auto;
+  }
+  .movement-chart *,
+  .movement-book-filters *,
+  .movement-controls * {
+    animation: none !important;
+    transition: none !important;
   }
 }
 

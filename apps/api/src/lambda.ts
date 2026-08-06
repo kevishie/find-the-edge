@@ -12,6 +12,7 @@ import {
   DynamoDbStrategyExperimentRepository,
   DynamoOddsHistoryRepository,
 } from "@find-the-edge/database";
+import { impliedProbability } from "@find-the-edge/odds";
 import {
   approvedSportsbookCollection,
   sportsbookRegistry,
@@ -157,6 +158,7 @@ export const handler = async (event: LambdaEvent) => {
       tableName,
       cursorCodec,
       approvedLabels,
+      impliedProbability,
     ),
   )({
     route,

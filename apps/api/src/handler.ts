@@ -14,7 +14,11 @@ import {
   type OddsHistoryRepository,
   OddsHistoryInputError,
 } from "@find-the-edge/database";
-import { EVENT_LIFECYCLE_STATES } from "@find-the-edge/domain";
+import {
+  EVENT_LIFECYCLE_STATES,
+  participantSelectionKey,
+  type EntityId,
+} from "@find-the-edge/domain";
 export interface ApiRequest {
   readonly route:
     | "list"
@@ -386,6 +390,15 @@ export const createEventHandler =
         const from = query["from"] ?? "";
         const to = query["to"] ?? "";
         const limitText = query["limit"] ?? "100";
+        const marketKey = query["market"];
+        const selectionKey = query["selection"];
+        const booksText = query["books"];
+        const sportsbookIds = booksText?.split(",");
+        const validMarketOrBook = (value: string) =>
+          /^[a-z0-9][a-z0-9._-]{0,127}$/.test(value);
+        const validSelection = (value: string) =>
+          value.length <= 128 &&
+          /^[A-Za-z0-9._:-](?:[A-Za-z0-9._:-]|%[0-9A-Fa-f]{2})*$/.test(value);
         const canonicalTimestamp = (value: string) => {
           const parsed = Date.parse(value);
           return (
@@ -394,27 +407,69 @@ export const createEventHandler =
         };
         if (
           Object.keys(query).some(
-            (key) => !["from", "to", "limit", "cursor"].includes(key),
+            (key) =>
+              ![
+                "from",
+                "to",
+                "limit",
+                "cursor",
+                "market",
+                "selection",
+                "books",
+              ].includes(key),
           ) ||
           !canonicalTimestamp(from) ||
           !canonicalTimestamp(to) ||
           Date.parse(from) > Date.parse(to) ||
           Date.parse(to) - Date.parse(from) > 31 * 24 * 60 * 60 * 1_000 ||
           !/^(?:[1-9]|[1-9][0-9]|1[0-9]{2}|200)$/.test(limitText) ||
+          (marketKey !== undefined &&
+            (!validMarketOrBook(marketKey) ||
+              !["moneyline", "spread", "total"].includes(marketKey))) ||
+          (selectionKey !== undefined && !validSelection(selectionKey)) ||
+          (sportsbookIds !== undefined &&
+            (sportsbookIds.length < 1 ||
+              sportsbookIds.length > 64 ||
+              new Set(sportsbookIds).size !== sportsbookIds.length ||
+              sportsbookIds.some((id) => !validMarketOrBook(id)))) ||
           (query["cursor"] !== undefined &&
             (query["cursor"].length < 1 || query["cursor"].length > 4096))
         )
           throw new EventInputError("invalid-odds-history-query");
+        oddsHistoryRepository.validateSportsbookIds(sportsbookIds);
         const eventId = request.eventId ?? "";
         const event = await repository.detail(eventId);
         if (!event.item)
           return response((status = 404), { error: "not-found" });
+        if (selectionKey) {
+          const participantSelections = event.item.participants.map(({ id }) =>
+            participantSelectionKey(id as EntityId),
+          );
+          const validForMarket =
+            marketKey === "total"
+              ? ["over", "under"].includes(selectionKey)
+              : marketKey === "spread"
+                ? participantSelections.includes(selectionKey as never)
+                : marketKey === "moneyline"
+                  ? participantSelections.includes(selectionKey as never) ||
+                    (event.item.sportKey === "soccer" &&
+                      selectionKey === "draw")
+                  : participantSelections.includes(selectionKey as never) ||
+                    ["over", "under"].includes(selectionKey) ||
+                    (event.item.sportKey === "soccer" &&
+                      selectionKey === "draw");
+          if (!validForMarket)
+            throw new EventInputError("unsupported-odds-history-selection");
+        }
         const page = await oddsHistoryRepository.list({
           eventId,
           canonicalEventVersion: event.item.version,
           from,
           to,
           limit: Number(limitText),
+          ...(marketKey ? { marketKey } : {}),
+          ...(selectionKey ? { selectionKey } : {}),
+          ...(sportsbookIds ? { sportsbookIds } : {}),
           ...(query["cursor"] ? { cursor: query["cursor"] } : {}),
         });
         oddsHistoryCounts = {

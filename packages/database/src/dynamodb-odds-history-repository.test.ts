@@ -1,6 +1,7 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { normalizeFixtureOddsObservation } from "@find-the-edge/domain";
+import { impliedProbability } from "@find-the-edge/odds";
 import { DynamoOddsHistoryRepository } from "./dynamodb-odds-history-repository";
 import { EventCursorCodec } from "./event-repository";
 import { oddsHistoryPartition } from "./odds-history-repository";
@@ -20,6 +21,12 @@ describe("Dynamo odds history repository", () => {
       americanOdds: -105,
       observedAt: "2026-08-05T12:00:00.000Z",
       retrievedAt: "2026-08-05T12:00:01.000Z",
+      provenance: {
+        providerId: "sharpapi",
+        policyVersion: "v1",
+        bookRole: "comparison",
+        sourceState: "active",
+      },
     });
     const send = vi.fn().mockResolvedValue({
       Items: [
@@ -37,6 +44,7 @@ describe("Dynamo odds history repository", () => {
         current: { id: "test", secret: new Uint8Array(32).fill(8) },
       }),
       { pinnacle: "Pinnacle" },
+      impliedProbability,
       () => new Date("2026-08-05T13:00:00.000Z"),
     );
     await expect(

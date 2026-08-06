@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assessEventMetadata } from "@find-the-edge/domain";
+import { impliedProbability } from "@find-the-edge/odds";
 import {
   EventStorageError,
   EventCursorCodec,
@@ -35,7 +36,17 @@ const historyEventRepository: EventRepository = {
     return {
       projectionState: "ready",
       item:
-        eventId === "event:one" ? ({ id: eventId, version: 7 } as never) : null,
+        eventId === "event:one"
+          ? ({
+              id: eventId,
+              version: 7,
+              sportKey: "mlb",
+              participants: [
+                { id: "away", label: "Away" },
+                { id: "home", label: "Home" },
+              ],
+            } as never)
+          : null,
       unavailableReason: null,
     };
   },
@@ -391,12 +402,15 @@ describe("event API", () => {
     const reads: unknown[] = [];
     const logs: Readonly<Record<string, unknown>>[] = [];
     const history: OddsHistoryRepository = {
+      validateSportsbookIds: () => undefined,
       list: (input) => {
         reads.push(input);
         return Promise.resolve({
           eventId: input.eventId,
           generatedAt: "2026-08-05T13:00:00.000Z",
+          markerScope: "page",
           series: [],
+          coverage: [],
           nextCursor: null,
         });
       },
@@ -418,6 +432,9 @@ describe("event API", () => {
         from: "2026-08-05T12:00:00.000Z",
         to: "2026-08-05T13:00:00.000Z",
         limit: "100",
+        market: "moneyline",
+        selection: "participant:away",
+        books: "draftkings,fanduel",
       },
     });
     expect(result.statusCode).toBe(200);
@@ -428,12 +445,17 @@ describe("event API", () => {
         from: "2026-08-05T12:00:00.000Z",
         to: "2026-08-05T13:00:00.000Z",
         limit: 100,
+        marketKey: "moneyline",
+        selectionKey: "participant:away",
+        sportsbookIds: ["draftkings", "fanduel"],
       },
     ]);
     expect(JSON.parse(result.body)).toEqual({
       eventId: "event:one",
       generatedAt: "2026-08-05T13:00:00.000Z",
+      markerScope: "page",
       series: [],
+      coverage: [],
       nextCursor: null,
     });
     expect(logs.at(-1)).toMatchObject({
@@ -447,6 +469,7 @@ describe("event API", () => {
   it("rejects malformed odds-history queries before reading storage", async () => {
     let reads = 0;
     const history: OddsHistoryRepository = {
+      validateSportsbookIds: () => undefined,
       list: async () => {
         await Promise.resolve();
         reads += 1;
@@ -481,6 +504,31 @@ describe("event API", () => {
         to: "2026-08-05T13:00:00.000Z",
         cursor: "x".repeat(4097),
       },
+      {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        market: "bad value",
+      },
+      {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        market: "player-prop",
+      },
+      {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        books: "draftkings,draftkings",
+      },
+      {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        selection: "participant:%away",
+      },
+      {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        books: "DraftKings",
+      },
     ]) {
       const result = await handler({
         route: "odds-history",
@@ -499,6 +547,7 @@ describe("event API", () => {
         current: { id: "test", secret: new Uint8Array(32).fill(3) },
       }),
       { draftkings: "DraftKings" },
+      impliedProbability,
       () => new Date("2026-08-05T13:00:00.000Z"),
     );
     const result = await createEventHandler(
@@ -522,9 +571,108 @@ describe("event API", () => {
     expect(result.statusCode).toBe(400);
     expect(result.body).toBe('{"error":"invalid-request"}');
   });
+  it("rejects an unapproved requested sportsbook", async () => {
+    let eventReads = 0;
+    const history = new MemoryOddsHistoryRepository(
+      [],
+      new EventCursorCodec({
+        current: { id: "test", secret: new Uint8Array(32).fill(3) },
+      }),
+      { draftkings: "DraftKings" },
+      impliedProbability,
+      () => new Date("2026-08-05T13:00:00.000Z"),
+    );
+    const result = await createEventHandler(
+      {
+        ...historyEventRepository,
+        detail: async (...args) => {
+          eventReads += 1;
+          return historyEventRepository.detail(...args);
+        },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      history,
+    )({
+      route: "odds-history",
+      eventId: "event:one",
+      query: {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        books: "unknownbook",
+      },
+    });
+
+    expect(result.statusCode).toBe(400);
+    expect(result.body).toBe('{"error":"invalid-request"}');
+    expect(eventReads).toBe(0);
+  });
+
+  it("accepts a canonical percent-encoded participant selection", async () => {
+    const reads: unknown[] = [];
+    const history: OddsHistoryRepository = {
+      validateSportsbookIds: () => undefined,
+      list: async (input) => {
+        await Promise.resolve();
+        reads.push(input);
+        return {
+          eventId: input.eventId,
+          generatedAt: "2026-08-05T13:00:00.000Z",
+          markerScope: "page",
+          series: [],
+          coverage: [],
+          nextCursor: null,
+        };
+      },
+    };
+    const result = await createEventHandler(
+      {
+        ...historyEventRepository,
+        detail: async () => {
+          await Promise.resolve();
+          return {
+            projectionState: "ready" as const,
+            item: {
+              id: "event:one",
+              version: 7,
+              sportKey: "mlb",
+              participants: [
+                { id: "club:42", label: "Away" },
+                { id: "club:43", label: "Home" },
+              ],
+            } as never,
+            unavailableReason: null,
+          };
+        },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      history,
+    )({
+      route: "odds-history",
+      eventId: "event:one",
+      query: {
+        from: "2026-08-05T12:00:00.000Z",
+        to: "2026-08-05T13:00:00.000Z",
+        market: "moneyline",
+        selection: "participant:club%3A42",
+      },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(reads).toHaveLength(1);
+  });
   it("distinguishes a missing game from an empty history", async () => {
     let reads = 0;
     const history: OddsHistoryRepository = {
+      validateSportsbookIds: () => undefined,
       list: async () => {
         await Promise.resolve();
         reads += 1;

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 56" role="img" aria-labelledby="title">
+  <title id="title">Caesars Sportsbook</title>
+  <rect width="220" height="56" rx="10" fill="#102d24"/>
+  <path d="M17 35c-5-8-3-17 5-22m20 22c5-8 3-17-5-22M20 17c4-4 13-4 18 0m-17 19c4 4 12 4 17 0" fill="none" stroke="#d7b765" stroke-width="2.4" stroke-linecap="round"/>
+  <text x="51" y="27" fill="#f6e9bd" font-family="Georgia,serif" font-size="17" font-weight="700" letter-spacing="1.1">CAESARS</text>
+  <text x="52" y="43" fill="#d7b765" font-family="Arial,Helvetica,sans-serif" font-size="9" font-weight="700" letter-spacing="2.1">SPORTSBOOK</text>
+</svg>

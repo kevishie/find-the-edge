@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-026
+nextReadyStory: FTE-028
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -611,14 +611,14 @@ stories:
   - id: FTE-026
     title: Odds History API and Chart
     epic: Odds ingestion and market normalization
-    status: in-progress
+    status: done
     dependencies: [FTE-021, FTE-025, FTE-027]
     risk: Medium
     approvalRequiredBeforeMerge: false
   - id: FTE-026A
     title: Multi-Sportsbook Line Movement Graph
     epic: Odds ingestion and market normalization
-    status: in-progress
+    status: done
     dependencies: [FTE-025, FTE-026, FTE-027]
     risk: Medium
     approvalRequiredBeforeMerge: false

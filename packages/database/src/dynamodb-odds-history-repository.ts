@@ -4,6 +4,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import {
   JoinedOddsHistoryRepository,
+  type OddsHistoryProbabilityProjector,
   type OddsHistoryStoredRow,
 } from "./odds-history-repository";
 import type { EventCursorCodec } from "./event-repository";
@@ -14,6 +15,7 @@ export class DynamoOddsHistoryRepository extends JoinedOddsHistoryRepository {
     tableName: string,
     cursor: EventCursorCodec,
     approvedSportsbooks: Readonly<Record<string, string>>,
+    projectImpliedProbability: OddsHistoryProbabilityProjector,
     now: () => Date = () => new Date(),
   ) {
     super(
@@ -49,6 +51,7 @@ export class DynamoOddsHistoryRepository extends JoinedOddsHistoryRepository {
       },
       cursor,
       approvedSportsbooks,
+      projectImpliedProbability,
       now,
     );
   }

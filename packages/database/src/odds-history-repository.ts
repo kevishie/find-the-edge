@@ -1,4 +1,9 @@
-import type { NormalizedFixtureOddsSnapshot } from "@find-the-edge/domain";
+import type {
+  NormalizedFixtureOddsSnapshot,
+  OddsHistoryObservationDto,
+  OddsHistoryPageDto,
+  OddsHistorySeriesDto,
+} from "@find-the-edge/domain";
 import { FixtureOddsStateCorruptionError } from "@find-the-edge/domain";
 import { EventCursorError } from "./event-errors";
 import { EventCursorCodec } from "./event-repository";
@@ -9,28 +14,9 @@ const MAIN_MARKETS = new Set(["moneyline", "spread", "total"]);
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1_000;
 export const ODDS_HISTORY_MAX_PAGE_SIZE = 200;
 
-export interface OddsHistoryPoint {
-  readonly point?: number;
-  readonly americanOdds: number;
-  readonly observedAt: string;
-  readonly retrievedAt: string;
-}
-
-export interface OddsHistorySeries {
-  readonly marketKey: string;
-  readonly selectionKey: string;
-  readonly selectionLabel: string;
-  readonly sportsbookId: string;
-  readonly sportsbookLabel: string;
-  readonly points: readonly OddsHistoryPoint[];
-}
-
-export interface OddsHistoryPage {
-  readonly eventId: string;
-  readonly generatedAt: string;
-  readonly series: readonly OddsHistorySeries[];
-  readonly nextCursor: string | null;
-}
+export type OddsHistoryPoint = OddsHistoryObservationDto;
+export type OddsHistorySeries = OddsHistorySeriesDto;
+export type OddsHistoryPage = OddsHistoryPageDto;
 
 export interface OddsHistoryQuery {
   readonly eventId: string;
@@ -39,11 +25,17 @@ export interface OddsHistoryQuery {
   readonly to: string;
   readonly limit: number;
   readonly cursor?: string;
+  readonly marketKey?: string;
+  readonly selectionKey?: string;
+  readonly sportsbookIds?: readonly string[];
 }
 
 export interface OddsHistoryRepository {
+  validateSportsbookIds(sportsbookIds?: readonly string[]): void;
   list(query: OddsHistoryQuery): Promise<OddsHistoryPage>;
 }
+
+export type OddsHistoryProbabilityProjector = (americanOdds: number) => number;
 
 export interface OddsHistoryStoredRow {
   readonly pk: string;
@@ -83,6 +75,12 @@ const canonicalTimestamp = (value: string) => {
   );
 };
 
+const validMarketOrBook = (value: string) =>
+  /^[a-z0-9][a-z0-9._-]{0,127}$/.test(value);
+const validSelection = (value: string) =>
+  value.length <= 128 &&
+  /^[A-Za-z0-9._:-](?:[A-Za-z0-9._:-]|%[0-9A-Fa-f]{2})*$/.test(value);
+
 const validated = (query: OddsHistoryQuery) => {
   const from = Date.parse(query.from);
   const to = Date.parse(query.to);
@@ -90,6 +88,7 @@ const validated = (query: OddsHistoryQuery) => {
     !isCanonicalEntityId(query.eventId) ||
     !Number.isSafeInteger(query.canonicalEventVersion) ||
     query.canonicalEventVersion < 1 ||
+    (query.marketKey !== undefined && !MAIN_MARKETS.has(query.marketKey)) ||
     !canonicalTimestamp(query.from) ||
     !canonicalTimestamp(query.to) ||
     from > to ||
@@ -97,6 +96,13 @@ const validated = (query: OddsHistoryQuery) => {
     !Number.isSafeInteger(query.limit) ||
     query.limit < 1 ||
     query.limit > ODDS_HISTORY_MAX_PAGE_SIZE ||
+    (query.marketKey !== undefined && !validMarketOrBook(query.marketKey)) ||
+    (query.selectionKey !== undefined && !validSelection(query.selectionKey)) ||
+    (query.sportsbookIds !== undefined &&
+      (query.sportsbookIds.length < 1 ||
+        query.sportsbookIds.length > 64 ||
+        new Set(query.sportsbookIds).size !== query.sportsbookIds.length ||
+        query.sportsbookIds.some((id) => !validMarketOrBook(id)))) ||
     (query.cursor !== undefined &&
       (query.cursor.length < 1 || query.cursor.length > 4096))
   )
@@ -105,7 +111,14 @@ const validated = (query: OddsHistoryQuery) => {
 };
 
 const cursorScope = (query: OddsHistoryQuery) =>
-  `${oddsHistoryPartition(query.eventId)}#${query.from}#${query.to}`;
+  JSON.stringify([
+    oddsHistoryPartition(query.eventId),
+    query.from,
+    query.to,
+    query.marketKey ?? null,
+    query.selectionKey ?? null,
+    query.sportsbookIds ? [...query.sportsbookIds].sort() : null,
+  ]);
 
 const rowSnapshot = (
   row: OddsHistoryStoredRow,
@@ -155,6 +168,7 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
     readonly gateway: OddsHistoryReadGateway,
     readonly cursor: EventCursorCodec,
     readonly approvedSportsbooks: Readonly<Record<string, string>>,
+    readonly projectImpliedProbability: OddsHistoryProbabilityProjector,
     readonly now: () => Date = () => new Date(),
   ) {
     if (
@@ -166,8 +180,19 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
       throw new OddsHistoryInputError("approved-sportsbook-roster-invalid");
   }
 
+  validateSportsbookIds(sportsbookIds?: readonly string[]): void {
+    if (
+      sportsbookIds?.some(
+        (sportsbookId) =>
+          !Object.hasOwn(this.approvedSportsbooks, sportsbookId),
+      )
+    )
+      throw new OddsHistoryInputError("odds-history-sportsbook-invalid");
+  }
+
   async list(rawQuery: OddsHistoryQuery): Promise<OddsHistoryPage> {
     const query = validated(rawQuery);
+    this.validateSportsbookIds(query.sportsbookIds);
     const pk = oddsHistoryPartition(query.eventId);
     const requestNow = this.now();
     let paginationAsOf = requestNow.toISOString();
@@ -212,15 +237,58 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
         throw new OddsHistoryStorageError("odds-history-order-invalid");
     const bySeries = new Map<string, OddsHistorySeries>();
     const newestLabelEvidence = new Map<string, string>();
+    const seenEvidence = new Set<string>();
     for (const snapshot of snapshots) {
       const sportsbookLabel = this.approvedSportsbooks[snapshot.sportsbookId];
-      if (!sportsbookLabel || !MAIN_MARKETS.has(snapshot.marketKey)) continue;
+      if (
+        !sportsbookLabel ||
+        snapshot.provenance?.providerId !== "sharpapi" ||
+        !MAIN_MARKETS.has(snapshot.marketKey) ||
+        (query.marketKey !== undefined &&
+          snapshot.marketKey !== query.marketKey) ||
+        (query.selectionKey !== undefined &&
+          snapshot.selectionKey !== query.selectionKey) ||
+        (query.sportsbookIds !== undefined &&
+          !query.sportsbookIds.includes(snapshot.sportsbookId))
+      )
+        continue;
+      const requiresPoint =
+        snapshot.marketKey === "spread" || snapshot.marketKey === "total";
+      if (requiresPoint !== (snapshot.point !== undefined))
+        throw new OddsHistoryStorageError("odds-history-point-invalid");
+      const evidenceIdentity = JSON.stringify([
+        snapshot.marketKey,
+        snapshot.selectionKey,
+        snapshot.sportsbookId,
+        snapshot.point ?? null,
+        snapshot.americanOdds,
+        snapshot.observedAt,
+        snapshot.retrievedAt,
+        snapshot.provenance.providerId,
+        snapshot.provenance.policyVersion,
+        snapshot.provenance.bookRole,
+        snapshot.provenance.sourceState,
+      ]);
+      if (seenEvidence.has(evidenceIdentity)) continue;
+      seenEvidence.add(evidenceIdentity);
       const key = seriesKey(snapshot);
       const point: OddsHistoryPoint = {
+        observationId: snapshot.snapshotId,
+        state:
+          snapshot.provenance?.sourceState === "suspended"
+            ? "suspended"
+            : snapshot.provenance.sourceState === "active"
+              ? "active"
+              : "unavailable",
         ...(snapshot.point === undefined ? {} : { point: snapshot.point }),
         americanOdds: snapshot.americanOdds,
+        impliedProbability: this.projectImpliedProbability(
+          snapshot.americanOdds,
+        ),
         observedAt: snapshot.observedAt,
         retrievedAt: snapshot.retrievedAt,
+        isOpening: false,
+        isCurrent: false,
       };
       const existing = bySeries.get(key);
       const labelEvidence = `${snapshot.observedAt}|${snapshot.retrievedAt}|${snapshot.snapshotId}`;
@@ -249,15 +317,55 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
     const hasMore = result.hasMore || result.items.length > query.limit;
     const last = consumedRows.at(-1);
     const generatedAt = paginationAsOf;
-    return {
-      eventId: query.eventId,
-      generatedAt,
-      series: [...bySeries.values()].sort(
+    const series = [...bySeries.values()]
+      .map((item) => {
+        const points = [...item.points].sort(
+          (left, right) =>
+            left.observedAt.localeCompare(right.observedAt) ||
+            left.retrievedAt.localeCompare(right.retrievedAt) ||
+            left.observationId.localeCompare(right.observationId),
+        );
+        const activeIndexes = points.flatMap((point, index) =>
+          point.state === "active" ? [index] : [],
+        );
+        const openingIndex = activeIndexes[0];
+        const currentIndex = activeIndexes.at(-1);
+        return {
+          ...item,
+          points: points.map((point, index) => ({
+            ...point,
+            isOpening: index === openingIndex,
+            isCurrent: index === currentIndex,
+          })),
+        };
+      })
+      .sort(
         (left, right) =>
           left.marketKey.localeCompare(right.marketKey) ||
           left.selectionKey.localeCompare(right.selectionKey) ||
           left.sportsbookId.localeCompare(right.sportsbookId),
-      ),
+      );
+    const requestedSportsbooks = query.sportsbookIds
+      ? query.sportsbookIds.map(
+          (sportsbookId) =>
+            [sportsbookId, this.approvedSportsbooks[sportsbookId]!] as const,
+        )
+      : Object.entries(this.approvedSportsbooks);
+    const observedSportsbooks = new Set(
+      series.map(({ sportsbookId }) => sportsbookId),
+    );
+    return {
+      eventId: query.eventId,
+      generatedAt,
+      markerScope: "page",
+      series,
+      coverage: requestedSportsbooks.map(([sportsbookId, sportsbookLabel]) => ({
+        sportsbookId,
+        sportsbookLabel,
+        status: observedSportsbooks.has(sportsbookId)
+          ? "available"
+          : "unavailable",
+      })),
       nextCursor:
         hasMore && last
           ? this.cursor.encode(
@@ -276,6 +384,7 @@ export class MemoryOddsHistoryRepository extends JoinedOddsHistoryRepository {
     snapshots: readonly NormalizedFixtureOddsSnapshot[],
     cursor: EventCursorCodec,
     approvedSportsbooks: Readonly<Record<string, string>>,
+    projectImpliedProbability: OddsHistoryProbabilityProjector,
     now: () => Date = () => new Date(),
   ) {
     const rows = new Map<string, OddsHistoryStoredRow>();
@@ -311,6 +420,7 @@ export class MemoryOddsHistoryRepository extends JoinedOddsHistoryRepository {
       },
       cursor,
       approvedSportsbooks,
+      projectImpliedProbability,
       now,
     );
   }

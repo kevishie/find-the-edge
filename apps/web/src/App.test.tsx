@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { assessEventMetadata } from "@find-the-edge/domain";
 
@@ -364,6 +364,19 @@ it("renders independent accessible lifecycle and freshness badges on games and d
     Promise.resolve({
       eventId: game.id,
       generatedAt: "2026-08-01T12:30:00.000Z",
+      markerScope: "loaded" as const,
+      coverage: [
+        {
+          sportsbookId: "pinnacle",
+          sportsbookLabel: "Pinnacle",
+          status: "available" as const,
+        },
+        {
+          sportsbookId: "draftkings",
+          sportsbookLabel: "DraftKings",
+          status: "available" as const,
+        },
+      ],
       series: [
         {
           marketKey: "moneyline",
@@ -373,14 +386,24 @@ it("renders independent accessible lifecycle and freshness badges on games and d
           sportsbookLabel: "Pinnacle",
           points: [
             {
+              observationId: "pinnacle-opening",
+              state: "active" as const,
               americanOdds: -110,
+              impliedProbability: 110 / 210,
               observedAt: "2026-08-01T11:00:00.000Z",
               retrievedAt: "2026-08-01T11:00:01.000Z",
+              isOpening: true,
+              isCurrent: false,
             },
             {
+              observationId: "pinnacle-current",
+              state: "active" as const,
               americanOdds: 110,
+              impliedProbability: 100 / 210,
               observedAt: "2026-08-01T12:00:00.000Z",
               retrievedAt: "2026-08-01T12:00:01.000Z",
+              isOpening: false,
+              isCurrent: true,
             },
           ],
         },
@@ -392,9 +415,14 @@ it("renders independent accessible lifecycle and freshness badges on games and d
           sportsbookLabel: "DraftKings",
           points: [
             {
+              observationId: "draftkings-only",
+              state: "active" as const,
               americanOdds: 120,
+              impliedProbability: 100 / 220,
               observedAt: "2026-08-01T10:00:00.000Z",
               retrievedAt: "2026-08-01T10:00:01.000Z",
+              isOpening: true,
+              isCurrent: true,
             },
           ],
         },
@@ -429,14 +457,12 @@ it("renders independent accessible lifecycle and freshness badges on games and d
     screen.getByText("Market suspended").closest("td")?.querySelector("time"),
   ).toHaveAttribute("datetime", "2026-08-01T12:15:00.000Z");
   expect(
-    await screen.findByRole("img", {
+    await screen.findByRole("group", {
       name: "Implied probability movement across 2 sportsbooks",
     }),
   ).toBeVisible();
   expect(
-    screen.getByText(
-      "Pinnacle and Circa first-to-latest loaded probability move",
-    ),
+    screen.getByText("Pinnacle first-to-latest loaded probability move"),
   ).toBeVisible();
   expect(screen.getByText("-4.8 probability points")).toBeVisible();
   expect(screen.getByRole("combobox", { name: "Selection" })).toHaveValue(
@@ -451,7 +477,7 @@ it("renders independent accessible lifecycle and freshness badges on games and d
   ).toBeVisible();
 });
 
-it("does not declare movement from isolated points in separate sportsbook series", async () => {
+it("renders exact opening/current markers for isolated sportsbook points", async () => {
   const singleton = (sportsbookId: string, sportsbookLabel: string) => ({
     marketKey: "moneyline",
     selectionKey: "away",
@@ -460,9 +486,14 @@ it("does not declare movement from isolated points in separate sportsbook series
     sportsbookLabel,
     points: [
       {
+        observationId: `${sportsbookId}-only`,
+        state: "active" as const,
         americanOdds: -110,
+        impliedProbability: 110 / 210,
         observedAt: "2026-08-01T11:00:00.000Z",
         retrievedAt: "2026-08-01T11:00:01.000Z",
+        isOpening: true,
+        isCurrent: true,
       },
     ],
   });
@@ -470,6 +501,19 @@ it("does not declare movement from isolated points in separate sportsbook series
     Promise.resolve({
       eventId: game.id,
       generatedAt: "2026-08-01T12:30:00.000Z",
+      markerScope: "loaded" as const,
+      coverage: [
+        {
+          sportsbookId: "pinnacle",
+          sportsbookLabel: "Pinnacle",
+          status: "available" as const,
+        },
+        {
+          sportsbookId: "draftkings",
+          sportsbookLabel: "DraftKings",
+          status: "available" as const,
+        },
+      ],
       series: [
         singleton("pinnacle", "Pinnacle"),
         singleton("draftkings", "DraftKings"),
@@ -491,14 +535,184 @@ it("does not declare movement from isolated points in separate sportsbook series
     />,
   );
   expect(
-    await screen.findByText(
-      /A second observation will create the movement graph/,
-    ),
+    await screen.findByRole("group", {
+      name: "Implied probability movement across 2 sportsbooks",
+    }),
   ).toBeVisible();
   expect(
-    screen.queryByRole("img", { name: /movement across/ }),
-  ).not.toBeInTheDocument();
-  expect(screen.getAllByText("1 observation")).toHaveLength(2);
+    screen.getAllByRole("button", { name: /opening and current/i }),
+  ).toHaveLength(2);
+  expect(screen.getAllByText("1 active observation")).toHaveLength(2);
+});
+
+it("provides a selectable step-line history view with exact details and table parity", async () => {
+  const history = {
+    eventId: game.id,
+    generatedAt: "2026-08-01T12:30:00.000Z",
+    markerScope: "loaded" as const,
+    coverage: [
+      {
+        sportsbookId: "draftkings",
+        sportsbookLabel: "DraftKings",
+        status: "available" as const,
+      },
+      {
+        sportsbookId: "pinnacle",
+        sportsbookLabel: "Pinnacle",
+        status: "available" as const,
+      },
+      {
+        sportsbookId: "caesars",
+        sportsbookLabel: "Caesars Sportsbook",
+        status: "unavailable" as const,
+      },
+    ],
+    series: [
+      {
+        marketKey: "moneyline",
+        selectionKey: "away",
+        selectionLabel: "Boston",
+        sportsbookId: "draftkings",
+        sportsbookLabel: "DraftKings",
+        points: [
+          {
+            observationId: "dk-open",
+            state: "active" as const,
+            americanOdds: 125,
+            impliedProbability: 100 / 225,
+            observedAt: "2026-07-30T10:00:00.000Z",
+            retrievedAt: "2026-07-30T10:00:01.000Z",
+            isOpening: true,
+            isCurrent: false,
+          },
+          {
+            observationId: "dk-suspended",
+            state: "suspended" as const,
+            americanOdds: 120,
+            impliedProbability: 100 / 220,
+            observedAt: "2026-08-01T11:00:00.000Z",
+            retrievedAt: "2026-08-01T11:00:01.000Z",
+            isOpening: false,
+            isCurrent: false,
+          },
+          {
+            observationId: "dk-current",
+            state: "active" as const,
+            americanOdds: 110,
+            impliedProbability: 100 / 210,
+            observedAt: "2026-08-01T12:00:00.000Z",
+            retrievedAt: "2026-08-01T12:00:01.000Z",
+            isOpening: false,
+            isCurrent: true,
+          },
+        ],
+      },
+      {
+        marketKey: "moneyline",
+        selectionKey: "away",
+        selectionLabel: "Boston",
+        sportsbookId: "pinnacle",
+        sportsbookLabel: "Pinnacle",
+        points: [
+          {
+            observationId: "pin-open",
+            state: "active" as const,
+            americanOdds: 118,
+            impliedProbability: 100 / 218,
+            observedAt: "2026-08-01T10:00:00.000Z",
+            retrievedAt: "2026-08-01T10:00:01.000Z",
+            isOpening: true,
+            isCurrent: false,
+          },
+          {
+            observationId: "pin-current",
+            state: "active" as const,
+            americanOdds: 105,
+            impliedProbability: 100 / 205,
+            observedAt: "2026-08-01T12:00:00.000Z",
+            retrievedAt: "2026-08-01T12:00:02.000Z",
+            isOpening: false,
+            isCurrent: true,
+          },
+        ],
+      },
+    ],
+    nextCursor: null,
+  };
+  render(
+    <App
+      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          detail: vi.fn(() => Promise.resolve(comparisonDetail())),
+          oddsHistory: vi.fn(() => Promise.resolve(history)),
+        },
+      }}
+    />,
+  );
+
+  const filters = await screen.findByLabelText("Sportsbook line filters");
+  const draftKings = within(filters).getByRole("button", {
+    name: "Hide DraftKings line",
+  });
+  expect(draftKings).toHaveAttribute("aria-pressed", "true");
+  expect(
+    within(filters).getByRole("button", {
+      name: "Caesars Sportsbook: No history",
+    }),
+  ).toBeDisabled();
+  expect(document.querySelector('[data-series="pinnacle"]')).toHaveAttribute(
+    "data-interpolation",
+    "step-after",
+  );
+  expect(document.querySelector('[data-series="pinnacle"]')).toHaveAttribute(
+    "stroke-dasharray",
+  );
+  expect(document.querySelector('[data-gap-state="suspended"]')).toBeVisible();
+
+  fireEvent.click(screen.getByRole("button", { name: "American odds" }));
+  expect(
+    screen.getByRole("group", {
+      name: "American odds movement across 2 sportsbooks",
+    }),
+  ).toBeVisible();
+
+  const exactPoint = screen.getByRole("button", {
+    name: /DraftKings current.*\+110.*provider.*collected/i,
+  });
+  fireEvent.focus(exactPoint);
+  expect(
+    screen.getByLabelText("Focused observation details"),
+  ).toHaveTextContent("DraftKings");
+  expect(
+    screen.getByLabelText("Focused observation details"),
+  ).toHaveTextContent("Collected");
+
+  fireEvent.click(screen.getByText("Accessible history table"));
+  const table = screen.getByRole("table", { name: "Plotted line history" });
+  expect(within(table).getByText("dk-suspended")).toBeVisible();
+  expect(within(table).getByText("Suspended")).toBeVisible();
+  expect(within(table).getAllByText("Current").length).toBeGreaterThan(0);
+
+  fireEvent.click(screen.getByRole("button", { name: "Last 6 hours" }));
+  expect(within(table).queryByText("dk-open")).not.toBeInTheDocument();
+  expect(
+    screen.getByText(/earlier loaded observations are hidden/i),
+  ).toBeVisible();
+  expect(
+    within(table).getAllByText("Opening and current").length,
+  ).toBeGreaterThan(0);
+
+  fireEvent.click(draftKings);
+  expect(draftKings).toHaveAttribute("aria-pressed", "false");
+  expect(document.querySelector('[data-series="draftkings"]')).toBeNull();
+  expect(
+    screen.getByRole("group", {
+      name: "American odds movement across 1 sportsbook",
+    }),
+  ).toBeVisible();
 });
 
 it("keeps not-found detail distinct from retryable outages", async () => {
