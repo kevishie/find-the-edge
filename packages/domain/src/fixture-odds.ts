@@ -102,6 +102,7 @@ export type FixtureOddsAvailabilityState =
   | "active"
   | "suspended"
   | "closed"
+  | "stale"
   | "missing"
   | "malformed"
   | "incomplete"

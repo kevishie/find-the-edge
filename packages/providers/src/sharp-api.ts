@@ -186,6 +186,8 @@ export interface SharpApiPrice {
   readonly isActive?: boolean;
   readonly isSuspended?: boolean;
   readonly observedAt: IsoTimestamp;
+  /** Local retrieval boundary for durable replay; never sourced from provider input. */
+  readonly retrievedAt?: IsoTimestamp;
 }
 
 export interface SharpApiBookmaker {
@@ -211,6 +213,7 @@ export interface SharpApiOddsPage {
   readonly hasMore: boolean;
   readonly nextCursor?: string;
   readonly retrievedAt: IsoTimestamp;
+  readonly eventRetrievedAt?: Readonly<Record<string, IsoTimestamp>>;
   readonly responseMetadata?: SharpApiResponseMetadata;
 }
 
@@ -353,6 +356,7 @@ export class SharpApiError extends Error {
       | "rate-limited"
       | "provider-request-ambiguous"
       | "provider-unavailable"
+      | "provider-rejected"
       | "invalid-response",
     readonly retryable = false,
     readonly retryAt?: IsoTimestamp,
@@ -378,22 +382,91 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const iso = (value: string) => new Date(value).toISOString() as IsoTimestamp;
 const MAX_RESPONSE_BYTES = 10_000_000;
 
-const boundedJson = async (response: Response): Promise<unknown> => {
+type SharpApiEndpoint =
+  "account" | "odds" | "focused-odds" | "schedule" | "splits";
+
+const invalidResponse = (endpoint: SharpApiEndpoint, stage: string) =>
+  new SharpApiError(
+    "invalid-response",
+    false,
+    undefined,
+    `${endpoint}:${stage}`,
+  );
+
+const rethrowInvalidResponseAt = (
+  error: unknown,
+  endpoint: SharpApiEndpoint,
+): never => {
+  if (
+    error instanceof SharpApiError &&
+    error.code === "invalid-response" &&
+    !error.stage
+  )
+    throw invalidResponse(endpoint, "unknown");
+  throw error;
+};
+
+const isEmptyProviderErrorSentinel = (value: unknown) =>
+  value === null ||
+  value === undefined ||
+  value === false ||
+  value === "" ||
+  (Array.isArray(value) && value.length === 0) ||
+  (record(value) && Object.keys(value).length === 0);
+
+const providerEnvelopeIssue = (
+  payload: Record<string, unknown>,
+): "declared-error" | "malformed" | undefined => {
+  if (
+    Object.prototype.hasOwnProperty.call(payload, "success") &&
+    typeof payload["success"] !== "boolean"
+  )
+    return "malformed";
+  if (payload["success"] === false) return "declared-error";
+  return ["error", "errors"].some(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(payload, key) &&
+      !isEmptyProviderErrorSentinel(payload[key]),
+  )
+    ? "declared-error"
+    : undefined;
+};
+
+const assertProviderEnvelope = (
+  payload: Record<string, unknown>,
+  endpoint: SharpApiEndpoint,
+) => {
+  const issue = providerEnvelopeIssue(payload);
+  if (issue === "declared-error")
+    throw new SharpApiError(
+      "provider-rejected",
+      false,
+      undefined,
+      `${endpoint}:provider-error`,
+    );
+  if (issue === "malformed") throw invalidResponse(endpoint, "envelope");
+};
+
+const boundedJson = async (
+  response: Response,
+  endpoint: SharpApiEndpoint,
+): Promise<unknown> => {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES)
-    throw new SharpApiError("invalid-response");
+    throw invalidResponse(endpoint, "content-length");
   const raw = await response.text();
   if (new TextEncoder().encode(raw).byteLength > MAX_RESPONSE_BYTES)
-    throw new SharpApiError("invalid-response");
+    throw invalidResponse(endpoint, "body-size");
   try {
     return JSON.parse(raw) as unknown;
   } catch {
-    throw new SharpApiError("invalid-response");
+    throw invalidResponse(endpoint, "json");
   }
 };
 
 const request = async (
   path: string,
+  endpoint: SharpApiEndpoint,
   apiKey: string,
   fetcher: typeof fetch,
 ): Promise<{
@@ -414,7 +487,12 @@ const request = async (
   }
   if (!response.ok) {
     if ([401, 403].includes(response.status)) {
-      const body = await boundedJson(response);
+      let body: unknown;
+      try {
+        body = await boundedJson(response, endpoint);
+      } catch {
+        throw new SharpApiError("unauthorized");
+      }
       const error = record(body) && record(body["error"]) ? body["error"] : {};
       if (error["code"] === "tier_restricted")
         throw new SharpApiError("not-entitled");
@@ -425,19 +503,20 @@ const request = async (
       throw new SharpApiError("rate-limited", true, retryAt);
     }
     throw new SharpApiError(
-      response.status >= 500 ? "provider-unavailable" : "invalid-response",
+      response.status >= 500 ? "provider-unavailable" : "provider-rejected",
       response.status >= 500,
     );
   }
   return {
-    payload: await boundedJson(response),
+    payload: await boundedJson(response, endpoint),
     metadata: parseSharpApiResponseMetadata(response.headers),
   };
 };
 
 export function parseSharpApiAccount(input: unknown): SharpApiAccount {
-  if (!record(input) || !record(input["data"]))
-    throw new SharpApiError("invalid-response");
+  if (!record(input)) throw invalidResponse("account", "envelope");
+  assertProviderEnvelope(input, "account");
+  if (!record(input["data"])) throw invalidResponse("account", "envelope");
   const data = input["data"];
   const rate = data["rate_limit"];
   const streaming = data["streaming"];
@@ -451,12 +530,7 @@ export function parseSharpApiAccount(input: unknown): SharpApiAccount {
     !record(streaming) ||
     typeof streaming["enabled"] !== "boolean"
   )
-    throw new SharpApiError(
-      "invalid-response",
-      false,
-      undefined,
-      "odds-page-envelope",
-    );
+    throw invalidResponse("account", "data");
   return {
     tier: data["tier"],
     features: [...data["features"]] as string[],
@@ -556,21 +630,66 @@ export function parseSharpApiOddsPage(
   league: SharpApiLeague,
   retrievedAt: IsoTimestamp,
   maximumRows = 200,
+  requestKind: "initial" | "cursor" | "focused" = "initial",
 ): SharpApiOddsPage {
+  const endpoint: SharpApiEndpoint =
+    requestKind === "focused" ? "focused-odds" : "odds";
   const payload = record(input) ? input : undefined;
+  if (payload) assertProviderEnvelope(payload, endpoint);
   const pagination = payload?.["pagination"];
-  const explicitlyEmpty =
+  const terminalCount = record(pagination) ? pagination["count"] : undefined;
+  const terminalTotal = record(pagination) ? pagination["total"] : undefined;
+  const commonTerminalPagination =
     record(pagination) &&
-    payload?.["data"] === null &&
     pagination["has_more"] === false &&
-    pagination["count"] === 0;
+    (pagination["next_cursor"] === null ||
+      pagination["next_cursor"] === undefined);
+  const initialZeroEvidence = terminalCount === 0 && terminalTotal === 0;
+  const cursorZeroEvidence =
+    (terminalCount === null ||
+      terminalCount === undefined ||
+      terminalCount === 0) &&
+    (terminalTotal === null ||
+      terminalTotal === undefined ||
+      (integer(terminalTotal) && terminalTotal >= 0)) &&
+    (terminalCount === 0 || (integer(terminalTotal) && terminalTotal >= 0));
+  const terminalPagination =
+    commonTerminalPagination &&
+    (requestKind === "initial" || requestKind === "focused"
+      ? initialZeroEvidence
+      : requestKind === "cursor"
+        ? cursorZeroEvidence
+        : false);
+  const explicitlyEmpty =
+    payload?.["data"] === null && terminalPagination && payload !== undefined;
   if (
     !payload ||
     (!explicitlyEmpty && !Array.isArray(payload["data"])) ||
     (Array.isArray(payload["data"]) && payload["data"].length > maximumRows)
   )
-    throw new SharpApiError("invalid-response");
+    throw invalidResponse(endpoint, "page-envelope");
   const data = explicitlyEmpty ? [] : (payload["data"] as unknown[]);
+  if (record(pagination) && Array.isArray(payload["data"])) {
+    const count = pagination["count"];
+    const total = pagination["total"];
+    if (
+      (count !== null &&
+        count !== undefined &&
+        (!integer(count) || count < 0 || count !== data.length)) ||
+      (total !== null &&
+        total !== undefined &&
+        (!integer(total) || total < data.length)) ||
+      (integer(count) && integer(total) && count > total) ||
+      (requestKind !== "cursor" &&
+        pagination["has_more"] === false &&
+        integer(total) &&
+        total !== data.length) ||
+      (pagination["has_more"] === false &&
+        pagination["next_cursor"] !== null &&
+        pagination["next_cursor"] !== undefined)
+    )
+      throw invalidResponse(endpoint, "pagination-coherence");
+  }
   const deduplicatedRows: (Record<string, unknown> | null)[] = [];
   const rejections: SharpApiNormalizationRejection[] = [];
   const priceIdentities = new Map<
@@ -945,25 +1064,16 @@ export function parseSharpApiOddsPage(
       isActive: value["is_active"] !== false,
       isSuspended: value["is_active"] === false,
       observedAt: iso(value["timestamp"]),
+      retrievedAt,
     });
     books.set(book, prices);
     grouped.set(eventId, books);
   }
   if (!record(pagination) || typeof pagination["has_more"] !== "boolean")
-    throw new SharpApiError(
-      "invalid-response",
-      false,
-      undefined,
-      "odds-pagination-envelope",
-    );
+    throw invalidResponse(endpoint, "pagination-envelope");
   const nextCursor = pagination["next_cursor"];
   if (pagination["has_more"] && !canonical(nextCursor, 4096))
-    throw new SharpApiError(
-      "invalid-response",
-      false,
-      undefined,
-      "odds-pagination-cursor",
-    );
+    throw invalidResponse(endpoint, "pagination-cursor");
   return {
     events: [...identities].map(([eventId, identity]) => ({
       ...identity,
@@ -985,14 +1095,16 @@ export function parseSharpApiSchedulePage(
   league: SharpApiLeague,
   retrievedAt: IsoTimestamp,
 ): SharpApiSchedulePage {
+  const invalid = (stage: string) => invalidResponse("schedule", stage);
+  if (!record(input)) throw invalid("page-envelope");
+  assertProviderEnvelope(input, "schedule");
   if (
-    !record(input) ||
     !Array.isArray(input["data"]) ||
     input["data"].length > 200 ||
     !record(input["pagination"]) ||
     typeof input["pagination"]["has_more"] !== "boolean"
   )
-    throw new SharpApiError("invalid-response");
+    throw invalid("page-envelope");
   const events: SharpApiScheduleEvent[] = [];
   const exclusions: SharpApiScheduleExclusion[] = [];
   const ids = new Set<string>();
@@ -1002,7 +1114,7 @@ export function parseSharpApiSchedulePage(
       !canonical(value["id"]) ||
       !canonical(value["league"], 64)
     )
-      throw new SharpApiError("invalid-response");
+      throw invalid("event-identity");
     // The endpoint can include valid but differently shaped rows from related
     // catalogues despite an exact filter. League identity is the only field we
     // need in order to exclude those rows safely.
@@ -1025,10 +1137,10 @@ export function parseSharpApiSchedulePage(
       (typeof value["home_team"] === "string" &&
         value["home_team"].length > 512)
     )
-      throw new SharpApiError("invalid-response");
+      throw invalid("event-shape");
     const awayTeam = value["away_team"];
     const homeTeam = value["home_team"];
-    if (ids.has(value["id"])) throw new SharpApiError("invalid-response");
+    if (ids.has(value["id"])) throw invalid("duplicate-event");
     ids.add(value["id"]);
     // Sharp includes futures/binary propositions in this catalogue. Those
     // records intentionally have a missing participant and are not games.
@@ -1040,7 +1152,7 @@ export function parseSharpApiSchedulePage(
     )
       continue;
     if (!canonical(awayTeam) || !canonical(homeTeam))
-      throw new SharpApiError("invalid-response");
+      throw invalid("participants");
     if (awayTeam === homeTeam) {
       exclusions.push({
         providerEventId: value["id"],
@@ -1079,7 +1191,7 @@ export function parseSharpApiSchedulePage(
   }
   const next = input["pagination"]["next_offset"];
   if (next !== null && next !== undefined && (!integer(next) || next < 0))
-    throw new SharpApiError("invalid-response");
+    throw invalid("pagination-offset");
   return {
     events,
     ...(exclusions.length > 0 ? { exclusions } : {}),
@@ -1091,7 +1203,7 @@ export function parseSharpApiSchedulePage(
 
 const splitPercent = (value: unknown) => {
   if (!finite(value) || value < 0 || value > 1)
-    throw new SharpApiError("invalid-response");
+    throw invalidResponse("splits", "percentage");
   return Math.round(value * 10_000) / 100;
 };
 
@@ -1099,10 +1211,12 @@ export function parseSharpApiSplitPage(
   input: unknown,
   retrievedAt: IsoTimestamp,
 ): SharpApiSplitPage {
-  if (!record(input)) throw new SharpApiError("invalid-response");
+  const invalid = (stage: string) => invalidResponse("splits", stage);
+  if (!record(input)) throw invalid("page-envelope");
+  assertProviderEnvelope(input, "splits");
   const pagination = input["pagination"];
   if (!record(pagination) || typeof pagination["has_more"] !== "boolean")
-    throw new SharpApiError("invalid-response");
+    throw invalid("pagination-envelope");
   const emptyPage =
     input["data"] === null &&
     pagination["has_more"] === false &&
@@ -1112,7 +1226,7 @@ export function parseSharpApiSplitPage(
     (!emptyPage && !Array.isArray(input["data"])) ||
     (Array.isArray(input["data"]) && input["data"].length > 200)
   )
-    throw new SharpApiError("invalid-response");
+    throw invalid("data-envelope");
   const data = emptyPage ? [] : (input["data"] as unknown[]);
   const items = data.map((value): SharpApiSplitEvent => {
     if (
@@ -1125,7 +1239,7 @@ export function parseSharpApiSplitPage(
       !canonical(value["home_team"]) ||
       !instant(value["fetched_at"])
     )
-      throw new SharpApiError("invalid-response");
+      throw invalid("event-shape");
     const markets: SharpApiSplitMarket[] = [];
     const add = (
       marketKey: SharpApiSplitMarket["marketKey"],
@@ -1134,10 +1248,10 @@ export function parseSharpApiSplitPage(
     ) => {
       const raw = value[marketKey];
       if (raw === null || raw === undefined) return;
-      if (!record(raw)) throw new SharpApiError("invalid-response");
+      if (!record(raw)) throw invalid("market-shape");
       const handle = record(raw["handle_pct"]) ? raw["handle_pct"] : undefined;
       const bets = record(raw["bets_pct"]) ? raw["bets_pct"] : undefined;
-      if (!handle && !bets) throw new SharpApiError("invalid-response");
+      if (!handle && !bets) throw invalid("market-percentages");
       const selections = sides.flatMap((side) => {
         const pointValue =
           marketKey === "total" ? raw["line"] : raw[`${side}_${pointField}`];
@@ -1181,7 +1295,7 @@ export function parseSharpApiSplitPage(
   });
   const nextOffset = pagination["next_offset"];
   if (nextOffset !== null && nextOffset !== undefined && !integer(nextOffset))
-    throw new SharpApiError("invalid-response");
+    throw invalid("pagination-offset");
   return {
     items,
     hasMore: pagination["has_more"],
@@ -1194,8 +1308,17 @@ export async function fetchSharpApiAccount(
   apiKey: string,
   fetcher: typeof fetch = fetch,
 ): Promise<SharpApiAccount> {
-  const { payload, metadata } = await request("/account", apiKey, fetcher);
-  return { ...parseSharpApiAccount(payload), responseMetadata: metadata };
+  try {
+    const { payload, metadata } = await request(
+      "/account",
+      "account",
+      apiKey,
+      fetcher,
+    );
+    return { ...parseSharpApiAccount(payload), responseMetadata: metadata };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "account");
+  }
 }
 
 export async function fetchSharpApiOddsPage(
@@ -1212,15 +1335,26 @@ export async function fetchSharpApiOddsPage(
   });
   if (cursor) query.set("cursor", cursor);
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
-  const { payload, metadata } = await request(
-    `/odds?${query.toString()}`,
-    apiKey,
-    fetcher,
-  );
-  return {
-    ...parseSharpApiOddsPage(payload, league, retrievedAt),
-    responseMetadata: metadata,
-  };
+  try {
+    const { payload, metadata } = await request(
+      `/odds?${query.toString()}`,
+      "odds",
+      apiKey,
+      fetcher,
+    );
+    return {
+      ...parseSharpApiOddsPage(
+        payload,
+        league,
+        retrievedAt,
+        200,
+        cursor ? "cursor" : "initial",
+      ),
+      responseMetadata: metadata,
+    };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "odds");
+  }
 }
 
 export interface SharpApiOddsRequestMetadata {
@@ -1262,51 +1396,78 @@ export async function fetchSharpApiEventOdds(
   if (!canonical(providerEventId, 256))
     throw new SharpApiError("configuration");
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
-  const response = await request(
-    `/events/${encodeURIComponent(providerEventId)}/odds`,
-    apiKey,
-    fetcher,
-  );
-  const payload = response.payload;
-  if (!record(payload) || !Array.isArray(payload["data"]))
-    throw new SharpApiError("invalid-response");
-  if (payload["data"].length === 0 || payload["data"].length > 5_000)
-    throw new SharpApiError("invalid-response");
-  for (const row of payload["data"]) {
-    if (
-      !record(row) ||
-      row["event_id"] !== providerEventId ||
-      !canonical(row["league"], 128) ||
-      ![league.leagueKey, league.providerLeague.toLowerCase()].includes(
-        row["league"].toLowerCase(),
+  try {
+    const response = await request(
+      `/events/${encodeURIComponent(providerEventId)}/odds`,
+      "focused-odds",
+      apiKey,
+      fetcher,
+    );
+    const payload = response.payload;
+    if (!record(payload)) throw invalidResponse("focused-odds", "envelope");
+    assertProviderEnvelope(payload, "focused-odds");
+    if (!Array.isArray(payload["data"]) && payload["data"] !== null)
+      throw invalidResponse("focused-odds", "envelope");
+    if (Array.isArray(payload["data"]) && payload["data"].length > 5_000)
+      throw invalidResponse("focused-odds", "envelope");
+    if (record(payload["pagination"])) {
+      const hasMore = payload["pagination"]["has_more"];
+      if (
+        (hasMore !== undefined && typeof hasMore !== "boolean") ||
+        hasMore === true
       )
-    )
-      throw new SharpApiError("invalid-response");
-  }
-  const page = {
-    ...parseSharpApiOddsPage(
-      {
-        ...payload,
-        pagination: { has_more: false, next_cursor: null },
+        throw invalidResponse("focused-odds", "pagination-envelope");
+    }
+    for (const row of Array.isArray(payload["data"]) ? payload["data"] : []) {
+      if (
+        !record(row) ||
+        row["event_id"] !== providerEventId ||
+        !canonical(row["league"], 128) ||
+        ![league.leagueKey, league.providerLeague.toLowerCase()].includes(
+          row["league"].toLowerCase(),
+        )
+      )
+        throw invalidResponse("focused-odds", "identity");
+    }
+    const page = {
+      ...parseSharpApiOddsPage(
+        record(payload["pagination"])
+          ? payload
+          : {
+              ...payload,
+              pagination: {
+                has_more: false,
+                next_cursor: null,
+                count: Array.isArray(payload["data"])
+                  ? payload["data"].length
+                  : 0,
+                total: Array.isArray(payload["data"])
+                  ? payload["data"].length
+                  : 0,
+              },
+            },
+        league,
+        retrievedAt,
+        5_000,
+        "focused",
+      ),
+      responseMetadata: response.metadata,
+    };
+    if (page.events.some((event) => event.providerEventId !== providerEventId))
+      throw invalidResponse("focused-odds", "identity");
+    return {
+      page,
+      request: {
+        endpointMode: "focused",
+        leagueKey: league.leagueKey,
+        providerLeague: league.providerLeague,
+        marketSet: ["main"],
+        providerEventId,
       },
-      league,
-      retrievedAt,
-      5_000,
-    ),
-    responseMetadata: response.metadata,
-  };
-  if (page.events.some((event) => event.providerEventId !== providerEventId))
-    throw new SharpApiError("invalid-response");
-  return {
-    page,
-    request: {
-      endpointMode: "focused",
-      leagueKey: league.leagueKey,
-      providerLeague: league.providerLeague,
-      marketSet: ["main"],
-      providerEventId,
-    },
-  };
+    };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "focused-odds");
+  }
 }
 
 export async function fetchSharpApiSchedulePage(
@@ -1322,15 +1483,20 @@ export async function fetchSharpApiSchedulePage(
     offset: String(offset),
   });
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
-  const { payload, metadata } = await request(
-    `/events?${query.toString()}`,
-    apiKey,
-    fetcher,
-  );
-  return {
-    ...parseSharpApiSchedulePage(payload, league, retrievedAt),
-    responseMetadata: metadata,
-  };
+  try {
+    const { payload, metadata } = await request(
+      `/events?${query.toString()}`,
+      "schedule",
+      apiKey,
+      fetcher,
+    );
+    return {
+      ...parseSharpApiSchedulePage(payload, league, retrievedAt),
+      responseMetadata: metadata,
+    };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "schedule");
+  }
 }
 
 export async function fetchSharpApiSplitsPage(
@@ -1345,15 +1511,20 @@ export async function fetchSharpApiSplitsPage(
     offset: String(offset),
   });
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
-  const { payload, metadata } = await request(
-    `/splits?${query.toString()}`,
-    apiKey,
-    fetcher,
-  );
-  return {
-    ...parseSharpApiSplitPage(payload, retrievedAt),
-    responseMetadata: metadata,
-  };
+  try {
+    const { payload, metadata } = await request(
+      `/splits?${query.toString()}`,
+      "splits",
+      apiKey,
+      fetcher,
+    );
+    return {
+      ...parseSharpApiSplitPage(payload, retrievedAt),
+      responseMetadata: metadata,
+    };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "splits");
+  }
 }
 
 export function validateSharpApiActivation(value: SharpApiActivationConfig) {

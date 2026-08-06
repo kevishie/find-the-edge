@@ -312,7 +312,7 @@ export async function persistSharpApiOddsPage(
   store: EventIngestionStore,
   odds: SharpApiOddsPersister,
   league: SharpApiLeague,
-  page: Pick<SharpApiOddsPage, "events" | "retrievedAt"> &
+  page: Pick<SharpApiOddsPage, "events" | "retrievedAt" | "eventRetrievedAt"> &
     Partial<Pick<SharpApiOddsPage, "rejections">>,
   bookRoles?: Readonly<
     Record<string, "offered" | "comparison" | "collected" | "splits">
@@ -436,7 +436,9 @@ export async function persistSharpApiOddsPage(
       (rejectionCounts[rejection.reason] ?? 0) + 1;
   for (const raw of page.events) {
     if (isSharpDerivativeMatchup(raw.awayTeam, raw.homeTeam)) continue;
-    const event = providerEvent(league, raw, page.retrievedAt);
+    const eventRetrievedAt =
+      page.eventRetrievedAt?.[raw.providerEventId] ?? page.retrievedAt;
+    const event = providerEvent(league, raw, eventRetrievedAt);
     const binding = {
       providerId: SHARP_API_PROVIDER_ID,
       providerEventId: raw.providerEventId,
@@ -452,7 +454,7 @@ export async function persistSharpApiOddsPage(
         ...event,
         providerId: SHARP_API_PROVIDER_ID,
         normalizedIdentity: normalizedUpcomingEventIdentity(event),
-        observedAt: page.retrievedAt,
+        observedAt: eventRetrievedAt,
       });
       // Featured odds may legitimately expose an entitled event before it has
       // appeared on the paginated schedule scan. Bootstrap only the exact
@@ -463,7 +465,7 @@ export async function persistSharpApiOddsPage(
           store,
           SHARP_API_PROVIDER_ID,
           event,
-          page.retrievedAt,
+          eventRetrievedAt,
         );
       if (ingested.kind === "unresolved")
         throw new Error(`sharpapi-odds-mapping-${ingested.reason}`);
@@ -471,7 +473,7 @@ export async function persistSharpApiOddsPage(
     }
     if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
     const canonicalStartsAt = Date.parse(canonical.startsAt);
-    const pageRetrievedAt = Date.parse(page.retrievedAt);
+    const pageRetrievedAt = Date.parse(eventRetrievedAt);
     if (
       !Number.isFinite(canonicalStartsAt) ||
       !Number.isFinite(pageRetrievedAt)
@@ -483,6 +485,9 @@ export async function persistSharpApiOddsPage(
     // event once this page was retrieved at or after the authoritative start.
     // A later live-state provider may persist those prices under a live model.
     if (pageRetrievedAt >= canonicalStartsAt) continue;
+    const priceRetrievedBeforeStart = (
+      price: SharpApiOddsPage["events"][number]["bookmakers"][number]["prices"][number],
+    ) => Date.parse(price.retrievedAt ?? eventRetrievedAt) < canonicalStartsAt;
     canonicalOddsEvents.push({ raw, canonical });
     const providerParticipantIndexes = (() => {
       const startDrift = Math.abs(
@@ -522,7 +527,11 @@ export async function persistSharpApiOddsPage(
               : price.isActive === false
                 ? "closed"
                 : undefined;
-          if (!state || Date.parse(price.observedAt) >= canonicalStartsAt)
+          if (
+            !state ||
+            Date.parse(price.observedAt) >= canonicalStartsAt ||
+            !priceRetrievedBeforeStart(price)
+          )
             continue;
           if (state === "suspended") suspendedEvidence += 1;
           const providerParticipantIndex =
@@ -593,6 +602,7 @@ export async function persistSharpApiOddsPage(
             !price.isPlayerProp &&
             !price.isStalePregamePrice &&
             Date.parse(price.observedAt) < canonicalStartsAt &&
+            priceRetrievedBeforeStart(price) &&
             !price.isSuspended,
         ),
         league.leagueKey,
@@ -623,6 +633,7 @@ export async function persistSharpApiOddsPage(
                   !price.isPlayerProp &&
                   !price.isStalePregamePrice &&
                   Date.parse(price.observedAt) < canonicalStartsAt &&
+                  priceRetrievedBeforeStart(price) &&
                   !price.isSuspended,
               ),
               league.leagueKey,
@@ -638,7 +649,7 @@ export async function persistSharpApiOddsPage(
           await odds.persistAvailability({
             identity,
             state: "incomplete",
-            observedAt: page.retrievedAt,
+            observedAt: eventRetrievedAt,
             evidenceId: sha256Hex(
               JSON.stringify([
                 SHARP_API_PROVIDER_ID,
@@ -719,7 +730,7 @@ export async function persistSharpApiOddsPage(
               ...(price.point === undefined ? {} : { point: price.point }),
               americanOdds: price.americanOdds,
               observedAt: price.observedAt,
-              retrievedAt: page.retrievedAt,
+              retrievedAt: price.retrievedAt ?? eventRetrievedAt,
               provenance: {
                 providerId: SHARP_API_PROVIDER_ID,
                 policyVersion: oddsCollectionPolicyVersion,
@@ -780,7 +791,7 @@ export async function persistSharpApiOddsPage(
             await odds.persistAvailability({
               identity,
               state: persistedCount === expected ? "active" : "incomplete",
-              observedAt: page.retrievedAt,
+              observedAt: eventRetrievedAt,
               evidenceId: sha256Hex(
                 JSON.stringify([
                   SHARP_API_PROVIDER_ID,
@@ -798,7 +809,13 @@ export async function persistSharpApiOddsPage(
         }
     }
     if (odds.persistAvailability && bookRoles && expectedBookMarkets) {
-      const observed = new Map<string, Set<string>>();
+      const observed = new Map<
+        string,
+        {
+          readonly complete: ReadonlySet<string>;
+          readonly prices: SharpApiOddsPage["events"][number]["bookmakers"][number]["prices"];
+        }
+      >();
       for (const book of raw.bookmakers) {
         const normalized = normalizeSportsbook(book.id);
         if (normalized.kind === "rejected") continue;
@@ -810,15 +827,16 @@ export async function persistSharpApiOddsPage(
               !price.isPlayerProp &&
               !price.isStalePregamePrice &&
               Date.parse(price.observedAt) < canonicalStartsAt &&
+              priceRetrievedBeforeStart(price) &&
               !price.isSuspended &&
               price.isActive !== false,
           ),
           league.leagueKey,
         );
-        observed.set(
-          normalized.sportsbook.id,
-          new Set(complete.prices.map(({ marketKey }) => marketKey)),
-        );
+        observed.set(normalized.sportsbook.id, {
+          complete: new Set(complete.prices.map(({ marketKey }) => marketKey)),
+          prices: book.prices,
+        });
       }
       for (const [sportsbookId, expectedMarkets] of Object.entries(
         expectedBookMarkets,
@@ -832,7 +850,30 @@ export async function persistSharpApiOddsPage(
             continue;
           const marketKey = expectedMarket as
             "moneyline" | "spread" | "total" | "btts" | "team_total";
-          if (!observed.get(sportsbookId)?.has(marketKey)) {
+          const book = observed.get(sportsbookId);
+          if (!book?.complete.has(marketKey)) {
+            const evidence =
+              book?.prices.filter(
+                (price) =>
+                  price.marketKey === marketKey &&
+                  price.isMainLine &&
+                  !price.isAlternateLine &&
+                  !price.isPlayerProp &&
+                  Date.parse(price.observedAt) < canonicalStartsAt &&
+                  priceRetrievedBeforeStart(price),
+              ) ?? [];
+            const state =
+              evidence.length === 0
+                ? "missing"
+                : evidence.every((price) => price.isStalePregamePrice)
+                  ? "stale"
+                  : evidence.every((price) => price.isSuspended)
+                    ? "suspended"
+                    : evidence.every((price) => price.isActive === false)
+                      ? "closed"
+                      : "incomplete";
+            const reason =
+              state === "missing" ? "provider-market-omitted" : state;
             const identity = fixtureOddsGroupAvailabilityIdentity({
               canonicalEventId: canonical.id,
               canonicalEventVersion: canonical.version,
@@ -842,17 +883,17 @@ export async function persistSharpApiOddsPage(
             });
             await odds.persistAvailability({
               identity,
-              state: "missing",
-              observedAt: page.retrievedAt,
+              state,
+              observedAt: eventRetrievedAt,
               evidenceId: sha256Hex(
                 JSON.stringify([
                   SHARP_API_PROVIDER_ID,
                   raw.providerEventId,
                   identity,
-                  "missing",
+                  state,
                 ]),
               ),
-              reason: "provider-market-omitted",
+              reason,
             });
           }
         }

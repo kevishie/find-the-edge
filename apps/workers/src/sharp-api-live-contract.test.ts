@@ -81,8 +81,27 @@ describe.skipIf(!apiKey)("SharpAPI live contract", () => {
       policy.expectedBooks,
     );
 
-    expect(persisted.events).toBeGreaterThan(0);
-    expect(persisted.observations).toBeGreaterThan(0);
+    const hasPregameApprovedEvidence = page.events.some(
+      (event) =>
+        Date.parse(event.startsAt) > Date.parse(page.retrievedAt) &&
+        event.bookmakers.some(
+          (book) =>
+            policy.books[book.id] &&
+            book.prices.some(
+              (price) =>
+                price.isMainLine &&
+                !price.isAlternateLine &&
+                !price.isPlayerProp &&
+                !price.isStalePregamePrice &&
+                price.isActive !== false &&
+                !price.isSuspended &&
+                Date.parse(price.observedAt) < Date.parse(event.startsAt),
+            ),
+        ),
+    );
+    if (hasPregameApprovedEvidence)
+      expect(persisted.observations).toBeGreaterThan(0);
+    else expect(persisted.observations).toBe(0);
     expect(persisted.canonicalOddsEvents).toHaveLength(persisted.events);
     const account = await fetchSharpApiAccount(apiKey!);
     if (account.features.includes("splits")) {
@@ -123,6 +142,7 @@ describe.skipIf(!apiKey)("SharpAPI live contract", () => {
 
     expect(summary.leagues).toBeGreaterThan(0);
     expect(summary.events).toBeGreaterThan(0);
+    expect(summary.observations).toBeGreaterThan(0);
     expect(summary.observations).toBe(writes);
     expect(events.events.size).toBeGreaterThan(0);
     expect(events.mappings.size).toBeGreaterThanOrEqual(events.events.size);

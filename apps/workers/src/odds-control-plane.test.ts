@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { productionOddsCollectionPolicies } from "@find-the-edge/config";
+import {
+  approvedSportsbookCollection,
+  productionOddsCollectionPolicies,
+} from "@find-the-edge/config";
 import { MemoryOddsControlPlaneStore } from "@find-the-edge/database";
 import {
   classifyOddsControlPlaneFailure,
@@ -158,6 +161,21 @@ describe("odds collection control plane", () => {
       }),
     });
     expect(terminal).not.toHaveProperty("expiresAt");
+    const unstaged = unhealthyOddsProviderState(
+      { ...terminal, failureStage: "odds:old-stage" },
+      {
+        providerId: "sharpapi",
+        healthKey: "sharpapi:mlb:odds",
+        now,
+        cooldownSeconds: 60,
+        decision: decideOddsRetry({
+          error: new Error("provider-rejected"),
+          attempt: 1,
+          now,
+        }),
+      },
+    );
+    expect(unstaged).not.toHaveProperty("failureStage");
     expect(
       healthyOddsProviderState(transient, {
         providerId: "sharpapi",
@@ -379,13 +397,16 @@ describe("odds collection control plane", () => {
     expect(continuation?.updatedAt).toBe(liveClaimTime.toISOString());
     expect(continuation?.leaseUntil).toBe("2026-08-03T13:05:00.000Z");
   });
-  it("uses sealed normalized material after a commit interruption without a second paid call", async () => {
+  it("replays a sealed many-book page after a commit interruption without a second paid call", async () => {
     const store = new MemoryOddsControlPlaneStore();
+    const normalizedItems = Object.keys(approvedSportsbookCollection).map(
+      (sportsbookId) => ({ sportsbookId }),
+    );
     const fetchPage = vi.fn().mockResolvedValue({
-      items: [{ id: 1 }],
+      items: normalizedItems,
       gaps: [],
       quotaCost: 1,
-      digest: "one",
+      digest: "many-books",
     });
     const commit = vi
       .fn()
@@ -412,6 +433,8 @@ describe("odds collection control plane", () => {
     expect(lower).toMatchObject({ status: "completed", quotaCost: 1 });
     expect(fetchPage).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[0]?.[0]).toMatchObject({ items: normalizedItems });
+    expect(commit.mock.calls[1]?.[0]).toEqual(commit.mock.calls[0]?.[0]);
   });
   it("recovers a sealed response when post-fetch bookkeeping fails", async () => {
     const store = new MemoryOddsControlPlaneStore();
@@ -474,6 +497,101 @@ describe("odds collection control plane", () => {
     expect(
       [...store.attempts.values()].map((attempt) => attempt.state),
     ).toEqual(["failed", "succeeded"]);
+  });
+  it("reconciles a two-call reserve to one terminal request and retains its stage", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      quotaRemaining: 1_000,
+      updatedAt: now.toISOString(),
+    });
+    const failure = Object.assign(new Error("provider-rejected"), {
+      stage: "odds:provider-error",
+    });
+    const result = await runOddsLeague({
+      policy,
+      store,
+      providers: new Map([
+        [
+          "sharpapi",
+          {
+            providerId: "sharpapi",
+            requestCost: 2,
+            failureRequestCost: () => 1,
+            fetchPage: vi.fn().mockRejectedValue(failure),
+          },
+        ],
+      ]),
+      committer: { commit: vi.fn() },
+      now,
+    });
+    expect(result).toMatchObject({
+      status: "failed",
+      reason: "provider-rejected",
+      quotaCost: 1,
+    });
+    expect([...store.attempts.values()][0]).toMatchObject({
+      state: "failed",
+      quotaCost: 1,
+      failureReason: "provider-rejected",
+      failureStage: "odds:provider-error",
+    });
+    expect([...store.runs.values()].at(-1)).toMatchObject({
+      failureReason: "provider-rejected",
+      failureStage: "odds:provider-error",
+      quotaCost: 1,
+    });
+    expect(await store.getHealth("sharpapi:mlb:odds")).toMatchObject({
+      healthy: false,
+      quotaRemaining: 999,
+      failureReason: "provider-rejected",
+      failureStage: "odds:provider-error",
+    });
+  });
+  it("reconciles a known one-call dispatch while fencing an ambiguous outcome", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      quotaRemaining: 1_000,
+      updatedAt: now.toISOString(),
+    });
+    const timeout = new Error("network timeout");
+    const result = await runOddsLeague({
+      policy,
+      store,
+      providers: new Map([
+        [
+          "sharpapi",
+          {
+            providerId: "sharpapi",
+            requestCost: 2,
+            failureRequestCost: () => 1,
+            fetchPage: vi.fn().mockRejectedValue(timeout),
+          },
+        ],
+      ]),
+      committer: { commit: vi.fn() },
+      now,
+    });
+    expect(result).toMatchObject({
+      status: "failed",
+      reason: "provider-request-ambiguous",
+      quotaCost: 1,
+    });
+    expect([...store.attempts.values()][0]).toMatchObject({
+      state: "ambiguous",
+      quotaCost: 1,
+      failureReason: "provider-request-ambiguous",
+    });
+    expect(await store.getHealth("sharpapi:mlb:odds")).toMatchObject({
+      quotaRemaining: 999,
+    });
   });
   it("leaves an unsealed paid response terminally ambiguous and blocks recall during its lease", async () => {
     const store = new MemoryOddsControlPlaneStore();
@@ -805,6 +923,8 @@ describe("odds collection control plane", () => {
   });
   it("uses bounded recovery probes without serving primary evidence prematurely", async () => {
     const store = new MemoryOddsControlPlaneStore();
+    const reserveQuotaAttempt = vi.spyOn(store, "reserveQuotaAttempt");
+    const reconcileQuota = vi.spyOn(store, "reconcileQuota");
     await store.putHealth({
       providerId: "sharpapi",
       healthKey: "sharpapi:mlb:odds",
@@ -832,7 +952,8 @@ describe("odds collection control plane", () => {
           "sharpapi",
           {
             providerId: "sharpapi",
-            requestCost: 1,
+            requestCost: 2,
+            probeRequestCost: 1,
             probe,
             fetchPage: sharpFetch,
           },
@@ -844,6 +965,19 @@ describe("odds collection control plane", () => {
     });
     expect(result.providerId).toBe("the-odds-api");
     expect(probe).toHaveBeenCalledOnce();
+    expect(reserveQuotaAttempt).toHaveBeenCalledWith(
+      "sharpapi:mlb:odds",
+      expect.any(Number),
+      1,
+      expect.objectContaining({ capability: "odds", pageToken: "probe" }),
+    );
+    expect(reconcileQuota).toHaveBeenCalledWith(
+      "sharpapi:mlb:odds",
+      1,
+      1,
+      undefined,
+      now.toISOString(),
+    );
     expect(sharpFetch).not.toHaveBeenCalled();
     expect(await store.getHealth("sharpapi:mlb:odds")).toMatchObject({
       healthy: false,

@@ -3,10 +3,10 @@
 ## Current state
 
 SharpAPI is the sole enabled production schedule, odds, and public-betting
-provider. The Odds API is not called by production ingestion. The prior account was verified on
-2026-08-03 as Pro: 300 requests/minute, 15 selected sportsbooks, odds, schedule,
-+EV, arbitrage, middles, low hold, steam, closing line, and betting splits.
-Streaming and Live Game State add-ons are intentionally disabled for MVP.
+provider. The Odds API is not called by production ingestion. The upgraded
+account boundary was verified on 2026-08-05 with `maxBooks=25`; this is a
+capacity fact, not a promise that every book appears on every event. Streaming
+and Live Game State add-ons are intentionally disabled for MVP.
 
 The runtime references `find-the-edge/<stage>/sharpapi` in AWS Secrets Manager.
 The secret must contain only the server-side API key. Never place the value in
@@ -30,10 +30,10 @@ decision and is never performed by deployment automation.
 ## Entitled collection roster and consensus policy
 
 ADR 0003 defines Hard Rock (`hardrock`) as the offered sportsbook and
-DraftKings, FanDuel, BetMGM, and Caesars as equal-weight comparison books. Live
-account checks returned HTTP 200 with odds data for all five identifiers. The
-production collector requests that roster for MLB and MLS and excludes Hard
-Rock unconditionally from a Hard Rock consensus.
+DraftKings, FanDuel, BetMGM, and Caesars as equal-weight comparison books. The
+production collector accepts the closed, versioned collection allowlist across
+enabled leagues and excludes Hard Rock unconditionally from a Hard Rock
+consensus. Collection approval never grants an evaluation weight.
 
 The upgraded entitlement is modeled separately from evaluation. Approved
 Pinnacle, Circa, Bally Bet, Betano, Fanatics, Fanatics Markets, BetRivers,
@@ -77,20 +77,30 @@ SharpAPI immediately on malformed material or unexpected licensing constraints;
 production ingestion then remains unavailable until SharpAPI is re-enabled or a
 separately approved fallback policy is deployed.
 
-Stage entitlement rollout as canary, one enabled league, then remaining leagues.
-Roll back by disabling new collection entries or restoring the prior catalog.
-Never delete or rewrite immutable snapshots; removed-book history stays
-auditable and receives no evaluation weight.
+Stage entitlement rollout as an operator-run deployment sequence: bounded
+canary, a versioned policy deployment with one enabled league, then a reviewed
+policy deployment for the remaining leagues. There is no hidden runtime toggle
+that changes the catalog silently. Roll back by deploying the prior versioned
+collection entries or catalog. Never delete or rewrite immutable snapshots;
+removed-book history stays auditable and receives no evaluation weight.
 
 ## Failure, health, and redrive matrix
 
 HTTP 429 and an unambiguous connection failure are transient. Honor the
 provider retry time when supplied, otherwise use bounded exponential delay with
-jitter; never exceed five deliveries or a fifteen-minute delay. Authentication,
-entitlement, configuration, malformed response, and coverage failures are
-terminal and must be acknowledged without another paid call. A timeout or lost
-connection after dispatch is ambiguous: inspect the durable attempt and sealed
-page during its reconciliation lease before permitting a new call.
+jitter; never exceed five deliveries or a fifteen-minute delay. A featured odds
+request may make one identical, quota-accounted refetch after a structurally
+invalid response; the second failure is terminal and validation is never
+relaxed. Authentication, entitlement, configuration, and coverage failures are
+terminal. A timeout or lost connection after dispatch is ambiguous: inspect the
+durable attempt and sealed page during its reconciliation lease before
+permitting a new call. Invalid-response diagnostics contain only a fixed stage
+such as `account:json`, `odds:page-envelope`, `schedule:event-shape`,
+`splits:pagination-envelope`, or `focused-odds:identity`; they never contain the
+response body or request URL. HTTP 401/403 remains terminal even when the
+provider returns HTML or an empty body. Other HTTP 4xx responses are terminal
+provider rejections and are not eligible for the one structural-response
+refetch.
 
 Transient unhealthy health records carry a retry time and bounded TTL. Success
 heals current health but does not delete runs, attempts, gaps, or prior failure
@@ -99,6 +109,13 @@ corrected. An exhausted FIFO command reaches the odds DLQ after five receives.
 Before redrive, identify the bounded reason, verify the provider cooldown/window
 has reset, and verify no ambiguous attempt or sealed page already owns the paid
 request. Redrive the exact command once; never bulk-redrive unknown messages.
+
+Operational metrics are intentionally at-least-once. They are emitted only
+after the corresponding durable evidence write, but a worker replay can emit
+the same bounded metric again. Dashboards and alarms must aggregate by their
+time window and must not treat metric totals as an exact row count; DynamoDB
+snapshots, availability evidence, attempts, and sealed pages are the source of
+truth.
 
 Newer suspended, closed, missing, malformed, incomplete, or unavailable market
 evidence blocks the older current price from recommendation inputs while leaving

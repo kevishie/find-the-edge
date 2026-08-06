@@ -20,6 +20,7 @@ export interface OddsRunRecord {
   readonly startedAt: string;
   readonly updatedAt: string;
   readonly failureReason?: string;
+  readonly failureStage?: string;
   readonly skipReason?: string;
   readonly evidenceCommitted: boolean;
   readonly quotaCost: number;
@@ -38,6 +39,7 @@ export interface OddsAttemptRecord {
   readonly quotaCost?: number;
   readonly ambiguousUntil?: string;
   readonly failureReason?: string;
+  readonly failureStage?: string;
 }
 export interface SealedOddsPage {
   readonly runId: string;
@@ -94,6 +96,7 @@ export interface OddsProviderHealth {
   };
   readonly failureClass?: "transient" | "terminal" | "ambiguous";
   readonly failureReason?: string;
+  readonly failureStage?: string;
   readonly retryAt?: string;
   /** Only transient unhealthy records expire. Success and terminal audit remain durable. */
   readonly expiresAt?: number;

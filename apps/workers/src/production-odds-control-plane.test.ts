@@ -3,8 +3,12 @@ import {
   EventDataConflict,
   MemoryEventIngestionStore,
   MemoryOddsControlPlaneStore,
+  type FixtureOddsIngestInput,
 } from "@find-the-edge/database";
-import type { IsoTimestamp } from "@find-the-edge/domain";
+import type {
+  FixtureOddsAvailabilityEvidence,
+  IsoTimestamp,
+} from "@find-the-edge/domain";
 import { productionOddsCollectionPolicies } from "@find-the-edge/config";
 import {
   parseSharpApiSchedulePage,
@@ -18,7 +22,9 @@ import {
   fetchSharpOddsPageWithRetry,
   runFocusedSharpOddsIngestion,
   runProductionOddsControlPlane,
+  reconstructSharpOddsRun,
   scheduleEventConflictReason,
+  sharpOddsFailureRequestCost,
   sharpOddsRequestIdentity,
 } from "./production-odds-control-plane";
 import { ScheduleEventConflictError } from "./schedule-reconciliation";
@@ -52,15 +58,262 @@ describe("production odds control-plane composition", () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
-  it("does not retry non-contract SharpAPI failures", async () => {
+  it("records the actual paid request count when featured odds fails", async () => {
+    const terminal = new SharpApiError(
+      "provider-rejected",
+      false,
+      undefined,
+      "odds:provider-error",
+    );
+    await expect(
+      fetchSharpOddsPageWithRetry(() => Promise.reject(terminal)),
+    ).rejects.toBe(terminal);
+    expect(sharpOddsFailureRequestCost(terminal)).toBe(1);
+
+    const first = new SharpApiError("invalid-response");
+    const second = new SharpApiError("provider-rejected");
     const fetchPage = vi
       .fn()
-      .mockRejectedValue(new SharpApiError("unauthorized"));
+      .mockRejectedValueOnce(first)
+      .mockRejectedValueOnce(second);
+    await expect(fetchSharpOddsPageWithRetry(fetchPage)).rejects.toBe(second);
+    expect(sharpOddsFailureRequestCost(second)).toBe(2);
+  });
 
-    await expect(fetchSharpOddsPageWithRetry(fetchPage)).rejects.toThrow(
-      "unauthorized",
+  it("does not retry non-contract SharpAPI failures", async () => {
+    for (const code of ["unauthorized", "provider-rejected"] as const) {
+      const fetchPage = vi.fn().mockRejectedValue(new SharpApiError(code));
+      await expect(fetchSharpOddsPageWithRetry(fetchPage)).rejects.toThrow(
+        code,
+      );
+      expect(fetchPage).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("preserves SharpAPI schedule rejection diagnostics through operations", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const metrics = { emit: vi.fn() };
+    await runProductionOddsControlPlane({
+      events: new MemoryEventIngestionStore(),
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      metrics,
+      sharpApiKey: "sharp-key",
+      now,
+      fetchSharpSchedule: vi
+        .fn()
+        .mockRejectedValue(
+          new SharpApiError(
+            "provider-rejected",
+            false,
+            undefined,
+            "schedule:provider-error",
+          ),
+        ),
+      fetchSharpOdds: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 25,
+        streamingEnabled: false,
+      }),
+    });
+
+    const scheduleAttempts = [...control.attempts.values()].filter(
+      (attempt) => attempt.capability === "schedule",
     );
-    expect(fetchPage).toHaveBeenCalledOnce();
+    expect(scheduleAttempts).toHaveLength(5);
+    expect(scheduleAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          state: "failed",
+          failureReason: "provider-rejected",
+          failureStage: "schedule:provider-error",
+        }),
+      ]),
+    );
+    expect(
+      [...control.health.values()].find((health) =>
+        health.healthKey?.endsWith(":schedule"),
+      ),
+    ).toMatchObject({
+      failureReason: "provider-rejected",
+      failureStage: "schedule:provider-error",
+    });
+    expect(metrics.emit).toHaveBeenCalledWith(
+      "OddsScheduleFailure",
+      1,
+      expect.objectContaining({
+        provider: "sharpapi",
+        reason: "provider-rejected",
+        failureStage: "schedule:provider-error",
+      }),
+    );
+  });
+
+  it("preserves SharpAPI account and splits rejection diagnostics", async () => {
+    const run = async (capability: "account" | "splits") => {
+      const control = new MemoryOddsControlPlaneStore();
+      const metrics = { emit: vi.fn() };
+      await runProductionOddsControlPlane({
+        events: new MemoryEventIngestionStore(),
+        odds: { persist: vi.fn() },
+        splits: {
+          persist: vi.fn(),
+          current: vi.fn(),
+          listCurrent: vi.fn(),
+          persistGap: vi.fn(),
+        },
+        control,
+        metrics,
+        sharpApiKey: "sharp-key",
+        now,
+        fetchSharpSchedule: vi.fn().mockResolvedValue({
+          events: [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+        fetchSharpOdds: vi.fn().mockResolvedValue({
+          events: [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+        fetchSharpAccount:
+          capability === "account"
+            ? vi
+                .fn()
+                .mockRejectedValue(
+                  new SharpApiError(
+                    "provider-rejected",
+                    false,
+                    undefined,
+                    "account:provider-error",
+                  ),
+                )
+            : vi.fn().mockResolvedValue({
+                tier: "pro",
+                features: ["splits"],
+                requestsPerMinute: 300,
+                maxBooks: 25,
+                streamingEnabled: false,
+              }),
+        ...(capability === "splits"
+          ? {
+              fetchSharpSplits: vi
+                .fn()
+                .mockRejectedValue(
+                  new SharpApiError(
+                    "provider-rejected",
+                    false,
+                    undefined,
+                    "splits:provider-error",
+                  ),
+                ),
+            }
+          : {}),
+      });
+      return { control, metrics };
+    };
+
+    for (const capability of ["account", "splits"] as const) {
+      const { control, metrics } = await run(capability);
+      const stage = `${capability}:provider-error`;
+      const attempts = [...control.attempts.values()].filter(
+        (attempt) => attempt.capability === capability,
+      );
+      expect(attempts.length).toBeGreaterThan(0);
+      expect(attempts[0]).toMatchObject({
+        state: "failed",
+        failureReason: "provider-rejected",
+        failureStage: stage,
+      });
+      expect(
+        [...control.health.values()].find((health) =>
+          health.healthKey?.endsWith(`:${capability}`),
+        ),
+      ).toMatchObject({
+        failureReason: "provider-rejected",
+        failureStage: stage,
+      });
+      expect(metrics.emit).toHaveBeenCalledWith(
+        capability === "account" ? "OddsAccountFailure" : "OddsSplitFailure",
+        1,
+        expect.objectContaining({
+          provider: "sharpapi",
+          reason: "provider-rejected",
+          failureStage: stage,
+        }),
+      );
+    }
+  });
+
+  it("reserves and records the two-call worst case for a failed featured page", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const fetchSharpOdds = vi.fn((league: SharpApiLeague) =>
+      league.leagueKey === "mlb"
+        ? Promise.reject(
+            new SharpApiError(
+              "invalid-response",
+              false,
+              undefined,
+              "odds:page-envelope",
+            ),
+          )
+        : Promise.resolve({ events: [], hasMore: false, retrievedAt: at }),
+    );
+    await runProductionOddsControlPlane({
+      events: new MemoryEventIngestionStore(),
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      fetchSharpSchedule: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+      fetchSharpOdds,
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 25,
+        streamingEnabled: false,
+      }),
+    });
+
+    expect(
+      fetchSharpOdds.mock.calls.filter(
+        ([league]) => league.leagueKey === "mlb",
+      ),
+    ).toHaveLength(2);
+    expect(
+      [...control.attempts.values()].find(
+        (attempt) =>
+          attempt.capability === "odds" && attempt.leagueKey === "mlb",
+      ),
+    ).toMatchObject({
+      state: "failed",
+      quotaCost: 2,
+      failureReason: "invalid-response",
+    });
   });
 
   it("deduplicates focused event refreshes by durable polling-window identity", async () => {
@@ -291,7 +544,12 @@ describe("production odds control-plane composition", () => {
 
     const retryAt = "2026-08-03T12:20:00.000Z" as IsoTimestamp;
     fetchFocused.mockRejectedValueOnce(
-      new SharpApiError("rate-limited", true, retryAt),
+      new SharpApiError(
+        "rate-limited",
+        true,
+        retryAt,
+        "focused-odds:provider-error",
+      ),
     );
     await expect(
       runFocusedSharpOddsIngestion({
@@ -301,8 +559,23 @@ describe("production odds control-plane composition", () => {
       }),
     ).rejects.toThrow("rate-limited");
     expect(await control.getHealth("sharpapi:mls:odds")).toEqual(
-      expect.objectContaining({ cooldownUntil: retryAt }),
+      expect.objectContaining({
+        cooldownUntil: retryAt,
+        failureStage: "focused-odds:provider-error",
+      }),
     );
+    expect(
+      await control.getAttempt(
+        sharpOddsRequestIdentity({
+          leagueKey: "mls",
+          endpointMode: "focused",
+          providerEventId: "event-3",
+          marketSet: ["main"],
+          now: new Date("2026-08-03T12:05:00.000Z"),
+          pollingWindowSeconds: 300,
+        }),
+      ),
+    ).toMatchObject({ failureStage: "focused-odds:provider-error" });
     expect(
       await runFocusedSharpOddsIngestion({
         ...common,
@@ -746,6 +1019,353 @@ describe("production odds control-plane composition", () => {
     ]);
     expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
     expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
+  });
+
+  it("keeps an approved book active when the same event continues on another page", async () => {
+    const events = new MemoryEventIngestionStore();
+    const control = new MemoryOddsControlPlaneStore();
+    const reserveQuotaAttempt = vi.spyOn(control, "reserveQuotaAttempt");
+    const persistAvailability = vi
+      .fn<(value: FixtureOddsAvailabilityEvidence) => Promise<unknown>>()
+      .mockResolvedValue(undefined);
+    const mlbEvent = {
+      providerEventId: "mlb-multipage-event",
+      providerEventUuid: "mlb-multipage-uuid",
+      awayTeam: "Boston Red Sox",
+      homeTeam: "New York Yankees",
+      startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+    };
+    const prices = (["away", "home"] as const).map((selectionKey, index) => ({
+      providerPriceId: `pinnacle-${selectionKey}`,
+      marketKey: "moneyline" as const,
+      outcomeStructure: "two-way" as const,
+      providerMarketType: "moneyline",
+      providerMarketId: "pinnacle-moneyline",
+      selectionKey,
+      selectionLabel:
+        selectionKey === "away" ? mlbEvent.awayTeam : mlbEvent.homeTeam,
+      providerSelectionId: `pinnacle-${selectionKey}`,
+      americanOdds: index === 0 ? 110 : -120,
+      decimalOdds: index === 0 ? 2.1 : 1.83,
+      impliedProbability: index === 0 ? 0.476 : 0.545,
+      isLive: false,
+      isMainLine: true,
+      isAlternateLine: false,
+      isPlayerProp: false,
+      isStalePregamePrice: false,
+      isActive: true,
+      isSuspended: false,
+      observedAt: at,
+    }));
+    const fetchSharpSchedule = vi.fn((league: SharpApiLeague) =>
+      Promise.resolve({
+        events:
+          league.leagueKey === "mlb"
+            ? [{ ...mlbEvent, status: "scheduled" as const }]
+            : [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+    );
+    const fetchSharpOdds = vi.fn(
+      (league: SharpApiLeague, _key: string, cursor?: string) =>
+        Promise.resolve(
+          league.leagueKey !== "mlb"
+            ? { events: [], hasMore: false, retrievedAt: at }
+            : cursor
+              ? {
+                  events: [
+                    {
+                      ...mlbEvent,
+                      bookmakers: [
+                        {
+                          id: "pinnacle",
+                          label: "Pinnacle",
+                          prices: [prices[1]!],
+                        },
+                      ],
+                    },
+                  ],
+                  hasMore: false,
+                  retrievedAt: "2026-08-03T12:01:00.000Z" as IsoTimestamp,
+                }
+              : {
+                  events: [
+                    {
+                      ...mlbEvent,
+                      bookmakers: [
+                        {
+                          id: "pinnacle",
+                          label: "Pinnacle",
+                          prices: [prices[0]!],
+                        },
+                      ],
+                    },
+                  ],
+                  hasMore: true,
+                  nextCursor: "mlb-page-2",
+                  retrievedAt: at,
+                },
+        ),
+    );
+    const metrics = { emit: vi.fn() };
+    const persist = vi.fn().mockResolvedValue({
+      snapshot: "created",
+      current: "advanced",
+    });
+
+    await runProductionOddsControlPlane({
+      events,
+      odds: {
+        persist,
+        persistAvailability,
+      },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      metrics,
+      sharpApiKey: "sharp-key",
+      now,
+      fetchSharpSchedule,
+      fetchSharpOdds,
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 25,
+        streamingEnabled: false,
+      }),
+    });
+
+    expect(fetchSharpOdds).toHaveBeenCalledWith(
+      expect.objectContaining({ leagueKey: "mlb" }),
+      "sharp-key",
+      "mlb-page-2",
+    );
+    expect(
+      reserveQuotaAttempt.mock.calls.some(
+        ([key, , cost]) => key === "sharpapi:mlb:odds" && cost === 2,
+      ),
+    ).toBe(true);
+    expect(persistAvailability).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "active",
+      }),
+    );
+    expect(
+      persistAvailability.mock.calls.some(
+        ([value]) => value.state === "missing",
+      ),
+    ).toBe(false);
+    const pinnacleGroupStates = persistAvailability.mock.calls
+      .map(([value]) => value)
+      .filter((value) =>
+        ["complete-market", "incomplete-market"].includes(value.reason),
+      );
+    expect(pinnacleGroupStates.map(({ state }) => state)).toEqual(["active"]);
+    expect(pinnacleGroupStates.at(-1)?.state).toBe("active");
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(
+      new Set(
+        persist.mock.calls.map(
+          ([value]) =>
+            (value as FixtureOddsIngestInput).observation.retrievedAt,
+        ),
+      ),
+    ).toEqual(new Set([at, "2026-08-03T12:01:00.000Z"]));
+    expect(
+      [...control.gaps.values()].some(
+        (gap) => gap.sportsbookId === "pinnacle" && gap.reason === "missing",
+      ),
+    ).toBe(false);
+    expect(metrics.emit).toHaveBeenCalledWith(
+      "OddsRunPinnacleCoverage",
+      1,
+      expect.objectContaining({ league: "mlb", status: "observed" }),
+    );
+  });
+
+  it("reconstructs selection siblings from legacy sealed Sharp pages", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const identity = {
+      providerEventId: "legacy-event",
+      providerEventUuid: "legacy-uuid",
+      awayTeam: "Boston Red Sox",
+      homeTeam: "New York Yankees",
+      startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+    };
+    const material = (
+      selectionKey: "away" | "home",
+      retrievedAt: string,
+      startsAt = identity.startsAt,
+      reversed = false,
+    ) => ({
+      kind: "sharpapi",
+      page: {
+        events: [
+          {
+            ...identity,
+            startsAt,
+            ...(reversed
+              ? {
+                  awayTeam: identity.homeTeam,
+                  homeTeam: identity.awayTeam,
+                }
+              : {}),
+            bookmakers: [
+              {
+                id: "pinnacle",
+                label: "Pinnacle",
+                prices: [
+                  {
+                    providerPriceId: `legacy-${reversed ? "reversed-" : ""}${selectionKey}`,
+                    selectionKey,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        hasMore: false,
+        retrievedAt,
+      },
+    });
+    await control.sealPage({
+      runId: "legacy-run",
+      pageToken: "start",
+      nextPageToken: "two",
+      responseDigest: "one",
+      normalizedItems: [material("away", at)],
+      gaps: [],
+      quotaCost: 1,
+      sealedAt: at,
+    });
+    await control.sealPage({
+      runId: "legacy-run",
+      pageToken: "two",
+      responseDigest: "two",
+      normalizedItems: [
+        material(
+          "away",
+          "2026-08-03T12:01:00.000Z",
+          "2026-08-03T20:01:00.000Z" as IsoTimestamp,
+          true,
+        ),
+      ],
+      gaps: [],
+      quotaCost: 1,
+      sealedAt: at,
+    });
+
+    const merged = await reconstructSharpOddsRun(control, "legacy-run");
+    expect(
+      merged.events[0]?.bookmakers[0]?.prices.map(
+        ({ selectionKey }) => selectionKey,
+      ),
+    ).toEqual(["away", "home"]);
+    expect(merged.events[0]?.startsAt).toBe(identity.startsAt);
+    expect(merged.retrievedAt).toBe("2026-08-03T12:01:00.000Z");
+    expect(merged.eventRetrievedAt?.[identity.providerEventId]).toBe(at);
+    expect(
+      merged.events[0]?.bookmakers[0]?.prices.map(
+        ({ retrievedAt }) => retrievedAt,
+      ),
+    ).toEqual([at, "2026-08-03T12:01:00.000Z"]);
+
+    await control.sealPage({
+      runId: "broken-run",
+      pageToken: "start",
+      nextPageToken: "missing",
+      responseDigest: "broken",
+      normalizedItems: [material("away", at)],
+      gaps: [],
+      quotaCost: 1,
+      sealedAt: at,
+    });
+    await expect(
+      reconstructSharpOddsRun(control, "broken-run"),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        code: "invalid-response",
+        stage: "odds:sealed-page-missing",
+      }),
+    );
+  });
+
+  it("persists scoped missing availability for a scheduled event omitted from odds", async () => {
+    const events = new MemoryEventIngestionStore();
+    const control = new MemoryOddsControlPlaneStore();
+    const persistAvailability = vi
+      .fn<(value: FixtureOddsAvailabilityEvidence) => Promise<unknown>>()
+      .mockResolvedValue(undefined);
+    const resolveBinding = vi.spyOn(events, "resolveExactCanonicalBinding");
+    const providerEventId = "mlb-scheduled-without-odds";
+    await runProductionOddsControlPlane({
+      events,
+      odds: { persist: vi.fn(), persistAvailability },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      fetchSharpSchedule: vi.fn((league: SharpApiLeague) =>
+        Promise.resolve({
+          events:
+            league.leagueKey === "mlb"
+              ? [
+                  {
+                    providerEventId,
+                    awayTeam: "Boston Red Sox",
+                    homeTeam: "New York Yankees",
+                    startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+                    status: "scheduled" as const,
+                  },
+                ]
+              : [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+      ),
+      fetchSharpOdds: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 25,
+        streamingEnabled: false,
+      }),
+    });
+
+    expect(persistAvailability).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "missing",
+        reason: "provider-market-omitted",
+      }),
+    );
+    expect(resolveBinding).toHaveBeenCalledWith({
+      providerId: "sharpapi",
+      providerEventId,
+      sportKey: "mlb",
+      leagueKey: "mlb",
+    });
+    expect(
+      [...control.gaps.values()].some(
+        (gap) =>
+          gap.providerEventId === providerEventId && gap.reason === "missing",
+      ),
+    ).toBe(true);
   });
   it("withholds fresh schedule readiness when continuation cleanup fails", async () => {
     class CleanupFailingControl extends MemoryOddsControlPlaneStore {

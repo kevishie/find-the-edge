@@ -2,8 +2,8 @@
 title: 'FTE-DATA-003D SharpAPI Entitled Sportsbook Ingestion'
 type: 'feature'
 created: '2026-08-04T00:00:00-04:00'
-status: 'in-progress'
-baseline_revision: '8cfa464'
+status: 'in-review'
+baseline_revision: 'acf67c5'
 approval_required_before_merge: true
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/spec-fte-data-003b-sharpapi-redundant-odds-and-betting-splits.md'
@@ -13,7 +13,7 @@ context:
 
 # Story FTE-DATA-003D: SharpAPI Entitled Sportsbook Ingestion
 
-Status: in-progress
+Status: in-review
 
 ## Story
 
@@ -60,34 +60,34 @@ so that the platform retains the full licensed pricing evidence for explicitly v
 
 ## Tasks / Subtasks
 
-- [ ] Freeze the upgraded account contract and returned bookmaker catalog (AC: 1, 6, 7)
-  - [ ] Use the existing server-side SharpAPI secret and `fetchSharpApiAccount` boundary to verify `maxBooks >= 25`; do not introduce browser credentials, plaintext environment values, or raw-response logging.
-  - [ ] Run an explicitly authorized, bounded canary across enabled leagues and capture only redacted distinct bookmaker identifiers/labels and coverage counts.
-  - [ ] Produce synthetic fixtures and a reviewed mapping table for the exact returned identifiers, including Pinnacle. Record regional/exchange/sharp-book distinctions rather than merging names speculatively.
+- [x] Freeze the upgraded account contract and returned bookmaker catalog (AC: 1, 6, 7)
+  - [x] Use the existing server-side SharpAPI secret and `fetchSharpApiAccount` boundary to verify `maxBooks >= 25`; do not introduce browser credentials, plaintext environment values, or raw-response logging.
+  - [x] Run an explicitly authorized, bounded canary across enabled leagues and capture only redacted distinct bookmaker identifiers/labels and coverage counts.
+  - [x] Produce synthetic fixtures and a reviewed mapping table for the exact returned identifiers, including Pinnacle. Record regional/exchange/sharp-book distinctions rather than merging names speculatively.
 
-- [ ] Expand the canonical sportsbook registry and policy model (AC: 2, 4, 5)
-  - [ ] Add approved canonical IDs, display names, aliases, and logos only when assets exist in `packages/config/src/sportsbooks.ts`.
-  - [ ] Add an explicit collection-eligibility catalog/policy distinct from `defaultEvaluationPolicy.comparisonWeights`; change existing equality assertions to prove the weighted roster is a valid subset of collected comparison candidates.
-  - [ ] Add validation/tests for canonical-ID uniqueness, alias collision, exactly one `offered` book, and Pinnacle collection without implicit consensus promotion.
-  - [ ] Extend the versioned collection policy so entitlement, approved ingestion, evaluation participation, and league/market expectations are explicit and do not generate global false-missing evidence.
+- [x] Expand the canonical sportsbook registry and policy model (AC: 2, 4, 5)
+  - [x] Add approved canonical IDs, display names, aliases, and logos only when assets exist in `packages/config/src/sportsbooks.ts`.
+  - [x] Add an explicit collection-eligibility catalog/policy distinct from `defaultEvaluationPolicy.comparisonWeights`; change existing equality assertions to prove the weighted roster is a valid subset of collected comparison candidates.
+  - [x] Add validation/tests for canonical-ID uniqueness, alias collision, exactly one `offered` book, and Pinnacle collection without implicit consensus promotion.
+  - [x] Extend the versioned collection policy so entitlement, approved ingestion, evaluation participation, and league/market expectations are explicit and do not generate global false-missing evidence.
 
-- [ ] Reuse and harden SharpAPI normalization (AC: 2, 3)
-  - [ ] Extend synthetic SharpAPI fixtures/tests; do not add a Pinnacle-specific HTTP adapter, scraper, storage path, or direct Pinnacle credential.
-  - [ ] Preserve strict row bounds, typed/redacted errors, participant reconciliation, supported-market gates, and rejected-row accounting in `parseSharpApiOddsPage`.
-  - [ ] Prove featured and focused pages preserve all approved books returned for the same event and keep observation identities book-specific.
+- [x] Reuse and harden SharpAPI normalization (AC: 2, 3)
+  - [x] Extend synthetic SharpAPI fixtures/tests; do not add a Pinnacle-specific HTTP adapter, scraper, storage path, or direct Pinnacle credential.
+  - [x] Preserve strict row bounds, typed/redacted errors, participant reconciliation, supported-market gates, and rejected-row accounting in `parseSharpApiOddsPage`.
+  - [x] Prove featured and focused pages preserve all approved books returned for the same event and keep observation identities book-specific.
 
-- [ ] Persist expanded book evidence through the production control plane (AC: 3, 4)
-  - [ ] Reuse `persistSharpApiOddsPage`, `DynamoFixtureOddsAdapter`, exact snapshot indexes, and current projection ordering without a migration or history rewrite.
-  - [ ] Scope expected-book availability by league/market and keep missing coverage distinct from provider health, rate limit, quota, and entitlement state.
-  - [ ] Verify sealed-page recovery and replay remain deterministic when a page contains many books.
+- [x] Persist expanded book evidence through the production control plane (AC: 3, 4)
+  - [x] Reuse `persistSharpApiOddsPage`, `DynamoFixtureOddsAdapter`, exact snapshot indexes, and current projection ordering without a migration or history rewrite.
+  - [x] Scope expected-book availability by league/market and keep missing coverage distinct from provider health, rate limit, quota, and entitlement state.
+  - [x] Verify sealed-page recovery and replay remain deterministic when a page contains many books.
 
-- [ ] Add bounded operations and rollout evidence (AC: 1, 6)
-  - [ ] Update `docs/phase1-deployment.md` and/or `docs/runbooks/sharpapi.md` with catalog verification, canary, staged rollout, unknown-book alerting, and non-destructive rollback.
-  - [ ] Add bounded metrics/log dimensions from canonical allowlisted IDs only; never emit arbitrary provider labels as metric dimensions.
-  - [ ] Confirm the existing SharpAPI secret and IAM grant are reused; no new secret or direct Pinnacle network access is introduced.
+- [x] Add bounded operations and rollout evidence (AC: 1, 6)
+  - [x] Update `docs/phase1-deployment.md` and/or `docs/runbooks/sharpapi.md` with catalog verification, canary, staged rollout, unknown-book alerting, and non-destructive rollback.
+  - [x] Add bounded metrics/log dimensions from canonical allowlisted IDs only; never emit arbitrary provider labels as metric dimensions.
+  - [x] Confirm the existing SharpAPI secret and IAM grant are reused; no new secret or direct Pinnacle network access is introduced.
 
 - [ ] Complete verification (AC: 1-7)
-  - [ ] Run focused config/provider/worker/control-plane tests, `pnpm check`, `pnpm synth`, `pnpm phase1:preflight`, and `git diff --check`.
+  - [x] Run focused config/provider/worker/control-plane tests, `pnpm check`, `pnpm synth`, `pnpm phase1:preflight`, and `git diff --check`.
   - [ ] With explicit operator authorization, run one paid canary and save only its bounded verification summary. Do not make the default test suite network-dependent.
 
 ## Dev Notes
@@ -173,8 +173,158 @@ GPT-5 Codex
 - The closed canonical registry and collection policy use only those observed
   identities. Collection approval is separate from evaluation weights, and
   expected absence is league/market scoped.
+- Production odds parsing accepts a bounded terminal `data=null` initial page
+  only with explicit zero count and total evidence. A cursor page may omit its
+  per-page count while retaining a nonnegative global total. Provider error
+  envelopes, contradictory counts, stale terminal cursors, malformed JSON, and
+  malformed rows remain fail-closed. Fixed endpoint/inner-stage diagnostics do
+  not retain response bodies or request URLs.
+- HTTP 401/403 failures are terminal even when the response body is HTML, empty,
+  or malformed. Other HTTP 4xx responses are terminal provider rejections and
+  cannot consume the one structural-response retry.
+- Expected-book coverage reconstructs and merges the authoritative normalized
+  SharpAPI event material from every durable sealed page in cursor order before
+  final persistence and missing-evidence reconciliation. Cross-page event
+  identity, orientation, and price conflicts fail closed; selection siblings
+  split across pages complete as one market, while suspended, stale, and
+  incomplete evidence cannot be downgraded to missing.
+- Schedule-expected events omitted from all odds pages bind through the exact
+  provider-event mapping and receive deterministic group-level missing
+  evidence without fabricating provider events or UUIDs. Distinct approved-book
+  and Pinnacle coverage is derived from observed merged provider evidence;
+  usable persisted-book counts are reported separately. Operational metrics are
+  documented as at-least-once.
+- Featured odds collection reserves the two-request retry ceiling before the
+  first paid call and refunds the unused unit after a one-call success. A double
+  structural failure retains cost two. Provider-rejected schedule, account, and
+  splits diagnostics retain their bounded error code and validation stage in
+  attempts, runs, health, and metrics.
+- The authorized paid local SharpAPI contract traversed all enabled leagues and
+  entitled splits in under ten seconds. The current first MLB page did not include a
+  persistable Pinnacle market, so that sample correctly remains
+  `coverage-unverified`; the broader authorized catalog scan remains the bounded
+  evidence that the entitlement returns Pinnacle. No deployment was used for
+  validation.
+- `pnpm check`, credential-safe `pnpm synth`, `pnpm phase1:preflight`, and
+  `git diff --check` passed after the terminal-page and sealed-replay changes.
 - Remaining live proof before merge: execute one explicitly authorized
   ingestion canary that persists and reads back a normalized Pinnacle snapshot;
   record only bounded counts and observed/coverage-unverified status.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/spec-fte-data-003d-sharpapi-entitled-sportsbook-ingestion.md`
+- `apps/workers/src/odds-control-plane.test.ts`
+- `apps/workers/src/odds-control-plane.ts`
+- `apps/workers/src/production-odds-control-plane.test.ts`
+- `apps/workers/src/production-odds-control-plane.ts`
+- `apps/workers/src/sharp-api-ingestion.test.ts`
+- `apps/workers/src/sharp-api-ingestion.ts`
+- `apps/workers/src/live-odds-lambda.ts`
+- `apps/workers/src/sharp-api-live-contract.test.ts`
+- `docs/runbooks/sharpapi.md`
+- `packages/database/src/odds-control-plane.ts`
+- `packages/domain/src/fixture-odds.ts`
+- `packages/providers/src/sharp-api.test.ts`
+- `packages/providers/src/sharp-api.ts`
+
+### Review Triage Log
+
+#### 2026-08-05 — Adversarial review pass 1
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 8 (high: 5, medium: 3, low: 0)
+- defer: 0
+- reject: 0
+- addressed_findings:
+  - `[high]` `[patch]` Distinguished initial and cursor terminal null pages and
+    required request-appropriate zero evidence.
+  - `[high]` `[patch]` Failed closed on malformed success discriminants,
+    meaningful provider error envelopes, contradictory pagination, and stale
+    terminal cursors.
+  - `[high]` `[patch]` Restricted retries to one structurally invalid successful
+    response while making authentication and ordinary client errors terminal.
+  - `[high]` `[patch]` Reconstructed the authoritative run from durable sealed
+    pages and merged cross-page bookmaker and price evidence before final
+    persistence.
+  - `[high]` `[patch]` Prevented expected-book reconciliation from downgrading
+    suspended, stale, or incomplete evidence to missing.
+  - `[medium]` `[patch]` Preserved bounded endpoint and validation-stage
+    diagnostics across account, odds, focused odds, schedule, and splits.
+  - `[medium]` `[patch]` Added deterministic missing evidence for scheduled
+    events omitted from all odds pages through exact provider-event bindings.
+  - `[medium]` `[patch]` Derived approved-book and Pinnacle telemetry only from
+    successfully persisted merged evidence.
+
+#### 2026-08-05 — Adversarial review pass 2
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 5 (high: 3, medium: 2, low: 0)
+- defer: 1
+- reject: 0
+- addressed_findings:
+  - `[high]` `[patch]` Merged selection siblings split across provider pages and
+    rejected cross-page event identity, orientation, and price conflicts.
+  - `[high]` `[patch]` Reserved the paid two-call retry ceiling before the first
+    request and reconciled the unused unit after a one-call success.
+  - `[high]` `[patch]` Propagated provider-rejection codes and validation stages
+    into attempts, runs, health state, and bounded metrics.
+  - `[medium]` `[patch]` Added local contract coverage for legacy sealed-page
+    recovery, omitted scheduled events, and availability-state preservation.
+  - `[medium]` `[patch]` Cleared stale failure-stage diagnostics after a healthy
+    provider result and documented operational metrics as at-least-once.
+- deferred_findings:
+  - `[high]` `[defer]` The explicitly authorized production canary must still
+    persist and read back one Pinnacle snapshot before this story can be marked
+    done. The implementation remains `in-review` and the final verification
+    task is intentionally unchecked until deployment.
+
+#### 2026-08-05 — Adversarial review pass 3
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 9 (high: 1, medium: 8, low: 0)
+- defer: 0
+- reject: 0
+- addressed_findings:
+  - `[high]` `[patch]` Deferred persistence until the complete sealed run is
+    reconstructed, eliminating page-by-page plus final replay duplicates.
+  - `[medium]` `[patch]` Preserved each price's original retrieval boundary so
+    legacy recovery remains immutable and idempotent.
+  - `[medium]` `[patch]` Reconciled terminal and ambiguous one-call failures
+    against the reserved two-call ceiling without permitting paid recall.
+  - `[medium]` `[patch]` Reserved and reconciled recovery probes at their actual
+    one-account-call cost.
+  - `[medium]` `[patch]` Retained featured and focused failure stages in attempts,
+    runs, health state, and bounded metrics while clearing stale stages.
+  - `[medium]` `[patch]` Validated focused and terminal array pagination without
+    replacing contradictory provider metadata.
+  - `[medium]` `[patch]` Accepted a coherent focused terminal null page as valid
+    no-coverage evidence.
+  - `[medium]` `[patch]` Allowed bounded cross-page start drift and remapped
+    reversed participant orientation before merging selections.
+  - `[medium]` `[patch]` Separated observed sportsbook coverage from usable
+    persisted sportsbook counts.
+
+#### 2026-08-05 — Adversarial repair audit
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 4 (high: 0, medium: 4, low: 0)
+- defer: 1
+- reject: 0
+- addressed_findings:
+  - `[medium]` `[patch]` Reconciled known dispatch count even when transport
+    outcome remains ambiguous and replay is fenced.
+  - `[medium]` `[patch]` Required terminal initial/focused totals to agree with
+    returned array rows.
+  - `[medium]` `[patch]` Preserved per-event and per-price retrieval boundaries
+    when later unrelated pages cross an event's start time.
+  - `[medium]` `[patch]` Removed stale failure-stage carryover and propagated
+    focused endpoint stages.
+- deferred_findings:
+  - `[high]` `[defer]` Production Pinnacle persist/readback remains the sole live
+    acceptance item and will be completed only after this reviewed commit is
+    deployed.

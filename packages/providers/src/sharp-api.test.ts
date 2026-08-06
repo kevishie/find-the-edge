@@ -3,11 +3,16 @@ import type { SportKey } from "@find-the-edge/domain";
 import {
   isSharpDerivativeMatchup,
   parseSharpApiOddsPage,
+  parseSharpApiAccount,
   parseSharpApiSchedulePage,
   parseSharpApiSplitPage,
   parseSharpApiResponseMetadata,
   fetchSharpApiEventOdds,
+  fetchSharpApiAccount,
   fetchSharpApiFeaturedOdds,
+  fetchSharpApiOddsPage,
+  fetchSharpApiSchedulePage,
+  fetchSharpApiSplitsPage,
   sharpApiLeagueByKey,
   sharpApiLeagues,
   sharpApiDescriptor,
@@ -257,10 +262,68 @@ describe("SharpAPI activation boundary", () => {
     expect(page.events[0]?.bookmakers[0]?.prices[0]?.selectionKey).toBe("draw");
   });
 
+  it("accepts an empty focused payload as no coverage", async () => {
+    await expect(
+      fetchSharpApiEventOdds(
+        sharpApiLeagueByKey("mls"),
+        "mls-away-home-2026-08-04",
+        "secret-key",
+        () => Promise.resolve(Response.json({ data: [] })),
+      ),
+    ).resolves.toMatchObject({ page: { events: [], hasMore: false } });
+
+    await expect(
+      fetchSharpApiEventOdds(
+        sharpApiLeagueByKey("mls"),
+        "mls-away-home-2026-08-04",
+        "secret-key",
+        () =>
+          Promise.resolve(
+            Response.json({
+              data: null,
+              pagination: {
+                has_more: false,
+                next_cursor: null,
+                count: 0,
+                total: 0,
+              },
+            }),
+          ),
+      ),
+    ).resolves.toMatchObject({ page: { events: [], hasMore: false } });
+  });
+
   it.each([
-    { data: [] },
     { data: [oddsRow({ event_id: "wrong-event" })] },
     { data: [oddsRow({ league: "mlb" })] },
+    { data: [], pagination: { has_more: true } },
+    {
+      data: [],
+      pagination: {
+        has_more: false,
+        next_cursor: "stale",
+        count: 0,
+        total: 0,
+      },
+    },
+    {
+      data: [],
+      pagination: {
+        has_more: false,
+        next_cursor: null,
+        count: 1,
+        total: 1,
+      },
+    },
+    {
+      data: [],
+      pagination: {
+        has_more: false,
+        next_cursor: null,
+        count: 0,
+        total: 1,
+      },
+    },
   ])("rejects focused payload identity failures", async (payload) => {
     await expect(
       fetchSharpApiEventOdds(
@@ -828,6 +891,39 @@ describe("SharpAPI activation boundary", () => {
         "2026-08-03T21:42:01.000Z" as never,
       ),
     ).toMatchObject({ events: [], hasMore: false });
+    expect(
+      parseSharpApiOddsPage(
+        {
+          data: null,
+          pagination: {
+            has_more: false,
+            total: 200,
+            next_cursor: null,
+          },
+        },
+        sharpApiLeagues[0]!,
+        "2026-08-03T21:42:01.000Z" as never,
+        200,
+        "cursor",
+      ),
+    ).toMatchObject({ events: [], hasMore: false });
+    expect(() =>
+      parseSharpApiOddsPage(
+        {
+          data: null,
+          pagination: {
+            has_more: false,
+            count: null,
+            total: null,
+            next_cursor: null,
+          },
+        },
+        sharpApiLeagues[0]!,
+        "2026-08-03T21:42:01.000Z" as never,
+        200,
+        "cursor",
+      ),
+    ).toThrow(expect.objectContaining({ stage: "odds:page-envelope" }));
     expect(() =>
       parseSharpApiOddsPage(
         {
@@ -838,6 +934,276 @@ describe("SharpAPI activation boundary", () => {
         "2026-08-03T21:42:01.000Z" as never,
       ),
     ).toThrow("invalid-response");
+    expect(() =>
+      parseSharpApiOddsPage(
+        {
+          data: null,
+          pagination: {
+            has_more: false,
+            total: 200,
+            next_cursor: null,
+          },
+        },
+        sharpApiLeagues[0]!,
+        "2026-08-03T21:42:01.000Z" as never,
+      ),
+    ).toThrow(expect.objectContaining({ stage: "odds:page-envelope" }));
+  });
+
+  it("does not mistake provider errors or incoherent pagination for empty pages", () => {
+    const league = sharpApiLeagues[0]!;
+    const retrievedAt = "2026-08-03T21:42:01.000Z" as never;
+    for (const payload of [
+      {
+        data: null,
+        error: { code: "provider_failure" },
+        pagination: { has_more: false, count: 0, next_cursor: null },
+      },
+      {
+        success: false,
+        data: null,
+        pagination: { has_more: false, count: 0, next_cursor: null },
+      },
+    ]) {
+      const error = (() => {
+        try {
+          parseSharpApiOddsPage(payload, league, retrievedAt);
+        } catch (caught) {
+          return caught;
+        }
+      })();
+      expect(error).toEqual(
+        expect.objectContaining({
+          code: "provider-rejected",
+          stage: "odds:provider-error",
+        }),
+      );
+    }
+    for (const payload of [
+      {
+        data: null,
+        pagination: { has_more: false, count: 1, next_cursor: null },
+      },
+      {
+        data: null,
+        pagination: { has_more: false, count: 0, next_cursor: "stale" },
+      },
+    ])
+      expect(() => parseSharpApiOddsPage(payload, league, retrievedAt)).toThrow(
+        expect.objectContaining({
+          code: "invalid-response",
+          stage: "odds:page-envelope",
+        }),
+      );
+  });
+
+  it("rejects incoherent array pagination metadata", () => {
+    const league = sharpApiLeagueByKey("mlb");
+    const retrievedAt = "2026-08-03T21:42:01.000Z" as never;
+    for (const pagination of [
+      { has_more: false, count: 0, total: 1, next_cursor: null },
+      { has_more: false, count: 1, total: 0, next_cursor: null },
+      { has_more: false, count: 1, total: 1, next_cursor: "stale" },
+    ])
+      expect(() =>
+        parseSharpApiOddsPage(
+          { data: [oddsRow({ league: "mlb" })], pagination },
+          league,
+          retrievedAt,
+        ),
+      ).toThrow(
+        expect.objectContaining({ stage: "odds:pagination-coherence" }),
+      );
+  });
+
+  it("adds bounded endpoint stages without exposing malformed response bodies", async () => {
+    const error = await fetchSharpApiFeaturedOdds(
+      sharpApiLeagueByKey("mlb"),
+      "secret-key",
+      undefined,
+      () => Promise.resolve(new Response("not-json", { status: 200 })),
+    ).catch((caught: unknown) => caught);
+    expect(error).toEqual(
+      expect.objectContaining({
+        code: "invalid-response",
+        stage: "odds:json",
+      }),
+    );
+    expect(error).not.toHaveProperty("response");
+
+    expect(() => parseSharpApiAccount({ data: null })).toThrow(
+      expect.objectContaining({ stage: "account:envelope" }),
+    );
+  });
+
+  it("uses endpoint-scoped diagnostics for malformed JSON responses", async () => {
+    const malformed = () =>
+      Promise.resolve(new Response("not-json", { status: 200 }));
+    const cases = [
+      ["account:json", () => fetchSharpApiAccount("secret-key", malformed)],
+      [
+        "odds:json",
+        () =>
+          fetchSharpApiOddsPage(
+            sharpApiLeagueByKey("mlb"),
+            "secret-key",
+            undefined,
+            malformed,
+          ),
+      ],
+      [
+        "focused-odds:json",
+        () =>
+          fetchSharpApiEventOdds(
+            sharpApiLeagueByKey("mlb"),
+            "event-1",
+            "secret-key",
+            malformed,
+          ),
+      ],
+      [
+        "schedule:json",
+        () =>
+          fetchSharpApiSchedulePage(
+            sharpApiLeagueByKey("mlb"),
+            "secret-key",
+            0,
+            malformed,
+          ),
+      ],
+      [
+        "splits:json",
+        () =>
+          fetchSharpApiSplitsPage(
+            sharpApiLeagueByKey("mlb"),
+            "secret-key",
+            0,
+            malformed,
+          ),
+      ],
+    ] as const;
+    for (const [stage, invoke] of cases)
+      await expect(invoke()).rejects.toEqual(
+        expect.objectContaining({ code: "invalid-response", stage }),
+      );
+  });
+
+  it("uses endpoint-scoped diagnostics for structured error envelopes", async () => {
+    const response = () =>
+      Promise.resolve(
+        Response.json({
+          success: false,
+          error: { code: "provider_failure" },
+          data: [],
+          pagination: { has_more: false },
+        }),
+      );
+    const cases = [
+      [
+        "account:provider-error",
+        () => fetchSharpApiAccount("secret-key", response),
+      ],
+      [
+        "odds:provider-error",
+        () =>
+          fetchSharpApiOddsPage(
+            sharpApiLeagueByKey("mlb"),
+            "secret-key",
+            undefined,
+            response,
+          ),
+      ],
+      [
+        "focused-odds:provider-error",
+        () =>
+          fetchSharpApiEventOdds(
+            sharpApiLeagueByKey("mlb"),
+            "event-1",
+            "secret-key",
+            response,
+          ),
+      ],
+      [
+        "schedule:provider-error",
+        () =>
+          fetchSharpApiSchedulePage(
+            sharpApiLeagueByKey("mlb"),
+            "secret-key",
+            0,
+            response,
+          ),
+      ],
+      [
+        "splits:provider-error",
+        () =>
+          fetchSharpApiSplitsPage(
+            sharpApiLeagueByKey("mlb"),
+            "secret-key",
+            0,
+            response,
+          ),
+      ],
+    ] as const;
+    for (const [stage, invoke] of cases)
+      await expect(invoke()).rejects.toEqual(
+        expect.objectContaining({ code: "provider-rejected", stage }),
+      );
+  });
+
+  it("allows empty error sentinels but rejects malformed success envelopes", () => {
+    const account = {
+      success: true,
+      error: false,
+      errors: [],
+      data: {
+        tier: "pro",
+        features: [],
+        rate_limit: { requests_per_minute: 60, max_books: 25 },
+        streaming: { enabled: false },
+      },
+    };
+    expect(parseSharpApiAccount(account)).toMatchObject({ tier: "pro" });
+    expect(() => parseSharpApiAccount({ ...account, success: "true" })).toThrow(
+      expect.objectContaining({ stage: "account:envelope" }),
+    );
+    expect(() =>
+      parseSharpApiSchedulePage(
+        { success: false, data: [], pagination: { has_more: false } },
+        sharpApiLeagueByKey("mlb"),
+        "2026-08-03T21:42:01.000Z" as never,
+      ),
+    ).toThrow(expect.objectContaining({ stage: "schedule:provider-error" }));
+    expect(() =>
+      parseSharpApiSplitPage(
+        {
+          errors: [{ code: "failed" }],
+          data: [],
+          pagination: { has_more: false },
+        },
+        "2026-08-03T21:42:01.000Z" as never,
+      ),
+    ).toThrow(expect.objectContaining({ stage: "splits:provider-error" }));
+  });
+
+  it("treats unauthorized HTML and ordinary client errors as terminal", async () => {
+    for (const status of [401, 403])
+      await expect(
+        fetchSharpApiOddsPage(
+          sharpApiLeagueByKey("mlb"),
+          "secret-key",
+          undefined,
+          () =>
+            Promise.resolve(new Response("<html>denied</html>", { status })),
+        ),
+      ).rejects.toEqual(expect.objectContaining({ code: "unauthorized" }));
+    await expect(
+      fetchSharpApiOddsPage(
+        sharpApiLeagueByKey("mlb"),
+        "secret-key",
+        undefined,
+        () => Promise.resolve(new Response("bad request", { status: 400 })),
+      ),
+    ).rejects.toEqual(expect.objectContaining({ code: "provider-rejected" }));
   });
 
   it("keeps valid sibling prices when a provider timestamp is unavailable", () => {

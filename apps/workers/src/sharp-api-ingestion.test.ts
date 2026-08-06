@@ -11,6 +11,7 @@ import {
 import type {
   CanonicalEvent,
   CanonicalEventBootstrap,
+  FixtureOddsAvailabilityEvidence,
   IsoTimestamp,
   SportKey,
 } from "@find-the-edge/domain";
@@ -937,6 +938,104 @@ describe("SharpAPI primary ingestion", () => {
         { pinnacle: "collected" },
       ),
     ).rejects.toThrow("sharpapi-odds-mapping-participant-mismatch");
+  });
+
+  it("preserves explicit expected-book states instead of downgrading them to missing", async () => {
+    const canonical = {
+      id: "event-state",
+      version: 1,
+      sportKey: "mlb",
+      startsAt: "2026-08-06T01:00:00.000Z",
+      participantIds: ["away-id", "home-id"],
+      participantLabels: ["Boston Red Sox", "New York Yankees"],
+    } as unknown as CanonicalEvent;
+    const store = {
+      getExactMapping: vi.fn().mockResolvedValue({ bindingKind: "source" }),
+      resolveExactCanonicalBinding: vi.fn().mockResolvedValue(canonical),
+    } as unknown as EventIngestionStore;
+    const base = {
+      marketKey: "moneyline" as const,
+      outcomeStructure: "two-way" as const,
+      providerMarketType: "moneyline",
+      providerMarketId: "market-state",
+      americanOdds: -110,
+      decimalOdds: 1.91,
+      impliedProbability: 0.524,
+      isLive: false,
+      isMainLine: true,
+      isAlternateLine: false,
+      isPlayerProp: false,
+      observedAt: "2026-08-05T23:00:00.000Z" as IsoTimestamp,
+    };
+    for (const [expectedState, pricePatch, selections] of [
+      [
+        "suspended",
+        { isSuspended: true, isActive: false, isStalePregamePrice: false },
+        ["away", "home"],
+      ],
+      [
+        "stale",
+        { isSuspended: false, isActive: true, isStalePregamePrice: true },
+        ["away", "home"],
+      ],
+      [
+        "incomplete",
+        { isSuspended: false, isActive: true, isStalePregamePrice: false },
+        ["away"],
+      ],
+    ] as const) {
+      const persistAvailability = vi
+        .fn<(value: FixtureOddsAvailabilityEvidence) => Promise<void>>()
+        .mockResolvedValue(undefined);
+      await persistSharpApiOddsPage(
+        store,
+        { persist: vi.fn(), persistAvailability },
+        { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
+        {
+          retrievedAt: "2026-08-05T23:00:01.000Z" as IsoTimestamp,
+          events: [
+            {
+              providerEventId: "event-state",
+              providerEventUuid: "event-state-uuid",
+              awayTeam: "Boston Red Sox",
+              homeTeam: "New York Yankees",
+              startsAt: canonical.startsAt,
+              bookmakers: [
+                {
+                  id: "pinnacle",
+                  label: "Pinnacle",
+                  prices: selections.map((selectionKey) => ({
+                    ...base,
+                    ...pricePatch,
+                    providerPriceId: `${expectedState}-${selectionKey}`,
+                    selectionKey,
+                    selectionLabel:
+                      selectionKey === "away"
+                        ? "Boston Red Sox"
+                        : "New York Yankees",
+                    providerSelectionId: `${expectedState}-${selectionKey}`,
+                  })),
+                },
+              ],
+            },
+          ],
+        },
+        { pinnacle: "collected" },
+        undefined,
+        { pinnacle: ["moneyline"] },
+      );
+      expect(
+        persistAvailability.mock.calls
+          .map(([value]) => value)
+          .filter((value) => value.identity.startsWith("FIXTURE_ODDS_GROUP#"))
+          .at(-1),
+      ).toMatchObject({ state: expectedState });
+      expect(
+        persistAvailability.mock.calls.some(
+          ([value]) => value.state === "missing",
+        ),
+      ).toBe(false);
+    }
   });
 
   it("binds suffixless consensus splits to the exact suffixed MLB event", async () => {

@@ -104,6 +104,8 @@ export async function withPaidLeaseHeartbeat<T>(
 export interface ControlPlaneProvider {
   readonly providerId: string;
   readonly requestCost?: number;
+  readonly probeRequestCost?: number;
+  failureRequestCost?(error: unknown): number | undefined;
   fetchPage(input: {
     readonly runId: string;
     readonly leagueKey: string;
@@ -236,6 +238,7 @@ const SAFE_FAILURES = [
   "coverage-missing",
   "unauthorized",
   "invalid-response",
+  "provider-rejected",
   "configuration",
   "page-limit-exceeded",
   "provider-page-material-mismatch",
@@ -319,6 +322,13 @@ export const oddsFailureDiagnostic = (error: unknown) => {
       : {}),
   };
 };
+const oddsFailureStage = (error: unknown) => {
+  if (!(error instanceof Error)) return undefined;
+  const stage = Reflect.get(error, "stage") as unknown;
+  return typeof stage === "string"
+    ? sanitizedDiagnosticText(stage, "unknown")
+    : undefined;
+};
 const ambiguousTransport = (error: unknown) =>
   error instanceof Error &&
   (error.name === "AbortError" ||
@@ -347,6 +357,7 @@ const TERMINAL_FAILURES = new Set([
   "not-entitled",
   "configuration",
   "invalid-response",
+  "provider-rejected",
   "coverage-missing",
   "mapping-quarantine",
   "pagination-invalid",
@@ -430,6 +441,7 @@ export const healthyOddsProviderState = (
   } = { ...(current ?? {}) };
   delete retained.failureClass;
   delete retained.failureReason;
+  delete retained.failureStage;
   delete retained.retryAt;
   delete retained.expiresAt;
   delete retained.cooldownUntil;
@@ -452,6 +464,7 @@ export const unhealthyOddsProviderState = (
     readonly now: Date;
     readonly decision: OddsRetryDecision;
     readonly cooldownSeconds: number;
+    readonly failureStage?: string;
   },
 ) => {
   const fallbackRetryAt = new Date(
@@ -465,6 +478,7 @@ export const unhealthyOddsProviderState = (
     -readonly [K in keyof OddsProviderHealth]?: OddsProviderHealth[K];
   } = { ...(current ?? {}) };
   delete retained.expiresAt;
+  delete retained.failureStage;
   delete retained.retryAt;
   delete retained.cooldownUntil;
   delete retained.degraded;
@@ -479,6 +493,7 @@ export const unhealthyOddsProviderState = (
     consecutiveSuccesses: 0,
     failureClass: input.decision.class,
     failureReason: input.decision.reason,
+    ...(input.failureStage ? { failureStage: input.failureStage } : {}),
     ...(retryAt
       ? {
           retryAt,
@@ -602,6 +617,8 @@ export async function runOddsLeague(input: {
     .sort((a, b) => (a.role === "primary" ? -1 : b.role === "primary" ? 1 : 0))
     .filter((p) => p.active);
   let lastReason = "provider-unavailable";
+  let lastPages = 0;
+  let lastQuotaCost = 0;
   const ownerId = randomUUID();
   for (const candidate of candidates) {
     if (continuation && continuation.providerId !== candidate.providerId)
@@ -671,10 +688,11 @@ export async function runOddsLeague(input: {
           continue;
         }
         const attemptId = `${policy.leagueKey}:${candidate.providerId}:probe:${iso(probeNow)}`;
+        const probeRequestCost = provider.probeRequestCost ?? 1;
         const probeReserved = await store.reserveQuotaAttempt(
           healthKey,
           candidate.quotaReserve,
-          provider.requestCost ?? 1,
+          probeRequestCost,
           {
             attemptId,
             runId: `probe:${policy.leagueKey}:${candidate.providerId}`,
@@ -721,6 +739,13 @@ export async function runOddsLeague(input: {
               },
               input.heartbeatIntervalMs,
             );
+            await store.reconcileQuota(
+              healthKey,
+              probeRequestCost,
+              probe.quotaCost,
+              probe.quotaRemaining,
+              iso(now),
+            );
             const successes = health.consecutiveSuccesses + 1;
             await store.completeAttempt({
               attemptId,
@@ -751,6 +776,15 @@ export async function runOddsLeague(input: {
             );
           } catch (error) {
             const ambiguous = ambiguousTransport(error);
+            const failureStage = oddsFailureStage(error);
+            if (!ambiguous)
+              await store.reconcileQuota(
+                healthKey,
+                probeRequestCost,
+                provider.failureRequestCost?.(error) ?? probeRequestCost,
+                undefined,
+                iso(now),
+              );
             await store.completeAttempt({
               attemptId,
               runId: `probe:${policy.leagueKey}:${candidate.providerId}`,
@@ -758,9 +792,12 @@ export async function runOddsLeague(input: {
               requestedAt: iso(probeNow),
               completedAt: iso(now),
               state: ambiguous ? "ambiguous" : "failed",
+              quotaCost:
+                provider.failureRequestCost?.(error) ?? probeRequestCost,
               failureReason: ambiguous
                 ? "provider-request-ambiguous"
                 : classifyOddsControlPlaneFailure(error),
+              ...(failureStage ? { failureStage } : {}),
             });
             await store.putHealth(
               unhealthyOddsProviderState(await store.getHealth(healthKey), {
@@ -776,6 +813,7 @@ export async function runOddsLeague(input: {
                   jitter: () => 0,
                 }),
                 cooldownSeconds: candidate.cooldownSeconds,
+                ...(failureStage ? { failureStage } : {}),
               }),
             );
             if (ambiguous)
@@ -1064,6 +1102,24 @@ export async function runOddsLeague(input: {
             } else {
               const ambiguous =
                 response !== undefined || ambiguousTransport(error);
+              const knownFailureRequestCost =
+                provider.failureRequestCost?.(error);
+              const failureRequestCost =
+                response?.quotaCost ?? knownFailureRequestCost ?? requestCost;
+              const failureStage = oddsFailureStage(error);
+              if (!ambiguous || knownFailureRequestCost !== undefined) {
+                await store.reconcileQuota(
+                  quotaKey,
+                  requestCost,
+                  failureRequestCost,
+                  undefined,
+                  iso(now),
+                );
+                quotaCost = Math.max(
+                  0,
+                  quotaCost + failureRequestCost - requestCost,
+                );
+              }
               await store.completeAttempt({
                 attemptId,
                 runId,
@@ -1071,12 +1127,13 @@ export async function runOddsLeague(input: {
                 requestedAt: iso(now),
                 completedAt: iso(clock()),
                 state: ambiguous ? "ambiguous" : "failed",
-                quotaCost: response?.quotaCost ?? requestCost,
+                quotaCost: failureRequestCost,
                 failureReason: response
                   ? "provider-response-unsealed"
                   : ambiguous
                     ? "provider-request-ambiguous"
                     : classifyOddsControlPlaneFailure(error),
+                ...(failureStage ? { failureStage } : {}),
               });
               if (ambiguous)
                 await putContinuationCas(store, {
@@ -1205,6 +1262,7 @@ export async function runOddsLeague(input: {
       };
     } catch (error) {
       const reason = classifyOddsControlPlaneFailure(error);
+      const failureStage = oddsFailureStage(error);
       if (["internal-failure", "invalid-response"].includes(reason))
         console.error(
           JSON.stringify({
@@ -1218,6 +1276,8 @@ export async function runOddsLeague(input: {
           }),
         );
       lastReason = reason;
+      lastPages = pages;
+      lastQuotaCost = quotaCost;
       const safelySkipped =
         !evidenceCommitted &&
         ["quota-reserve", "provider-recovering"].includes(reason);
@@ -1227,6 +1287,7 @@ export async function runOddsLeague(input: {
         status: safelySkipped ? "skipped" : "failed",
         updatedAt: iso(now),
         ...(safelySkipped ? { skipReason: reason } : { failureReason: reason }),
+        ...(failureStage ? { failureStage } : {}),
         evidenceCommitted,
         quotaCost,
       });
@@ -1256,6 +1317,7 @@ export async function runOddsLeague(input: {
           "not-entitled",
           "configuration",
           "invalid-response",
+          "provider-rejected",
           "coverage-missing",
           "provider-request-ambiguous",
         ].includes(retryDecision.reason)
@@ -1267,6 +1329,7 @@ export async function runOddsLeague(input: {
             now,
             decision: retryDecision,
             cooldownSeconds: candidate.cooldownSeconds,
+            ...(failureStage ? { failureStage } : {}),
           }),
         );
       if (retryDecision.reason !== "quota-reserve")
@@ -1298,8 +1361,8 @@ export async function runOddsLeague(input: {
     leagueKey: policy.leagueKey,
     status: "failed",
     reason: lastReason,
-    pages: 0,
-    quotaCost: 0,
+    pages: lastPages,
+    quotaCost: lastQuotaCost,
   };
 }
 

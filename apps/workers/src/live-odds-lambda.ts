@@ -348,6 +348,7 @@ const boundedSingleLiveOddsInvocationError = (error: unknown) => {
         "rate-limited",
         "provider-request-ambiguous",
         "provider-unavailable",
+        "provider-rejected",
         "invalid-response",
       ].includes(error.message)
     )
