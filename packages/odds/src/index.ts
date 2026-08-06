@@ -1,3 +1,5 @@
+import { detectMarketOutliers } from "./market-quality";
+
 export const CALCULATION_VERSION = "edge-calculation-v1" as const;
 export const CONSENSUS_CALCULATION_VERSION = "weighted-consensus-v1" as const;
 export const FAIR_VALUE_CALCULATION_VERSION = "fair-value-v1" as const;
@@ -220,14 +222,6 @@ export function removeVig(americanOdds: readonly number[]): number[] {
   return raw.map((probability) => probability / overround);
 }
 
-function median(values: readonly number[]): number {
-  const ordered = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(ordered.length / 2);
-  const upper = ordered[middle];
-  if (upper === undefined) throw new RangeError("Median requires values");
-  return upper;
-}
-
 function canonicalSportsbookId(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -444,18 +438,14 @@ export function calculateWeightedConsensus(
     return [{ sportsbookId, probabilities, weight: weight! }];
   });
 
-  const centers =
-    eligible.length === 0
-      ? []
-      : Array.from({ length: selectionKeys.length }, (_, index) =>
-          median(eligible.map((book) => book.probabilities[index]!)),
-        );
+  const outlierAudit = detectMarketOutliers({
+    selectionKeys,
+    contributions: eligible,
+    threshold: input.policy.outlierThreshold,
+  });
+  const outlierSportsbookIds = new Set(outlierAudit.outlierSportsbookIds);
   const included = eligible.filter((book) => {
-    const outlier = book.probabilities.some(
-      (probability, index) =>
-        Math.abs(probability - (centers[index] ?? probability)) >
-        input.policy.outlierThreshold,
-    );
+    const outlier = outlierSportsbookIds.has(book.sportsbookId);
     if (outlier) {
       issues.add("outlier");
       exclusions.push({
@@ -813,3 +803,6 @@ export function evaluateEdge(input: EdgeInput): EdgeEvaluation {
 export * from "./qualification";
 export * from "./grading";
 export * from "./performance";
+export * from "./movement";
+export * from "./market-quality";
+export * from "./clv";

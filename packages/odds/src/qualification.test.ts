@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expectedValue } from "./index";
+import { expectedValue, removeVig, scoreMarketDisagreement } from "./index";
 import { qualifyEvaluation } from "./qualification";
 
 const input = () => ({
@@ -63,6 +63,17 @@ describe("deterministic qualification", () => {
     expect(result.noVigProbability).toBeCloseTo(expected, 12);
     expect(result.includedSportsbookIds).toEqual(["circa", "pinnacle"]);
     expect(result.includedWeights).toEqual({ circa: 1.25, pinnacle: 1 });
+    const directDisagreement = scoreMarketDisagreement({
+      selectionKeys: ["outcome-0", "outcome-1"],
+      contributions: input().books.map((book) => ({
+        sportsbookId: book.sportsbookId,
+        probabilities: removeVig(book.americanOdds),
+      })),
+      warningThreshold: input().policy.disagreementWarningThreshold,
+      blockThreshold: input().policy.disagreementBlockThreshold,
+    });
+    expect(directDisagreement.status).toBe("available");
+    expect(result.marketDisagreement).toBe(directDisagreement.score);
   });
   it.each([
     [0, -1],
@@ -81,6 +92,23 @@ describe("deterministic qualification", () => {
       expect(result.expectedValue).toBeCloseTo(expected, 12);
     },
   );
+
+  it("preserves legacy scoring for malformed disagreement thresholds", () => {
+    const fixture = input();
+    const result = qualifyEvaluation({
+      ...fixture,
+      policy: {
+        ...fixture.policy,
+        disagreementWarningThreshold: 0.2,
+        disagreementBlockThreshold: 0.1,
+      },
+    });
+
+    expect(result.marketDisagreement).toBeCloseTo(
+      0.010_881_111_518_467_379,
+      12,
+    );
+  });
   it.each([
     [
       "negative EV",

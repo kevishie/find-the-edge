@@ -5,6 +5,7 @@ import {
   calculateFairValue,
   calculateWeightedConsensus,
   decimalToAmerican,
+  detectMarketOutliers,
   evaluateEdge,
   expectedProfit,
   expectedValue,
@@ -697,6 +698,44 @@ describe("weighted consensus", () => {
       eligibleBookCount: 2,
       issues: ["insufficient-books", "outlier"],
     });
+  });
+
+  it("delegates whole-book outliers to the public shared audit without changing exclusions", () => {
+    const books = [
+      book("a", [100, 100]),
+      book("b", [-110, -110]),
+      book("divergent", [-400, 300]),
+    ];
+    const threshold = 0.08;
+    const audit = detectMarketOutliers({
+      selectionKeys: ["away", "home"],
+      contributions: books.map((entry) => ({
+        sportsbookId: entry.sportsbookId,
+        probabilities: removeVig(
+          entry.selections.map(({ americanOdds }) => americanOdds),
+        ),
+      })),
+      threshold,
+    });
+    const consensus = calculateWeightedConsensus({
+      targetSportsbookId: "target",
+      selectionKeys: ["away", "home"],
+      policy: {
+        comparisonWeights: { a: 1, b: 1, divergent: 1 },
+        minimumBooks: 2,
+        maximumAgeMinutes: 15,
+        outlierThreshold: threshold,
+      },
+      books,
+    });
+
+    expect(audit.outlierSportsbookIds).toEqual(["divergent"]);
+    expect(
+      consensus.exclusions
+        .filter(({ reason }) => reason === "outlier")
+        .map(({ sportsbookId }) => sportsbookId),
+    ).toEqual(audit.outlierSportsbookIds);
+    expect(consensus.includedSportsbookIds).toEqual(["a", "b"]);
   });
 
   it("returns typed invalid results for malformed markets and duplicate books", () => {

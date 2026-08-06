@@ -201,6 +201,27 @@ describe("pick evaluation service", () => {
       "duplicate",
     );
     if (first.terminal !== "evaluation") throw new Error("expected evaluation");
+    const expectedInputHash =
+      "8b5dbf20702aa1468a46fc0e50845439108d707c5d5ed984c674030f8e9ec525";
+    expect(first.pair.evaluation).toMatchObject({
+      evaluationId: `evaluation:${expectedInputHash}`,
+      inputHash: expectedInputHash,
+      decision: "play",
+      reasonCodes: ["positive-ev-qualified"],
+      manifest: {
+        inputHash: expectedInputHash,
+        consensusProvenance: {
+          disagreementWarningThreshold:
+            defaultEvaluationPolicy.disagreementWarningThreshold,
+          disagreementBlockThreshold:
+            defaultEvaluationPolicy.disagreementBlockThreshold,
+          marketDisagreement: 0.010_881_111_518_467_379,
+        },
+      },
+    });
+    expect(first.pair.paperBet?.paperBetId).toBe(
+      `paper-bet:${expectedInputHash}`,
+    );
     expect(first.pair.evaluation.manifest.gradingTerms).toEqual({
       schemaVersion: "1",
       canonicalEventVersion: 1,

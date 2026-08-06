@@ -5,6 +5,7 @@ import {
   impliedProbability,
   removeVig,
 } from "./index";
+import { scoreMarketDisagreement } from "./market-quality";
 
 export const QUALIFICATION_VERSION = "deterministic-qualification-v1";
 
@@ -107,17 +108,43 @@ export function qualifyEvaluation(
     })),
   });
   const noVigProbability = consensus.probabilities?.[input.candidateIndex] ?? 0;
-  const includedVectors =
-    consensus.status === "available"
-      ? consensus.contributions.map(({ probabilities }) => probabilities)
-      : [];
-  const marketDisagreement = Array.from(
-    { length: input.outcomeCount },
-    (_, outcome) => {
-      const values = includedVectors.map((vector) => vector[outcome]!);
-      return values.length < 2 ? 0 : Math.max(...values) - Math.min(...values);
-    },
-  ).reduce((maximum, value) => Math.max(maximum, value), 0);
+  const disagreementContributions =
+    consensus.status === "available" ? consensus.contributions : [];
+  const disagreementThresholdsValid =
+    Number.isFinite(input.policy.disagreementWarningThreshold) &&
+    Number.isFinite(input.policy.disagreementBlockThreshold) &&
+    input.policy.disagreementWarningThreshold >= 0 &&
+    input.policy.disagreementBlockThreshold <= 1 &&
+    input.policy.disagreementWarningThreshold <=
+      input.policy.disagreementBlockThreshold;
+  let marketDisagreement: number;
+  if (disagreementThresholdsValid) {
+    const disagreement = scoreMarketDisagreement({
+      selectionKeys,
+      contributions: disagreementContributions,
+      warningThreshold: input.policy.disagreementWarningThreshold,
+      blockThreshold: input.policy.disagreementBlockThreshold,
+    });
+    marketDisagreement = disagreement.score ?? 0;
+  } else {
+    marketDisagreement = Array.from(
+      { length: input.outcomeCount },
+      (_, outcome) => {
+        const values = disagreementContributions.map(
+          ({ probabilities }) => probabilities[outcome]!,
+        );
+        if (values.length < 2) return 0;
+        const range = values.reduce(
+          ({ minimum, maximum }, value) => ({
+            minimum: Math.min(minimum, value),
+            maximum: Math.max(maximum, value),
+          }),
+          { minimum: Infinity, maximum: -Infinity },
+        );
+        return range.maximum - range.minimum;
+      },
+    ).reduce((maximum, value) => Math.max(maximum, value), 0);
+  }
   const conservativeProbability = input.modelProbability.low;
   const decimalOdds = americanToDecimal(input.offeredAmerican);
   const marketImpliedProbability = impliedProbability(input.offeredAmerican);
