@@ -1811,11 +1811,16 @@ describe("Betting splits", () => {
       expect(
         screen.queryByText("Betting splits are temporarily unavailable."),
       ).not.toBeInTheDocument();
+      expect(screen.getByText("Refresh delayed.")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Showing the last valid board while we retry/),
+      ).toBeInTheDocument();
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(30_000);
       });
       expect(await screen.findByText("47%")).toBeInTheDocument();
+      expect(screen.queryByText("Refresh delayed.")).not.toBeInTheDocument();
       expect(listSplits).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
@@ -1879,6 +1884,33 @@ describe("Betting splits", () => {
         name: /View Boston versus New York game details/,
       }),
     ).toHaveAttribute("href", expect.stringContaining("sport=mlb"));
+  });
+
+  it("renders signed American odds in populated moneyline line cells", async () => {
+    const pricedGame = {
+      ...splitGame,
+      splits: splitGame.splits.map((split) =>
+        split.marketKey !== "moneyline"
+          ? split
+          : {
+              ...split,
+              americanOdds: split.selectionKey === "away" ? 145 : -162,
+            },
+      ),
+    };
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage([pricedGame]));
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    expect(await screen.findByText("+145")).toBeInTheDocument();
+    expect(screen.getByText("-162")).toBeInTheDocument();
+    expect(screen.queryByText("No line")).not.toBeInTheDocument();
   });
 
   it("preserves missing provider values without manufacturing a percentage", async () => {
@@ -2064,7 +2096,7 @@ describe("Betting splits", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("switches scopes without duplicating or hiding the complete schedule", async () => {
+  it("shows every scope in All books and filters without hiding the schedule", async () => {
     const base = splitGame.splits[0]!;
     const listSplits = vi
       .fn<NonNullable<GamesClient["listSplits"]>>()
@@ -2093,12 +2125,93 @@ describe("Betting splits", () => {
       bookButtons.map((button) => button.getAttribute("aria-label")),
     ).toEqual(["Show Book A splits", "Show Book B splits"]);
     expect(screen.getByText("71%")).toBeInTheDocument();
-    expect(screen.queryByText("29%")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Boston")).toHaveLength(1);
+    expect(screen.getByText("29%")).toBeInTheDocument();
+    expect(screen.getAllByText("Boston")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: "Show Book B splits" }));
     expect(screen.getByText("29%")).toBeInTheDocument();
     expect(screen.queryByText("71%")).not.toBeInTheDocument();
     expect(screen.getAllByText("Boston")).toHaveLength(1);
+  });
+
+  it("orders DraftKings and Circa controls and names selected-source gaps", async () => {
+    const base = splitGame.splits[0]!;
+    const circaGame = {
+      ...splitGame,
+      id: "event:mlb:circa-only",
+      participants: [
+        { id: "participant:mlb:chicago", label: "Chicago" },
+        { id: "participant:mlb:detroit", label: "Detroit" },
+      ],
+      splits: [
+        {
+          ...base,
+          id: "circa-away-spread",
+          canonicalEventId: "event:mlb:circa-only",
+          scope: "circa",
+          moneyPercent: 43,
+        },
+      ],
+    } satisfies SplitsPageDto["items"][number];
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(
+        splitsPage([
+          {
+            ...splitGame,
+            splits: [
+              {
+                ...base,
+                id: "draftkings-away-spread",
+                scope: "draftkings",
+                moneyPercent: 71,
+              },
+              {
+                ...base,
+                id: "circa-boston-away-spread",
+                scope: "circa",
+                moneyPercent: 29,
+              },
+            ],
+          },
+          circaGame,
+        ]),
+      );
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    const sourceButtons = await screen.findAllByRole("button", {
+      name: /Show (DraftKings|Circa Sports) splits/,
+    });
+    expect(
+      sourceButtons.map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Show DraftKings splits", "Show Circa Sports splits"]);
+    expect(screen.getByAltText("DraftKings")).toBeInTheDocument();
+    expect(screen.getByAltText("Circa Sports")).toBeInTheDocument();
+    expect(screen.getAllByText("DraftKings")).toHaveLength(1);
+    expect(screen.getAllByText("Circa Sports")).toHaveLength(2);
+    expect(screen.getByText("71%")).toBeInTheDocument();
+    expect(screen.getByText("29%")).toBeInTheDocument();
+    expect(screen.getByText("43%")).toBeInTheDocument();
+    expect(screen.getAllByText("Boston")).toHaveLength(2);
+    expect(
+      screen.getByText("2 games · 2 with data · 3 observations"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show DraftKings splits" }),
+    );
+    expect(screen.getByText("No DraftKings data")).toBeInTheDocument();
+    expect(screen.getByText("Chicago")).toBeInTheDocument();
+    expect(screen.getByText("Detroit")).toBeInTheDocument();
+    expect(screen.queryByText("29%")).not.toBeInTheDocument();
+    expect(screen.queryByText("43%")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("2 games · 1 with data · 1 observations"),
+    ).toBeInTheDocument();
   });
 
   it("shows multiple games in the same comparison terminal", async () => {
@@ -2129,7 +2242,7 @@ describe("Betting splits", () => {
     expect(await screen.findByText("Chicago")).toBeInTheDocument();
     expect(screen.getByText("Detroit")).toBeInTheDocument();
     expect(
-      screen.getByText(/2 games · 2 with data · 8 observations/),
+      screen.getByText(/2 games · 2 with data · 12 observations/),
     ).toBeInTheDocument();
   });
 

@@ -157,7 +157,7 @@ describe("foundation CDK app", () => {
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 2);
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
-      ScheduleExpression: "rate(15 minutes)",
+      ScheduleExpression: "rate(5 minutes)",
     });
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
@@ -190,6 +190,7 @@ describe("foundation CDK app", () => {
       "OddsRateWindowBlockedAlarm",
       "OddsMarketSuspendedAlarm",
       "OddsPartialEvidenceAlarm",
+      "OddsSplitFailureAlarm",
       "LiveOddsControlPlaneDlqAlarm",
     ])
       expect(paperResources).toContain(alarm);
@@ -993,7 +994,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 75);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 76);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

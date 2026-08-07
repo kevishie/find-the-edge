@@ -2103,6 +2103,7 @@ describe("games client", () => {
             leagueKey: "mlb",
             marketKey: "moneyline",
             selectionKey: "away",
+            americanOdds: 145,
             betPercent: 45,
             moneyPercent: 55,
             betCount: 12_345,
@@ -2156,11 +2157,13 @@ describe("games client", () => {
       if (endpoint === "splits") {
         const splitItem = page.items[0] as (typeof payload.items)[0] & {
           readonly splits: readonly {
+            readonly americanOdds?: number;
             readonly betCount?: number;
             readonly moneyAmount?: number;
           }[];
         };
         expect(splitItem.splits[0]).toMatchObject({
+          americanOdds: 145,
           betCount: 12_345,
           moneyAmount: 987_654.32,
         });
@@ -2257,6 +2260,9 @@ describe("games client", () => {
     ["fractional bet count", { betCount: 1.5 }],
     ["infinite money amount", { moneyAmount: Number.POSITIVE_INFINITY }],
     ["negative money amount", { moneyAmount: -0.01 }],
+    ["zero American odds", { americanOdds: 0 }],
+    ["out-of-range American odds", { americanOdds: 99 }],
+    ["fractional American odds", { americanOdds: 145.5 }],
   ])("rejects splits with %s", async (_name, sample) => {
     const split = {
       id: "split:invalid-sample",

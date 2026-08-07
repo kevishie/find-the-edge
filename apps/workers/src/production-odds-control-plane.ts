@@ -85,7 +85,7 @@ const putContinuationCas = async (
       await store.putContinuation({
         ...current,
         ...patch,
-        ...(current?.ambiguousUntil
+        ...(current?.ambiguousUntil && value.ambiguousUntil
           ? { ambiguousUntil: current.ambiguousUntil }
           : {}),
         ...(current?.version === undefined ? {} : { version: current.version }),
@@ -100,6 +100,21 @@ const putContinuationCas = async (
     }
   }
   throw new Error("continuation-transition-conflict");
+};
+const resumeExpiredAmbiguousContinuation = (
+  continuation: OddsRunContinuation | null,
+  now: Date,
+): {
+  readonly blocked: boolean;
+  readonly continuation: OddsRunContinuation | null;
+} => {
+  if (!continuation?.ambiguousUntil) return { blocked: false, continuation };
+  const ambiguousUntil = Date.parse(continuation.ambiguousUntil);
+  if (!Number.isFinite(ambiguousUntil) || ambiguousUntil > now.getTime())
+    return { blocked: true, continuation };
+  const { ambiguousUntil: expired, ...resumable } = continuation;
+  void expired;
+  return { blocked: false, continuation: resumable };
 };
 const assertAndRenewOwner = async (
   store: OddsControlPlaneStore,
@@ -175,9 +190,12 @@ import {
   fetchSharpApiAccount,
   fetchSharpApiSchedulePage,
   fetchSharpApiSplitsPage,
+  fetchSharpApiSplitHistory,
+  latestSharpApiSplitHistoryByBook,
   sharpApiLeagues,
   type SharpApiOddsPage,
   type SharpApiSchedulePage,
+  type SharpApiSplitEvent,
 } from "@find-the-edge/providers";
 import {
   persistSharpApiOddsPage,
@@ -203,6 +221,23 @@ type CanonicalSharpOddsEvents = Awaited<
 >["canonicalOddsEvents"];
 
 const digest = (value: unknown) => sha256Hex(JSON.stringify(value));
+
+const splitHistoryWindow = (
+  runId: string,
+  leagueKey: string,
+  fallback: Date,
+) => {
+  const prefix = `splits:${leagueKey}:`;
+  const encoded = runId.startsWith(prefix) ? runId.slice(prefix.length) : "";
+  const parsed = Date.parse(encoded);
+  const end = Number.isFinite(parsed) ? new Date(parsed) : fallback;
+  return {
+    startTime: new Date(
+      end.getTime() - 30 * 60_000,
+    ).toISOString() as IsoTimestamp,
+    endTime: end.toISOString() as IsoTimestamp,
+  };
+};
 
 const checkpointScheduleBindings = (
   checkpoint: Awaited<ReturnType<OddsControlPlaneStore["getCheckpoint"]>>,
@@ -1220,6 +1255,7 @@ export async function runProductionOddsControlPlane(input: {
   readonly fetchSharpFeatured?: typeof fetchSharpApiFeaturedOdds;
   readonly fetchSharpAccount?: typeof fetchSharpApiAccount;
   readonly fetchSharpSplits?: typeof fetchSharpApiSplitsPage;
+  readonly fetchSharpSplitHistory?: typeof fetchSharpApiSplitHistory;
   readonly heartbeatIntervalMs?: number;
 }) {
   const ownerId = randomUUID();
@@ -2216,7 +2252,12 @@ export async function runProductionOddsControlPlane(input: {
   const splitCheckpoint = await input.control.getCheckpoint(splitCheckpointKey);
   let splitContinuation =
     await input.control.getContinuation(splitCheckpointKey);
-  if (splitContinuation?.ambiguousUntil) return results;
+  const splitAmbiguity = resumeExpiredAmbiguousContinuation(
+    splitContinuation,
+    liveNow(),
+  );
+  if (splitAmbiguity.blocked) return results;
+  splitContinuation = splitAmbiguity.continuation;
   const splitsDue =
     input.forceRefresh === true ||
     splitContinuation !== null ||
@@ -2426,10 +2467,13 @@ export async function runProductionOddsControlPlane(input: {
         for (const league of sharpApiLeagues) {
           try {
             const continuationKey = `splits:${league.leagueKey}`;
-            const existingContinuation =
-              await input.control.getContinuation(continuationKey);
-            if (existingContinuation?.ambiguousUntil) continue;
             const claimNow = liveNow();
+            const ambiguity = resumeExpiredAmbiguousContinuation(
+              await input.control.getContinuation(continuationKey),
+              claimNow,
+            );
+            if (ambiguity.blocked) continue;
+            const existingContinuation = ambiguity.continuation;
             const continuation = await input.control.claimContinuation({
               ...existingContinuation,
               leagueKey: continuationKey,
@@ -2473,6 +2517,8 @@ export async function runProductionOddsControlPlane(input: {
             let splitsComplete = false;
             let splitQuotaCost = continuation?.quotaCost ?? 0;
             let latestSplitRateWindow: OddsProviderHealth["rateWindow"];
+            const currentSplitEvents = new Map<string, SharpApiSplitEvent>();
+            const currentSplitBooks = new Map<string, Set<string>>();
             for (let guard = 0; guard < 20; guard += 1) {
               const pageToken = String(offset);
               let sealed = await input.control.getPage(runId, pageToken);
@@ -2612,6 +2658,19 @@ export async function runProductionOddsControlPlane(input: {
               latestSplitRateWindow =
                 nonEmptyRateWindow(splitPage.responseMetadata?.rateWindow) ??
                 latestSplitRateWindow;
+              for (const item of splitPage.items) {
+                const prior = currentSplitEvents.get(item.providerEventId);
+                if (
+                  !prior ||
+                  Date.parse(item.providerTimestamp) >
+                    Date.parse(prior.providerTimestamp)
+                )
+                  currentSplitEvents.set(item.providerEventId, item);
+                const books =
+                  currentSplitBooks.get(item.providerEventId) ?? new Set();
+                books.add(item.sportsbookId.toLowerCase());
+                currentSplitBooks.set(item.providerEventId, books);
+              }
               if (!sealed.committedAt) {
                 await persistSharpApiSplitPage(
                   input.events,
@@ -2647,6 +2706,191 @@ export async function runProductionOddsControlPlane(input: {
             }
             if (!splitsComplete)
               throw new Error("sharpapi-splits-pagination-limit");
+            const historyWindow = splitHistoryWindow(
+              runId,
+              league.leagueKey,
+              now,
+            );
+            for (const sourceEvent of currentSplitEvents.values()) {
+              const presentBooks =
+                currentSplitBooks.get(sourceEvent.providerEventId) ?? new Set();
+              const missingBooks = ["draftkings", "circa"].filter(
+                (book) => !presentBooks.has(book),
+              );
+              if (missingBooks.length === 0) continue;
+              const pageToken = `history:${digest([
+                sourceEvent.providerEventId,
+                historyWindow.startTime,
+                historyWindow.endTime,
+              ]).slice(0, 32)}`;
+              let sealed = await input.control.getPage(runId, pageToken);
+              if (!sealed) {
+                await assertAndRenewOwner(
+                  input.control,
+                  continuationKey,
+                  runId,
+                  ownerId,
+                  liveNow,
+                );
+                const attemptId = `${runId}:${pageToken}:${now.toISOString()}`;
+                if (
+                  !(await input.control.reserveQuotaAttempt(
+                    `${SHARP_API_PROVIDER_ID}:account:account`,
+                    20,
+                    1,
+                    {
+                      attemptId,
+                      runId,
+                      pageToken,
+                      requestedAt: liveNow().toISOString(),
+                      leaseUntil: new Date(
+                        liveNow().getTime() + 300_000,
+                      ).toISOString(),
+                      state: "reserved",
+                      providerId: SHARP_API_PROVIDER_ID,
+                      leagueKey: league.leagueKey,
+                      capability: "splits",
+                    },
+                  ))
+                )
+                  throw new Error("split-history-attempt-reservation-conflict");
+                splitQuotaCost += 1;
+                await putContinuationCas(input.control, {
+                  leagueKey: continuationKey,
+                  runId,
+                  providerId: SHARP_API_PROVIDER_ID,
+                  updatedAt: now.toISOString(),
+                  startedAt: continuation?.startedAt ?? now.toISOString(),
+                  capability: "splits",
+                  evidenceCommitted: true,
+                  quotaCost: splitQuotaCost,
+                });
+                let page: Awaited<ReturnType<typeof fetchSharpApiSplitHistory>>;
+                try {
+                  page = await paidCall(continuationKey, runId, () =>
+                    (input.fetchSharpSplitHistory ?? fetchSharpApiSplitHistory)(
+                      sourceEvent,
+                      historyWindow.startTime,
+                      historyWindow.endTime,
+                      input.sharpApiKey,
+                    ),
+                  );
+                } catch (error) {
+                  const ambiguous = isAmbiguousTransport(error);
+                  const failureStage =
+                    error instanceof SharpApiError ? error.stage : undefined;
+                  await input.control.completeAttempt({
+                    attemptId,
+                    runId,
+                    pageToken,
+                    requestedAt: liveNow().toISOString(),
+                    completedAt: now.toISOString(),
+                    quotaCost: 1,
+                    state: ambiguous ? "ambiguous" : "failed",
+                    failureReason: ambiguous
+                      ? "provider-request-ambiguous"
+                      : capabilityFailure(error),
+                    ...(failureStage ? { failureStage } : {}),
+                  });
+                  if (ambiguous)
+                    await putContinuationCas(input.control, {
+                      ...continuation,
+                      leagueKey: continuationKey,
+                      runId,
+                      providerId: SHARP_API_PROVIDER_ID,
+                      updatedAt: now.toISOString(),
+                      ambiguousUntil: new Date(
+                        liveNow().getTime() + 300_000,
+                      ).toISOString(),
+                    });
+                  if (ambiguous) throw new Error("provider-request-ambiguous");
+                  throw error;
+                }
+                sealed = {
+                  runId,
+                  pageToken,
+                  responseDigest: digest(page),
+                  normalizedItems: [page],
+                  gaps: [],
+                  quotaCost: 1,
+                  sealedAt: now.toISOString(),
+                };
+                await assertAndRenewOwner(
+                  input.control,
+                  continuationKey,
+                  runId,
+                  ownerId,
+                  liveNow,
+                );
+                await sealPaidPage(
+                  input.control,
+                  sealed,
+                  {
+                    attemptId,
+                    runId,
+                    pageToken,
+                    requestedAt: liveNow().toISOString(),
+                    leaseUntil: new Date(
+                      liveNow().getTime() + 300_000,
+                    ).toISOString(),
+                  },
+                  continuation,
+                );
+                await input.control.completeAttempt({
+                  attemptId,
+                  runId,
+                  pageToken,
+                  requestedAt: liveNow().toISOString(),
+                  completedAt: now.toISOString(),
+                  quotaCost: 1,
+                });
+              }
+              const historyPage = sealed.normalizedItems[0] as Awaited<
+                ReturnType<typeof fetchSharpApiSplitHistory>
+              >;
+              latestSplitRateWindow =
+                nonEmptyRateWindow(historyPage.responseMetadata?.rateWindow) ??
+                latestSplitRateWindow;
+              if (!sealed.committedAt) {
+                const latest = latestSharpApiSplitHistoryByBook(
+                  historyPage.items,
+                  missingBooks,
+                );
+                await persistSharpApiSplitPage(
+                  input.events,
+                  input.splits,
+                  league,
+                  { items: latest, retrievedAt: historyPage.retrievedAt },
+                  canonicalOddsEventsByLeague.get(league.leagueKey) ?? [],
+                );
+                input.metrics?.emit("OddsSplitHistoryFallback", 1, {
+                  league: league.leagueKey,
+                  provider: SHARP_API_PROVIDER_ID,
+                });
+                input.metrics?.emit(
+                  "OddsSplitHistoryBooksRecovered",
+                  latest.length,
+                  {
+                    league: league.leagueKey,
+                    provider: SHARP_API_PROVIDER_ID,
+                  },
+                );
+                if (latest.length < missingBooks.length)
+                  input.metrics?.emit(
+                    "OddsSplitHistoryBooksMissing",
+                    missingBooks.length - latest.length,
+                    {
+                      league: league.leagueKey,
+                      provider: SHARP_API_PROVIDER_ID,
+                    },
+                  );
+                await input.control.commitPage(
+                  runId,
+                  pageToken,
+                  now.toISOString(),
+                );
+              }
+            }
             await input.control.putRun({
               ...(await input.control.getRun(runId))!,
               status: "completed",
@@ -2701,6 +2945,7 @@ export async function runProductionOddsControlPlane(input: {
               reason,
               ...(failureStage ? { failureStage } : {}),
             });
+            input.metrics?.emit("OddsSplitFailure", 1, {});
             const continuation = await input.control.getContinuation(
               `splits:${league.leagueKey}`,
             );
@@ -2743,7 +2988,7 @@ export async function runProductionOddsControlPlane(input: {
         leagueKey: splitCheckpointKey,
         providerId: SHARP_API_PROVIDER_ID,
         completedAt: now.toISOString(),
-        nextDueAt: new Date(now.getTime() + 900_000).toISOString(),
+        nextDueAt: new Date(now.getTime() + 300_000).toISOString(),
         runId: accountRunId,
       });
       await clearOwned(splitCheckpointKey, accountRunId);

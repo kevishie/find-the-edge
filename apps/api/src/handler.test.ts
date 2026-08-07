@@ -16,7 +16,7 @@ import {
   type OddsHistoryRepository,
   type RankedOpportunityRepository,
 } from "@find-the-edge/database";
-import { createEventHandler } from "./handler";
+import { createEventHandler, publishedSplitScopes } from "./handler";
 import { parseCursorSecretRing } from "./secrets";
 const repository: EventRepository = {
   list: async () => ({
@@ -35,6 +35,19 @@ const repository: EventRepository = {
     return { projectionState: "ready", item: null, unavailableReason: null };
   },
 };
+
+it("publishes book-scoped splits instead of a redundant provider consensus", () => {
+  const values = [
+    { id: "consensus", scope: "consensus" },
+    { id: "dk", scope: "draftkings" },
+    { id: "circa", scope: "circa" },
+  ];
+  expect(publishedSplitScopes(values).map(({ id }) => id)).toEqual([
+    "dk",
+    "circa",
+  ]);
+  expect(publishedSplitScopes(values.slice(0, 2))).toEqual(values.slice(0, 2));
+});
 
 it("serves the public provider-status contract without query parameters", async () => {
   const providerStatus = vi.fn(() =>

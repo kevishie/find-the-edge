@@ -349,6 +349,12 @@ export interface SharpApiSplitPage {
   readonly responseMetadata?: SharpApiResponseMetadata;
 }
 
+export interface SharpApiSplitHistoryPage {
+  readonly items: readonly SharpApiSplitEvent[];
+  readonly retrievedAt: IsoTimestamp;
+  readonly responseMetadata?: SharpApiResponseMetadata;
+}
+
 export class SharpApiError extends Error {
   override readonly name = "SharpApiError";
   constructor(
@@ -386,7 +392,12 @@ const iso = (value: string) => new Date(value).toISOString() as IsoTimestamp;
 const MAX_RESPONSE_BYTES = 10_000_000;
 
 type SharpApiEndpoint =
-  "account" | "odds" | "focused-odds" | "schedule" | "splits";
+  | "account"
+  | "odds"
+  | "focused-odds"
+  | "schedule"
+  | "splits"
+  | "splits-history";
 
 const invalidResponse = (endpoint: SharpApiEndpoint, stage: string) =>
   new SharpApiError(
@@ -1342,6 +1353,160 @@ export function parseSharpApiSplitPage(
   };
 }
 
+export function parseSharpApiSplitHistoryPage(
+  input: unknown,
+  sourceEvent: SharpApiSplitEvent,
+  retrievedAt: IsoTimestamp,
+  startTime: IsoTimestamp,
+  endTime: IsoTimestamp,
+): SharpApiSplitHistoryPage {
+  const invalid = (stage: string) => invalidResponse("splits-history", stage);
+  if (!record(input)) throw invalid("page-envelope");
+  assertProviderEnvelope(input, "splits-history");
+  const meta = input["meta"];
+  const data = input["data"];
+  // This endpoint has no cursor. A full page could be the oldest 200 rows of
+  // a truncated result, so fail closed instead of treating it as the latest.
+  if (!record(meta) || !Array.isArray(data) || data.length >= 200)
+    throw invalid("data-envelope");
+  if (
+    meta["event_id"] !== sourceEvent.providerEventId ||
+    !integer(meta["total"]) ||
+    meta["total"] !== data.length ||
+    !instant(meta["updated_at"])
+  )
+    throw invalid("metadata");
+  const metaBookValues = meta["books"];
+  if (
+    data.length === 0
+      ? metaBookValues !== undefined &&
+        (!Array.isArray(metaBookValues) || metaBookValues.length > 0)
+      : !Array.isArray(metaBookValues) ||
+        metaBookValues.some((book) => !canonical(book, 128))
+  )
+    throw invalid("metadata-books");
+  if (!instant(startTime) || !instant(endTime)) throw invalid("window");
+  const startMs = Date.parse(startTime);
+  const endMs = Date.parse(endTime);
+  if (startMs > endMs) throw invalid("window");
+
+  const items = data.map((value): SharpApiSplitEvent => {
+    if (
+      !record(value) ||
+      !canonical(value["book"], 128) ||
+      !instant(value["ts"]) ||
+      !finite(value["timestamp"])
+    )
+      throw invalid("event-shape");
+    const providerTimestamp = iso(value["ts"]);
+    const providerMs = Date.parse(providerTimestamp);
+    if (
+      providerMs < startMs ||
+      providerMs > endMs ||
+      Math.abs(providerMs - value["timestamp"] * 1_000) > 2_000
+    )
+      throw invalid("event-timestamp");
+    const markets: SharpApiSplitMarket[] = [];
+    const add = (
+      marketKey: SharpApiSplitMarket["marketKey"],
+      sides: readonly SharpApiSplitSelection["selectionKey"][],
+      pointField: "line" | "odds",
+    ) => {
+      const raw = value[marketKey];
+      if (raw === null || raw === undefined) return;
+      if (!record(raw)) throw invalid("market-shape");
+      const handle = record(raw["handle_pct"]) ? raw["handle_pct"] : undefined;
+      const bets = record(raw["bets_pct"]) ? raw["bets_pct"] : undefined;
+      if (!handle && !bets) throw invalid("market-percentages");
+      const selections = sides.flatMap((side) => {
+        const pointValue =
+          marketKey === "total" ? raw["line"] : raw[`${side}_${pointField}`];
+        const rawBetPercent = bets?.[side] ?? undefined;
+        const rawMoneyPercent = handle?.[side] ?? undefined;
+        const betPercent =
+          rawBetPercent === undefined ? undefined : splitPercent(rawBetPercent);
+        const moneyPercent =
+          rawMoneyPercent === undefined
+            ? undefined
+            : splitPercent(rawMoneyPercent);
+        if (betPercent === undefined && moneyPercent === undefined) return [];
+        return [
+          {
+            selectionKey: side,
+            ...(finite(pointValue)
+              ? marketKey === "moneyline"
+                ? { americanOdds: pointValue }
+                : { point: pointValue }
+              : {}),
+            ...(betPercent === undefined ? {} : { betPercent }),
+            ...(moneyPercent === undefined ? {} : { moneyPercent }),
+          },
+        ];
+      });
+      if (selections.length > 0) markets.push({ marketKey, selections });
+    };
+    add("spread", ["away", "home"], "line");
+    add("total", ["over", "under"], "odds");
+    add("moneyline", ["away", "home"], "odds");
+    return {
+      ...sourceEvent,
+      sportsbookId: value["book"],
+      providerTimestamp,
+      markets,
+    };
+  });
+  const rowBooks = new Set(items.map(({ sportsbookId }) => sportsbookId));
+  const metaBooks = new Set(
+    (Array.isArray(metaBookValues) ? metaBookValues : []) as string[],
+  );
+  if (
+    rowBooks.size !== metaBooks.size ||
+    [...rowBooks].some((book) => !metaBooks.has(book))
+  )
+    throw invalid("book-set");
+  if (items.length === 0) {
+    if (
+      (meta["oldest"] !== null && meta["oldest"] !== undefined) ||
+      (meta["newest"] !== null && meta["newest"] !== undefined)
+    )
+      throw invalid("empty-range");
+  } else {
+    if (!instant(meta["oldest"]) || !instant(meta["newest"]))
+      throw invalid("range");
+    const timestamps = items.map(({ providerTimestamp }) =>
+      Date.parse(providerTimestamp),
+    );
+    if (
+      Math.abs(Math.min(...timestamps) - Date.parse(meta["oldest"])) > 2_000 ||
+      Math.abs(Math.max(...timestamps) - Date.parse(meta["newest"])) > 2_000
+    )
+      throw invalid("range");
+  }
+  return { items, retrievedAt };
+}
+
+export const latestSharpApiSplitHistoryByBook = (
+  items: readonly SharpApiSplitEvent[],
+  books: readonly string[] = ["draftkings", "circa"],
+) => {
+  const accepted = new Set(books.map((book) => book.toLowerCase()));
+  const latest = new Map<string, SharpApiSplitEvent>();
+  for (const item of items) {
+    const sportsbookId = item.sportsbookId.toLowerCase();
+    if (!accepted.has(sportsbookId)) continue;
+    const previous = latest.get(sportsbookId);
+    if (
+      !previous ||
+      Date.parse(item.providerTimestamp) >
+        Date.parse(previous.providerTimestamp)
+    )
+      latest.set(sportsbookId, item);
+  }
+  return [...latest.values()].sort((left, right) =>
+    left.sportsbookId.localeCompare(right.sportsbookId),
+  );
+};
+
 export async function fetchSharpApiAccount(
   apiKey: string,
   fetcher: typeof fetch = fetch,
@@ -1562,6 +1727,42 @@ export async function fetchSharpApiSplitsPage(
     };
   } catch (error) {
     return rethrowInvalidResponseAt(error, "splits");
+  }
+}
+
+export async function fetchSharpApiSplitHistory(
+  sourceEvent: SharpApiSplitEvent,
+  startTime: IsoTimestamp,
+  endTime: IsoTimestamp,
+  apiKey: string,
+  fetcher: typeof fetch = fetch,
+): Promise<SharpApiSplitHistoryPage> {
+  const query = new URLSearchParams({
+    event_id: sourceEvent.providerEventId,
+    start_time: startTime,
+    end_time: endTime,
+    limit: "200",
+  });
+  const retrievedAt = new Date().toISOString() as IsoTimestamp;
+  try {
+    const { payload, metadata } = await request(
+      `/splits/history?${query.toString()}`,
+      "splits-history",
+      apiKey,
+      fetcher,
+    );
+    return {
+      ...parseSharpApiSplitHistoryPage(
+        payload,
+        sourceEvent,
+        retrievedAt,
+        startTime,
+        endTime,
+      ),
+      responseMetadata: metadata,
+    };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "splits-history");
   }
 }
 

@@ -57,6 +57,14 @@ export function normalizeBettingSplitObservation(
       throw new BettingSplitValidationError("betting-split-percentage-invalid");
   if (input.point !== undefined && !Number.isFinite(input.point))
     throw new BettingSplitValidationError("betting-split-point-invalid");
+  if (
+    input.americanOdds !== undefined &&
+    (!Number.isSafeInteger(input.americanOdds) ||
+      input.americanOdds === 0 ||
+      Math.abs(input.americanOdds) < 100 ||
+      Math.abs(input.americanOdds) > 100_000)
+  )
+    throw new BettingSplitValidationError("betting-split-odds-invalid");
   for (const value of [input.betCount, input.moneyAmount])
     if (value !== undefined && (!Number.isFinite(value) || value < 0))
       throw new BettingSplitValidationError("betting-split-sample-invalid");
@@ -72,6 +80,7 @@ export function normalizeBettingSplitObservation(
     input.marketKey,
     input.selectionKey,
     input.point ?? null,
+    input.americanOdds ?? null,
     input.betPercent ?? null,
     input.moneyPercent ?? null,
     input.betCount ?? null,

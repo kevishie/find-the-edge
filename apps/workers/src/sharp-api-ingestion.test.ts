@@ -366,6 +366,40 @@ describe("SharpAPI primary ingestion", () => {
       store.resolveExactCanonicalBinding(phantomBinding),
     ).resolves.toBeNull();
 
+    const unlistedFeaturedBinding = {
+      ...binding,
+      providerEventId: "mlb_marlins_braves_2026-08-06_b3",
+    };
+    const unlistedFeatured = await persistSharpApiOddsPage(
+      store,
+      { persist },
+      league,
+      {
+        ...oddsPage,
+        events: oddsPage.events.map((featured) => ({
+          ...featured,
+          providerEventId: unlistedFeaturedBinding.providerEventId,
+          providerEventUuid: `${unlistedFeaturedBinding.providerEventId}:uuid`,
+          bookmakers: [
+            ...featured.bookmakers,
+            ...featured.bookmakers.map((book) => ({
+              ...book,
+              id: "draftkings",
+              label: "DraftKings",
+            })),
+          ],
+        })),
+      },
+      { pinnacle: "collected", draftkings: "offered" },
+      undefined,
+      undefined,
+      new Set([binding.providerEventId]),
+    );
+    expect(unlistedFeatured).toMatchObject({ events: 0, observations: 0 });
+    await expect(
+      store.resolveExactCanonicalBinding(unlistedFeaturedBinding),
+    ).resolves.toBeNull();
+
     const result = await persistSharpApiOddsPage(
       store,
       { persist },
@@ -1122,7 +1156,11 @@ describe("SharpAPI primary ingestion", () => {
               {
                 marketKey: "moneyline",
                 selections: [
-                  { selectionKey: "away", betPercent: 42 },
+                  {
+                    selectionKey: "away",
+                    americanOdds: 145,
+                    betPercent: 42,
+                  },
                   { selectionKey: "home", betPercent: 58 },
                 ],
               },
@@ -1142,6 +1180,7 @@ describe("SharpAPI primary ingestion", () => {
       expect.objectContaining({
         canonicalEventId: canonical.id,
         canonicalEventVersion: 4,
+        americanOdds: 145,
         scope: "consensus",
       }),
     );

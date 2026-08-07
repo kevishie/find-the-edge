@@ -3081,3 +3081,110 @@ footer {
     justify-content: center;
   }
 }
+
+/* Splits keeps the full schedule visible, so its controls and rows stay dense. */
+.splits-primary-filters {
+  gap: 14px;
+  margin: 16px 0 12px;
+  padding: 12px 14px;
+}
+
+.splits-primary-filters legend,
+.splits-primary-filters label > span {
+  margin-bottom: 6px;
+}
+
+.splits-scope-filters {
+  flex-wrap: nowrap;
+  gap: 7px;
+  margin: 0 0 10px;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.splits-scope-filters button {
+  flex: 0 0 auto;
+  min-width: 64px;
+  height: 38px;
+  padding: 4px 9px;
+}
+
+.splits-scope-filters .sportsbook-logo {
+  width: 100px;
+  height: 24px;
+}
+
+.splits-toolbar {
+  gap: 18px;
+  margin-bottom: 0;
+  padding: 11px 14px;
+}
+
+.splits-refresh-warning,
+.splits-no-data-notice {
+  margin: 0;
+  padding: 9px 14px;
+  border-right: 1px solid #302a3b;
+  border-left: 1px solid #302a3b;
+  color: #aaa2b5;
+  background: #121017;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+}
+
+.splits-refresh-warning {
+  color: #d7a95b;
+  background: #17130f;
+}
+
+.split-board th,
+.split-board td {
+  padding: 8px;
+}
+
+@media (max-width: 800px) {
+  .split-signal-context {
+    margin-top: 16px;
+    padding: 11px 13px;
+  }
+
+  .splits-primary-filters {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .splits-toolbar {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .split-bar-legend {
+    gap: 8px 14px;
+    padding: 9px 11px;
+  }
+
+  .split-board {
+    min-width: 740px;
+  }
+
+  .split-board .split-team-heading,
+  .split-board .split-team,
+  .split-team-col {
+    width: 170px;
+  }
+
+  .split-line-col {
+    width: 50px;
+  }
+
+  .split-bar-col {
+    width: 140px;
+  }
+
+  .split-board th,
+  .split-board td {
+    padding: 7px;
+  }
+}

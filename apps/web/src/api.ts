@@ -94,6 +94,7 @@ export interface BettingSplitDto {
   readonly marketKey: string;
   readonly selectionKey: string;
   readonly point?: number;
+  readonly americanOdds?: number;
   readonly betPercent?: number;
   readonly moneyPercent?: number;
   readonly betCount?: number;
@@ -1940,6 +1941,7 @@ function parseSplitsPage(
       ];
       const optional = [
         "point",
+        "americanOdds",
         "betPercent",
         "moneyPercent",
         "betCount",
@@ -1982,6 +1984,11 @@ function parseSplitsPage(
           (typeof split["point"] !== "number" ||
             !Number.isFinite(split["point"]) ||
             Math.abs(split["point"]) > 10_000)) ||
+        (split["americanOdds"] !== undefined &&
+          (!Number.isSafeInteger(split["americanOdds"]) ||
+            split["americanOdds"] === 0 ||
+            Math.abs(split["americanOdds"] as number) < 100 ||
+            Math.abs(split["americanOdds"] as number) > 100_000)) ||
         (split["betCount"] !== undefined &&
           (!Number.isSafeInteger(split["betCount"]) ||
             (split["betCount"] as number) < 0)) ||

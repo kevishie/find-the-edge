@@ -6,6 +6,8 @@ import {
   parseSharpApiAccount,
   parseSharpApiSchedulePage,
   parseSharpApiSplitPage,
+  parseSharpApiSplitHistoryPage,
+  latestSharpApiSplitHistoryByBook,
   parseSharpApiResponseMetadata,
   fetchSharpApiEventOdds,
   fetchSharpApiAccount,
@@ -13,6 +15,7 @@ import {
   fetchSharpApiOddsPage,
   fetchSharpApiSchedulePage,
   fetchSharpApiSplitsPage,
+  fetchSharpApiSplitHistory,
   sharpApiLeagueByKey,
   sharpApiLeagues,
   sharpApiDescriptor,
@@ -1502,6 +1505,141 @@ describe("SharpAPI activation boundary", () => {
           },
         },
         "2026-08-03T15:00:01.000Z" as never,
+      ),
+    ).toThrow("invalid-response");
+  });
+
+  it("strictly parses bounded split history and selects the newest DK/Circa rows", () => {
+    const sourceEvent = parseSharpApiSplitPage(
+      {
+        data: [
+          {
+            event_id: "mlb-away-home-2026-08-07",
+            sport: "baseball",
+            league: "mlb",
+            sportsbook: "consensus",
+            away_team: "Away Club",
+            home_team: "Home Club",
+            spread: null,
+            total: null,
+            moneyline: null,
+            fetched_at: "2026-08-07T18:20:00.000Z",
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      "2026-08-07T18:20:01.000Z" as never,
+    ).items[0]!;
+    const row = (book: string, ts: string, away: number) => ({
+      book,
+      timestamp: Date.parse(ts) / 1_000,
+      ts,
+      spread: {
+        away_line: 1.5,
+        home_line: -1.5,
+        handle_pct: { away, home: 1 - away },
+        bets_pct: { away: 0.4, home: 0.6 },
+      },
+      total: null,
+      moneyline: null,
+    });
+    const page = parseSharpApiSplitHistoryPage(
+      {
+        success: true,
+        meta: {
+          books: ["circa", "draftkings"],
+          event_id: sourceEvent.providerEventId,
+          newest: "2026-08-07T18:20:00.000Z",
+          oldest: "2026-08-07T18:00:00.000Z",
+          total: 4,
+          updated_at: "2026-08-07T18:20:10.000Z",
+        },
+        data: [
+          row("circa", "2026-08-07T18:00:00.000Z", 0.51),
+          row("draftkings", "2026-08-07T18:00:00.000Z", 0.55),
+          row("circa", "2026-08-07T18:20:00.000Z", 0.63),
+          row("draftkings", "2026-08-07T18:20:00.000Z", 0.67),
+        ],
+      },
+      sourceEvent,
+      "2026-08-07T18:20:11.000Z" as never,
+      "2026-08-07T17:50:00.000Z" as never,
+      "2026-08-07T18:30:00.000Z" as never,
+    );
+    const latest = latestSharpApiSplitHistoryByBook(page.items);
+    expect(latest.map(({ sportsbookId }) => sportsbookId)).toEqual([
+      "circa",
+      "draftkings",
+    ]);
+    expect(latest[0]?.providerTimestamp).toBe("2026-08-07T18:20:00.000Z");
+    expect(latest[0]?.markets[0]?.selections[0]?.point).toBe(1.5);
+    expect(latest[1]?.markets[0]?.selections[0]?.moneyPercent).toBe(67);
+  });
+
+  it("requests only a bounded history window and rejects mismatched event metadata", async () => {
+    const sourceEvent = {
+      providerEventId: "mlb-away-home-2026-08-07",
+      sport: "baseball",
+      league: "mlb",
+      sportsbookId: "consensus",
+      awayTeam: "Away Club",
+      homeTeam: "Home Club",
+      providerTimestamp: "2026-08-07T18:20:00.000Z" as never,
+      markets: [],
+    } as const;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          success: true,
+          meta: {
+            event_id: sourceEvent.providerEventId,
+            total: 0,
+            updated_at: "2026-08-07T18:20:10.000Z",
+          },
+          data: [],
+        }),
+      ),
+    );
+    await fetchSharpApiSplitHistory(
+      sourceEvent,
+      "2026-08-07T17:50:00.000Z" as never,
+      "2026-08-07T18:20:00.000Z" as never,
+      "secret",
+      fetcher,
+    );
+    const requestInput = fetcher.mock.calls[0]?.[0];
+    if (typeof requestInput !== "string")
+      throw new Error("Expected a string SharpAPI history request URL.");
+    const requested = new URL(requestInput);
+    expect(requested.pathname).toBe("/api/v1/splits/history");
+    expect(requested.searchParams.get("event_id")).toBe(
+      sourceEvent.providerEventId,
+    );
+    expect(requested.searchParams.get("start_time")).toBe(
+      "2026-08-07T17:50:00.000Z",
+    );
+    expect(requested.searchParams.get("end_time")).toBe(
+      "2026-08-07T18:20:00.000Z",
+    );
+
+    expect(() =>
+      parseSharpApiSplitHistoryPage(
+        {
+          success: true,
+          meta: {
+            books: [],
+            event_id: "another-event",
+            newest: null,
+            oldest: null,
+            total: 0,
+            updated_at: "2026-08-07T18:20:10.000Z",
+          },
+          data: [],
+        },
+        sourceEvent,
+        "2026-08-07T18:20:11.000Z" as never,
+        "2026-08-07T17:50:00.000Z" as never,
+        "2026-08-07T18:20:00.000Z" as never,
       ),
     ).toThrow("invalid-response");
   });

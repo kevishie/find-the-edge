@@ -482,35 +482,8 @@ export async function persistSharpApiOddsPage(
       league.leagueKey === "mlb" &&
       acceptedProviderEventIds &&
       !acceptedProviderEventIds.has(raw.providerEventId)
-    ) {
-      // A featured full-game board can lead the schedule catalogue. Preserve
-      // that legitimate bootstrap only when an approved sportsbook supplies
-      // a complete primary market; thin unregistered-book derivatives fail
-      // closed and cannot recreate a rejected schedule row.
-      const completeApprovedBooks = raw.bookmakers.filter((book) => {
-        const normalized = normalizeSportsbook(book.id);
-        if (normalized.kind === "rejected") return false;
-        const role = bookRoles
-          ? bookRoles[normalized.sportsbook.id]
-          : normalized.sportsbook.productionRole;
-        if (!role) return false;
-        return (
-          completeMainPrices(
-            book.prices.filter(
-              (price) =>
-                price.isMainLine &&
-                !price.isAlternateLine &&
-                !price.isPlayerProp &&
-                !price.isStalePregamePrice &&
-                price.isActive !== false &&
-                !price.isSuspended,
-            ),
-            league.leagueKey,
-          ).prices.length > 0
-        );
-      }).length;
-      if (completeApprovedBooks < 2) continue;
-    }
+    )
+      continue;
     const eventRetrievedAt =
       page.eventRetrievedAt?.[raw.providerEventId] ?? page.retrievedAt;
     const event = providerEvent(league, raw, eventRetrievedAt);
@@ -1117,6 +1090,9 @@ export async function persistSharpApiSplitPage(
           marketKey: market.marketKey,
           selectionKey: selection.selectionKey,
           ...(selection.point === undefined ? {} : { point: selection.point }),
+          ...(selection.americanOdds === undefined
+            ? {}
+            : { americanOdds: selection.americanOdds }),
           ...(selection.betPercent === undefined
             ? {}
             : { betPercent: selection.betPercent }),

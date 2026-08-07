@@ -732,6 +732,17 @@ const validDay = (value: string) => {
 const oddsPrice = (value: number) =>
   value > 0 ? `+${String(value)}` : String(value);
 
+const splitAmericanOdds = (split: unknown) => {
+  if (
+    typeof split !== "object" ||
+    split === null ||
+    !("americanOdds" in split) ||
+    typeof split.americanOdds !== "number"
+  )
+    return undefined;
+  return split.americanOdds;
+};
+
 const linePoint = (value: number) =>
   value > 0 ? `+${String(value)}` : String(value);
 
@@ -1435,6 +1446,7 @@ function SplitsExplorer() {
         readonly freshness: string | null | undefined;
         readonly snapshotAt: string | null | undefined;
         readonly observedAt: number;
+        readonly refreshFailed: boolean;
       }
     | { readonly kind: "not-found"; readonly message: string }
     | { readonly kind: "error"; readonly message: string }
@@ -1470,14 +1482,28 @@ function SplitsExplorer() {
             freshness: page.freshness,
             snapshotAt: page.snapshotAt,
             observedAt: Date.now(),
+            refreshFailed: false,
           });
         }
       } catch {
-        if (!controller.signal.aborted && !hasValidBoard)
-          setState({
-            kind: "error",
-            message: "Betting splits are temporarily unavailable.",
-          });
+        if (!controller.signal.aborted) {
+          if (!hasValidBoard) {
+            setState({
+              kind: "error",
+              message: "Betting splits are temporarily unavailable.",
+            });
+          } else {
+            setState((current) =>
+              current.kind === "ready"
+                ? {
+                    ...current,
+                    observedAt: Date.now(),
+                    refreshFailed: true,
+                  }
+                : current,
+            );
+          }
+        }
       } finally {
         requestInFlight = false;
       }
@@ -1495,6 +1521,21 @@ function SplitsExplorer() {
   const games = state.kind === "ready" ? state.items : [];
   const scopeLabel = (scope: string | undefined) =>
     scope?.trim() || "Scope unavailable";
+  const compareSplitScopes = (left: string, right: string) => {
+    const priority = (scope: string) => {
+      const key = sportsbookScopeKey(scope);
+      if (key === "draftkings") return 0;
+      if (key === "circa") return 1;
+      if (key === "consensus") return 2;
+      return 3;
+    };
+    return (
+      priority(left) - priority(right) ||
+      sportsbookMetadata(left).name.localeCompare(
+        sportsbookMetadata(right).name,
+      )
+    );
+  };
   const scopes = [
     ...new Map(
       games
@@ -1505,10 +1546,8 @@ function SplitsExplorer() {
         )
         .map((scope) => [sportsbookScopeKey(scope), scope]),
     ).values(),
-  ].sort((left, right) =>
-    sportsbookMetadata(left).name.localeCompare(sportsbookMetadata(right).name),
-  );
-  const boards = games.map((game) => {
+  ].sort(compareSplitScopes);
+  const boards = games.flatMap((game) => {
     const usableSplits = game.splits.filter(hasSplitPercent);
     const gameScopes = [
       ...new Map(
@@ -1517,25 +1556,35 @@ function SplitsExplorer() {
           return [sportsbookScopeKey(scope), scope];
         }),
       ).values(),
-    ].sort((left, right) =>
-      sportsbookMetadata(left).name.localeCompare(
-        sportsbookMetadata(right).name,
-      ),
-    );
-    const scope = selectedScope ?? gameScopes[0];
-    return {
-      game,
-      scope,
-      splits: scope
+    ].sort(compareSplitScopes);
+    const displayedScopes: readonly (string | undefined)[] =
+      selectedScope !== null
+        ? [selectedScope]
+        : gameScopes.length > 0
+          ? gameScopes
+          : [undefined];
+    return displayedScopes.map((scope) => {
+      const splits = scope
         ? usableSplits.filter(
             (split) =>
               sportsbookScopeKey(scopeLabel(split.scope)) ===
               sportsbookScopeKey(scope),
           )
-        : [],
-    };
+        : [];
+      return {
+        game,
+        scope,
+        splits,
+        emptyLabel:
+          splits.length === 0 && selectedScope
+            ? `No ${sportsbookMetadata(selectedScope).name} data`
+            : "No split data",
+      };
+    });
   });
-  const coveredGames = boards.filter(({ splits }) => splits.length > 0).length;
+  const coveredGames = new Set(
+    boards.filter(({ splits }) => splits.length > 0).map(({ game }) => game.id),
+  ).size;
   const observationCount = boards.reduce(
     (total, { splits }) => total + splits.length,
     0,
@@ -1614,7 +1663,10 @@ function SplitsExplorer() {
           movement and +EV analysis before acting.
         </span>
       </aside>
-      <section className="game-filters" aria-label="Split filters">
+      <section
+        className="game-filters splits-primary-filters"
+        aria-label="Split filters"
+      >
         <fieldset>
           <legend>Sport</legend>
           {(Object.keys(sportLabels) as GamesSport[]).map((key) => (
@@ -1646,7 +1698,10 @@ function SplitsExplorer() {
         </label>
       </section>
       {state.kind === "ready" && games.length > 0 && (
-        <section className="sportsbook-filters" aria-label="Sportsbook scope">
+        <section
+          className="sportsbook-filters splits-scope-filters"
+          aria-label="Sportsbook scope"
+        >
           <button
             type="button"
             className={selectedScope === null ? "selected" : ""}
@@ -1706,6 +1761,21 @@ function SplitsExplorer() {
             </div>
           </dl>
         </section>
+      )}
+      {state.kind === "ready" && state.refreshFailed && (
+        <p className="splits-refresh-warning" role="status">
+          <strong>Refresh delayed.</strong> Showing the last valid board while
+          we retry.
+        </p>
+      )}
+      {state.kind === "ready" && games.length > 0 && coveredGames === 0 && (
+        <p className="splits-no-data-notice" role="status">
+          No split percentages are available
+          {selectedScope
+            ? ` from ${sportsbookMetadata(selectedScope).name}`
+            : " from the returned sportsbooks"}
+          . The complete schedule remains below.
+        </p>
       )}
       <section className="splits-terminal" aria-label="Betting splits">
         <div className="terminal-state" aria-live="polite">
@@ -1780,7 +1850,7 @@ function SplitsExplorer() {
                     )}
                   </tr>
                 </thead>
-                {boards.map(({ game, scope, splits }) => {
+                {boards.map(({ game, scope, splits, emptyLabel }) => {
                   const hasDraw = game.sportKey === "soccer";
                   const rows = [
                     {
@@ -1796,7 +1866,10 @@ function SplitsExplorer() {
                       : []),
                   ];
                   return (
-                    <tbody key={game.id} className="split-game-group">
+                    <tbody
+                      key={`${game.id}:${scope ? sportsbookScopeKey(scope) : "no-data"}`}
+                      className="split-game-group"
+                    >
                       {rows.map((row, rowIndex) => {
                         const spread =
                           row.key === "draw"
@@ -1830,7 +1903,7 @@ function SplitsExplorer() {
                               </span>
                               {rowIndex === 0 && splits.length === 0 && (
                                 <span className="split-scope split-no-data">
-                                  No split data
+                                  {emptyLabel}
                                 </span>
                               )}
                               {rowIndex === 0 && splits.length > 0 && scope && (
@@ -1864,6 +1937,7 @@ function SplitsExplorer() {
                               const market = ["Spread", "Total", "Moneyline"][
                                 marketIndex
                               ]!;
+                              const americanOdds = splitAmericanOdds(split);
                               return [
                                 <td
                                   key={`${marketIndex}-line`}
@@ -1872,7 +1946,9 @@ function SplitsExplorer() {
                                   {!split
                                     ? "—"
                                     : marketIndex === 2
-                                      ? "No line"
+                                      ? americanOdds === undefined
+                                        ? "No line"
+                                        : oddsPrice(americanOdds)
                                       : split.point === undefined
                                         ? "—"
                                         : marketIndex === 1

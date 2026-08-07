@@ -60,6 +60,18 @@ describe("betting split evidence", () => {
       normalizeBettingSplitObservation(split({ providerId: "other" })).id,
     );
   });
+  it("preserves valid moneyline odds and binds them into immutable identity", () => {
+    const priced = normalizeBettingSplitObservation(
+      split({ americanOdds: 145 }),
+    );
+    expect(priced.americanOdds).toBe(145);
+    expect(priced.id).not.toBe(
+      normalizeBettingSplitObservation(split({ americanOdds: 150 })).id,
+    );
+    expect(() =>
+      normalizeBettingSplitObservation(split({ americanOdds: 99 })),
+    ).toThrow("betting-split-odds-invalid");
+  });
   it("returns the freshest logical splits across harmless event version bumps", async () => {
     const repository = new MemoryBettingSplitRepository();
     await repository.persist(split({ canonicalEventVersion: 8 }));

@@ -261,6 +261,8 @@ describe("production odds control-plane composition", () => {
           failureStage: stage,
         }),
       );
+      if (capability === "splits")
+        expect(metrics.emit).toHaveBeenCalledWith("OddsSplitFailure", 1, {});
     }
   });
 
@@ -332,11 +334,97 @@ describe("production odds control-plane composition", () => {
     expect(await control.getHealth("sharpapi:mlb:splits")).toMatchObject({
       rateWindow: { limit: 1_000, remaining: 800 },
     });
+    expect(
+      await control.getCheckpoint("public-betting:sharpapi"),
+    ).toMatchObject({ nextDueAt: "2026-08-03T12:05:00.000Z" });
+  });
+
+  it("resumes account and league split continuations after ambiguity expires", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const expiredAt = "2026-08-03T11:55:00.000Z";
+    await control.putContinuation({
+      leagueKey: "public-betting:sharpapi",
+      runId: "splits:sharpapi:expired",
+      providerId: "sharpapi",
+      updatedAt: expiredAt,
+      startedAt: expiredAt,
+      capability: "account",
+      ambiguousUntil: expiredAt,
+      leaseUntil: expiredAt,
+      ownerId: "expired-owner",
+    });
+    await control.putContinuation({
+      leagueKey: "splits:mlb",
+      runId: "splits:mlb:expired",
+      providerId: "sharpapi",
+      updatedAt: expiredAt,
+      startedAt: expiredAt,
+      capability: "splits",
+      ambiguousUntil: expiredAt,
+      leaseUntil: expiredAt,
+      ownerId: "expired-owner",
+    });
+    const fetchSharpAccount = vi.fn().mockResolvedValue({
+      tier: "pro",
+      features: ["splits"],
+      requestsPerMinute: 300,
+      maxBooks: 25,
+      streamingEnabled: false,
+    });
+    const fetchSharpSplits = vi.fn((league: SharpApiLeague) => {
+      void league;
+      return Promise.resolve({
+        items: [],
+        hasMore: false,
+        retrievedAt: at,
+      });
+    });
+
+    await runProductionOddsControlPlane({
+      events: new MemoryEventIngestionStore(),
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      clock: () => now,
+      fetchSharpSchedule: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+      fetchSharpOdds: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+      fetchSharpAccount,
+      fetchSharpSplits,
+    });
+
+    expect(fetchSharpAccount).toHaveBeenCalledOnce();
+    expect(
+      fetchSharpSplits.mock.calls.filter(
+        ([league]) => league.leagueKey === "mlb",
+      ),
+    ).toHaveLength(1);
+    expect(await control.getContinuation("public-betting:sharpapi")).toBeNull();
+    expect(await control.getContinuation("splits:mlb")).toBeNull();
+    expect(await control.getHealth("sharpapi:mlb:splits")).toMatchObject({
+      healthy: true,
+      lastSuccessfulAt: at,
+    });
   });
 
   it("carries canonical odds candidates into suffixless MLB split persistence", async () => {
     const control = new MemoryOddsControlPlaneStore();
     const events = new MemoryEventIngestionStore();
+    const metrics = { emit: vi.fn() };
     const persistOdds = vi.fn().mockResolvedValue({
       snapshot: "created",
       current: "advanced",
@@ -379,6 +467,7 @@ describe("production odds control-plane composition", () => {
         persistGap,
       },
       control,
+      metrics,
       sharpApiKey: "sharp-key",
       now,
       clock: () => now,
@@ -461,12 +550,61 @@ describe("production odds control-plane composition", () => {
           retrievedAt: at,
         }),
       ),
+      fetchSharpSplitHistory: vi.fn().mockImplementation((sourceEvent) =>
+        Promise.resolve({
+          items: [
+            {
+              ...sourceEvent,
+              sportsbookId: "draftkings",
+              providerTimestamp: "2026-08-03T11:50:00.000Z",
+              markets: [
+                {
+                  marketKey: "moneyline" as const,
+                  selections: [
+                    { selectionKey: "away" as const, betPercent: 41 },
+                    { selectionKey: "home" as const, betPercent: 59 },
+                  ],
+                },
+              ],
+            },
+            {
+              ...sourceEvent,
+              sportsbookId: "draftkings",
+              providerTimestamp: "2026-08-03T11:55:00.000Z",
+              markets: [
+                {
+                  marketKey: "moneyline" as const,
+                  selections: [
+                    { selectionKey: "away" as const, betPercent: 43 },
+                    { selectionKey: "home" as const, betPercent: 57 },
+                  ],
+                },
+              ],
+            },
+            {
+              ...sourceEvent,
+              sportsbookId: "circa",
+              providerTimestamp: "2026-08-03T11:55:00.000Z",
+              markets: [
+                {
+                  marketKey: "moneyline" as const,
+                  selections: [
+                    { selectionKey: "away" as const, moneyPercent: 61 },
+                    { selectionKey: "home" as const, moneyPercent: 39 },
+                  ],
+                },
+              ],
+            },
+          ],
+          retrievedAt: at,
+        }),
+      ),
     });
 
     const canonicalEventId = (
       persistOdds.mock.calls[0]![0] as FixtureOddsIngestInput
     ).observation.canonicalEventId;
-    expect(persistSplit).toHaveBeenCalledTimes(2);
+    expect(persistSplit).toHaveBeenCalledTimes(6);
     expect(persistSplit).toHaveBeenCalledWith(
       expect.objectContaining({
         providerEventId: "mlb_cardinals_yankees_2026-08-03",
@@ -478,6 +616,36 @@ describe("production odds control-plane composition", () => {
       expect.objectContaining({
         providerEventId: "mlb_cardinals_yankees_2026-08-03",
       }),
+    );
+    expect(persistSplit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "draftkings",
+        providerTimestamp: "2026-08-03T11:55:00.000Z",
+        betPercent: 43,
+      }),
+    );
+    expect(persistSplit).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "draftkings",
+        providerTimestamp: "2026-08-03T11:50:00.000Z",
+      }),
+    );
+    expect(persistSplit).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "circa", moneyPercent: 61 }),
+    );
+    const historyAttempts = [...control.attempts.values()].filter(
+      ({ pageToken }) => pageToken.startsWith("history:"),
+    );
+    expect(historyAttempts).toHaveLength(1);
+    expect(historyAttempts[0]).toMatchObject({
+      capability: "splits",
+      state: "succeeded",
+      quotaCost: 1,
+    });
+    expect(metrics.emit).toHaveBeenCalledWith(
+      "OddsSplitHistoryBooksRecovered",
+      2,
+      { league: "mlb", provider: "sharpapi" },
     );
   });
 

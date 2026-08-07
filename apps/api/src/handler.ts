@@ -73,6 +73,15 @@ export interface ApiRequest {
   readonly reviewerAuthorized?: boolean;
   readonly strategyPromoterAuthorized?: boolean;
 }
+
+export const publishedSplitScopes = <T extends { readonly scope?: string }>(
+  splits: readonly T[],
+) => {
+  const scopes = new Set(splits.map(({ scope }) => scope?.toLowerCase()));
+  return scopes.has("draftkings") && scopes.has("circa")
+    ? splits.filter(({ scope }) => scope?.toLowerCase() !== "consensus")
+    : splits;
+};
 export interface ApiResponse {
   readonly statusCode: number;
   readonly headers: Readonly<Record<string, string>>;
@@ -758,7 +767,9 @@ export const createEventHandler =
           // Schedule refreshes may advance the canonical event version even
           // when the event identity and split evidence are unchanged. Return
           // the freshest logical split per market/selection across versions.
-          splits: await splitsRepository.listCurrent(game.id),
+          splits: publishedSplitScopes(
+            await splitsRepository.listCurrent(game.id),
+          ),
         })),
       );
       return response(200, { ...page, items });

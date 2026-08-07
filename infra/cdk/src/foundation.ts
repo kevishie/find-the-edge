@@ -624,7 +624,7 @@ export class FoundationStack extends Stack {
     );
     const liveOddsScheduler = new Rule(this, "LiveOddsScheduler", {
       enabled: props.schedulerEnabled,
-      schedule: Schedule.rate(Duration.minutes(15)),
+      schedule: Schedule.rate(Duration.minutes(5)),
     });
     liveOddsScheduler.addTarget(
       new SqsQueue(liveOddsQueue, { messageGroupId: "odds-cadence" }),
@@ -1595,6 +1595,18 @@ export class FoundationStack extends Stack {
         metric: new Metric({
           namespace: "FindTheEdge/OddsControlPlane",
           metricName: "OddsLeagueFailure",
+          statistic: "Sum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "OddsSplitFailureAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/OddsControlPlane",
+          metricName: "OddsSplitFailure",
           statistic: "Sum",
           period: Duration.minutes(5),
         }),

@@ -283,6 +283,7 @@ export interface BettingSplitObservation {
   readonly marketKey: string;
   readonly selectionKey: string;
   readonly point?: number;
+  readonly americanOdds?: number;
   readonly betPercent?: number;
   readonly moneyPercent?: number;
   readonly betCount?: number;
