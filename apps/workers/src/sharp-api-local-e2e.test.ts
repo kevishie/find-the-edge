@@ -324,7 +324,7 @@ const sharpApiCollectionPolicy = (league: SharpApiLeague) => {
 };
 
 describe("local SharpAPI ingestion end to end", () => {
-  it("preserves every game, Pinnacle odds, immutable history, current winners, and paginated splits", async () => {
+  it("preserves schedule-classified games, Pinnacle odds, immutable history, current winners, and paginated splits", async () => {
     const eventStore = new MemoryEventIngestionStore();
     const oddsGateway = new LocalFixtureOddsGateway(eventStore);
     const odds = new DynamoFixtureOddsAdapter(oddsGateway);
@@ -482,9 +482,9 @@ describe("local SharpAPI ingestion end to end", () => {
 
     expect(summary).toMatchObject({
       leagues: 5,
-      events: 2,
-      observations: 12,
-      splits: 4,
+      events: 1,
+      observations: 6,
+      splits: 2,
       splitsEntitled: true,
     });
     expect(scheduleRequests).toEqual([
@@ -511,19 +511,19 @@ describe("local SharpAPI ingestion end to end", () => {
       "liga-mx:0",
       "uefa-champions-league:0",
     ]);
-    expect(eventStore.events).toHaveLength(3);
+    expect(eventStore.events).toHaveLength(2);
     expect(
       oddsGateway
         .currents()
         .filter(({ sportsbookId }) =>
           ["hardrock", "draftkings", "pinnacle"].includes(sportsbookId),
         ),
-    ).toHaveLength(12);
+    ).toHaveLength(6);
     expect(
       oddsGateway
         .currents()
         .filter(({ sportsbookId }) => sportsbookId === "pinnacle"),
-    ).toHaveLength(4);
+    ).toHaveLength(2);
 
     const mlb = sharpApiLeagueByKey("mlb");
     const policy = sharpApiCollectionPolicy(mlb);
@@ -661,19 +661,17 @@ describe("local SharpAPI ingestion end to end", () => {
         readonly odds: { readonly state: string };
       }[];
     };
-    expect(gamesBody.items).toHaveLength(3);
-    expect(new Set(gamesBody.items.map(({ id }) => id))).toHaveLength(3);
+    expect(gamesBody.items).toHaveLength(2);
+    expect(new Set(gamesBody.items.map(({ id }) => id))).toHaveLength(2);
     expect(
       gamesBody.items.map(({ participants }) =>
         participants.map(({ label }) => label).join(" vs "),
       ),
     ).toEqual([
       "Chicago White Sox vs Boston Red Sox",
-      "Miami Marlins vs Atlanta Braves",
       "New York Mets vs Detroit Tigers",
     ]);
     expect(gamesBody.items.map(({ odds: { state } }) => state)).toEqual([
-      "available",
       "available",
       "unavailable",
     ]);
@@ -696,7 +694,7 @@ describe("local SharpAPI ingestion end to end", () => {
       }[];
     };
     expect(splitsBody.items.map(({ splits: values }) => values.length)).toEqual(
-      [2, 2, 0],
+      [2, 0],
     );
     const scheduledSplits = splitsBody.items[0]!.splits;
     expect(scheduledSplits).toEqual(
