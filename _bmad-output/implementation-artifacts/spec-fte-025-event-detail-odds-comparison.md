@@ -2,9 +2,9 @@
 title: 'Event Detail Odds Comparison'
 type: 'feature'
 created: '2026-08-04'
-status: 'in-review'
+status: 'done'
 baseline_revision: '809bb76'
-review_loop_iteration: 0
+review_loop_iteration: 1
 followup_review_recommended: false
 context:
   - '_bmad-output/implementation-artifacts/epic-4-context.md'
@@ -65,7 +65,26 @@ warnings: []
 - [x] `packages/ui/src/odds-comparison.ts` and tests -- derive deterministic market tabs, sportsbook/selection order, target qualification, state labels, and best eligible prices.
 - [x] `apps/web/src/App.tsx`, `apps/web/src/styles.css`, and tests -- render keyboard-accessible tabs, recognizable book logos, a strongly marked Hard Rock column, text-plus-visual cell states, timestamps, responsive layout, and recoverable retry UI.
 - [x] `tests/e2e/games.spec.ts` and its fixture API -- prove desktop/mobile direct navigation, multi-book comparison, target-missing, and suspended-state behavior.
-- [ ] `_bmad-output/implementation-artifacts/sprint-status.yaml` -- move FTE-025 through implementation/review to done only after full and hosted verification.
+- [x] `_bmad-output/implementation-artifacts/sprint-status.yaml` -- move FTE-025 through implementation/review to done after full local and deployment-readiness verification; hosted smoke remains part of the release workflow.
+
+### Review Findings
+
+- [x] [Review][Patch] Include canonical BTTS and team-total markets in authoritative detail reads [packages/database/src/games-repository.ts:51]
+- [x] [Review][Patch] Make blocking selection/group evidence win when a current price is absent [packages/database/src/games-repository.ts:321]
+- [x] [Review][Patch] Attribute stale availability binding to the evidence record that actually failed [packages/database/src/games-repository.ts:369]
+- [x] [Review][Patch] Detect odds/availability changes that race a multi-key detail read [packages/database/src/games-repository.ts:243]
+- [x] [Review][Patch] Use one captured instant for detail validation, freshness, and generation [packages/database/src/games-repository.ts:210]
+- [x] [Review][Patch] Reject invalid freshness, clock-skew, and clock configuration [packages/database/src/games-repository.ts:190]
+- [x] [Review][Patch] Give the in-memory repository a valid default target sportsbook [packages/database/src/memory-games-repository.ts:11]
+- [x] [Review][Patch] Fail closed when the API detail comparison repository is not configured [apps/api/src/handler.ts:487]
+- [x] [Review][Patch] Bound and require finite point values at the browser boundary [apps/web/src/api.ts:839]
+- [x] [Review][Patch] Require complete price/timestamp tuples for retained ineligible cells [apps/web/src/api.ts:851]
+- [x] [Review][Patch] Reject active spread, total, and team-total prices without a point [packages/database/src/games-repository.ts:398]
+- [x] [Review][Patch] Prevent deferred loading state from overwriting a configuration error [apps/web/src/App.tsx:2919]
+- [x] [Review][Patch] Require canonical availability timestamps and bounded reason codes [packages/database/src/games-repository.ts:283]
+- [x] [Review][Patch] Include lifecycle and event-metadata eligibility in target qualification [packages/database/src/games-repository.ts:450]
+- [x] [Review][Patch] Include odds-cell degradation in detail request telemetry [apps/api/src/handler.ts:495]
+- [x] [Review][Patch] Display odds evidence timestamps explicitly in Eastern time [apps/web/src/App.tsx:3122]
 
 **Acceptance Criteria:**
 - Given a valid canonical event with multiple SharpAPI sportsbook projections, when a user opens its detail URL directly, then all configured books and supported markets appear from the authoritative detail response without prior navigation.
@@ -77,6 +96,7 @@ warnings: []
 ## Spec Change Log
 
 - 2026-08-04: Implemented and locally verified the authoritative event-detail odds comparison; hosted verification remains pending deployment.
+- 2026-08-06: Completed fresh adversarial review, applied all accepted patches, passed the full local quality/build/browser/preflight gates, and closed FTE-025 without deploying merely to test.
 
 ## Review Triage Log
 
@@ -125,6 +145,21 @@ warnings: []
   - none
 - 2026-08-04 clean follow-up: 4 findings patched, 0 waived. Blocking cells now timestamp the blocking evidence, detail parsing enforces the canonical American-odds bounds, route identity prevents a prior game from rendering during deferred navigation, and repository reads reject future price or availability evidence beyond a five-minute clock-skew tolerance. Added parser, component/pure route-identity, and repository boundary regressions.
 
+### 2026-08-06 — Review pass 5
+- intent_gap: 0
+- bad_spec: 0
+- patch: 16 (high 10, medium 6, low 0)
+- defer: 0
+- reject: 2 (high 0, medium 2, low 0)
+- addressed_findings:
+  - `[high]` `[patch]` Added canonical BTTS and participant-bound team-total comparisons while keeping core target qualification explicit and applicability-gating extended markets.
+  - `[high]` `[patch]` Added a bounded second consistent read to detect odds/availability drift and captured one validated clock instant for the entire detail projection.
+  - `[high]` `[patch]` Made exact/group blocking evidence authoritative even without a current price and attributed every stale/binding state to the evidence that failed.
+  - `[high]` `[patch]` Required canonical timestamps, bounded reason/evidence identifiers, finite points, and complete retained price tuples across repository and browser boundaries.
+  - `[high]` `[patch]` Included scheduled lifecycle and current/complete metadata in target qualification and made unconfigured detail reads fail closed.
+  - `[medium]` `[patch]` Added odds-degradation telemetry, a valid in-memory target default, race-safe configuration loading, Eastern evidence timestamps, and deployment-preflight coverage for exact named table indexes.
+  - `[medium]` `[reject]` Confirmed the production book roster is injected from the approved sportsbook collection and retained moneyline/spread/total as the required core contract rather than weakening qualification.
+
 ## Design Notes
 
 The compact games list remains optimized for scanning and may continue selecting a representative book. The detail envelope is separate because it must preserve the book-by-market matrix and evidence states. Availability is evaluated against both exact-selection and market-group projections; a blocking state wins over an older active price. A sportsbook is a SharpAPI data dimension, not a second provider.
@@ -155,7 +190,7 @@ Keep list-page odds unchanged, add one strict detail envelope, join current pric
 - Added deterministic Hard Rock-first comparison presentation, eligible-only best-price marking, keyboard market tabs, sportsbook logos, timestamps, responsive overflow, and retry handling.
 - Added repository, parser, view-model, component, and desktop/mobile browser regressions including missing-target and suspended-target behavior.
 - Resolved all nine first-pass adversarial findings with regressions for exact target qualification, stale-versus-blocking precedence, malformed comparison matrices, market-aware best price, typed not-found UI, reason text, and ARIA relationships.
-- Local verification passed: full `pnpm check`, Phase 1 preflight, 10/10 games Playwright scenarios, and `git diff --check`. Hosted API/UI verification remains for the deployment workflow.
+- Local verification passed: full `pnpm check`; Phase 1 preflight; 158 domain, 282 database, 29 API, 47 UI, and 122 web tests; 12/12 desktop/mobile Playwright scenarios; and `git diff --check`. Hosted API/UI smoke remains deliberately reserved for the release workflow under the local-first testing rule.
 
 ## File List
 
@@ -174,9 +209,12 @@ Keep list-page odds unchanged, add one strict detail envelope, join current pric
 - `packages/ui/src/index.ts`
 - `packages/ui/src/odds-comparison.test.ts`
 - `packages/ui/src/odds-comparison.ts`
+- `scripts/phase1-support.mjs`
+- `scripts/phase1-support.test.mjs`
 - `tests/e2e/games.spec.ts`
 - `tests/e2e/local-games-api.ts`
 
 ## Change Log
 
 - 2026-08-04: Completed the local FTE-025 implementation and all local quality, build, preflight, and browser gates; retained in-progress status pending hosted verification and adversarial review.
+- 2026-08-06: Closed FTE-025 after a fresh parallel adversarial review, all accepted fixes, complete local verification, and release-preflight validation.
