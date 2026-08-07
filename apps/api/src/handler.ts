@@ -32,6 +32,7 @@ import type {
   ScoutingHttpRequest,
   ScoutingHttpResponse,
 } from "./scouting-handler";
+import { createSplitLookupCache } from "./splits-cache";
 export interface ApiRequest {
   readonly route:
     | "list"
@@ -78,6 +79,12 @@ export interface ApiRequest {
 // publishing those two beside it repeats every game once per member book.
 // Books the consensus does not cover stand alone and stay published.
 const consensusMemberScopes = new Set(["draftkings", "circa"]);
+
+// Module scope on purpose: the handler is rebuilt per invocation, so a cache
+// owned by it would never survive to serve a second request.
+const splitLookupCache = createSplitLookupCache<
+  Awaited<ReturnType<BettingSplitRepository["listCurrent"]>>
+>({ ttlMs: 30_000, maxEntries: 512 });
 
 export const publishedSplitScopes = <T extends { readonly scope?: string }>(
   splits: readonly T[],
@@ -775,7 +782,9 @@ export const createEventHandler =
           // when the event identity and split evidence are unchanged. Return
           // the freshest logical split per market/selection across versions.
           splits: publishedSplitScopes(
-            await splitsRepository.listCurrent(game.id),
+            await splitLookupCache(game.id, () =>
+              splitsRepository.listCurrent(game.id),
+            ),
           ),
         })),
       );

@@ -15,6 +15,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  redirect,
   useNavigate,
   useParams,
   useSearch,
@@ -57,8 +58,17 @@ import { detailMatchesRoute } from "./route-state";
 import { Dashboard } from "./dashboard";
 import { DataSources } from "./provider-status";
 import { ScoutEventButton, ScoutingProgress } from "./scouting";
+import {
+  asSplitsSource,
+  loadSplits,
+  prefetchSplits,
+  readCachedSplits,
+  splitsCacheKey,
+} from "./splits-cache";
 
-const SPLITS_REFRESH_INTERVAL_MS = 30_000;
+// Ingestion refreshes the provider board every five minutes, so polling faster
+// than this only repeats work behind the splits route.
+const SPLITS_REFRESH_INTERVAL_MS = 60_000;
 const oddsCellTimestamp = (
   cell: import("@find-the-edge/domain").GameOddsCellDto,
 ) =>
@@ -421,13 +431,11 @@ function AppShell() {
             <small>BY @KEVISHIE</small>
           </div>
         </div>
+        {/* Only screens that are built out are advertised. The remaining
+            routes still resolve for anyone holding a direct link. */}
         <nav aria-label="Primary navigation">
-          <Link
-            to="/"
-            activeOptions={{ exact: true }}
-            activeProps={{ className: "active" }}
-          >
-            Dashboard
+          <Link to="/splits" activeProps={{ className: "active" }}>
+            Betting Splits
           </Link>
           <Link
             to="/games"
@@ -443,22 +451,6 @@ function AppShell() {
             activeProps={{ className: "active" }}
           >
             Games
-          </Link>
-          <Link to="/splits" activeProps={{ className: "active" }}>
-            Betting Splits
-          </Link>
-          <span>Scout Reports</span>
-          <Link to="/performance" activeProps={{ className: "active" }}>
-            Performance
-          </Link>
-          <Link to="/data-sources" activeProps={{ className: "active" }}>
-            Data Sources
-          </Link>
-          <Link to="/retrospectives" activeProps={{ className: "active" }}>
-            Retrospectives
-          </Link>
-          <Link to="/experiments" activeProps={{ className: "active" }}>
-            Experiments
           </Link>
         </nav>
         <div className="model-card">
@@ -477,12 +469,8 @@ function AppShell() {
           className="mobile-product-nav"
           aria-label="Compact product navigation"
         >
-          <Link
-            to="/"
-            activeOptions={{ exact: true }}
-            activeProps={{ className: "active" }}
-          >
-            Dashboard
+          <Link to="/splits" activeProps={{ className: "active" }}>
+            Splits
           </Link>
           <Link
             to="/games"
@@ -498,21 +486,6 @@ function AppShell() {
             activeProps={{ className: "active" }}
           >
             Games
-          </Link>
-          <Link to="/splits" activeProps={{ className: "active" }}>
-            Splits
-          </Link>
-          <Link to="/performance" activeProps={{ className: "active" }}>
-            Performance
-          </Link>
-          <Link to="/data-sources" activeProps={{ className: "active" }}>
-            Sources
-          </Link>
-          <Link to="/retrospectives" activeProps={{ className: "active" }}>
-            Reviews
-          </Link>
-          <Link to="/experiments" activeProps={{ className: "active" }}>
-            Experiments
           </Link>
         </nav>
       </main>
@@ -1461,6 +1434,10 @@ const splitBookGroupFor = (scope: string | undefined): SplitBookGroup => {
   );
 };
 
+type UiSplitsPage = Awaited<
+  ReturnType<NonNullable<UiGamesClient["listSplits"]>>
+>;
+
 function SplitsExplorer() {
   const client = useContext(GamesClientContext);
   const [sport, setSport] = useState<GamesSport>("mlb");
@@ -1480,17 +1457,42 @@ function SplitsExplorer() {
       }
     | { readonly kind: "not-found"; readonly message: string }
     | { readonly kind: "error"; readonly message: string }
-  >({ kind: "loading" });
-  const validBoardKey = useRef<string | null>(null);
+    // Open on a board warmed before this screen was reached, so arriving from
+    // a prefetch paints evidence instead of a loading state.
+  >(() => {
+    const warmed = readCachedSplits<UiSplitsPage>(sport, day);
+    return warmed
+      ? {
+          kind: "ready",
+          items: warmed.page.items,
+          freshness: warmed.page.freshness,
+          snapshotAt: warmed.page.snapshotAt,
+          observedAt: warmed.fetchedAt,
+          refreshFailed: false,
+        }
+      : { kind: "loading" };
+  });
+  const validBoardKey = useRef<string | null>(
+    readCachedSplits(sport, day) ? splitsCacheKey(sport, day) : null,
+  );
 
   useEffect(() => {
     const controller = new AbortController();
     let requestInFlight = false;
-    const boardKey = `${sport}:${day}`;
+    const boardKey = splitsCacheKey(sport, day);
     let hasValidBoard = validBoardKey.current === boardKey;
+    // Paint any warmed board immediately. One that is still within a refresh
+    // window is left to the interval, so arriving from a prefetch costs no
+    // extra request; an older one is revalidated at once.
+    const cached = readCachedSplits<UiSplitsPage>(sport, day);
+    const cachedIsFresh =
+      cached !== undefined &&
+      hasValidBoard &&
+      Date.now() - cached.fetchedAt < SPLITS_REFRESH_INTERVAL_MS;
     const load = async () => {
       if (requestInFlight || controller.signal.aborted) return;
-      if (!client.ok || !client.value.listSplits) {
+      const source = client.ok ? asSplitsSource(client.value) : undefined;
+      if (!source) {
         setState({
           kind: "error",
           message: "Betting splits are not configured yet.",
@@ -1499,10 +1501,7 @@ function SplitsExplorer() {
       }
       requestInFlight = true;
       try {
-        const page = await client.value.listSplits(
-          { sport, day },
-          controller.signal,
-        );
+        const page = await loadSplits(source, sport, day);
         if (!controller.signal.aborted) {
           hasValidBoard = true;
           validBoardKey.current = boardKey;
@@ -1538,7 +1537,7 @@ function SplitsExplorer() {
         requestInFlight = false;
       }
     };
-    void load();
+    if (!cachedIsFresh) void load();
     const refreshInterval = window.setInterval(() => {
       void load();
     }, SPLITS_REFRESH_INTERVAL_MS);
@@ -3505,9 +3504,20 @@ const rootRoute = createRootRoute({
   component: AppShell,
   errorComponent: AppError,
 });
+// Splits is the product's landing screen. The dashboard is not built out, so
+// it keeps a route for direct links but is no longer what the root resolves to.
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  beforeLoad: () => {
+    // Throwing a redirect is how the router signals navigation from a loader.
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw redirect({ to: "/splits" });
+  },
+});
+const dashboardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/dashboard",
   component: DashboardRoute,
 });
 const gamesRoute = createRoute({
@@ -4372,6 +4382,7 @@ const scoutingProgressRoute = createRoute({
 });
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  dashboardRoute,
   gamesRoute,
   gameDetailRoute,
   scoutingProgressRoute,
@@ -4417,6 +4428,12 @@ export function App({
         defaultOptions: { queries: { retry: false } },
       }),
   );
+  const client = gamesClient ?? defaultGamesClient;
+  useEffect(() => {
+    // Warm today's board while the reader is elsewhere so opening splits is a
+    // cache read rather than a cold round trip.
+    if (client.ok) prefetchSplits(client.value, "mlb", currentEasternDay());
+  }, [client]);
   return (
     <QueryClientProvider client={queryClient}>
       <GamesClientContext.Provider value={gamesClient ?? defaultGamesClient}>

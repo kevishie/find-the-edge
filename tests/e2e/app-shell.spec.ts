@@ -141,7 +141,8 @@ test("renders the ranked evidence dashboard without horizontal overflow", async 
       }),
     }),
   );
-  await page.goto("/");
+  // The root now lands on splits, so the dashboard is reached by direct link.
+  await page.goto("/dashboard");
 
   await expect(
     page.getByRole("heading", { name: "Where is the edge right now?" }),

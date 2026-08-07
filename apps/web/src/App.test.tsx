@@ -6,7 +6,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assessEventMetadata,
   type ProviderStatusPageDto,
@@ -15,6 +15,7 @@ import {
 
 import { App } from "./App";
 import { detailMatchesRoute } from "./route-state";
+import { clearSplitsCache } from "./splits-cache";
 import {
   GamesClientError,
   type GamesClient,
@@ -23,6 +24,10 @@ import {
   type SplitsPageDto,
   type RetrospectiveDto,
 } from "./api";
+
+// The splits board cache is process-wide so it survives navigation; tests must
+// not inherit a board warmed by an earlier case.
+beforeEach(clearSplitsCache);
 
 const hex = (value: string) => value.repeat(64);
 const retrospective: RetrospectiveDto = {
@@ -1156,11 +1161,45 @@ const providerPage = (
   items,
 });
 
+describe("Shell navigation", () => {
+  it("lands on splits from the root and advertises only built-out screens", async () => {
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            listSplits: vi.fn(() => Promise.resolve(splitsPage())),
+          },
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("Betting splits")).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Primary navigation" });
+    expect(
+      within(nav)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["Betting Splits", "Games"]);
+    for (const removed of [
+      "Dashboard",
+      "Scout Reports",
+      "Performance",
+      "Data Sources",
+      "Retrospectives",
+      "Experiments",
+    ])
+      expect(within(nav).queryByText(removed)).not.toBeInTheDocument();
+  });
+});
+
 describe("Dashboard", () => {
   it("keeps ranked cards when the independent status request fails", async () => {
     render(
       <App
-        initialPath="/"
+        initialPath="/dashboard"
         gamesClient={{
           ok: true,
           value: {
@@ -1190,7 +1229,7 @@ describe("Dashboard", () => {
     );
     render(
       <App
-        initialPath="/"
+        initialPath="/dashboard"
         gamesClient={{
           ok: true,
           value: { list: vi.fn(), listOpportunities },
@@ -1214,7 +1253,7 @@ describe("Dashboard", () => {
     );
     render(
       <App
-        initialPath="/"
+        initialPath="/dashboard"
         gamesClient={{
           ok: true,
           value: { list: vi.fn(), listOpportunities },
@@ -1261,7 +1300,7 @@ describe("Dashboard", () => {
       );
     render(
       <App
-        initialPath="/"
+        initialPath="/dashboard"
         gamesClient={{
           ok: true,
           value: { list: vi.fn(), listOpportunities },
@@ -1282,7 +1321,7 @@ describe("Dashboard", () => {
   it("does not turn an empty partial evaluation into a no-edge claim", async () => {
     render(
       <App
-        initialPath="/"
+        initialPath="/dashboard"
         gamesClient={{
           ok: true,
           value: {
@@ -1328,7 +1367,7 @@ describe("Dashboard", () => {
       );
     render(
       <App
-        initialPath="/"
+        initialPath="/dashboard"
         gamesClient={{
           ok: true,
           value: { list: vi.fn(), listOpportunities },
@@ -1361,7 +1400,7 @@ describe("Dashboard", () => {
       .mockResolvedValueOnce(dashboardPage([]));
     render(
       <App
-        initialPath="/"
+        initialPath="/dashboard"
         gamesClient={{
           ok: true,
           value: { list: vi.fn(), listOpportunities },
@@ -1395,7 +1434,7 @@ describe("Dashboard", () => {
     });
     render(
       <App
-        initialPath="/"
+        initialPath="/dashboard"
         gamesClient={{
           ok: true,
           value: {
@@ -1431,7 +1470,7 @@ describe("Dashboard", () => {
     });
     render(
       <App
-        initialPath="/"
+        initialPath="/dashboard"
         gamesClient={{
           ok: true,
           value: {
@@ -1769,7 +1808,7 @@ describe("Betting splits", () => {
         await screen.findByText("1 games · 0 with data · 0 observations"),
       ).toBeInTheDocument();
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.advanceTimersByTimeAsync(60_000);
       });
       expect(
         await screen.findByText("1 games · 1 with data · 6 observations"),
@@ -1805,7 +1844,7 @@ describe("Betting splits", () => {
 
       expect(await screen.findByText("45%")).toBeInTheDocument();
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.advanceTimersByTimeAsync(60_000);
       });
       expect(screen.getByText("45%")).toBeInTheDocument();
       expect(
@@ -1817,7 +1856,7 @@ describe("Betting splits", () => {
       ).toBeInTheDocument();
 
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.advanceTimersByTimeAsync(60_000);
       });
       expect(await screen.findByText("47%")).toBeInTheDocument();
       expect(screen.queryByText("Refresh delayed.")).not.toBeInTheDocument();
@@ -2308,6 +2347,8 @@ describe("Betting splits", () => {
     expect(await screen.findByText(/Stale splits board/)).toBeInTheDocument();
     expect(screen.queryByText(/LIVE CONSENSUS/)).not.toBeInTheDocument();
     unmount();
+    // A second app instance must not inherit the first instance's board.
+    clearSplitsCache();
 
     const { scope: omittedScope, ...splitWithoutScope } = splitGame.splits[0]!;
     void omittedScope;
