@@ -427,6 +427,10 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
     Table: {
       Type: "AWS::DynamoDB::Table",
       Properties: {
+        AttributeDefinitions: [
+          { AttributeName: "pk", AttributeType: "S" },
+          { AttributeName: "localSk", AttributeType: "S" },
+        ],
         KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
         PointInTimeRecoverySpecification: {
           PointInTimeRecoveryEnabled: true,
@@ -443,14 +447,17 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
         LocalSecondaryIndexes: [
           {
             IndexName: "local",
-            KeySchema: ["key"],
+            KeySchema: [
+              { AttributeName: "pk", KeyType: "HASH" },
+              { AttributeName: "localSk", KeyType: "RANGE" },
+            ],
             Projection: { ProjectionType: "ALL" },
           },
         ],
         GlobalSecondaryIndexes: [
           {
             IndexName: "global",
-            KeySchema: ["key"],
+            KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
             Projection: { ProjectionType: "KEYS_ONLY" },
           },
         ],
@@ -526,9 +533,16 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
   const upgraded = structuredClone(resources);
   upgraded.Table.Properties.Tags = [{ Key: "new", Value: "tag" }];
   upgraded.Table.Properties.PointInTimeRecoverySpecification.RecoveryPeriodInDays = 35;
+  upgraded.Table.Properties.AttributeDefinitions.push(
+    { AttributeName: "newPk", AttributeType: "S" },
+    { AttributeName: "newSk", AttributeType: "N" },
+  );
   upgraded.Table.Properties.GlobalSecondaryIndexes.push({
     IndexName: "new",
-    KeySchema: ["new"],
+    KeySchema: [
+      { AttributeName: "newPk", KeyType: "HASH" },
+      { AttributeName: "newSk", KeyType: "RANGE" },
+    ],
     Projection: { ProjectionType: "ALL" },
   });
   upgraded.Bucket.Properties.LifecycleConfiguration = { Rules: [] };
@@ -601,6 +615,107 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
         { Resources: resources },
         { Resources: weakened },
       ),
+    );
+  }
+});
+
+test("retained guard permits only GSI-backed additive attribute definitions", () => {
+  const table = {
+    Type: "AWS::DynamoDB::Table",
+    Properties: {
+      AttributeDefinitions: [{ AttributeName: "pk", AttributeType: "S" }],
+      KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: "existing",
+          KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
+          Projection: { ProjectionType: "KEYS_ONLY" },
+        },
+      ],
+    },
+    DeletionPolicy: "Retain",
+    UpdateReplacePolicy: "Retain",
+  };
+  const upgraded = structuredClone(table);
+  upgraded.Properties.AttributeDefinitions.push(
+    { AttributeName: "activePk", AttributeType: "S" },
+    { AttributeName: "activeSk", AttributeType: "N" },
+  );
+  upgraded.Properties.GlobalSecondaryIndexes.push({
+    IndexName: "opportunity-active-v1",
+    KeySchema: [
+      { AttributeName: "activePk", KeyType: "HASH" },
+      { AttributeName: "activeSk", KeyType: "RANGE" },
+    ],
+    Projection: { ProjectionType: "ALL" },
+  });
+  assert.doesNotThrow(() =>
+    assertRetainedResourcesSafe(
+      { Resources: { Table: table } },
+      { Resources: { Table: upgraded } },
+    ),
+  );
+  const reordered = structuredClone(upgraded);
+  reordered.Properties.AttributeDefinitions.reverse();
+  assert.doesNotThrow(() =>
+    assertRetainedResourcesSafe(
+      { Resources: { Table: table } },
+      { Resources: { Table: reordered } },
+    ),
+  );
+  const reuseExisting = structuredClone(table);
+  reuseExisting.Properties.GlobalSecondaryIndexes.push({
+    IndexName: "reuse-existing",
+    KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
+    Projection: { ProjectionType: "ALL" },
+  });
+  assert.doesNotThrow(() =>
+    assertRetainedResourcesSafe(
+      { Resources: { Table: table } },
+      { Resources: { Table: reuseExisting } },
+    ),
+  );
+  for (const mutate of [
+    (copy) =>
+      copy.Properties.AttributeDefinitions.push({
+        AttributeName: "orphan",
+        AttributeType: "S",
+      }),
+    (copy) => copy.Properties.AttributeDefinitions.shift(),
+    (copy) => (copy.Properties.AttributeDefinitions[0].AttributeType = "N"),
+    (copy) =>
+      copy.Properties.AttributeDefinitions.push({
+        AttributeName: "pk",
+        AttributeType: "N",
+      }),
+    (copy) => delete copy.Properties.GlobalSecondaryIndexes[1].IndexName,
+    (copy) =>
+      copy.Properties.GlobalSecondaryIndexes.push(
+        structuredClone(copy.Properties.GlobalSecondaryIndexes[1]),
+      ),
+    (copy) => (copy.Properties.GlobalSecondaryIndexes[1].IndexName = " "),
+    (copy) =>
+      (copy.Properties.GlobalSecondaryIndexes[1].KeySchema[1].AttributeName =
+        "missing"),
+    (copy) => copy.Properties.GlobalSecondaryIndexes.shift(),
+    (copy) =>
+      (copy.Properties.GlobalSecondaryIndexes[0].Projection.ProjectionType =
+        "ALL"),
+    (copy) =>
+      (copy.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
+        {
+          Enabled: true,
+        }),
+  ]) {
+    const unsafe = structuredClone(upgraded);
+    mutate(unsafe);
+    assert.throws(
+      () =>
+        assertRetainedResourcesSafe(
+          { Resources: { Table: table } },
+          { Resources: { Table: unsafe } },
+        ),
+      /protected properties/,
     );
   }
 });

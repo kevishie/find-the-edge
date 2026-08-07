@@ -75,20 +75,117 @@ export function assertRetainedResourcesSafe(existing, proposed) {
     (before[property] ?? []).every((item) =>
       (after[property] ?? []).some((candidate) => same(item, candidate)),
     );
-  const preservesNamedIndexes = (oldIndexes = [], newIndexes = []) =>
-    oldIndexes.every((oldIndex) => {
-      const nextIndex = newIndexes.find(
-        (candidate) => candidate.IndexName === oldIndex.IndexName,
-      );
-      return (
-        nextIndex &&
-        requireSame(oldIndex, nextIndex, [
-          "IndexName",
-          "KeySchema",
-          "Projection",
-        ])
-      );
-    });
+  const uniqueNamedMap = (
+    items,
+    nameProperty,
+    validName = (name) => name.length > 0,
+  ) => {
+    if (items === undefined) return new Map();
+    if (!Array.isArray(items)) return undefined;
+    const mapped = new Map();
+    for (const item of items) {
+      if (!item || typeof item !== "object" || Array.isArray(item))
+        return undefined;
+      const name = item[nameProperty];
+      if (typeof name !== "string" || !validName(name) || mapped.has(name))
+        return undefined;
+      mapped.set(name, item);
+    }
+    return mapped;
+  };
+  const validDynamoIndexName = (name) =>
+    name.length >= 3 && name.length <= 255 && /^[A-Za-z0-9_.-]+$/.test(name);
+  const preservesNamedIndexes = (oldIndexes, newIndexes) => {
+    const oldByName = uniqueNamedMap(
+      oldIndexes,
+      "IndexName",
+      validDynamoIndexName,
+    );
+    const newByName = uniqueNamedMap(
+      newIndexes,
+      "IndexName",
+      validDynamoIndexName,
+    );
+    if (!oldByName || !newByName) return false;
+    for (const [name, oldIndex] of oldByName) {
+      const nextIndex = newByName.get(name);
+      if (!nextIndex || !same(oldIndex, nextIndex)) return false;
+    }
+    return true;
+  };
+  const dynamoKeyAttributes = (keySchema) => {
+    if (
+      !Array.isArray(keySchema) ||
+      keySchema.length < 1 ||
+      keySchema.length > 2
+    )
+      return undefined;
+    const attributes = new Set();
+    const keyTypes = new Set();
+    for (const key of keySchema) {
+      if (!key || typeof key !== "object" || Array.isArray(key))
+        return undefined;
+      if (
+        typeof key.AttributeName !== "string" ||
+        key.AttributeName.length === 0 ||
+        (key.KeyType !== "HASH" && key.KeyType !== "RANGE") ||
+        attributes.has(key.AttributeName) ||
+        keyTypes.has(key.KeyType)
+      )
+        return undefined;
+      attributes.add(key.AttributeName);
+      keyTypes.add(key.KeyType);
+    }
+    if (!keyTypes.has("HASH")) return undefined;
+    return attributes;
+  };
+  const preservesDynamoAttributeDefinitions = (before, after) => {
+    const oldDefinitions = uniqueNamedMap(
+      before.AttributeDefinitions,
+      "AttributeName",
+    );
+    const newDefinitions = uniqueNamedMap(
+      after.AttributeDefinitions,
+      "AttributeName",
+    );
+    const oldIndexes = uniqueNamedMap(
+      before.GlobalSecondaryIndexes,
+      "IndexName",
+      validDynamoIndexName,
+    );
+    const newIndexes = uniqueNamedMap(
+      after.GlobalSecondaryIndexes,
+      "IndexName",
+      validDynamoIndexName,
+    );
+    if (!oldDefinitions || !newDefinitions || !oldIndexes || !newIndexes)
+      return false;
+    for (const definition of [
+      ...oldDefinitions.values(),
+      ...newDefinitions.values(),
+    ])
+      if (!["S", "N", "B"].includes(definition.AttributeType)) return false;
+    for (const [name, definition] of oldDefinitions)
+      if (
+        !newDefinitions.has(name) ||
+        !same(definition.AttributeType, newDefinitions.get(name).AttributeType)
+      )
+        return false;
+    const addedKeyAttributes = new Set();
+    for (const [name, index] of newIndexes) {
+      if (oldIndexes.has(name)) continue;
+      const keyAttributes = dynamoKeyAttributes(index.KeySchema);
+      if (!keyAttributes) return false;
+      for (const attribute of keyAttributes) {
+        if (!newDefinitions.has(attribute)) return false;
+        addedKeyAttributes.add(attribute);
+      }
+    }
+    for (const name of newDefinitions.keys())
+      if (!oldDefinitions.has(name) && !addedKeyAttributes.has(name))
+        return false;
+    return true;
+  };
   const preservesS3Encryption = (oldEncryption, newEncryption) => {
     if (oldEncryption === undefined) return true;
     const oldRules = oldEncryption.ServerSideEncryptionConfiguration ?? [];
@@ -140,11 +237,11 @@ export function assertRetainedResourcesSafe(existing, proposed) {
       safe =
         requireSame(before, after, [
           "TableName",
-          "AttributeDefinitions",
           "KeySchema",
           "TimeToLiveSpecification",
           "ResourcePolicy",
         ]) &&
+        preservesDynamoAttributeDefinitions(before, after) &&
         (before.StreamSpecification === undefined
           ? same(after.StreamSpecification, {
               StreamViewType: "NEW_IMAGE",
