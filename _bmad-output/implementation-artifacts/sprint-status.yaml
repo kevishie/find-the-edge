@@ -702,7 +702,7 @@ stories:
   - id: FTE-038
     title: Scout Event API, Idempotent Job Model, SQS, and Step Functions
     epic: Manual scouting workflow
-    status: backlog
+    status: in-progress
     dependencies: [FTE-016, FTE-007]
     risk: High
     approvalRequiredBeforeMerge: false

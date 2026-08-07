@@ -28,6 +28,10 @@ import {
   type EntityId,
   type ProviderStatusPageDto,
 } from "@find-the-edge/domain";
+import type {
+  ScoutingHttpRequest,
+  ScoutingHttpResponse,
+} from "./scouting-handler";
 export interface ApiRequest {
   readonly route:
     | "list"
@@ -50,12 +54,17 @@ export interface ApiRequest {
     | "experiment-rollback"
     | "opportunity-list"
     | "opportunity-detail"
-    | "provider-status";
+    | "provider-status"
+    | "scout-create"
+    | "scout-status"
+    | "scout-retry";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
   readonly sportKey?: string;
   readonly opportunityId?: string;
+  readonly jobId?: string;
+  readonly idempotencyKey?: string;
   readonly requestId?: string;
   readonly query?: Readonly<Record<string, string | undefined>>;
   readonly method?: "GET" | "POST";
@@ -87,6 +96,9 @@ export const createEventHandler =
     oddsHistoryRepository?: OddsHistoryRepository,
     rankedOpportunityRepository?: RankedOpportunityRepository,
     providerStatus?: () => Promise<ProviderStatusPageDto>,
+    scoutingHandler?: (
+      request: ScoutingHttpRequest,
+    ) => Promise<ScoutingHttpResponse>,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -121,6 +133,13 @@ export const createEventHandler =
       cursorRejected: number;
     } | null = null;
     try {
+      if (request.route.startsWith("scout-")) {
+        if (!scoutingHandler)
+          throw new Error("scouting-handler-not-configured");
+        const result = await scoutingHandler(request as ScoutingHttpRequest);
+        status = result.statusCode;
+        return result;
+      }
       if (request.route === "provider-status") {
         if (!providerStatus)
           throw new Error("provider-status-source-not-configured");
@@ -775,17 +794,24 @@ export const createEventHandler =
       )
         return response((status = 409), { error: "conflict" });
       status = 500;
+      const scoutingFailure = request.route.startsWith("scout-");
       log({
         event: "event-api-internal-failure",
         route: request.route,
-        errorName: error instanceof Error ? error.name.slice(0, 80) : "Unknown",
-        errorMessage:
-          error instanceof Error
+        errorName: scoutingFailure
+          ? "ScoutingInternalError"
+          : error instanceof Error
+            ? error.name.slice(0, 80)
+            : "Unknown",
+        errorMessage: scoutingFailure
+          ? "scouting-operation-failed"
+          : error instanceof Error
             ? error.message.slice(0, 240)
             : "non-error-thrown",
       });
       return response(500, { error: "internal-error" });
     } finally {
+      const scoutingRoute = request.route.startsWith("scout-");
       const retrospectiveRoute = request.route.startsWith("retrospective-");
       const experimentRoute = request.route.startsWith("experiment-");
       const reviewRoute = request.route === "retrospective-review";
@@ -793,6 +819,21 @@ export const createEventHandler =
       const metrics = [
         { Name: "Requests", Unit: "Count" },
         { Name: "Latency", Unit: "Milliseconds" },
+        ...(scoutingRoute
+          ? [{ Name: "ScoutingLatency", Unit: "Milliseconds" }]
+          : []),
+        ...(request.route === "scout-create" && status === 202
+          ? [{ Name: "ScoutingJobCreated", Unit: "Count" }]
+          : []),
+        ...(scoutingRoute && status === 200
+          ? [{ Name: "ScoutingDuplicate", Unit: "Count" }]
+          : []),
+        ...(request.route === "scout-retry" && status === 202
+          ? [{ Name: "ScoutingRetryCreated", Unit: "Count" }]
+          : []),
+        ...(scoutingRoute && status >= 500
+          ? [{ Name: "ScoutingFailure", Unit: "Count" }]
+          : []),
         ...(status === 500 ? [{ Name: "Caught5xx", Unit: "Count" }] : []),
         ...(retrospectiveRoute
           ? [{ Name: "RetrospectiveLatency", Unit: "Milliseconds" }]
@@ -869,6 +910,15 @@ export const createEventHandler =
         Status: status,
         Requests: 1,
         Latency: Date.now() - started,
+        ...(scoutingRoute ? { ScoutingLatency: Date.now() - started } : {}),
+        ...(request.route === "scout-create" && status === 202
+          ? { ScoutingJobCreated: 1 }
+          : {}),
+        ...(scoutingRoute && status === 200 ? { ScoutingDuplicate: 1 } : {}),
+        ...(request.route === "scout-retry" && status === 202
+          ? { ScoutingRetryCreated: 1 }
+          : {}),
+        ...(scoutingRoute && status >= 500 ? { ScoutingFailure: 1 } : {}),
         ...(status === 500 ? { Caught5xx: 1 } : {}),
         ...(retrospectiveRoute
           ? { RetrospectiveLatency: Date.now() - started }

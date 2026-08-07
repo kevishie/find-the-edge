@@ -12,13 +12,14 @@
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.883.0",
     "@aws-sdk/client-secrets-manager": "^3.883.0",
+    "@aws-sdk/client-sfn": "^3.1105.0",
     "@aws-sdk/client-sqs": "^3.1098.0",
     "@aws-sdk/lib-dynamodb": "^3.883.0",
-    "@find-the-edge/database": "workspace:*",
     "@find-the-edge/config": "workspace:*",
+    "@find-the-edge/database": "workspace:*",
     "@find-the-edge/domain": "workspace:*",
-    "@find-the-edge/providers": "workspace:*",
     "@find-the-edge/odds": "workspace:*",
+    "@find-the-edge/providers": "workspace:*",
     "@find-the-edge/scouting": "workspace:*",
     "@find-the-edge/sports": "workspace:*"
   },

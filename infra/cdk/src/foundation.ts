@@ -76,10 +76,12 @@ import {
   DefinitionBody,
   Fail,
   JsonPath,
+  LogLevel,
   StateMachine,
   StateMachineType,
   Succeed,
   TaskInput,
+  Timeout,
 } from "aws-cdk-lib/aws-stepfunctions";
 import {
   LambdaInvoke,
@@ -322,6 +324,14 @@ export class FoundationStack extends Stack {
       scopeName: "events:read",
       scopeDescription: "Read FIND THE EDGE events and odds",
     });
+    const scoutingReadScope = new ResourceServerScope({
+      scopeName: "scouting:read",
+      scopeDescription: "Read owned FIND THE EDGE scouting jobs",
+    });
+    const scoutingWriteScope = new ResourceServerScope({
+      scopeName: "scouting:write",
+      scopeDescription: "Create and retry FIND THE EDGE scouting jobs",
+    });
     const retrospectiveApprovalScope = new ResourceServerScope({
       scopeName: "retrospectives:approve",
       scopeDescription: "Review non-executable retrospective candidates",
@@ -337,7 +347,13 @@ export class FoundationStack extends Stack {
       {
         identifier: "events",
         userPool,
-        scopes: [readScope, retrospectiveApprovalScope, strategyPromotionScope],
+        scopes: [
+          readScope,
+          scoutingReadScope,
+          scoutingWriteScope,
+          retrospectiveApprovalScope,
+          strategyPromotionScope,
+        ],
       },
     );
     const assets = new Bucket(this, "WebAssets", {
@@ -474,6 +490,8 @@ export class FoundationStack extends Stack {
           OAuthScope.OPENID,
           OAuthScope.EMAIL,
           OAuthScope.resourceServer(resourceServer, readScope),
+          OAuthScope.resourceServer(resourceServer, scoutingReadScope),
+          OAuthScope.resourceServer(resourceServer, scoutingWriteScope),
         ],
         callbackUrls: [callbackUrl],
         logoutUrls: [webOrigin],
@@ -500,6 +518,8 @@ export class FoundationStack extends Stack {
           OAuthScope.OPENID,
           OAuthScope.EMAIL,
           OAuthScope.resourceServer(resourceServer, readScope),
+          OAuthScope.resourceServer(resourceServer, scoutingReadScope),
+          OAuthScope.resourceServer(resourceServer, scoutingWriteScope),
           OAuthScope.resourceServer(resourceServer, retrospectiveApprovalScope),
           OAuthScope.resourceServer(resourceServer, strategyPromotionScope),
         ],
@@ -867,6 +887,293 @@ export class FoundationStack extends Stack {
       schedule: Schedule.rate(Duration.hours(1)),
     });
     schedulerReady.addTarget(new LambdaFunction(producer));
+    const scoutingDispatchDlq = new Queue(this, "ScoutingDispatchDlq", {
+      fifo: true,
+      queueName: `find-the-edge-${props.stageName}-scouting-dispatch-dlq.fifo`,
+      encryption: QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+    });
+    const scoutingDispatchQueue = new Queue(this, "ScoutingDispatchQueue", {
+      fifo: true,
+      queueName: `find-the-edge-${props.stageName}-scouting-dispatch.fifo`,
+      contentBasedDeduplication: false,
+      encryption: QueueEncryption.SQS_MANAGED,
+      deadLetterQueue: { queue: scoutingDispatchDlq, maxReceiveCount: 5 },
+      retentionPeriod: Duration.days(4),
+      visibilityTimeout: Duration.minutes(2),
+    });
+    const scoutingWorkflowWorker = new NodejsFunction(
+      this,
+      "ScoutingWorkflowWorker",
+      {
+        entry: path.resolve(
+          directory,
+          "../../../apps/workers/src/scouting-workflow-lambda.ts",
+        ),
+        handler: "handler",
+        runtime: Runtime.NODEJS_24_X,
+        timeout: Duration.seconds(30),
+        memorySize: 256,
+        reservedConcurrentExecutions: 5,
+        environment: { FTE_EVENT_TABLE: table.tableName },
+        bundling: { minify: true, sourceMap: true },
+      },
+    );
+    scoutingWorkflowWorker.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:TransactWriteItems"],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": [
+              "EVENT_DETAIL#*",
+              "SCOUT_JOB#*",
+              "SCOUT_ATTEMPT#*",
+              "SCOUT_ACTIVE#*",
+            ],
+          },
+        },
+      }),
+    );
+    const scoutingWorkflowFailed = new Fail(this, "ScoutingWorkflowFailed", {
+      error: "ScoutingWorkflowFailed",
+      cause: "The fenced scouting workflow did not complete",
+    });
+    const scoutingWorkflowSucceeded = new Succeed(
+      this,
+      "ScoutingWorkflowSucceeded",
+    );
+    const scoutingWorkflowInvoke = new LambdaInvoke(
+      this,
+      "InvokeScoutingWorkflowWorker",
+      {
+        lambdaFunction: scoutingWorkflowWorker,
+        payloadResponseOnly: true,
+        taskTimeout: Timeout.duration(Duration.seconds(25)),
+      },
+    );
+    const scoutingWorkflowFailureFinalizer = new LambdaInvoke(
+      this,
+      "FinalizeScoutingWorkflowFailure",
+      {
+        lambdaFunction: scoutingWorkflowWorker,
+        payload: TaskInput.fromObject({
+          schemaVersion: 1,
+          action: "finalize-failure",
+          jobId: JsonPath.stringAt("$.jobId"),
+          attemptId: JsonPath.stringAt("$.attemptId"),
+          failureCode: "workflow-temporarily-unavailable",
+        }),
+        payloadResponseOnly: true,
+      },
+    );
+    const scoutingWorkflowTimeoutFinalizer = new LambdaInvoke(
+      this,
+      "FinalizeScoutingWorkflowTimeout",
+      {
+        lambdaFunction: scoutingWorkflowWorker,
+        payload: TaskInput.fromObject({
+          schemaVersion: 1,
+          action: "finalize-failure",
+          jobId: JsonPath.stringAt("$.jobId"),
+          attemptId: JsonPath.stringAt("$.attemptId"),
+          failureCode: "workflow-timeout",
+        }),
+        payloadResponseOnly: true,
+      },
+    );
+    scoutingWorkflowFailureFinalizer.addRetry({
+      errors: [
+        "Lambda.ServiceException",
+        "Lambda.AWSLambdaException",
+        "Lambda.SdkClientException",
+        "Lambda.TooManyRequestsException",
+      ],
+      interval: Duration.seconds(2),
+      backoffRate: 2,
+      maxAttempts: 2,
+    });
+    scoutingWorkflowTimeoutFinalizer.addRetry({
+      errors: [
+        "Lambda.ServiceException",
+        "Lambda.AWSLambdaException",
+        "Lambda.SdkClientException",
+        "Lambda.TooManyRequestsException",
+      ],
+      interval: Duration.seconds(2),
+      backoffRate: 2,
+      maxAttempts: 2,
+    });
+    scoutingWorkflowFailureFinalizer.addCatch(scoutingWorkflowFailed, {
+      errors: ["States.ALL"],
+      resultPath: "$.finalizerFailure",
+    });
+    scoutingWorkflowTimeoutFinalizer.addCatch(scoutingWorkflowFailed, {
+      errors: ["States.ALL"],
+      resultPath: "$.finalizerFailure",
+    });
+    scoutingWorkflowInvoke.addCatch(
+      scoutingWorkflowTimeoutFinalizer.next(scoutingWorkflowFailed),
+      {
+        errors: ["States.Timeout"],
+        resultPath: "$.workflowFailure",
+      },
+    );
+    scoutingWorkflowInvoke.addCatch(
+      scoutingWorkflowFailureFinalizer.next(scoutingWorkflowFailed),
+      {
+        errors: ["States.ALL"],
+        resultPath: "$.workflowFailure",
+      },
+    );
+    const scoutingWorkflowLogs = new LogGroup(this, "ScoutingWorkflowLogs", {
+      retention: RetentionDays.ONE_MONTH,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const scoutingWorkflow = new StateMachine(this, "ScoutingWorkflow", {
+      stateMachineType: StateMachineType.STANDARD,
+      definitionBody: DefinitionBody.fromChainable(
+        scoutingWorkflowInvoke.next(scoutingWorkflowSucceeded),
+      ),
+      timeout: Duration.minutes(5),
+      logs: {
+        destination: scoutingWorkflowLogs,
+        level: LogLevel.ERROR,
+        includeExecutionData: false,
+      },
+    });
+    const scoutingDispatcher = new NodejsFunction(this, "ScoutingDispatcher", {
+      entry: path.resolve(
+        directory,
+        "../../../apps/workers/src/scouting-dispatcher-lambda.ts",
+      ),
+      handler: "handler",
+      runtime: Runtime.NODEJS_24_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      reservedConcurrentExecutions: 5,
+      environment: {
+        FTE_SCOUTING_STATE_MACHINE_ARN: scoutingWorkflow.stateMachineArn,
+        FTE_EVENT_TABLE: table.tableName,
+      },
+      bundling: { minify: true, sourceMap: true },
+    });
+    scoutingWorkflow.grantStartExecution(scoutingDispatcher);
+    scoutingWorkflow.grantExecution(
+      scoutingDispatcher,
+      "states:DescribeExecution",
+    );
+    scoutingDispatcher.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:TransactWriteItems"],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": [
+              "EVENT_DETAIL#*",
+              "SCOUT_JOB#*",
+              "SCOUT_ATTEMPT#*",
+              "SCOUT_ACTIVE#*",
+            ],
+          },
+        },
+      }),
+    );
+    scoutingDispatcher.addEventSource(
+      new SqsEventSource(scoutingDispatchQueue, {
+        batchSize: 1,
+        maxConcurrency: 5,
+        reportBatchItemFailures: true,
+      }),
+    );
+    const scoutingOutboxPublisherDlq = new Queue(
+      this,
+      "ScoutingOutboxPublisherDlq",
+      {
+        queueName: `find-the-edge-${props.stageName}-scouting-outbox-publisher-dlq`,
+        encryption: QueueEncryption.SQS_MANAGED,
+        retentionPeriod: Duration.days(14),
+      },
+    );
+    const scoutingOutboxPublisher = new NodejsFunction(
+      this,
+      "ScoutingOutboxPublisher",
+      {
+        entry: path.resolve(
+          directory,
+          "../../../apps/workers/src/scouting-outbox-lambda.ts",
+        ),
+        handler: "handler",
+        runtime: Runtime.NODEJS_24_X,
+        timeout: Duration.seconds(30),
+        memorySize: 256,
+        reservedConcurrentExecutions: 2,
+        environment: {
+          FTE_EVENT_TABLE: table.tableName,
+          FTE_SCOUTING_QUEUE_URL: scoutingDispatchQueue.queueUrl,
+        },
+        bundling: { minify: true, sourceMap: true },
+      },
+    );
+    scoutingOutboxPublisher.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["SCOUT_OUTBOX#*"],
+          },
+        },
+      }),
+    );
+    scoutingDispatchQueue.grantSendMessages(scoutingOutboxPublisher);
+    scoutingOutboxPublisher.addEventSource(
+      new DynamoEventSource(table, {
+        startingPosition: StartingPosition.TRIM_HORIZON,
+        batchSize: 25,
+        bisectBatchOnError: true,
+        reportBatchItemFailures: true,
+        retryAttempts: 5,
+        maxRecordAge: Duration.days(1),
+        onFailure: new SqsDlq(scoutingOutboxPublisherDlq),
+        filters: [
+          FilterCriteria.filter({
+            eventName: ["INSERT", "MODIFY"],
+            dynamodb: {
+              Keys: {
+                pk: { S: [{ prefix: "SCOUT_OUTBOX#" }] },
+                sk: { S: ["CURRENT"] },
+              },
+              NewImage: {
+                entityType: { S: ["scouting-dispatch-outbox"] },
+                outboxStatus: { S: ["pending"] },
+              },
+            },
+          }),
+        ],
+      }),
+    );
+    new CfnOutput(this, "ScoutingDispatchQueueUrl", {
+      value: scoutingDispatchQueue.queueUrl,
+    });
+    new CfnOutput(this, "ScoutingDispatchDlqUrl", {
+      value: scoutingDispatchDlq.queueUrl,
+    });
+    new CfnOutput(this, "ScoutingOutboxPublisherDlqUrl", {
+      value: scoutingOutboxPublisherDlq.queueUrl,
+    });
+    new CfnOutput(this, "ScoutingWorkflowArn", {
+      value: scoutingWorkflow.stateMachineArn,
+    });
+    new CfnOutput(this, "ScoutingOutboxPublisherFunctionName", {
+      value: scoutingOutboxPublisher.functionName,
+    });
+    new CfnOutput(this, "ScoutingDispatcherFunctionName", {
+      value: scoutingDispatcher.functionName,
+    });
+    new CfnOutput(this, "ScoutingWorkflowWorkerFunctionName", {
+      value: scoutingWorkflowWorker.functionName,
+    });
     const eventApi = new NodejsFunction(this, "EventApi", {
       entry: path.resolve(directory, "../../../apps/api/src/lambda.ts"),
       handler: "handler",
@@ -941,6 +1248,27 @@ export class FoundationStack extends Stack {
       methods: [HttpMethod.GET],
       integration,
     });
+    api.addRoutes({
+      path: "/events/{eventId}/scout",
+      methods: [HttpMethod.POST],
+      integration,
+      authorizer,
+      authorizationScopes: ["events/scouting:write"],
+    });
+    api.addRoutes({
+      path: "/scout-jobs/{jobId}",
+      methods: [HttpMethod.GET],
+      integration,
+      authorizer,
+      authorizationScopes: ["events/scouting:read"],
+    });
+    api.addRoutes({
+      path: "/scout-jobs/{jobId}/retry",
+      methods: [HttpMethod.POST],
+      integration,
+      authorizer,
+      authorizationScopes: ["events/scouting:write"],
+    });
     for (const path of [
       "/sports/{sportKey}/opportunities",
       "/sports/{sportKey}/opportunities/{opportunityId}",
@@ -1008,7 +1336,7 @@ export class FoundationStack extends Stack {
         ApiId: api.apiId,
         CorsConfiguration: {
           AllowOrigins: [webOrigin],
-          AllowHeaders: ["authorization", "content-type"],
+          AllowHeaders: ["authorization", "content-type", "idempotency-key"],
           AllowMethods: ["GET", "POST", "OPTIONS"],
         },
       },
@@ -1081,8 +1409,120 @@ export class FoundationStack extends Stack {
     });
     new CfnOutput(this, "CognitoDomain", { value: domain.baseUrl() });
     new CfnOutput(this, "CognitoScope", { value: "events/events:read" });
+    new CfnOutput(this, "ScoutingReadScope", {
+      value: "events/scouting:read",
+    });
+    new CfnOutput(this, "ScoutingWriteScope", {
+      value: "events/scouting:write",
+    });
     new CfnOutput(this, "CognitoCallbackUrl", { value: callbackUrl });
     const alarms = [
+      new Alarm(this, "ScoutingOutboxPublisherErrorsAlarm", {
+        metric: scoutingOutboxPublisher.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingOutboxFailuresAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/Scouting",
+          metricName: "OutboxFailure",
+          dimensionsMap: { Component: "outbox" },
+          statistic: "Sum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingOutboxPublisherDlqAlarm", {
+        metric:
+          scoutingOutboxPublisherDlq.metricApproximateNumberOfMessagesVisible(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingOutboxIteratorAgeAlarm", {
+        metric: scoutingOutboxPublisher.metric("IteratorAge", {
+          statistic: "Maximum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 300_000,
+        evaluationPeriods: 2,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingOutboxLagAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/Scouting",
+          metricName: "OutboxLagMilliseconds",
+          dimensionsMap: { Component: "outbox" },
+          statistic: "Maximum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 300_000,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingDispatcherErrorsAlarm", {
+        metric: scoutingDispatcher.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingDispatchFailuresAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/Scouting",
+          metricName: "DispatchFailure",
+          dimensionsMap: { Component: "dispatcher" },
+          statistic: "Sum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingWorkflowWorkerErrorsAlarm", {
+        metric: scoutingWorkflowWorker.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingDispatchDlqAlarm", {
+        metric: scoutingDispatchDlq.metricApproximateNumberOfMessagesVisible(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingDispatchOldestMessageAlarm", {
+        metric: scoutingDispatchQueue.metricApproximateAgeOfOldestMessage(),
+        threshold: 300,
+        evaluationPeriods: 2,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingWorkflowFailuresAlarm", {
+        metric: scoutingWorkflow.metricFailed(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScoutingWorkflowTimeoutsAlarm", {
+        metric: scoutingWorkflow.metricTimedOut(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
       new Alarm(this, "PaperPickWorkerErrorsAlarm", {
         metric: paperPickWorker.metricErrors(),
         threshold: 1,
@@ -1333,6 +1773,9 @@ export class FoundationStack extends Stack {
           "opportunity-list",
           "opportunity-detail",
           "provider-status",
+          "scout-create",
+          "scout-status",
+          "scout-retry",
         ] as const
       ).map(
         (route) =>

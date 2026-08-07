@@ -73,6 +73,79 @@ it("serves the public provider-status contract without query parameters", async 
     await handler({ route: "provider-status", query: { leaked: "1" } }),
   ).toMatchObject({ statusCode: 400 });
 });
+
+it("redacts unexpected scouting failures from structured logs", async () => {
+  const logs: Readonly<Record<string, unknown>>[] = [];
+  const handler = createEventHandler(
+    repository,
+    undefined,
+    (entry) => logs.push(entry),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    () => Promise.reject(new Error("table-name-and-internal-key")),
+  );
+  const result = await handler({
+    route: "scout-status",
+    method: "GET",
+    subject: "owner",
+    scopes: ["events/scouting:read"],
+    jobId: `scout-job:${"a".repeat(64)}`,
+  });
+  expect(result.statusCode).toBe(500);
+  expect(logs).toContainEqual({
+    event: "event-api-internal-failure",
+    route: "scout-status",
+    errorName: "ScoutingInternalError",
+    errorMessage: "scouting-operation-failed",
+  });
+  expect(logs.at(-1)).toMatchObject({
+    Route: "scout-status",
+    Status: 500,
+    ScoutingFailure: 1,
+  });
+  expect(JSON.stringify(logs)).not.toContain("table-name-and-internal-key");
+});
+
+it("emits bounded scouting lifecycle metrics", async () => {
+  const logs: Readonly<Record<string, unknown>>[] = [];
+  const handler = createEventHandler(
+    repository,
+    undefined,
+    (entry) => logs.push(entry),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    () =>
+      Promise.resolve({
+        statusCode: 202,
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+  );
+  expect(
+    await handler({
+      route: "scout-create",
+      method: "POST",
+      subject: "owner",
+      scopes: ["events/scouting:write"],
+    }),
+  ).toMatchObject({ statusCode: 202 });
+  expect(logs.at(-1)).toMatchObject({
+    Route: "scout-create",
+    Status: 202,
+    ScoutingJobCreated: 1,
+  });
+  expect(JSON.stringify(logs.at(-1))).toContain('"Name":"ScoutingLatency"');
+});
 const gamesWithDetail = (
   detail: NonNullable<GamesRepository["detail"]>,
 ): GamesRepository => ({

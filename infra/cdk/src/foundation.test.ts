@@ -19,7 +19,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 12);
+    template.resourceCountIs("AWS::Lambda::Function", 15);
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -135,7 +135,7 @@ describe("foundation CDK app", () => {
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 11);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 14);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -151,10 +151,10 @@ describe("foundation CDK app", () => {
 
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
-    template.resourceCountIs("AWS::SQS::Queue", 6);
-    template.resourceCountIs("AWS::Lambda::Function", 11);
+    template.resourceCountIs("AWS::SQS::Queue", 9);
+    template.resourceCountIs("AWS::Lambda::Function", 14);
     template.resourceCountIs("AWS::Events::Rule", 6);
-    template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
+    template.resourceCountIs("AWS::StepFunctions::StateMachine", 2);
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
       ScheduleExpression: "rate(15 minutes)",
@@ -423,7 +423,7 @@ describe("foundation CDK app", () => {
         AuthorizationType: "NONE",
       });
     expect(rendered).toContain(
-      '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\"]',
+      '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\",\\"idempotency-key\\"]',
     );
     template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
       DefaultRouteSettings: {
@@ -496,7 +496,7 @@ describe("foundation CDK app", () => {
       GenerateSecret: false,
       CallbackURLs: [Match.anyValue()],
       LogoutURLs: [Match.anyValue()],
-      AllowedOAuthScopes: ["openid", "email", Match.anyValue()],
+      AllowedOAuthScopes: Match.anyValue(),
     });
     template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
       AllowedOAuthScopes: Match.anyValue(),
@@ -515,6 +515,14 @@ describe("foundation CDK app", () => {
         {
           ScopeName: "events:read",
           ScopeDescription: "Read FIND THE EDGE events and odds",
+        },
+        {
+          ScopeName: "scouting:read",
+          ScopeDescription: "Read owned FIND THE EDGE scouting jobs",
+        },
+        {
+          ScopeName: "scouting:write",
+          ScopeDescription: "Create and retry FIND THE EDGE scouting jobs",
         },
         {
           ScopeName: "retrospectives:approve",
@@ -576,6 +584,8 @@ describe("foundation CDK app", () => {
       "CognitoClientId",
       "CognitoDomain",
       "CognitoScope",
+      "ScoutingReadScope",
+      "ScoutingWriteScope",
       "CognitoCallbackUrl",
     ])
       template.hasOutput(output, {});
@@ -598,6 +608,237 @@ describe("foundation CDK app", () => {
       },
     });
     expect(rendered).not.toContain("2026-08-01T00:00:00.000Z");
+  });
+
+  it("synthesizes the protected idempotent scouting dispatch workflow", () => {
+    const { stack } = createFoundationApp({ stage: "test", ...eventConfig });
+    const template = Template.fromStack(stack);
+    const synthesized = template.toJSON();
+    const resources = synthesized.Resources as Record<
+      string,
+      { Type: string; Properties?: Record<string, unknown> }
+    >;
+    const rendered = JSON.stringify(synthesized);
+
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "find-the-edge-test-scouting-dispatch-dlq.fifo",
+      FifoQueue: true,
+      SqsManagedSseEnabled: true,
+      MessageRetentionPeriod: 1209600,
+    });
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "find-the-edge-test-scouting-dispatch.fifo",
+      FifoQueue: true,
+      ContentBasedDeduplication: false,
+      SqsManagedSseEnabled: true,
+      VisibilityTimeout: 120,
+      RedrivePolicy: Match.objectLike({ maxReceiveCount: 5 }),
+    });
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "find-the-edge-test-scouting-outbox-publisher-dlq",
+      SqsManagedSseEnabled: true,
+      MessageRetentionPeriod: 1209600,
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      ReservedConcurrentExecutions: 2,
+      Environment: {
+        Variables: {
+          FTE_EVENT_TABLE: Match.anyValue(),
+          FTE_SCOUTING_QUEUE_URL: Match.anyValue(),
+        },
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      ReservedConcurrentExecutions: 5,
+      Environment: {
+        Variables: {
+          FTE_SCOUTING_STATE_MACHINE_ARN: Match.anyValue(),
+          FTE_EVENT_TABLE: Match.anyValue(),
+        },
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Timeout: 30,
+      ReservedConcurrentExecutions: 5,
+      Environment: {
+        Variables: { FTE_EVENT_TABLE: Match.anyValue() },
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      BatchSize: 25,
+      BisectBatchOnFunctionError: true,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+      MaximumRetryAttempts: 5,
+      MaximumRecordAgeInSeconds: 86400,
+      DestinationConfig: {
+        OnFailure: { Destination: Match.anyValue() },
+      },
+      StartingPosition: "TRIM_HORIZON",
+      FilterCriteria: {
+        Filters: [
+          {
+            Pattern:
+              '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"SCOUT_OUTBOX#"}]},"sk":{"S":["CURRENT"]}},"NewImage":{"entityType":{"S":["scouting-dispatch-outbox"]},"outboxStatus":{"S":["pending"]}}}}',
+          },
+        ],
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      BatchSize: 1,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+      ScalingConfig: { MaximumConcurrency: 5 },
+    });
+
+    const scoutingStateMachine = Object.entries(resources).find(
+      ([key, resource]) =>
+        key.startsWith("ScoutingWorkflow") &&
+        resource.Type === "AWS::StepFunctions::StateMachine",
+    );
+    expect(scoutingStateMachine).toBeDefined();
+    expect(scoutingStateMachine?.[1].Properties?.["StateMachineType"]).toBe(
+      "STANDARD",
+    );
+    expect(
+      scoutingStateMachine?.[1].Properties?.["LoggingConfiguration"],
+    ).toEqual(
+      expect.objectContaining({ IncludeExecutionData: false, Level: "ERROR" }),
+    );
+    const workflowDefinition = JSON.stringify(
+      scoutingStateMachine?.[1].Properties?.["DefinitionString"],
+    );
+    expect(workflowDefinition).toContain("TimeoutSeconds");
+    expect(workflowDefinition).toContain("300");
+    expect(workflowDefinition).toContain("Retry");
+    const mainTaskDefinition = workflowDefinition.slice(
+      workflowDefinition.indexOf("InvokeScoutingWorkflowWorker"),
+      workflowDefinition.indexOf(
+        "ScoutingWorkflowSucceeded",
+        workflowDefinition.indexOf("InvokeScoutingWorkflowWorker"),
+      ),
+    );
+    expect(mainTaskDefinition).not.toContain("Retry");
+    expect(workflowDefinition).toContain("Catch");
+    expect(workflowDefinition).toContain("States.ALL");
+    expect(workflowDefinition).toContain("FinalizeScoutingWorkflowFailure");
+    expect(workflowDefinition).toContain("FinalizeScoutingWorkflowTimeout");
+    expect(workflowDefinition).toContain("finalize-failure");
+    expect(workflowDefinition).toContain("workflow-temporarily-unavailable");
+    expect(workflowDefinition).toContain("workflow-timeout");
+    expect(workflowDefinition).toContain("$.jobId");
+    expect(workflowDefinition).toContain("$.attemptId");
+
+    for (const [routeKey, scope] of [
+      ["POST /events/{eventId}/scout", "events/scouting:write"],
+      ["GET /scout-jobs/{jobId}", "events/scouting:read"],
+      ["POST /scout-jobs/{jobId}/retry", "events/scouting:write"],
+    ]) {
+      const matches = Object.values(resources).filter(
+        (resource) =>
+          resource.Type === "AWS::ApiGatewayV2::Route" &&
+          resource.Properties?.["RouteKey"] === routeKey,
+      );
+      expect(matches).toHaveLength(1);
+      expect(matches[0]?.Properties).toEqual(
+        expect.objectContaining({
+          AuthorizationType: "JWT",
+          AuthorizationScopes: [scope],
+        }),
+      );
+    }
+    expect(rendered).toContain("scouting:read");
+    expect(rendered).toContain("scouting:write");
+    const oauthClients = Object.values(resources).filter(
+      (resource) => resource.Type === "AWS::Cognito::UserPoolClient",
+    );
+    expect(oauthClients).toHaveLength(2);
+    for (const client of oauthClients) {
+      const scopes = JSON.stringify(client.Properties?.["AllowedOAuthScopes"]);
+      expect(scopes).toContain("scouting:read");
+      expect(scopes).toContain("scouting:write");
+    }
+    expect(rendered).toContain("states:StartExecution");
+    expect(rendered).toContain("states:DescribeExecution");
+    expect(rendered).toContain("sqs:SendMessage");
+    const outboxPolicy = Object.entries(resources).find(
+      ([key, resource]) =>
+        key.startsWith("ScoutingOutboxPublisherServiceRoleDefaultPolicy") &&
+        resource.Type === "AWS::IAM::Policy",
+    );
+    expect(JSON.stringify(outboxPolicy?.[1])).toContain(
+      '"Action":["dynamodb:GetItem","dynamodb:UpdateItem"]',
+    );
+    expect(JSON.stringify(outboxPolicy?.[1])).toContain("SCOUT_OUTBOX#*");
+    const dispatcherPolicy = Object.entries(resources).find(
+      ([key, resource]) =>
+        key.startsWith("ScoutingDispatcherServiceRoleDefaultPolicy") &&
+        resource.Type === "AWS::IAM::Policy",
+    );
+    expect(JSON.stringify(dispatcherPolicy?.[1])).toContain(
+      '"Action":["dynamodb:GetItem","dynamodb:TransactWriteItems"]',
+    );
+    for (const leadingKey of [
+      "EVENT_DETAIL#*",
+      "SCOUT_JOB#*",
+      "SCOUT_ATTEMPT#*",
+      "SCOUT_ACTIVE#*",
+    ])
+      expect(JSON.stringify(dispatcherPolicy?.[1])).toContain(leadingKey);
+    const workflowWorkerPolicy = Object.entries(resources).find(
+      ([key, resource]) =>
+        key.startsWith("ScoutingWorkflowWorkerServiceRoleDefaultPolicy") &&
+        resource.Type === "AWS::IAM::Policy",
+    );
+    expect(JSON.stringify(workflowWorkerPolicy?.[1])).toContain(
+      '"Action":["dynamodb:GetItem","dynamodb:TransactWriteItems"]',
+    );
+    for (const leadingKey of [
+      "EVENT_DETAIL#*",
+      "SCOUT_JOB#*",
+      "SCOUT_ATTEMPT#*",
+      "SCOUT_ACTIVE#*",
+    ])
+      expect(JSON.stringify(workflowWorkerPolicy?.[1])).toContain(leadingKey);
+    expect(rendered).not.toContain("dynamodb:Scan");
+    for (const [key, resource] of Object.entries(resources)) {
+      if (!key.startsWith("Scouting") || resource.Type !== "AWS::IAM::Policy")
+        continue;
+      const actions = JSON.stringify(resource.Properties?.["PolicyDocument"]);
+      expect(actions).not.toMatch(/"Action":"[^"]*\*/);
+      expect(actions).not.toMatch(/"Action":\[[^\]]*"[^"]*\*/);
+    }
+    for (const alarm of [
+      "ScoutingOutboxPublisherErrorsAlarm",
+      "ScoutingOutboxFailuresAlarm",
+      "ScoutingOutboxPublisherDlqAlarm",
+      "ScoutingOutboxIteratorAgeAlarm",
+      "ScoutingOutboxLagAlarm",
+      "ScoutingDispatcherErrorsAlarm",
+      "ScoutingDispatchFailuresAlarm",
+      "ScoutingWorkflowWorkerErrorsAlarm",
+      "ScoutingDispatchDlqAlarm",
+      "ScoutingDispatchOldestMessageAlarm",
+      "ScoutingWorkflowFailuresAlarm",
+      "ScoutingWorkflowTimeoutsAlarm",
+    ])
+      expect(rendered).toContain(alarm);
+    for (const route of ["scout-create", "scout-status", "scout-retry"])
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        MetricName: "Caught5xx",
+        Namespace: "FindTheEdge/EventApi",
+        Dimensions: [{ Name: "Route", Value: route }],
+      });
+    for (const output of [
+      "ScoutingDispatchQueueUrl",
+      "ScoutingDispatchDlqUrl",
+      "ScoutingOutboxPublisherDlqUrl",
+      "ScoutingWorkflowArn",
+      "ScoutingOutboxPublisherFunctionName",
+      "ScoutingDispatcherFunctionName",
+      "ScoutingWorkflowWorkerFunctionName",
+      "ScoutingReadScope",
+      "ScoutingWriteScope",
+    ])
+      template.hasOutput(output, {});
   });
 
   it("rejects unsafe stage names", () => {
@@ -670,7 +911,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 60);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 75);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

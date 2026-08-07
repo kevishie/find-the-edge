@@ -16,6 +16,7 @@ import {
   DynamoOpportunityLifecycleRepository,
   DynamoRankedOpportunityRepository,
   DynamoOddsControlPlaneStore,
+  DynamoScoutingJobRepository,
   OpportunityCursorCodec,
 } from "@find-the-edge/database";
 import { impliedProbability } from "@find-the-edge/odds";
@@ -27,6 +28,7 @@ import {
 } from "@find-the-edge/config";
 import { createEventHandler } from "./handler";
 import { buildProviderStatusPage } from "./provider-status";
+import { createScoutingHttpHandler } from "./scouting-handler";
 import { loadSecretRing } from "./secrets";
 interface LambdaEvent {
   readonly routeKey?: string;
@@ -34,6 +36,7 @@ interface LambdaEvent {
     readonly eventId?: string;
     readonly sportKey?: string;
     readonly opportunityId?: string;
+    readonly jobId?: string;
   };
   readonly queryStringParameters?: Record<string, string | undefined>;
   readonly headers?: Record<string, string | undefined>;
@@ -86,68 +89,81 @@ export const handler = async (event: LambdaEvent) => {
     detailSportsbooks,
   );
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  const scoutingJobs = new DynamoScoutingJobRepository(
+    documentClient,
+    tableName,
+  );
   const claims = event.requestContext?.authorizer?.jwt?.claims;
   const route =
-    event.routeKey === "GET /providers/status"
-      ? "provider-status"
-      : event.routeKey === "GET /sports/{sportKey}/opportunities"
-        ? "opportunity-list"
-        : event.routeKey ===
-            "GET /sports/{sportKey}/opportunities/{opportunityId}"
-          ? "opportunity-detail"
-          : event.routeKey === "GET /strategy-experiments"
-            ? "experiment-list"
-            : event.routeKey === "GET /strategy-experiments/{eventId}"
-              ? "experiment-detail"
+    event.routeKey === "POST /events/{eventId}/scout"
+      ? "scout-create"
+      : event.routeKey === "GET /scout-jobs/{jobId}"
+        ? "scout-status"
+        : event.routeKey === "POST /scout-jobs/{jobId}/retry"
+          ? "scout-retry"
+          : event.routeKey === "GET /providers/status"
+            ? "provider-status"
+            : event.routeKey === "GET /sports/{sportKey}/opportunities"
+              ? "opportunity-list"
               : event.routeKey ===
-                  "POST /strategy-experiments/{eventId}/approve"
-                ? "experiment-approve"
-                : event.routeKey ===
-                    "POST /strategy-experiments/{eventId}/promote"
-                  ? "experiment-promote"
-                  : event.routeKey ===
-                      "POST /strategy-experiments/{eventId}/rollback"
-                    ? "experiment-rollback"
-                    : event.routeKey === "GET /retrospectives"
-                      ? "retrospective-list"
-                      : event.routeKey === "GET /retrospectives/{eventId}"
-                        ? "retrospective-detail"
+                  "GET /sports/{sportKey}/opportunities/{opportunityId}"
+                ? "opportunity-detail"
+                : event.routeKey === "GET /strategy-experiments"
+                  ? "experiment-list"
+                  : event.routeKey === "GET /strategy-experiments/{eventId}"
+                    ? "experiment-detail"
+                    : event.routeKey ===
+                        "POST /strategy-experiments/{eventId}/approve"
+                      ? "experiment-approve"
+                      : event.routeKey ===
+                          "POST /strategy-experiments/{eventId}/promote"
+                        ? "experiment-promote"
                         : event.routeKey ===
-                            "GET /retrospectives/{eventId}/versions"
-                          ? "retrospective-versions"
-                          : event.routeKey ===
-                              "POST /retrospectives/{eventId}/review"
-                            ? "retrospective-review"
-                            : event.routeKey ===
-                                "GET /games/{eventId}/odds-history"
-                              ? "odds-history"
-                              : event.routeKey?.startsWith("GET /games")
-                                ? "games"
-                                : event.routeKey?.startsWith("GET /splits")
-                                  ? "splits"
+                            "POST /strategy-experiments/{eventId}/rollback"
+                          ? "experiment-rollback"
+                          : event.routeKey === "GET /retrospectives"
+                            ? "retrospective-list"
+                            : event.routeKey === "GET /retrospectives/{eventId}"
+                              ? "retrospective-detail"
+                              : event.routeKey ===
+                                  "GET /retrospectives/{eventId}/versions"
+                                ? "retrospective-versions"
+                                : event.routeKey ===
+                                    "POST /retrospectives/{eventId}/review"
+                                  ? "retrospective-review"
                                   : event.routeKey ===
-                                      "GET /performance/reports"
-                                    ? "performance-reports"
-                                    : event.routeKey?.startsWith(
-                                          "GET /performance/reports/",
-                                        )
-                                      ? "performance-detail"
+                                      "GET /games/{eventId}/odds-history"
+                                    ? "odds-history"
+                                    : event.routeKey?.startsWith("GET /games")
+                                      ? "games"
                                       : event.routeKey?.startsWith(
-                                            "GET /performance/cohorts/",
+                                            "GET /splits",
                                           )
-                                        ? "performance-members"
-                                        : event.routeKey?.startsWith(
-                                              "GET /performance/cohorts",
-                                            )
-                                          ? "performance-list"
-                                          : event.routeKey?.includes(
-                                                "/{eventId}",
+                                        ? "splits"
+                                        : event.routeKey ===
+                                            "GET /performance/reports"
+                                          ? "performance-reports"
+                                          : event.routeKey?.startsWith(
+                                                "GET /performance/reports/",
                                               )
-                                            ? "detail"
-                                            : "list";
+                                            ? "performance-detail"
+                                            : event.routeKey?.startsWith(
+                                                  "GET /performance/cohorts/",
+                                                )
+                                              ? "performance-members"
+                                              : event.routeKey?.startsWith(
+                                                    "GET /performance/cohorts",
+                                                  )
+                                                ? "performance-list"
+                                                : event.routeKey?.includes(
+                                                      "/{eventId}",
+                                                    )
+                                                  ? "detail"
+                                                  : "list";
   const eventId = event.pathParameters?.eventId;
   const sportKey = event.pathParameters?.sportKey;
   const opportunityId = event.pathParameters?.opportunityId;
+  const jobId = event.pathParameters?.jobId;
   const subject =
     typeof claims?.["sub"] === "string" ? claims["sub"] : undefined;
   const authorizedScopes = event.requestContext?.authorizer?.jwt?.scopes;
@@ -169,6 +185,9 @@ export const handler = async (event: LambdaEvent) => {
   const query = event.queryStringParameters;
   const contentType = Object.entries(event.headers ?? {}).find(
     ([key]) => key.toLowerCase() === "content-type",
+  )?.[1];
+  const idempotencyKey = Object.entries(event.headers ?? {}).find(
+    ([key]) => key.toLowerCase() === "idempotency-key",
   )?.[1];
   return createEventHandler(
     repository,
@@ -209,6 +228,7 @@ export const handler = async (event: LambdaEvent) => {
         productionProviderStatusCatalog,
         new DynamoOddsControlPlaneStore(documentClient, tableName),
       ),
+    createScoutingHttpHandler(repository, scoutingJobs),
   )({
     route,
     ...(subject ? { subject } : {}),
@@ -218,6 +238,8 @@ export const handler = async (event: LambdaEvent) => {
     ...(eventId ? { eventId } : {}),
     ...(sportKey ? { sportKey } : {}),
     ...(opportunityId ? { opportunityId } : {}),
+    ...(jobId ? { jobId } : {}),
+    ...(idempotencyKey ? { idempotencyKey } : {}),
     ...(event.requestContext?.requestId
       ? { requestId: event.requestContext.requestId }
       : {}),
