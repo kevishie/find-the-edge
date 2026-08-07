@@ -285,6 +285,9 @@ importers:
       '@find-the-edge/domain':
         specifier: workspace:*
         version: link:../domain
+      '@find-the-edge/sports':
+        specifier: workspace:*
+        version: link:../sports
     devDependencies:
       vitest:
         specifier: ^4.0.18
@@ -305,6 +308,18 @@ importers:
 
   packages/test-utils:
     devDependencies:
+      '@find-the-edge/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@find-the-edge/providers':
+        specifier: workspace:*
+        version: link:../providers
+      '@find-the-edge/scouting':
+        specifier: workspace:*
+        version: link:../scouting
+      '@find-the-edge/sports':
+        specifier: workspace:*
+        version: link:../sports
       vitest:
         specifier: ^4.0.18
         version: 4.1.10(@types/node@24.13.3)(@vitest/coverage-v8@4.1.10)(jsdom@28.1.0)(vite@7.3.6(@types/node@24.13.3))

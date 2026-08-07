@@ -2,6 +2,7 @@ import type { SportKey } from "@find-the-edge/domain";
 
 import { createDeclarativeSportModule } from "../shared/create-module";
 import type { StrategyDefinition } from "../shared/contracts";
+import { createUnavailableScoutingInputContract } from "../shared/scouting-input";
 
 export const mlbAnalysisPolicy = {
   enabled: true,
@@ -194,6 +195,23 @@ export const mlbModule = createDeclarativeSportModule({
   outputSchemaId: "scout/mlb@1",
   validationSchemaId: "sport-input/mlb@1",
   analysisPolicy: mlbAnalysisPolicy,
+  scoutingInputContract: createUnavailableScoutingInputContract({
+    sportKey: key,
+    schemaVersion: "1",
+    participantMinimum: 2,
+    participantMaximum: 2,
+    capabilityKeys: [
+      "starting-pitching",
+      "offense-vs-handedness",
+      "pitch-arsenal",
+      "lineup",
+      "bullpen",
+      "defense-baserunning",
+      "park-weather",
+      "travel-rest",
+      "market-intelligence",
+    ],
+  }),
   ui: {
     event: "Game",
     events: "Games",

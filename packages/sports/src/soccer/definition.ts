@@ -2,6 +2,7 @@ import type { SportKey } from "@find-the-edge/domain";
 
 import { createDeclarativeSportModule } from "../shared/create-module";
 import type { StrategyDefinition } from "../shared/contracts";
+import { soccerScoutingInputContract } from "./scouting-input";
 
 export const soccerAnalysisPolicy = {
   enabled: true,
@@ -178,6 +179,7 @@ export const soccerModule = createDeclarativeSportModule({
   outputSchemaId: "scout/soccer@1",
   validationSchemaId: "sport-input/soccer@1",
   analysisPolicy: soccerAnalysisPolicy,
+  scoutingInputContract: soccerScoutingInputContract,
   ui: {
     event: "Match",
     events: "Matches",

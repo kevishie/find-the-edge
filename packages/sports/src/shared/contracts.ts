@@ -10,6 +10,7 @@ import type {
 } from "@find-the-edge/domain";
 
 import type { SportAnalysisPolicy } from "./analysis";
+import type { SportScoutingInputContract } from "./scouting-input";
 
 export interface ValidationResult<T = unknown> {
   valid: boolean;
@@ -115,6 +116,7 @@ export interface SportModule {
   outputSchemaId: string;
   validationSchemaId: string;
   analysisPolicy: SportAnalysisPolicy;
+  scoutingInputContract: Readonly<SportScoutingInputContract>;
   ui: UiTerminology;
   validateInput(input: unknown): ValidationResult;
   normalizeEvent(raw: unknown): ValidationResult<Event>;

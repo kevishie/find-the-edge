@@ -127,4 +127,7 @@ export * from "./fixtures/mlb-schedule";
 export * from "./fixtures/mls-schedule";
 export * from "./fixtures/mvp-odds";
 
+export * from "./scouting-input-ports";
+export * from "./scouting-input-development-stub";
+
 export * from "./coverage-registry";

@@ -4,7 +4,7 @@
 
 ## Goal
 
-Deliver a private, soccer-first workflow that lets the user manually scout a selected event, follow durable progress through completion or failure, and review an auditable, versioned report. The workflow must turn provider-backed facts and deterministic betting analysis into disciplined decision support without inventing missing information, hiding uncertainty, or implying that automatic scouting is active in the MVP.
+Deliver an authenticated, manually triggered scouting workflow that turns provider-backed evidence, deterministic betting analysis, and constrained AI synthesis into an auditable, versioned report. The first detailed implementation is the experimental soccer module, but job, provider, storage, API, prompt, and evaluation contracts must remain sport-agnostic so additional registered sport modules do not require core rewrites. The workflow must make uncertainty and a valid no-bet outcome explicit; scheduled automatic scouting remains outside this epic.
 
 ## Stories
 
@@ -18,37 +18,37 @@ Deliver a private, soccer-first workflow that lets the user manually scout a sel
 
 ## Requirements & Constraints
 
-- Scouting is manually initiated from an eligible event. Fully automated schedules remain post-MVP and future-facing settings must not imply otherwise.
-- Every request creates a traceable job. Equivalent active work must converge instead of duplicating, and repeated clicks must return or open the existing job.
-- Durable states must distinguish queued, active, completed, retryable failure, and terminal failure. A permitted retry creates a linked attempt; a non-retryable failure explains what must change.
-- The production soccer enrichment provider remains unresolved until a human-approved evaluation covers data coverage, freshness, quotas, pricing, licensing, provenance, historical depth, and integration risk. Development fixtures must be unmistakably non-production.
-- Every factual input must carry enough metadata to audit its provider or source, provider timestamp when available, collection time, verification status, freshness, confidence, and unavailability. Malformed, stale, conflicting, inferred, and unavailable inputs must remain distinguishable.
-- Reports use a stable fourteen-section order from Match Snapshot through Nuke or Pass. Missing information remains visible as unavailable rather than disappearing.
-- Provider-backed facts, deterministic calculations, and AI-assisted interpretation are separate responsibilities. AI may synthesize verified inputs but must not invent facts or authoritatively calculate odds, probability, EV, Kelly sizing, or CLV.
-- Each completed run creates a new immutable report version with generation time, input and source references, associated odds snapshots, model and prompt versions, and change metadata when available. Historical versions and provenance remain readable after source data changes.
-- PASS or no qualified edge is a valid successful result. Partial data must never be presented as a complete report or confident recommendation.
-- All scouting jobs and reports require authentication. User-visible errors are safe, provider payloads and credentials are not exposed, and prohibited promotional language is avoided.
+- Scout Event is available only for eligible events and creates a traceable asynchronous job. Equivalent active requests must converge on the existing job; retryable failures create linked attempts, while terminal failures explain what must change.
+- Persist queued, active, completed, retryable-failure, and terminal-failure lifecycle states. The UI may expose finer progress such as collecting data, generating the report, calculating edges, and partial data without leaking infrastructure terminology.
+- Sportmonks is only the provisional primary for a bounded, non-production soccer trial across MLS, EPL, Liga MX, and UCL. Production enrichment stays disabled until separately authorized credentials, acceptable written usage and retention rights, and the defined coverage, freshness, correctness, reliability, provenance, and cost gates pass. API-Football is not a production option under the current evaluation.
+- Development fixtures must be clearly marked non-production and contain no secrets or restricted payloads. Every normalized fact must preserve source provider, provider entity and timestamp when available, collection time, verification status, freshness, confidence, and a contract-permitted evidence reference.
+- Missing, malformed, unlicensed, stale, inferred, or conflicting data must never become a verified fact. Partial provider data may produce a report only when unavailable states and provenance remain explicit.
+- The soccer report schema keeps all fourteen required sections in stable order, from Match Snapshot through Nuke or Pass; missing sections remain visible as unavailable. Other sports supply their own versioned scouting categories and schemas through registered modules.
+- Provider facts, deterministic calculations, and AI interpretation are separate responsibilities. AI may summarize verified inputs and explain tactical or risk themes, but it must not invent facts or authoritatively calculate odds conversion, probability, no-vig consensus, fair price, EV, Kelly sizing, qualification, CLV, or data freshness.
+- Each completed run creates an immutable report version. Preserve the exact input and source references, associated odds snapshots, generation time, sport/module/strategy/calculation versions, model and prompt-bundle versions, validation result, and changes from the prior version when available.
+- PASS or No Bet is a successful outcome, not a failure. Provider outages, quota exhaustion, stale evidence, and partial responses must remain visible and must not yield a misleading active recommendation.
+- Jobs, reports, and source details are private and authenticated. Errors and logs must be safe for display and must not expose credentials, restricted provider data, prompts, or sensitive inputs.
 
 ## Technical Decisions
 
-- Buffer scouting commands with SQS and orchestrate work with Standard Step Functions so provider calls, deterministic analysis, AI generation, validation, persistence, failure handling, and retries have isolated, visible boundaries.
-- Keep DynamoDB as the primary operational store. Use idempotent conditional writes for active work and append-oriented records for attempts and report history; re-scouting after materially changed inputs creates a new version instead of mutating history.
-- Place unresolved data providers behind adapters that return normalized domain contracts. Provider DTOs must not leak into scouting, report, or UI models, and adapters require contract validation.
-- Keep authoritative betting calculations in the deterministic domain. Structured AI output must validate against the report contract, cite normalized source references, preserve unavailable states, and record model and prompt versions before persistence.
-- Carry correlation and scouting job identifiers through API and worker logs. Monitor workflow success and failure, queue and DLQ health, provider latency and quota state, while redacting secrets and sensitive inputs.
-- Use Cognito-protected APIs, strict boundary validation, least-privilege IAM, encrypted AWS storage and queues, and sanitized rendering for report content and source links.
+- Buffer scouting commands with SQS and orchestrate collection, deterministic analysis, AI generation, contract validation, persistence, and failure handling with Step Functions. Correlation and scouting-job identifiers flow across API, queue, workflow, and worker boundaries; a DLQ captures exhausted work.
+- Keep shared records, routes, orchestration, and prompts keyed by stable `sportKey` and versioned module/strategy identifiers. Sport-specific fields and the soccer section schema belong to the sport module; shared code must not branch directly on sport.
+- Resolve providers by capability rather than vendor. Provider DTOs and IDs stay inside adapters, and normalized contracts expose declared sport/competition coverage, freshness, rate limits, quality, provenance, and explicit unavailable states.
+- SharpAPI remains authoritative for canonical schedules and odds. Soccer enrichment maps to an existing canonical event; discrepancies enter reconciliation and cannot silently create, delete, reschedule, change participants, or reprice the event.
+- Use DynamoDB conditional writes for active-job idempotency and immutable version insertion. Store report heads separately from historical versions; use private S3 pointers and content hashes only when payload size or contract-permitted evidence retention requires them.
+- Structured AI output must validate against the module-owned report contract before persistence. Authoritative market fields are references to deterministic domain outputs, not values recomputed by the AI or frontend.
+- Emit structured, redacted operational signals for state transitions, duplicates, retries, validation failures, provider latency/quota, workflow failures, and queue/DLQ health. Use protected APIs, strict boundary validation, least-privilege IAM, encrypted storage and queues, and sanitized report/source rendering.
 
 ## UX & Interaction Patterns
 
-- Scout Event creates or opens a dedicated progress surface. Labels describe user work such as collecting data, generating the report, and calculating edges rather than exposing AWS service terminology.
-- Progress and report surfaces explicitly represent queued, running, complete, failed, partial-data, and retry-available states. Errors use safe guidance; stale or partial states identify missing evidence without overstating certainty.
-- Reports provide sticky, collapsible section navigation, a version selector, change indicators, citations, timestamps, data warnings, confidence, and verification badges.
-- Provenance uses progressive disclosure: default views show concise freshness and confidence, while tooltips, row expansion, or a source drawer reveal provider timestamp, collection timestamp, source, verification, and unavailable facts.
-- PASS is calm and prominent, not styled as failure, and should explain that fresh data did not meet qualification thresholds.
+- Scout Event opens or redirects to a dedicated progress surface. User-facing states distinguish queued, collecting, generating, calculating, complete, failed, partial data, and retry available; repeated requests open the active job.
+- Reports provide sticky, collapsible section navigation, a version selector, change indicators, citations, collection timestamps, confidence, freshness and verification badges, structured verdicts, and a prominent calm PASS state.
+- Provenance uses progressive disclosure: summaries show concise status, freshness, and confidence, while expansion reveals source, provider and collection timestamps, verification, evidence, and unavailable facts.
+- Loading, empty, stale, provider-unavailable, error, and partial-data states are visually and semantically distinct. Status never relies on color alone, and keyboard access and live status messaging follow WCAG 2.1 AA patterns.
 
 ## Cross-Story Dependencies
 
-- The durable job contract depends on the existing event repository and infrastructure foundation. It enables the progress UI independently of production enrichment or final report content.
-- Provider evaluation gates the production input contract. The input contract then gates the AI interface and report schema; report validation gates immutable persistence.
-- Report persistence and progress UI can advance in parallel after their respective job and schema foundations, but both are required before the final report screen can expose versions, sources, and PASS.
-- Deterministic market-analysis work is a prerequisite for report fields that display odds-derived conclusions; the AI layer consumes those outputs rather than replacing them.
+- The job/API foundation depends on the existing event and infrastructure foundations and unlocks the progress UI without waiting for production enrichment or final report content.
+- The provider evaluation gates production enrichment. Its provisional trial decision informs the normalized input contract, while the fixture-backed stub allows schema and workflow development before production authorization.
+- The normalized input contract and deterministic market-analysis outputs gate the AI report interface. Validated report output then gates immutable persistence and version retrieval.
+- Progress UI and report persistence can proceed independently after their respective foundations, but both are required before the final report surface can expose status, versions, sources, partial data, and PASS behavior.

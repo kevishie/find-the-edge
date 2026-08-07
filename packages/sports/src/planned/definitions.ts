@@ -2,6 +2,7 @@ import type { SportKey } from "@find-the-edge/domain";
 
 import { createDeclarativeSportModule } from "../shared/create-module";
 import { createPlannedAnalysisPolicy } from "../shared/analysis";
+import { createUnavailableScoutingInputContract } from "../shared/scouting-input";
 
 function planned(
   keyValue: string,
@@ -51,6 +52,14 @@ function planned(
     outputSchemaId: `scout/${keyValue}@0`,
     validationSchemaId: `sport-input/${keyValue}@0`,
     analysisPolicy: createPlannedAnalysisPolicy(keyValue, leagues),
+    scoutingInputContract: createUnavailableScoutingInputContract({
+      sportKey: key,
+      schemaVersion: "0",
+      participantMinimum: 2,
+      participantMaximum: keyValue === "tennis" ? 4 : 2,
+      ...(keyValue === "tennis" ? { participantAllowedCounts: [2, 4] } : {}),
+      capabilityKeys: categories,
+    }),
     ui: {
       event: keyValue === "tennis" ? "Match" : "Game",
       events: keyValue === "tennis" ? "Matches" : "Games",
