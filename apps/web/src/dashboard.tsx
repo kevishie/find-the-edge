@@ -10,11 +10,12 @@ import { displayAmericanOdds, displayPercentage } from "@find-the-edge/odds";
 
 import type { GamesClient, GamesSport, RankedOpportunityPageDto } from "./api";
 import { SportsbookLogo, sportsbookMetadata } from "./sportsbooks";
+import { ProviderStatusSummary } from "./provider-status";
 
 export type DashboardClientResult =
   | {
       readonly ok: true;
-      readonly value: Pick<GamesClient, "listOpportunities">;
+      readonly value: Pick<GamesClient, "listOpportunities" | "providerStatus">;
     }
   | { readonly ok: false; readonly error: { readonly message: string } };
 
@@ -482,12 +483,13 @@ export function Dashboard({
         </>
       ) : null}
 
+      <ProviderStatusSummary client={client} />
+
       <section
         className="dashboard-placeholders"
         aria-label="Upcoming dashboard modules"
       >
         {[
-          ["Provider status and quota", "Not connected · owned by FTE-037"],
           ["Upcoming watched events", "Not connected · Watchlist is not built"],
           [
             "Recent line movement",

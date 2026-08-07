@@ -14,6 +14,21 @@ class FakeDocumentClient {
     const item = input["Item"] as
       { pk: string; sk: string; value: unknown } | undefined;
     const id = (v: { pk: string; sk: string }) => `${v.pk}|${v.sk}`;
+    if (command.constructor.name === "BatchGetCommand") {
+      const request = input["RequestItems"] as Record<
+        string,
+        { Keys: { pk: string; sk: string }[] }
+      >;
+      const [table, options] = Object.entries(request)[0]!;
+      return {
+        Responses: {
+          [table]: options.Keys.flatMap((batchKey) => {
+            const row = this.rows.get(id(batchKey));
+            return row ? [structuredClone(row)] : [];
+          }),
+        },
+      };
+    }
     if (command.constructor.name === "DeleteCommand" && key) {
       const row = this.rows.get(id(key));
       if (
@@ -79,6 +94,59 @@ const stores = (): readonly OddsControlPlaneStore[] => {
   ];
 };
 describe("odds control plane store", () => {
+  it("reads bounded exact health keys in caller order", async () => {
+    for (const store of stores()) {
+      await store.putHealth({
+        providerId: "sharpapi",
+        healthKey: "sharpapi:mlb:odds",
+        healthy: true,
+        consecutiveSuccesses: 1,
+        lastSuccessfulAt: "2026-08-07T12:00:00.000Z",
+        updatedAt: "2026-08-07T12:00:00.000Z",
+      });
+      await expect(
+        store.getHealthMany(["missing", "sharpapi:mlb:odds"]),
+      ).resolves.toEqual([
+        null,
+        expect.objectContaining({
+          healthKey: "sharpapi:mlb:odds",
+          lastSuccessfulAt: "2026-08-07T12:00:00.000Z",
+        }),
+      ]);
+    }
+  });
+
+  it("never projects a Dynamo TTL onto transient health that retains a success", async () => {
+    const client = new FakeDocumentClient();
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      healthy: false,
+      consecutiveSuccesses: 0,
+      lastSuccessfulAt: "2026-08-07T11:00:00.000Z",
+      updatedAt: "2026-08-07T12:00:00.000Z",
+      expiresAt: 1_786_101_000,
+    });
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mls:odds",
+      healthy: false,
+      consecutiveSuccesses: 0,
+      updatedAt: "2026-08-07T12:00:00.000Z",
+      expiresAt: 1_786_101_000,
+    });
+    expect(
+      client.rows.get("ODDS_CONTROL#HEALTH#sharpapi:mlb:odds|CURRENT"),
+    ).not.toHaveProperty("expiresAt");
+    expect(
+      client.rows.get("ODDS_CONTROL#HEALTH#sharpapi:mls:odds|CURRENT"),
+    ).toHaveProperty("expiresAt", 1_786_101_000);
+  });
+
   it("blocks ambiguous automatic recall until the durable request lease expires", async () => {
     const s = new MemoryOddsControlPlaneStore();
     const attempt = {

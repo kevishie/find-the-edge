@@ -5,6 +5,7 @@ import type {
   FixtureOddsPersistResult,
   OddsControlPlaneStore,
   OddsAttemptRecord,
+  OddsProviderHealth,
   OddsRunContinuation,
   SealedOddsPage,
 } from "@find-the-edge/database";
@@ -1126,6 +1127,7 @@ export async function runFocusedSharpOddsIngestion(input: {
         updatedAt: now.toISOString(),
         consecutiveSuccesses: (health?.consecutiveSuccesses ?? 0) + 1,
       }),
+      partialEvidenceCount: persisted.partialEvidence + gaps.length,
       ...(responseRateWindow ? { rateWindow: responseRateWindow } : {}),
     });
     for (const [name, value] of [
@@ -1263,6 +1265,7 @@ export async function runProductionOddsControlPlane(input: {
     let quarantinedScheduleEvents = 0;
     let contradictoryCommittedScheduleEvidence = false;
     let pendingConflictMetricDelivery = false;
+    let latestScheduleRateWindow: OddsProviderHealth["rateWindow"];
     const currentScheduleStarts: string[] = [];
     const currentExpectedProviderEventIds: string[] = [];
     const schedulePolicy = productionScheduleDiscoveryPolicies.find(
@@ -1491,6 +1494,9 @@ export async function runProductionOddsControlPlane(input: {
           });
         }
         const page = sealed.normalizedItems[0] as SharpApiSchedulePage;
+        latestScheduleRateWindow =
+          nonEmptyRateWindow(page.responseMetadata?.rateWindow) ??
+          latestScheduleRateWindow;
         scheduleStage = "event-reconcile";
         const conflictPageToken = `${pageToken}:schedule-conflicts`;
         const existingConflictPage = await input.control.getPage(
@@ -1797,6 +1803,9 @@ export async function runProductionOddsControlPlane(input: {
           : {
               quotaRemaining: authoritativeScheduleHealth.quotaRemaining,
             }),
+        ...(latestScheduleRateWindow
+          ? { rateWindow: latestScheduleRateWindow }
+          : {}),
       });
       scheduleStage = "ownership-clear";
       await clearOwned(checkpointKey, runId);
@@ -2357,15 +2366,21 @@ export async function runProductionOddsControlPlane(input: {
         readonly features: readonly string[];
         readonly requestsPerMinute: number;
         readonly maxBooks: number;
+        readonly responseMetadata?: {
+          readonly rateWindow: OddsProviderHealth["rateWindow"];
+        };
       };
+      const accountRateWindow = nonEmptyRateWindow(
+        account.responseMetadata?.rateWindow,
+      );
       if (!Number.isSafeInteger(account.maxBooks) || account.maxBooks < 0)
         throw new Error("account-capacity-invalid");
       input.metrics?.emit("OddsAccountBookCapacity", account.maxBooks, {
         provider: SHARP_API_PROVIDER_ID,
       });
       const accountHealthKey = `${SHARP_API_PROVIDER_ID}:account:account`;
-      await input.control.putHealth(
-        healthyOddsProviderState(
+      await input.control.putHealth({
+        ...healthyOddsProviderState(
           await input.control.getHealth(accountHealthKey),
           {
             providerId: SHARP_API_PROVIDER_ID,
@@ -2374,7 +2389,8 @@ export async function runProductionOddsControlPlane(input: {
             updatedAt: now.toISOString(),
           },
         ),
-      );
+        ...(accountRateWindow ? { rateWindow: accountRateWindow } : {}),
+      });
       if (!account.features.includes("splits"))
         for (const league of sharpApiLeagues)
           await input.control.putGap({
@@ -2442,6 +2458,7 @@ export async function runProductionOddsControlPlane(input: {
             let offset = 0;
             let splitsComplete = false;
             let splitQuotaCost = continuation?.quotaCost ?? 0;
+            let latestSplitRateWindow: OddsProviderHealth["rateWindow"];
             for (let guard = 0; guard < 20; guard += 1) {
               const pageToken = String(offset);
               let sealed = await input.control.getPage(runId, pageToken);
@@ -2575,12 +2592,18 @@ export async function runProductionOddsControlPlane(input: {
                 ownerId,
                 liveNow,
               );
+              const splitPage = sealed.normalizedItems[0] as Awaited<
+                ReturnType<typeof fetchSharpApiSplitsPage>
+              >;
+              latestSplitRateWindow =
+                nonEmptyRateWindow(splitPage.responseMetadata?.rateWindow) ??
+                latestSplitRateWindow;
               if (!sealed.committedAt) {
                 await persistSharpApiSplitPage(
                   input.events,
                   input.splits,
                   league,
-                  sealed.normalizedItems[0] as never,
+                  splitPage,
                   [],
                 );
                 await input.control.commitPage(
@@ -2619,15 +2642,18 @@ export async function runProductionOddsControlPlane(input: {
             });
             const splitHealthKey = `${SHARP_API_PROVIDER_ID}:${league.leagueKey}:splits`;
             const splitHealth = await input.control.getHealth(splitHealthKey);
-            await input.control.putHealth(
-              healthyOddsProviderState(splitHealth, {
+            await input.control.putHealth({
+              ...healthyOddsProviderState(splitHealth, {
                 providerId: SHARP_API_PROVIDER_ID,
                 healthKey: splitHealthKey,
                 consecutiveSuccesses:
                   (splitHealth?.consecutiveSuccesses ?? 0) + 1,
                 updatedAt: now.toISOString(),
               }),
-            );
+              ...(latestSplitRateWindow
+                ? { rateWindow: latestSplitRateWindow }
+                : {}),
+            });
             await clearOwned(continuationKey, runId);
           } catch (error) {
             const reason = capabilityFailure(error);

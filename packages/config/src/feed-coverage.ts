@@ -2,6 +2,7 @@ import type {
   FeedCapability,
   FeedCoverageRegistration,
   InactiveFeedPolicy,
+  ProviderStatusCapability,
   SportKey,
 } from "@find-the-edge/domain";
 import { approvedSportsbookCollection } from "./sportsbooks";
@@ -94,6 +95,81 @@ export const productionOddsCollectionPolicies: readonly LeagueOddsCollectionPoli
     providerPolicy("epl"),
     providerPolicy("liga-mx"),
     providerPolicy("uefa-champions-league"),
+  ]);
+
+export interface ProductionProviderStatusScope {
+  readonly scopeId: string;
+  readonly healthKey: string;
+  readonly providerId: "sharpapi";
+  readonly providerName: "SharpAPI";
+  readonly sportKey: "mlb" | "soccer" | null;
+  readonly leagueKey: string;
+  readonly capability: ProviderStatusCapability;
+  readonly purpose: string;
+  readonly supportedData: readonly string[];
+  readonly expectedFreshnessSeconds: number;
+  readonly reserve: number;
+}
+
+const providerStatusLeague = (leagueKey: string) => ({
+  sportKey: leagueKey === "mlb" ? ("mlb" as const) : ("soccer" as const),
+  leagueKey,
+});
+
+/** Exact public-status catalog. It deliberately describes production SharpAPI
+ * collection rather than fixture-development coverage. */
+export const productionProviderStatusCatalog: readonly ProductionProviderStatusScope[] =
+  deepFreeze([
+    {
+      scopeId: "sharpapi:account",
+      healthKey: "sharpapi:account:account",
+      providerId: "sharpapi",
+      providerName: "SharpAPI",
+      sportKey: null,
+      leagueKey: "account",
+      capability: "account",
+      purpose: "Connection and request-window metadata",
+      supportedData: ["Provider connectivity", "Request-window telemetry"],
+      expectedFreshnessSeconds: 900,
+      reserve: productionScheduleDiscoveryPolicies[0]!.quotaReserve,
+    },
+    ...productionOddsCollectionPolicies.flatMap((policy) => {
+      const league = providerStatusLeague(policy.leagueKey);
+      const provider = policy.providers[0]!;
+      return (
+        [
+          {
+            capability: "schedule",
+            purpose: "Upcoming event discovery",
+            supportedData: ["Schedules", "Event status"],
+            expectedFreshnessSeconds:
+              productionScheduleDiscoveryPolicies[0]!.cadenceSeconds,
+            reserve: productionScheduleDiscoveryPolicies[0]!.quotaReserve,
+          },
+          {
+            capability: "odds",
+            purpose: "Sportsbook prices and market availability",
+            supportedData: [...policy.markets],
+            expectedFreshnessSeconds: policy.baseCadenceSeconds,
+            reserve: provider.quotaReserve,
+          },
+          {
+            capability: "splits",
+            purpose: "Public betting splits",
+            supportedData: ["Bet percentage", "Money percentage"],
+            expectedFreshnessSeconds: 900,
+            reserve: provider.quotaReserve,
+          },
+        ] as const
+      ).map((entry) => ({
+        scopeId: `sharpapi:${policy.leagueKey}:${entry.capability}`,
+        healthKey: `sharpapi:${policy.leagueKey}:${entry.capability}`,
+        providerId: "sharpapi" as const,
+        providerName: "SharpAPI" as const,
+        ...league,
+        ...entry,
+      }));
+    }),
   ]);
 const capabilities = ["schedule", "odds", "results"] as const;
 

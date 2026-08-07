@@ -206,6 +206,100 @@ const rankedPage = (items = [rankedOpportunity("a", 0.12)]) => ({
   joinFailureCount: 0,
 });
 
+const providerStatusPage = () => ({
+  schemaVersion: "provider-status-page-v1",
+  snapshotAt: "2026-08-07T12:00:00.000Z",
+  evaluationState: "complete",
+  summary: {
+    total: 1,
+    healthy: 1,
+    partial: 0,
+    stale: 0,
+    outage: 0,
+    unknown: 0,
+    impacted: 0,
+  },
+  items: [
+    {
+      scopeId: "sharpapi:mlb:odds",
+      providerId: "sharpapi",
+      providerName: "SharpAPI",
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      capability: "odds",
+      purpose: "Sportsbook prices",
+      supportedData: ["moneyline"],
+      connection: "healthy",
+      safeReason: "none",
+      lastCheckedAt: "2026-08-07T11:59:00.000Z",
+      lastSuccessfulAt: "2026-08-07T11:59:00.000Z",
+      retryAt: null,
+      freshness: { ageSeconds: 60, expectedSeconds: 900 },
+      capacity: {
+        state: "available",
+        limit: 1000,
+        remaining: 800,
+        reserve: 100,
+        resetsAt: "2026-08-07T12:10:00.000Z",
+      },
+      recommendationImpact: "none",
+    },
+  ],
+});
+
+describe("provider status client", () => {
+  it("uses the public endpoint without credentials", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify(providerStatusPage())));
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.providerStatus!(new AbortController().signal),
+    ).resolves.toMatchObject({ summary: { healthy: 1 } });
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/providers/status",
+    );
+    expect(fetcher.mock.calls[0]?.[1]?.credentials).toBe("omit");
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toBeUndefined();
+  });
+
+  it.each([
+    { ...providerStatusPage(), internalHealthKey: "secret" },
+    {
+      ...providerStatusPage(),
+      summary: { ...providerStatusPage().summary, healthy: 0 },
+    },
+    {
+      ...providerStatusPage(),
+      items: [providerStatusPage().items[0], providerStatusPage().items[0]],
+    },
+    {
+      ...providerStatusPage(),
+      items: [
+        {
+          ...providerStatusPage().items[0],
+          capacity: {
+            ...providerStatusPage().items[0]!.capacity,
+            resetsAt: "2026-08-07T11:00:00.000Z",
+          },
+        },
+      ],
+    },
+  ])("rejects hostile provider status responses", async (body) => {
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(body))),
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.providerStatus!(new AbortController().signal),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+});
+
 describe("ranked opportunity client", () => {
   it("keeps the public server order and sends no credentials", async () => {
     const body = rankedPage([

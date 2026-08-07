@@ -55,6 +55,7 @@ import {
 } from "./api";
 import { detailMatchesRoute } from "./route-state";
 import { Dashboard } from "./dashboard";
+import { DataSources } from "./provider-status";
 
 const SPLITS_REFRESH_INTERVAL_MS = 30_000;
 const oddsCellTimestamp = (
@@ -233,6 +234,7 @@ interface UiGamesPage {
   }[];
 }
 interface UiGamesClient {
+  providerStatus?: NonNullable<import("./api").GamesClient["providerStatus"]>;
   listOpportunities?: NonNullable<
     import("./api").GamesClient["listOpportunities"]
   >;
@@ -441,6 +443,9 @@ function AppShell() {
           <Link to="/performance" activeProps={{ className: "active" }}>
             Performance
           </Link>
+          <Link to="/data-sources" activeProps={{ className: "active" }}>
+            Data Sources
+          </Link>
           <Link to="/retrospectives" activeProps={{ className: "active" }}>
             Retrospectives
           </Link>
@@ -492,6 +497,9 @@ function AppShell() {
           <Link to="/performance" activeProps={{ className: "active" }}>
             Performance
           </Link>
+          <Link to="/data-sources" activeProps={{ className: "active" }}>
+            Sources
+          </Link>
           <Link to="/retrospectives" activeProps={{ className: "active" }}>
             Reviews
           </Link>
@@ -506,6 +514,10 @@ function AppShell() {
 
 function DashboardRoute() {
   return <Dashboard client={useContext(GamesClientContext)} />;
+}
+
+function DataSourcesRoute() {
+  return <DataSources client={useContext(GamesClientContext)} />;
 }
 
 function AppError({ error }: { error: Error }) {
@@ -3472,6 +3484,11 @@ const performanceRoute = createRoute({
   path: "/performance",
   component: PerformanceDashboard,
 });
+const dataSourcesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/data-sources",
+  component: DataSourcesRoute,
+});
 function RetrospectivesList() {
   const client = useContext(GamesClientContext),
     [state, setState] = useState<{
@@ -4264,6 +4281,7 @@ const routeTree = rootRoute.addChildren([
   gameDetailRoute,
   splitsRoute,
   performanceRoute,
+  dataSourcesRoute,
   retrospectivesRoute,
   retrospectiveDetailRoute,
   experimentsRoute,

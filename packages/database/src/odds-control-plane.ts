@@ -2,6 +2,7 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 /* eslint-disable @typescript-eslint/require-await -- memory parity deliberately implements the async repository contract */
 import {
   DeleteCommand,
+  BatchGetCommand,
   GetCommand,
   PutCommand,
   UpdateCommand,
@@ -85,6 +86,10 @@ export interface OddsProviderHealth {
   readonly degradedReason?: "stored-event-conflict";
   readonly degradedCount?: number;
   readonly consecutiveSuccesses: number;
+  /** Durable successful observation retained when later attempts fail. */
+  readonly lastSuccessfulAt?: string;
+  /** Bounded latest-run partial evidence count for public status. */
+  readonly partialEvidenceCount?: number;
   readonly cooldownUntil?: string;
   readonly quotaRemaining?: number;
   /** Authoritative provider request window. Never populated from account RPM. */
@@ -163,6 +168,9 @@ export interface OddsControlPlaneStore {
   getCheckpoint(leagueKey: string): Promise<OddsLeagueCheckpoint | null>;
   putCheckpoint(value: OddsLeagueCheckpoint): Promise<void>;
   getHealth(providerId: string): Promise<OddsProviderHealth | null>;
+  getHealthMany(
+    healthKeys: readonly string[],
+  ): Promise<readonly (OddsProviderHealth | null)[]>;
   putHealth(value: OddsProviderHealth): Promise<void>;
   reserveQuota(
     healthKey: string,
@@ -402,6 +410,9 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
   async getHealth(k: string) {
     return clone(this.health.get(k) ?? null);
   }
+  async getHealthMany(keys: readonly string[]) {
+    return keys.map((key) => clone(this.health.get(key) ?? null));
+  }
   async putHealth(v: OddsProviderHealth) {
     const k = v.healthKey ?? v.providerId;
     const old = this.health.get(k);
@@ -565,7 +576,17 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       await this.client.send(
         new PutCommand({
           TableName: this.tableName,
-          Item: { ...key(kind, id), value },
+          Item: {
+            ...key(kind, id),
+            value,
+            ...(kind === "HEALTH" &&
+            typeof value === "object" &&
+            value !== null &&
+            Reflect.get(value, "lastSuccessfulAt") === undefined &&
+            Number.isSafeInteger(Reflect.get(value, "expiresAt"))
+              ? { expiresAt: Reflect.get(value, "expiresAt") as number }
+              : {}),
+          },
           ...(condition ? { ConditionExpression: condition } : {}),
           ...(expressionAttributeNames
             ? { ExpressionAttributeNames: expressionAttributeNames }
@@ -1012,6 +1033,32 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
   }
   getHealth(k: string) {
     return this.get<OddsProviderHealth>("HEALTH", k);
+  }
+  async getHealthMany(keys: readonly string[]) {
+    if (keys.length > 32 || new Set(keys).size !== keys.length)
+      throw new Error("health-keys-invalid");
+    if (keys.length === 0) return [];
+    const result = await this.client.send(
+      new BatchGetCommand({
+        RequestItems: {
+          [this.tableName]: {
+            Keys: keys.map((keyValue) => key("HEALTH", keyValue)),
+            ConsistentRead: true,
+          },
+        },
+      }),
+    );
+    if ((result.UnprocessedKeys?.[this.tableName]?.Keys?.length ?? 0) > 0)
+      throw new Error("health-read-partial");
+    const byKey = new Map(
+      (result.Responses?.[this.tableName] ?? []).map((item) => [
+        String(item["pk"]),
+        item["value"] as OddsProviderHealth,
+      ]),
+    );
+    return keys.map(
+      (keyValue) => byKey.get(`ODDS_CONTROL#HEALTH#${keyValue}`) ?? null,
+    );
   }
   async putHealth(v: OddsProviderHealth) {
     await this.putVersioned(

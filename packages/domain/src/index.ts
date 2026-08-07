@@ -11,6 +11,7 @@ export * from "./evaluation-attempt.js";
 export * from "./opportunity-candidate.js";
 export * from "./opportunities/opportunity-lifecycle.js";
 export * from "./opportunities/ranked-opportunity.js";
+export * from "./provider-status.js";
 export type EntityId = string & { readonly __entityId: unique symbol };
 export type IsoTimestamp = string & { readonly __isoTimestamp: unique symbol };
 

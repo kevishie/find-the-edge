@@ -2,10 +2,39 @@ import { describe, expect, it } from "vitest";
 import {
   oddsCollectionPolicyVersion,
   productionOddsCollectionPolicies,
+  productionProviderStatusCatalog,
 } from "./feed-coverage";
 import { defaultEvaluationPolicy } from "./evaluation-policy";
 
 describe("production odds policy", () => {
+  it("publishes exact non-fixture provider status scopes", () => {
+    expect(productionProviderStatusCatalog).toHaveLength(16);
+    expect(productionProviderStatusCatalog[0]).toMatchObject({
+      scopeId: "sharpapi:account",
+      healthKey: "sharpapi:account:account",
+    });
+    expect(
+      productionProviderStatusCatalog.every(
+        (scope) =>
+          scope.providerId === "sharpapi" &&
+          !scope.healthKey.includes("fixture"),
+      ),
+    ).toBe(true);
+    expect(Object.isFrozen(productionProviderStatusCatalog)).toBe(true);
+    expect(
+      productionProviderStatusCatalog.find(
+        ({ capability }) => capability === "account",
+      )?.expectedFreshnessSeconds,
+    ).toBe(900);
+    expect(
+      productionProviderStatusCatalog
+        .filter(({ capability }) => capability === "splits")
+        .every(
+          ({ expectedFreshnessSeconds }) => expectedFreshnessSeconds === 900,
+        ),
+    ).toBe(true);
+  });
+
   it("is Sharp-primary, independently budgeted and adaptive", () => {
     expect(oddsCollectionPolicyVersion).toContain("control-plane");
     expect(productionOddsCollectionPolicies).toHaveLength(5);

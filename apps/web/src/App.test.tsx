@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
   assessEventMetadata,
+  type ProviderStatusPageDto,
   type RankedOpportunityDto,
 } from "@find-the-edge/domain";
 
@@ -1100,7 +1101,82 @@ const dashboardPage = (
   ...overrides,
 });
 
+const providerScope = (
+  overrides: Partial<ProviderStatusPageDto["items"][number]> = {},
+): ProviderStatusPageDto["items"][number] => ({
+  scopeId: "sharpapi:mlb:odds",
+  providerId: "sharpapi",
+  providerName: "SharpAPI",
+  sportKey: "mlb",
+  leagueKey: "mlb",
+  capability: "odds",
+  purpose: "Sportsbook prices and market availability",
+  supportedData: ["moneyline", "spread", "total"],
+  connection: "healthy",
+  safeReason: "none",
+  lastCheckedAt: "2099-08-07T12:00:00.000Z",
+  lastSuccessfulAt: "2099-08-07T12:00:00.000Z",
+  retryAt: null,
+  freshness: { ageSeconds: 0, expectedSeconds: 900 },
+  capacity: {
+    state: "available",
+    limit: 1000,
+    remaining: 800,
+    reserve: 100,
+    resetsAt: "2099-08-07T12:10:00.000Z",
+  },
+  recommendationImpact: "none",
+  ...overrides,
+});
+
+const providerPage = (
+  items: ProviderStatusPageDto["items"] = [providerScope()],
+): ProviderStatusPageDto => ({
+  schemaVersion: "provider-status-page-v1",
+  snapshotAt: "2099-08-07T12:00:00.000Z",
+  evaluationState: "complete",
+  summary: {
+    total: items.length,
+    healthy: items.filter(({ connection }) => connection === "healthy").length,
+    partial: items.filter(({ connection }) => connection === "partial").length,
+    stale: items.filter(({ connection }) => connection === "stale").length,
+    outage: items.filter(({ connection }) => connection === "outage").length,
+    unknown: items.filter(({ connection }) => connection === "unknown").length,
+    impacted: items.filter(
+      ({ recommendationImpact }) => recommendationImpact !== "none",
+    ).length,
+  },
+  items,
+});
+
 describe("Dashboard", () => {
+  it("keeps ranked cards when the independent status request fails", async () => {
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            listOpportunities: vi.fn(() =>
+              Promise.resolve(dashboardPage([dashboardOpportunity("p", 0.09)])),
+            ),
+            providerStatus: vi.fn(() =>
+              Promise.reject(new Error("raw secret")),
+            ),
+          },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Away P vs Home P" }),
+    ).toBeVisible();
+    expect(await screen.findByText("Status unavailable")).toBeVisible();
+    expect(
+      screen.getByText(/remain governed by their own verified snapshot/),
+    ).toBeVisible();
+  });
+
   it("keeps a stable loading state while ranked evidence is pending", async () => {
     const listOpportunities = vi.fn(
       () => new Promise<RankedOpportunityPageDto>(() => undefined),
@@ -1365,6 +1441,56 @@ describe("Dashboard", () => {
     ).toBeVisible();
     expect(screen.getByText(/this is not a no-edge claim/i)).toBeVisible();
     expect(screen.queryByText("No qualified edge")).not.toBeInTheDocument();
+  });
+});
+
+describe("Data Sources", () => {
+  it("renders connection and capacity independently with safe impact copy", async () => {
+    const outage = providerScope({
+      connection: "outage",
+      safeReason: "provider-unavailable",
+      lastCheckedAt: "2099-08-07T11:59:00.000Z",
+      lastSuccessfulAt: "2099-08-07T11:45:00.000Z",
+      retryAt: "2099-08-07T12:05:00.000Z",
+      freshness: { ageSeconds: 900, expectedSeconds: 900 },
+      capacity: {
+        state: "exhausted",
+        limit: 1000,
+        remaining: 0,
+        reserve: 100,
+        resetsAt: "2099-08-07T12:10:00.000Z",
+      },
+      recommendationImpact: "suppressed",
+    });
+    render(
+      <App
+        initialPath="/data-sources"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            providerStatus: vi.fn(() =>
+              Promise.resolve(providerPage([outage])),
+            ),
+          },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Data Sources" }),
+    ).toBeVisible();
+    expect(await screen.findByText("Outage")).toBeVisible();
+    expect(
+      screen.getByText(
+        (_content, element) =>
+          element?.tagName === "P" &&
+          element.textContent?.includes("0 of 1000 requests remain") === true,
+      ),
+    ).toBeVisible();
+    expect(screen.getByText(/Aug 7, 2099, 8:05 AM Eastern/i)).toBeVisible();
+    expect(screen.getByText(/not subscription quota/i)).toBeVisible();
+    expect(screen.getByText(/suppressed server-side/)).toBeVisible();
+    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuenow", "0");
   });
 });
 

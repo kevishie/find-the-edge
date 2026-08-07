@@ -96,6 +96,51 @@ test("renders the ranked evidence dashboard without horizontal overflow", async 
       }),
     }),
   );
+  await page.route("**/providers/status", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: "provider-status-page-v1",
+        snapshotAt: "2099-08-07T12:00:00.000Z",
+        evaluationState: "complete",
+        summary: {
+          total: 1,
+          healthy: 0,
+          partial: 0,
+          stale: 0,
+          outage: 1,
+          unknown: 0,
+          impacted: 1,
+        },
+        items: [
+          {
+            scopeId: "sharpapi:mlb:odds",
+            providerId: "sharpapi",
+            providerName: "SharpAPI",
+            sportKey: "mlb",
+            leagueKey: "mlb",
+            capability: "odds",
+            purpose: "Sportsbook prices and market availability",
+            supportedData: ["moneyline", "spread", "total"],
+            connection: "outage",
+            safeReason: "provider-unavailable",
+            lastCheckedAt: "2099-08-07T11:59:00.000Z",
+            lastSuccessfulAt: "2099-08-07T11:45:00.000Z",
+            retryAt: "2099-08-07T12:05:00.000Z",
+            freshness: { ageSeconds: 900, expectedSeconds: 900 },
+            capacity: {
+              state: "exhausted",
+              limit: 1000,
+              remaining: 0,
+              reserve: 100,
+              resetsAt: "2099-08-07T12:10:00.000Z",
+            },
+            recommendationImpact: "suppressed",
+          },
+        ],
+      }),
+    }),
+  );
   await page.goto("/");
 
   await expect(
@@ -103,6 +148,9 @@ test("renders the ranked evidence dashboard without horizontal overflow", async 
   ).toBeVisible();
   const cards = page.locator("[data-opportunity-id]");
   await expect(cards).toHaveCount(2);
+  await expect(
+    page.getByText("1 scopes may limit new recommendations."),
+  ).toBeVisible();
   await expect(cards.nth(0)).toHaveAttribute(
     "data-opportunity-id",
     items[0]!.opportunityId,
@@ -129,6 +177,17 @@ test("renders the ranked evidence dashboard without horizontal overflow", async 
       page.getByRole("navigation", { name: "Compact product navigation" }),
     ).toBeVisible();
   }
+  await expect(page.locator("html")).toHaveJSProperty(
+    "scrollWidth",
+    await page.locator("html").evaluate((element) => element.clientWidth),
+  );
+  await page.getByRole("link", { name: "Open Data Sources" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Data Sources" }),
+  ).toBeVisible();
+  await expect(page.getByText("Outage")).toBeVisible();
+  await expect(page.getByText(/0 of 1000 requests remain/)).toBeVisible();
+  await expect(page.getByRole("meter")).toHaveAttribute("aria-valuenow", "0");
   await expect(page.locator("html")).toHaveJSProperty(
     "scrollWidth",
     await page.locator("html").evaluate((element) => element.clientWidth),

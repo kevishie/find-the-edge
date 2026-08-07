@@ -5,11 +5,13 @@ import type {
   GameOddsSelectionDto,
   EntityId,
   RankedOpportunityDto,
+  ProviderStatusPageDto,
 } from "@find-the-edge/domain";
 import {
   collapseNearDuplicateGames,
   EVENT_LIFECYCLE_STATES,
   normalizeRankedOpportunityDto,
+  normalizeProviderStatusPageDto,
   validateEventMetadataAssessment,
   participantSelectionKey,
 } from "@find-the-edge/domain";
@@ -136,6 +138,7 @@ export interface OddsHistoryDto {
 }
 
 export interface GamesClient {
+  providerStatus?(signal: AbortSignal): Promise<ProviderStatusPageDto>;
   listOpportunities?(
     sportKey: GamesSport,
     signal: AbortSignal,
@@ -2166,6 +2169,36 @@ export function createGamesClient(
   return {
     ok: true,
     value: {
+      async providerStatus(signal) {
+        const timeoutSignal = AbortSignal.timeout(8_000);
+        const requestSignal = AbortSignal.any([signal, timeoutSignal]);
+        let response: Response;
+        try {
+          response = await fetcher(
+            `${bootstrap.value.config.apiBase}/providers/status`,
+            { credentials: "omit", signal: requestSignal },
+          );
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw new GamesClientError(
+            "request-failed",
+            "Provider status is temporarily unavailable.",
+          );
+        }
+        if (!response.ok)
+          throw new GamesClientError(
+            "request-failed",
+            "Provider status is temporarily unavailable.",
+          );
+        try {
+          return normalizeProviderStatusPageDto(await response.json());
+        } catch {
+          throw new GamesClientError(
+            "invalid-response",
+            "The provider status response was invalid.",
+          );
+        }
+      },
       async listOpportunities(sportKey, signal) {
         if (sportKey !== "mlb" && sportKey !== "soccer")
           throw new GamesClientError(

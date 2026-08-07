@@ -35,6 +35,44 @@ const repository: EventRepository = {
     return { projectionState: "ready", item: null, unavailableReason: null };
   },
 };
+
+it("serves the public provider-status contract without query parameters", async () => {
+  const providerStatus = vi.fn(() =>
+    Promise.resolve({
+      schemaVersion: "provider-status-page-v1" as const,
+      snapshotAt: "2026-08-07T12:00:00.000Z",
+      evaluationState: "complete" as const,
+      summary: {
+        total: 0,
+        healthy: 0,
+        partial: 0,
+        stale: 0,
+        outage: 0,
+        unknown: 0,
+        impacted: 0,
+      },
+      items: [],
+    }),
+  );
+  const handler = createEventHandler(
+    repository,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    providerStatus,
+  );
+  const result = await handler({ route: "provider-status", method: "GET" });
+  expect(result.statusCode).toBe(200);
+  expect(providerStatus).toHaveBeenCalledOnce();
+  expect(
+    await handler({ route: "provider-status", query: { leaked: "1" } }),
+  ).toMatchObject({ statusCode: 400 });
+});
 const gamesWithDetail = (
   detail: NonNullable<GamesRepository["detail"]>,
 ): GamesRepository => ({

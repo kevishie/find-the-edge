@@ -264,6 +264,76 @@ describe("production odds control-plane composition", () => {
     }
   });
 
+  it("persists successful schedule, account, and split request windows", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    await runProductionOddsControlPlane({
+      events: new MemoryEventIngestionStore(),
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      clock: () => now,
+      fetchSharpSchedule: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+        responseMetadata: {
+          rateWindow: {
+            limit: 1_000,
+            remaining: 810,
+            resetsAt: "2026-08-03T12:15:00.000Z",
+          },
+        },
+      }),
+      fetchSharpOdds: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: ["splits"],
+        requestsPerMinute: 300,
+        maxBooks: 25,
+        streamingEnabled: false,
+        responseMetadata: {
+          rateWindow: {
+            limit: 1_000,
+            remaining: 805,
+            resetsAt: "2026-08-03T12:15:00.000Z",
+          },
+        },
+      }),
+      fetchSharpSplits: vi.fn().mockResolvedValue({
+        items: [],
+        hasMore: false,
+        retrievedAt: at,
+        responseMetadata: {
+          rateWindow: {
+            limit: 1_000,
+            remaining: 800,
+            resetsAt: "2026-08-03T12:15:00.000Z",
+          },
+        },
+      }),
+    });
+    expect(await control.getHealth("sharpapi:mlb:schedule")).toMatchObject({
+      rateWindow: { limit: 1_000, remaining: 810 },
+    });
+    expect(await control.getHealth("sharpapi:account:account")).toMatchObject({
+      rateWindow: { limit: 1_000, remaining: 800 },
+    });
+    expect(await control.getHealth("sharpapi:mlb:splits")).toMatchObject({
+      rateWindow: { limit: 1_000, remaining: 800 },
+    });
+  });
+
   it("rejects invalid replayed account capacity before telemetry", async () => {
     const control = new MemoryOddsControlPlaneStore();
     const metrics = { emit: vi.fn() };
@@ -2479,6 +2549,13 @@ describe("production odds control-plane composition", () => {
           ],
           hasMore: false,
           retrievedAt: at,
+          responseMetadata: {
+            rateWindow: {
+              limit: 1_000,
+              remaining: 777,
+              resetsAt: "2026-08-03T12:15:00.000Z",
+            },
+          },
         },
       ],
       gaps: [],
@@ -2523,6 +2600,9 @@ describe("production odds control-plane composition", () => {
     expect(await control.getCheckpoint("schedule:sharpapi:mlb")).toMatchObject({
       runId: "interrupted-mlb-schedule",
       expectedProviderEventIds: ["mlb-recovered-event"],
+    });
+    expect(await control.getHealth("sharpapi:mlb:schedule")).toMatchObject({
+      rateWindow: { limit: 1_000, remaining: 777 },
     });
   });
 

@@ -452,9 +452,11 @@ export const healthyOddsProviderState = (
   delete retained.degraded;
   delete retained.degradedReason;
   delete retained.degradedCount;
+  delete retained.partialEvidenceCount;
   return {
     ...retained,
     ...input,
+    lastSuccessfulAt: input.updatedAt,
     healthy: true as const,
     status: "healthy" as const,
   };
@@ -981,6 +983,7 @@ export async function runOddsLeague(input: {
       pages = 0,
       quotaCost = run.quotaCost;
     let evidenceCommitted = run.evidenceCommitted;
+    let partialEvidenceCount = 0;
     const seenProviderEventIds = new Set<string>();
     for (
       let token: string | undefined = "start", guard = 0;
@@ -1251,6 +1254,7 @@ export async function runOddsLeague(input: {
           });
         }
         pages += 1;
+        partialEvidenceCount += sealed.gaps.length;
         await putContinuationCas(store, {
           leagueKey: policy.leagueKey,
           runId,
@@ -1271,6 +1275,7 @@ export async function runOddsLeague(input: {
           seenProviderEventIds,
         });
         for (const gap of gaps) await store.putGap(gap);
+        partialEvidenceCount += gaps.length;
         evidenceCommitted ||= gaps.length > 0;
       }
       run = {
@@ -1300,6 +1305,7 @@ export async function runOddsLeague(input: {
             completedHealth?.consecutiveSuccesses ??
             (health?.consecutiveSuccesses ?? 0) + 1,
         }),
+        partialEvidenceCount,
         ...(completedHealth?.quotaRemaining === undefined
           ? {}
           : { quotaRemaining: completedHealth.quotaRemaining }),

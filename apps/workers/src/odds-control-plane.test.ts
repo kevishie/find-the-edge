@@ -19,6 +19,51 @@ import {
 } from "./odds-control-plane";
 const now = new Date("2026-08-03T12:00:00.000Z");
 
+it("preserves the last success when a later provider attempt fails", () => {
+  const healthy = healthyOddsProviderState(null, {
+    providerId: "sharpapi",
+    healthKey: "sharpapi:mlb:odds",
+    updatedAt: "2026-08-03T11:59:00.000Z",
+    consecutiveSuccesses: 1,
+  });
+  const failed = unhealthyOddsProviderState(healthy, {
+    providerId: "sharpapi",
+    healthKey: "sharpapi:mlb:odds",
+    now,
+    decision: decideOddsRetry({
+      error: new Error("provider-unavailable"),
+      attempt: 1,
+      now,
+      jitter: () => 0,
+    }),
+    cooldownSeconds: 900,
+  });
+  expect(failed.lastSuccessfulAt).toBe("2026-08-03T11:59:00.000Z");
+  expect(failed.updatedAt).toBe(now.toISOString());
+});
+
+it("clears prior partial evidence when a later successful run is complete", () => {
+  const recovered = healthyOddsProviderState(
+    {
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      healthy: true,
+      status: "healthy",
+      consecutiveSuccesses: 1,
+      partialEvidenceCount: 4,
+      updatedAt: "2026-08-03T11:50:00.000Z",
+    },
+    {
+      providerId: "sharpapi",
+      healthKey: "sharpapi:mlb:odds",
+      updatedAt: "2026-08-03T11:59:00.000Z",
+      consecutiveSuccesses: 2,
+    },
+  );
+  expect(recovered.partialEvidenceCount).toBeUndefined();
+  expect(recovered.lastSuccessfulAt).toBe("2026-08-03T11:59:00.000Z");
+});
+
 it("publishes bounded EMF dimensions instead of an empty dimension set", () => {
   const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
   embeddedOddsControlPlaneMetrics.emit("OddsSnapshotCreated", 1, {

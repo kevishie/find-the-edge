@@ -176,6 +176,143 @@
   }
 }
 
+/* FTE-037 provider status */
+.provider-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px solid var(--border);
+  background: linear-gradient(135deg, #101922, #0b1118);
+}
+.provider-summary h2,
+.provider-source h2 {
+  margin: 3px 0 5px;
+}
+.provider-summary-state {
+  display: grid;
+  gap: 4px;
+}
+.provider-summary-state button {
+  justify-self: start;
+}
+.data-sources {
+  min-width: 0;
+}
+.provider-snapshot {
+  color: var(--muted);
+}
+.provider-source-list {
+  display: grid;
+  gap: 14px;
+  padding: 0;
+  list-style: none;
+}
+.provider-source {
+  border: 1px solid var(--border);
+  border-left: 4px solid #77838d;
+  background: #0d141b;
+  padding: 20px;
+}
+.provider-source.provider-healthy {
+  border-left-color: #3fc380;
+}
+.provider-source.provider-partial,
+.provider-source.provider-stale {
+  border-left-color: #e4a93a;
+}
+.provider-source.provider-outage {
+  border-left-color: #f26767;
+}
+.provider-source header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.provider-state {
+  align-self: start;
+  padding: 6px 10px;
+  border: 1px solid currentColor;
+  font-family: var(--mono);
+  text-transform: uppercase;
+}
+.state-healthy {
+  color: #72d6a2;
+}
+.state-partial,
+.state-stale {
+  color: #f0bd5d;
+}
+.state-outage {
+  color: #ff8585;
+}
+.state-unknown {
+  color: #adb7bf;
+}
+.provider-details {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+.provider-details div {
+  min-width: 0;
+}
+.provider-details dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+.provider-details dd {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+.provider-capacity {
+  max-width: 640px;
+}
+.capacity-meter {
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #05090d;
+}
+.capacity-meter i {
+  display: block;
+  height: 100%;
+  background: #3fc380;
+}
+.capacity-low i,
+.capacity-reserve-protected i {
+  background: #e4a93a;
+}
+.capacity-exhausted i {
+  background: #f26767;
+}
+.capacity-unknown {
+  color: var(--muted);
+}
+@media (max-width: 900px) {
+  .provider-summary {
+    grid-template-columns: 1fr;
+  }
+  .provider-details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .provider-source {
+    padding: 15px;
+  }
+  .provider-source header {
+    display: grid;
+  }
+  .provider-details {
+    grid-template-columns: 1fr;
+  }
+}
+
 * {
   box-sizing: border-box;
 }

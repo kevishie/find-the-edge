@@ -26,6 +26,7 @@ import {
   opportunityWarningCodes,
   participantSelectionKey,
   type EntityId,
+  type ProviderStatusPageDto,
 } from "@find-the-edge/domain";
 export interface ApiRequest {
   readonly route:
@@ -48,7 +49,8 @@ export interface ApiRequest {
     | "experiment-promote"
     | "experiment-rollback"
     | "opportunity-list"
-    | "opportunity-detail";
+    | "opportunity-detail"
+    | "provider-status";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
@@ -84,6 +86,7 @@ export const createEventHandler =
     strategyExperimentRepository?: StrategyExperimentRepository,
     oddsHistoryRepository?: OddsHistoryRepository,
     rankedOpportunityRepository?: RankedOpportunityRepository,
+    providerStatus?: () => Promise<ProviderStatusPageDto>,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -118,6 +121,15 @@ export const createEventHandler =
       cursorRejected: number;
     } | null = null;
     try {
+      if (request.route === "provider-status") {
+        if (!providerStatus)
+          throw new Error("provider-status-source-not-configured");
+        if (request.method && request.method !== "GET")
+          throw new EventInputError("provider-status-method-invalid");
+        if (Object.keys(request.query ?? {}).length > 0)
+          throw new EventInputError("provider-status-query-invalid");
+        return response(200, await providerStatus());
+      }
       if (request.route.startsWith("opportunity-")) {
         if (!rankedOpportunityRepository)
           throw new Error("ranked-opportunity-repository-not-configured");
