@@ -1171,6 +1171,19 @@ export function parseSharpApiSchedulePage(
       continue;
     if (!canonical(awayTeam) || !canonical(homeTeam))
       throw invalid("participants");
+    // Sharp's MLB event catalogue can contain thin, book-specific derivative
+    // rows whose participant labels happen to be real clubs. A lone run-line
+    // record is not a scheduled game and has previously created phantom games
+    // with provider-generated timestamps. Full-game MLB events expose at least
+    // one unambiguous primary market in the catalogue metadata.
+    const markets = value["markets"];
+    if (
+      league.leagueKey === "mlb" &&
+      Array.isArray(markets) &&
+      !markets.includes("moneyline") &&
+      !markets.includes("total_runs")
+    )
+      continue;
     if (awayTeam === homeTeam) {
       exclusions.push({
         providerEventId: value["id"],

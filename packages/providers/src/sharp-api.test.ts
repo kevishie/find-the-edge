@@ -519,6 +519,48 @@ describe("SharpAPI activation boundary", () => {
     expect(soccer.events).toHaveLength(1);
   });
 
+  it("excludes thin MLB sportsbook derivatives that masquerade as games", () => {
+    const page = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "mlb_brewers_pirates_2026-08-07_b1",
+            league: "mlb",
+            away_team: "Pittsburgh Pirates",
+            home_team: "Milwaukee Brewers",
+            start_time: "2026-08-07T14:59:28Z",
+            status: "upcoming",
+            is_live: false,
+            book_count: 1,
+            market_count: 1,
+            markets: ["run_line"],
+            books: ["bet365 us"],
+          },
+          {
+            id: "mlb_mets_pirates_2026-08-07_b3",
+            league: "mlb",
+            away_team: "New York Mets",
+            home_team: "Pittsburgh Pirates",
+            start_time: "2026-08-07T22:40:00Z",
+            status: "upcoming",
+            is_live: false,
+            book_count: 37,
+            market_count: 78,
+            markets: ["moneyline", "run_line", "total_runs"],
+            books: ["circa", "draftkings", "pinnacle"],
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagueByKey("mlb"),
+      "2026-08-07T15:00:00.000Z" as never,
+    );
+
+    expect(page.events.map(({ providerEventId }) => providerEventId)).toEqual([
+      "mlb_mets_pirates_2026-08-07_b3",
+    ]);
+  });
+
   it("defensively excludes contaminated MLB odds identities", () => {
     const mlbRow = (
       id: string,
