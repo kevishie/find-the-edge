@@ -3,10 +3,14 @@ import type {
   OpportunityLifecycleApplyResult,
   OpportunityLifecycleEventEvidenceSource,
   OpportunityLifecycleRepository,
+  RankedOpportunityRepository,
 } from "@find-the-edge/database";
+import { OpportunityLifecycleConflictError } from "@find-the-edge/database";
+import { defaultOpportunityRankingPolicy } from "@find-the-edge/config";
 import type {
   OpportunityCandidate,
   OpportunityLifecycleHead,
+  OpportunityRankingPolicyContract,
 } from "@find-the-edge/domain";
 
 export interface OpportunityLifecycleTelemetry {
@@ -42,9 +46,40 @@ export class OpportunityLifecycleService {
       readonly lifecycle: OpportunityLifecycleRepository;
       readonly events: OpportunityLifecycleEventEvidenceSource;
       readonly candidates: OpportunityCandidateRepository;
+      readonly rankingPolicy?: OpportunityRankingPolicyContract;
+      readonly rankedOpportunities?: Pick<
+        RankedOpportunityRepository,
+        "reconcileActive"
+      >;
       readonly telemetry?: OpportunityLifecycleTelemetry;
     },
   ) {}
+  private async healRankProjectionAfterReplay(input: {
+    readonly result: OpportunityLifecycleApplyResult;
+    readonly candidate: OpportunityCandidate;
+    readonly fence: Parameters<
+      OpportunityLifecycleRepository["reconcileRankProjection"]
+    >[0]["fence"];
+    readonly rankingPolicy: OpportunityRankingPolicyContract;
+  }) {
+    if (
+      input.result.outcome === "applied" ||
+      input.result.head.state !== "active" ||
+      input.result.head.latestCandidateOccurrenceId !==
+        input.candidate.occurrenceId
+    )
+      return;
+    const outcome = await this.dependencies.lifecycle.reconcileRankProjection({
+      head: input.result.head,
+      candidate: input.candidate,
+      fence: input.fence,
+      rankingPolicy: input.rankingPolicy,
+    });
+    if (outcome === "conflict")
+      throw new OpportunityLifecycleConflictError(
+        "opportunity-rank-projection-conflict",
+      );
+  }
   async projectCandidate(
     candidate: OpportunityCandidate,
     occurredAt: string,
@@ -57,6 +92,8 @@ export class OpportunityLifecycleService {
         candidate.logicalIdentity.canonicalEventId,
         occurredAt,
       );
+      const rankingPolicy =
+        this.dependencies.rankingPolicy ?? defaultOpportunityRankingPolicy;
       const result = await this.dependencies.lifecycle.apply(
         {
           commandId: `candidate:${candidate.occurrenceId}:${event.evidence.evidenceId}`,
@@ -66,7 +103,14 @@ export class OpportunityLifecycleService {
           occurredAt,
         },
         event.fence,
+        rankingPolicy,
       );
+      await this.healRankProjectionAfterReplay({
+        result,
+        candidate,
+        fence: event.fence,
+        rankingPolicy,
+      });
       safeEmit(this.dependencies.telemetry ?? silent, {
         outcome:
           result.outcome === "applied"
@@ -138,7 +182,9 @@ export class OpportunityLifecycleService {
       head.canonicalEventId,
       asOf,
     );
-    return this.dependencies.lifecycle.apply(
+    const rankingPolicy =
+      this.dependencies.rankingPolicy ?? defaultOpportunityRankingPolicy;
+    const result = await this.dependencies.lifecycle.apply(
       {
         commandId: `sweep:${asOf}:${head.lastTransitionId}:${event.evidence.evidenceId}`,
         cause: "sweep",
@@ -147,6 +193,69 @@ export class OpportunityLifecycleService {
         occurredAt: asOf,
       },
       event.fence,
+      rankingPolicy,
     );
+    await this.healRankProjectionAfterReplay({
+      result,
+      candidate,
+      fence: event.fence,
+      rankingPolicy,
+    });
+    return result;
+  }
+  async reconcileRankProjections(input: {
+    readonly sportKey: string;
+    readonly asOf: string;
+    readonly pageLimit?: number;
+    readonly maximumPages?: number;
+    readonly cursor?: string;
+  }) {
+    if (!this.dependencies.rankedOpportunities)
+      throw new Error("ranked-opportunity-repository-not-configured");
+    const pageLimit = input.pageLimit ?? 100;
+    const maximumPages = input.maximumPages ?? 10;
+    if (
+      new Date(input.asOf).toISOString() !== input.asOf ||
+      !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(input.sportKey) ||
+      !Number.isSafeInteger(pageLimit) ||
+      pageLimit < 1 ||
+      pageLimit > 100 ||
+      !Number.isSafeInteger(maximumPages) ||
+      maximumPages < 1 ||
+      maximumPages > 100 ||
+      (input.cursor !== undefined &&
+        (input.cursor.length < 1 || input.cursor.length > 1_024))
+    )
+      throw new Error("ranked-opportunity-reconciliation-invalid");
+    const totals = {
+      discoveredCount: 0,
+      projectedCount: 0,
+      inactiveCount: 0,
+      conflictCount: 0,
+      failureCount: 0,
+      nextCursor: null as string | null,
+    };
+    const seen = new Set<string>(input.cursor ? [input.cursor] : []);
+    let cursor = input.cursor;
+    for (let pageNumber = 0; pageNumber < maximumPages; pageNumber += 1) {
+      const page = await this.dependencies.rankedOpportunities.reconcileActive({
+        sportKey: input.sportKey,
+        asOf: input.asOf,
+        limit: pageLimit,
+        ...(cursor ? { cursor } : {}),
+      });
+      totals.discoveredCount += page.discoveredCount;
+      totals.projectedCount += page.projectedCount;
+      totals.inactiveCount += page.inactiveCount;
+      totals.conflictCount += page.conflictCount;
+      totals.failureCount += page.failureCount;
+      totals.nextCursor = page.nextCursor;
+      if (!page.nextCursor) break;
+      if (seen.has(page.nextCursor))
+        throw new Error("ranked-opportunity-reconciliation-cursor-stalled");
+      seen.add(page.nextCursor);
+      cursor = page.nextCursor;
+    }
+    return Object.freeze(totals);
   }
 }

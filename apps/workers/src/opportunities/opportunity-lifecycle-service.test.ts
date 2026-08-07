@@ -3,12 +3,15 @@ import {
   MemoryOpportunityCandidateRepository,
   MemoryOpportunityLifecycleRepository,
   type OpportunityLifecycleEventEvidenceSource,
+  type OpportunityLifecycleRepository,
+  type RankedOpportunityRepository,
 } from "@find-the-edge/database";
 import {
   createCalculationProvenance,
   createOpportunityCandidate,
   OPPORTUNITY_QUALIFICATION_VERSION,
   type OpportunityCandidateInput,
+  type OpportunityLifecycleHead,
 } from "@find-the-edge/domain";
 import { OpportunityLifecycleService } from "./opportunity-lifecycle-service";
 
@@ -88,6 +91,36 @@ const eventSource = (): OpportunityLifecycleEventEvidenceSource => ({
     },
   }),
 });
+const activeHead = (
+  candidate: ReturnType<typeof createOpportunityCandidate>,
+): OpportunityLifecycleHead => ({
+  schemaVersion: "opportunity-lifecycle-v1",
+  logicalOpportunityId: candidate.logicalOpportunityId,
+  canonicalEventId: candidate.logicalIdentity.canonicalEventId,
+  canonicalEventVersion: candidate.logicalIdentity.canonicalEventVersion,
+  sportKey: candidate.logicalIdentity.sportKey,
+  state: "active",
+  stateVersion: 1,
+  latestCandidateOccurrenceId: candidate.occurrenceId,
+  latestCandidateEvaluatedAt: candidate.evaluatedAt,
+  reasonCodes: [],
+  candidateReasonCodes: [],
+  expiresAt: "2026-08-06T12:15:00.000Z",
+  eventEvidence: {
+    availability: "current",
+    canonicalEventId: "event-1",
+    canonicalEventVersion: 1,
+    sportKey: "mlb",
+    status: "scheduled",
+    startsAt: "2026-08-06T20:00:00.000Z",
+    observedAt: "2026-08-06T11:59:00.000Z",
+    identity: "EVENT_DETAIL#event-1#CURRENT",
+    evidenceId: "event-1@1",
+  },
+  transitionedAt: "2026-08-06T12:00:00.000Z",
+  lastTransitionId: "transition-1",
+  lastCommandId: `candidate:${candidate.occurrenceId}:event-1@1`,
+});
 
 describe("opportunity lifecycle service", () => {
   it("projects a persisted occurrence without mutating it and converges replay", async () => {
@@ -132,5 +165,124 @@ describe("opportunity lifecycle service", () => {
     await expect(
       service.projectCandidate(candidate, "2026-08-06T12:00:00.000Z"),
     ).rejects.toThrow("event-fence");
+  });
+
+  it("idempotently repairs a missing rank projection on active replay", async () => {
+    const candidate = createOpportunityCandidate(input());
+    const head = activeHead(candidate);
+    const reconcileRankProjection = vi
+      .fn<OpportunityLifecycleRepository["reconcileRankProjection"]>()
+      .mockResolvedValue("projected");
+    const lifecycle = {
+      get: vi.fn().mockResolvedValue(head),
+      apply: vi.fn().mockResolvedValue({ outcome: "duplicate", head }),
+      reconcileRankProjection,
+    } as unknown as OpportunityLifecycleRepository;
+    const service = new OpportunityLifecycleService({
+      lifecycle,
+      events: eventSource(),
+      candidates: new MemoryOpportunityCandidateRepository(),
+    });
+
+    await expect(
+      service.projectCandidate(candidate, "2026-08-06T12:00:00.000Z"),
+    ).resolves.toMatchObject({ outcome: "duplicate", head });
+    expect(reconcileRankProjection).toHaveBeenCalledTimes(1);
+    const reconciliation = reconcileRankProjection.mock.calls[0]?.[0];
+    expect(reconciliation?.head).toEqual(head);
+    expect(reconciliation?.candidate).toEqual(candidate);
+    expect(reconciliation?.fence.expectedMaterialVersion).toBe(1);
+  });
+
+  it("fails closed when active replay rank repair loses its fence", async () => {
+    const candidate = createOpportunityCandidate(input());
+    const head = activeHead(candidate);
+    const lifecycle = {
+      get: vi.fn().mockResolvedValue(head),
+      apply: vi.fn().mockResolvedValue({ outcome: "duplicate", head }),
+      reconcileRankProjection: vi.fn().mockResolvedValue("conflict"),
+    } as unknown as OpportunityLifecycleRepository;
+    const service = new OpportunityLifecycleService({
+      lifecycle,
+      events: eventSource(),
+      candidates: new MemoryOpportunityCandidateRepository(),
+    });
+
+    await expect(
+      service.projectCandidate(candidate, "2026-08-06T12:00:00.000Z"),
+    ).rejects.toThrow("opportunity-rank-projection-conflict");
+  });
+
+  it("backfills active pre-projection heads through the scheduled sweep path", async () => {
+    const candidate = createOpportunityCandidate(input());
+    const head = activeHead(candidate);
+    const reconcileRankProjection = vi
+      .fn<OpportunityLifecycleRepository["reconcileRankProjection"]>()
+      .mockResolvedValue("projected");
+    const lifecycle = {
+      apply: vi.fn().mockResolvedValue({ outcome: "noop", head }),
+      reconcileRankProjection,
+    } as unknown as OpportunityLifecycleRepository;
+    const candidates = {
+      get: vi.fn().mockResolvedValue(candidate),
+    } as unknown as MemoryOpportunityCandidateRepository;
+    const service = new OpportunityLifecycleService({
+      lifecycle,
+      events: eventSource(),
+      candidates,
+    });
+
+    await expect(
+      service.sweepHead(head, "2026-08-06T12:00:00.000Z"),
+    ).resolves.toMatchObject({ outcome: "noop", head });
+    expect(reconcileRankProjection).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles pre-existing active heads through bounded cursor pages", async () => {
+    const reconcileActive = vi
+      .fn<RankedOpportunityRepository["reconcileActive"]>()
+      .mockResolvedValueOnce({
+        discoveredCount: 2,
+        projectedCount: 1,
+        inactiveCount: 0,
+        conflictCount: 1,
+        failureCount: 0,
+        nextCursor: "next-page",
+      })
+      .mockResolvedValueOnce({
+        discoveredCount: 1,
+        projectedCount: 1,
+        inactiveCount: 0,
+        conflictCount: 0,
+        failureCount: 0,
+        nextCursor: null,
+      });
+    const service = new OpportunityLifecycleService({
+      lifecycle: new MemoryOpportunityLifecycleRepository(),
+      events: eventSource(),
+      candidates: new MemoryOpportunityCandidateRepository(),
+      rankedOpportunities: { reconcileActive },
+    });
+    await expect(
+      service.reconcileRankProjections({
+        sportKey: "mlb",
+        asOf: "2026-08-06T12:00:00.000Z",
+        pageLimit: 20,
+        maximumPages: 3,
+      }),
+    ).resolves.toEqual({
+      discoveredCount: 3,
+      projectedCount: 2,
+      inactiveCount: 0,
+      conflictCount: 1,
+      failureCount: 0,
+      nextCursor: null,
+    });
+    expect(reconcileActive).toHaveBeenNthCalledWith(2, {
+      sportKey: "mlb",
+      asOf: "2026-08-06T12:00:00.000Z",
+      limit: 20,
+      cursor: "next-page",
+    });
   });
 });

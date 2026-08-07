@@ -102,9 +102,10 @@ describe("opportunity lifecycle repository", () => {
     const transaction = send.mock.calls[1]?.[0] as {
       input: { TransactItems: readonly unknown[] };
     };
-    expect(transaction.input.TransactItems).toHaveLength(3);
+    expect(transaction.input.TransactItems).toHaveLength(4);
     expect(JSON.stringify(transaction.input)).toContain("materialVersion");
     expect(JSON.stringify(transaction.input)).not.toContain("activePk");
+    expect(JSON.stringify(transaction.input)).toContain("OPPORTUNITY_RANK#");
   });
 
   it("converges duplicate commands without another transition version", async () => {

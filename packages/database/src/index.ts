@@ -40,6 +40,7 @@ export * from "./dynamodb-opportunity-candidate-repository";
 export * from "./opportunities/opportunity-lifecycle-repository";
 export * from "./opportunities/dynamodb-opportunity-lifecycle-repository";
 export * from "./opportunities/opportunity-lifecycle-event-evidence";
+export * from "./opportunities/ranked-opportunity-repository";
 export * from "./cohort-repository";
 export * from "./dynamodb-cohort-repository";
 export * from "./retrospective-repository";

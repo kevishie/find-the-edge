@@ -147,6 +147,12 @@ export class FoundationStack extends Stack {
       sortKey: { name: "activeSk", type: AttributeType.STRING },
       projectionType: ProjectionType.KEYS_ONLY,
     });
+    table.addGlobalSecondaryIndex({
+      indexName: "opportunity-rank-v1",
+      partitionKey: { name: "rankPk", type: AttributeType.STRING },
+      sortKey: { name: "rankSk", type: AttributeType.STRING },
+      projectionType: ProjectionType.KEYS_ONLY,
+    });
     const performanceWorker = new NodejsFunction(this, "PerformanceWorker", {
       runtime: Runtime.NODEJS_22_X,
       entry: path.join(
@@ -888,6 +894,12 @@ export class FoundationStack extends Stack {
     );
     eventApi.addToRolePolicy(
       new PolicyStatement({
+        actions: ["dynamodb:Query"],
+        resources: [`${table.tableArn}/index/opportunity-rank-v1`],
+      }),
+    );
+    eventApi.addToRolePolicy(
+      new PolicyStatement({
         actions: ["secretsmanager:GetSecretValue"],
         resources: [props.cursorSecretArn],
       }),
@@ -929,6 +941,15 @@ export class FoundationStack extends Stack {
       methods: [HttpMethod.GET],
       integration,
     });
+    for (const path of [
+      "/sports/{sportKey}/opportunities",
+      "/sports/{sportKey}/opportunities/{opportunityId}",
+    ])
+      api.addRoutes({
+        path,
+        methods: [HttpMethod.GET],
+        integration,
+      });
     api.addRoutes({
       path: "/games",
       methods: [HttpMethod.GET],
@@ -1304,6 +1325,8 @@ export class FoundationStack extends Stack {
           "experiment-approve",
           "experiment-promote",
           "experiment-rollback",
+          "opportunity-list",
+          "opportunity-detail",
         ] as const
       ).map(
         (route) =>
@@ -1361,6 +1384,20 @@ export class FoundationStack extends Stack {
               period: Duration.minutes(5),
             }),
             threshold: 5,
+            evaluationPeriods: 1,
+          }),
+      ),
+      ...(["OpportunityJoinFailure", "OpportunityStaleRead"] as const).map(
+        (metricName) =>
+          new Alarm(this, `${metricName}Alarm`, {
+            metric: new Metric({
+              namespace: "FindTheEdge/EventApi",
+              metricName,
+              dimensionsMap: { Route: "opportunity-list" },
+              statistic: "Sum",
+              period: Duration.minutes(5),
+            }),
+            threshold: 1,
             evaluationPeriods: 1,
           }),
       ),

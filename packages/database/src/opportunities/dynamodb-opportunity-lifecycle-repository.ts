@@ -6,6 +6,7 @@ import {
   type DynamoDBDocumentClient,
 } from "@aws-sdk/lib-dynamodb";
 import {
+  createRankedOpportunityProjection,
   isOpportunityLifecycleHeadActive,
   normalizeOpportunityLifecycleHead,
   normalizeOpportunityLifecycleTransition,
@@ -13,6 +14,7 @@ import {
   type OpportunityLifecycleCommand,
   type OpportunityLifecycleHead,
   type OpportunityLifecycleTransition,
+  type OpportunityRankingPolicyContract,
 } from "@find-the-edge/domain";
 import {
   OpportunityLifecycleConflictError,
@@ -25,6 +27,7 @@ import {
 
 export const OPPORTUNITY_ACTIVE_INDEX = "opportunity-active-v1";
 const partition = (id: string) => `OPPORTUNITY_LIFECYCLE#${id}`;
+const rankPartition = (id: string) => `OPPORTUNITY_RANK#${id}`;
 const padded = (version: number) => String(version).padStart(16, "0");
 
 export class DynamoOpportunityLifecycleRepository implements OpportunityLifecycleRepository {
@@ -51,11 +54,24 @@ export class DynamoOpportunityLifecycleRepository implements OpportunityLifecycl
   async apply(
     command: OpportunityLifecycleCommand,
     fence: OpportunityLifecycleEventFence,
+    rankingPolicy?: OpportunityRankingPolicyContract,
   ): Promise<OpportunityLifecycleApplyResult> {
     const existing = await this.get(command.candidate.logicalOpportunityId);
     const decision = reduceOpportunityLifecycle(existing, command);
     if (decision.outcome !== "applied")
       return { outcome: decision.outcome, head: decision.head };
+    const rankProjection =
+      decision.head.state === "active"
+        ? rankingPolicy
+          ? createRankedOpportunityProjection(
+              command.candidate,
+              decision.head,
+              rankingPolicy,
+            )
+          : null
+        : null;
+    if (decision.head.state === "active" && !rankProjection)
+      throw new Error("opportunity-ranking-policy-required");
     try {
       await this.client.send(
         new TransactWriteCommand({
@@ -122,6 +138,28 @@ export class DynamoOpportunityLifecycleRepository implements OpportunityLifecycl
                 ConditionExpression: "attribute_not_exists(pk)",
               },
             },
+            rankProjection
+              ? {
+                  Put: {
+                    TableName: this.tableName,
+                    Item: {
+                      pk: rankPartition(decision.head.logicalOpportunityId),
+                      sk: "CURRENT",
+                      rankPk: rankProjection.rankPartition,
+                      rankSk: rankProjection.rankKey,
+                      value: rankProjection,
+                    },
+                  },
+                }
+              : {
+                  Delete: {
+                    TableName: this.tableName,
+                    Key: {
+                      pk: rankPartition(decision.head.logicalOpportunityId),
+                      sk: "CURRENT",
+                    },
+                  },
+                },
           ],
         }),
       );
@@ -316,5 +354,149 @@ export class DynamoOpportunityLifecycleRepository implements OpportunityLifecycl
         },
       }),
     );
+  }
+  async reconcileRankProjection(input: {
+    readonly head: OpportunityLifecycleHead;
+    readonly candidate: import("@find-the-edge/domain").OpportunityCandidate;
+    readonly fence: OpportunityLifecycleEventFence;
+    readonly rankingPolicy: OpportunityRankingPolicyContract;
+  }): Promise<"projected" | "inactive" | "conflict"> {
+    if (input.head.state !== "active") {
+      if (
+        input.candidate.logicalOpportunityId !==
+          input.head.logicalOpportunityId ||
+        input.candidate.occurrenceId !== input.head.latestCandidateOccurrenceId
+      )
+        return "conflict";
+      try {
+        await this.client.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                ConditionCheck: {
+                  TableName: this.tableName,
+                  Key: {
+                    pk: partition(input.head.logicalOpportunityId),
+                    sk: "HEAD",
+                  },
+                  ConditionExpression:
+                    "#value.#state = :state AND #value.#stateVersion = :version AND #value.#latest = :occurrence",
+                  ExpressionAttributeNames: {
+                    "#value": "value",
+                    "#state": "state",
+                    "#stateVersion": "stateVersion",
+                    "#latest": "latestCandidateOccurrenceId",
+                  },
+                  ExpressionAttributeValues: {
+                    ":state": input.head.state,
+                    ":version": input.head.stateVersion,
+                    ":occurrence": input.candidate.occurrenceId,
+                  },
+                },
+              },
+              {
+                Delete: {
+                  TableName: this.tableName,
+                  Key: {
+                    pk: rankPartition(input.head.logicalOpportunityId),
+                    sk: "CURRENT",
+                  },
+                },
+              },
+            ],
+          }),
+        );
+        return "inactive";
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          [
+            "TransactionCanceledException",
+            "ConditionalCheckFailedException",
+          ].includes(error.name)
+        )
+          return "conflict";
+        throw error;
+      }
+    }
+    const projection = createRankedOpportunityProjection(
+      input.candidate,
+      input.head,
+      input.rankingPolicy,
+    );
+    try {
+      await this.client.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              ConditionCheck: {
+                TableName: this.tableName,
+                Key: { pk: input.fence.pk, sk: input.fence.sk },
+                ConditionExpression:
+                  input.fence.expectedMaterialVersion === null
+                    ? "attribute_not_exists(pk)"
+                    : "#value.#materialVersion = :eventVersion",
+                ...(input.fence.expectedMaterialVersion === null
+                  ? {}
+                  : {
+                      ExpressionAttributeNames: {
+                        "#value": "value",
+                        "#materialVersion": "materialVersion",
+                      },
+                      ExpressionAttributeValues: {
+                        ":eventVersion": input.fence.expectedMaterialVersion,
+                      },
+                    }),
+              },
+            },
+            {
+              ConditionCheck: {
+                TableName: this.tableName,
+                Key: {
+                  pk: partition(input.head.logicalOpportunityId),
+                  sk: "HEAD",
+                },
+                ConditionExpression:
+                  "#value.#state = :active AND #value.#stateVersion = :version AND #value.#latest = :occurrence",
+                ExpressionAttributeNames: {
+                  "#value": "value",
+                  "#state": "state",
+                  "#stateVersion": "stateVersion",
+                  "#latest": "latestCandidateOccurrenceId",
+                },
+                ExpressionAttributeValues: {
+                  ":active": "active",
+                  ":version": input.head.stateVersion,
+                  ":occurrence": input.candidate.occurrenceId,
+                },
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: {
+                  pk: rankPartition(input.head.logicalOpportunityId),
+                  sk: "CURRENT",
+                  rankPk: projection.rankPartition,
+                  rankSk: projection.rankKey,
+                  value: projection,
+                },
+              },
+            },
+          ],
+        }),
+      );
+      return "projected";
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        [
+          "TransactionCanceledException",
+          "ConditionalCheckFailedException",
+        ].includes(error.name)
+      )
+        return "conflict";
+      throw error;
+    }
   }
 }

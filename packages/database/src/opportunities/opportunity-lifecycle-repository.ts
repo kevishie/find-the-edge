@@ -1,10 +1,14 @@
 import {
+  createRankedOpportunityProjection,
   isOpportunityLifecycleHeadActive,
   reduceOpportunityLifecycle,
+  type OpportunityCandidate,
   type OpportunityLifecycleCommand,
   type OpportunityLifecycleDecision,
   type OpportunityLifecycleHead,
   type OpportunityLifecycleTransition,
+  type OpportunityRankingPolicyContract,
+  type RankedOpportunityProjection,
 } from "@find-the-edge/domain";
 
 export interface OpportunityLifecycleEventFence {
@@ -30,6 +34,7 @@ export interface OpportunityLifecycleRepository {
   apply(
     command: OpportunityLifecycleCommand,
     fence: OpportunityLifecycleEventFence,
+    rankingPolicy?: OpportunityRankingPolicyContract,
   ): Promise<OpportunityLifecycleApplyResult>;
   get(logicalOpportunityId: string): Promise<OpportunityLifecycleHead | null>;
   history(
@@ -52,6 +57,12 @@ export interface OpportunityLifecycleRepository {
     readonly cursor: string | null;
     readonly updatedAt: string;
   }): Promise<void>;
+  reconcileRankProjection(input: {
+    readonly head: OpportunityLifecycleHead;
+    readonly candidate: OpportunityCandidate;
+    readonly fence: OpportunityLifecycleEventFence;
+    readonly rankingPolicy: OpportunityRankingPolicyContract;
+  }): Promise<"projected" | "inactive" | "conflict">;
 }
 export class OpportunityLifecycleConflictError extends Error {
   override readonly name = "OpportunityLifecycleConflictError";
@@ -64,10 +75,15 @@ export class MemoryOpportunityLifecycleRepository implements OpportunityLifecycl
     OpportunityLifecycleTransition[]
   >();
   private readonly sweepCursors = new Map<string, string>();
+  private readonly rankProjections = new Map<
+    string,
+    RankedOpportunityProjection
+  >();
 
   apply(
     command: OpportunityLifecycleCommand,
     fence: OpportunityLifecycleEventFence,
+    rankingPolicy?: OpportunityRankingPolicyContract,
   ): Promise<OpportunityLifecycleApplyResult> {
     void fence;
     const existing =
@@ -78,6 +94,16 @@ export class MemoryOpportunityLifecycleRepository implements OpportunityLifecycl
         outcome: decision.outcome,
         head: structuredClone(decision.head),
       });
+    if (decision.head.state === "active" && !rankingPolicy)
+      return Promise.reject(new Error("opportunity-ranking-policy-required"));
+    const rankProjection =
+      decision.head.state === "active"
+        ? createRankedOpportunityProjection(
+            command.candidate,
+            decision.head,
+            rankingPolicy!,
+          )
+        : null;
     this.heads.set(
       decision.head.logicalOpportunityId,
       structuredClone(decision.head),
@@ -91,6 +117,12 @@ export class MemoryOpportunityLifecycleRepository implements OpportunityLifecycl
     )
       history.push(structuredClone(decision.transition));
     this.transitions.set(decision.head.logicalOpportunityId, history);
+    if (rankProjection) {
+      this.rankProjections.set(
+        decision.head.logicalOpportunityId,
+        rankProjection,
+      );
+    } else this.rankProjections.delete(decision.head.logicalOpportunityId);
     return Promise.resolve({
       outcome: "applied",
       head: structuredClone(decision.head),
@@ -182,5 +214,39 @@ export class MemoryOpportunityLifecycleRepository implements OpportunityLifecycl
     if (input.cursor === null) this.sweepCursors.delete(key);
     else this.sweepCursors.set(key, input.cursor);
     return Promise.resolve();
+  }
+  reconcileRankProjection(input: {
+    readonly head: OpportunityLifecycleHead;
+    readonly candidate: OpportunityCandidate;
+    readonly fence: OpportunityLifecycleEventFence;
+    readonly rankingPolicy: OpportunityRankingPolicyContract;
+  }): Promise<"projected" | "inactive" | "conflict"> {
+    void input.fence;
+    const current = this.heads.get(input.head.logicalOpportunityId);
+    if (
+      !current ||
+      current.stateVersion !== input.head.stateVersion ||
+      current.latestCandidateOccurrenceId !== input.candidate.occurrenceId
+    )
+      return Promise.resolve("conflict");
+    if (
+      !isOpportunityLifecycleHeadActive(current, input.candidate.evaluatedAt)
+    ) {
+      this.rankProjections.delete(current.logicalOpportunityId);
+      return Promise.resolve("inactive");
+    }
+    this.rankProjections.set(
+      current.logicalOpportunityId,
+      createRankedOpportunityProjection(
+        input.candidate,
+        current,
+        input.rankingPolicy,
+      ),
+    );
+    return Promise.resolve("projected");
+  }
+  getRankProjection(logicalOpportunityId: string) {
+    const value = this.rankProjections.get(logicalOpportunityId);
+    return value ? structuredClone(value) : null;
   }
 }

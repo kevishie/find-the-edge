@@ -220,6 +220,14 @@ describe("foundation CDK app", () => {
           ],
           Projection: { ProjectionType: "KEYS_ONLY" },
         }),
+        Match.objectLike({
+          IndexName: "opportunity-rank-v1",
+          KeySchema: [
+            { AttributeName: "rankPk", KeyType: "HASH" },
+            { AttributeName: "rankSk", KeyType: "RANGE" },
+          ],
+          Projection: { ProjectionType: "KEYS_ONLY" },
+        }),
       ]),
     });
     expect(JSON.stringify(template.toJSON())).toContain(
@@ -402,6 +410,14 @@ describe("foundation CDK app", () => {
       RouteKey: "GET /events",
       AuthorizationType: "JWT",
     });
+    for (const routeKey of [
+      "GET /sports/{sportKey}/opportunities",
+      "GET /sports/{sportKey}/opportunities/{opportunityId}",
+    ])
+      template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+        RouteKey: routeKey,
+        AuthorizationType: "NONE",
+      });
     expect(rendered).toContain(
       '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\"]',
     );
@@ -440,6 +456,9 @@ describe("foundation CDK app", () => {
       },
     });
     expect(rendered).toContain("Caught5xx");
+    expect(rendered).toContain("opportunity-rank-v1");
+    expect(rendered).toContain("OpportunityJoinFailure");
+    expect(rendered).toContain("OpportunityStaleRead");
     expect(rendered).toContain("RetrospectiveValidationFailures");
     expect(rendered).toContain("RetrospectiveReviewConflict");
     expect(rendered).toContain("RetrospectiveReviewForbidden");
@@ -645,7 +664,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 55);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 59);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });

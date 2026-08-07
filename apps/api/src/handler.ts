@@ -13,9 +13,17 @@ import {
   type StrategyExperimentRepository,
   type OddsHistoryRepository,
   OddsHistoryInputError,
+  RankedOpportunityUnavailableError,
+  type RankedOpportunityRepository,
 } from "@find-the-edge/database";
 import {
+  approvedSportsbookCollection,
+  defaultOpportunityRankingPolicy,
+} from "@find-the-edge/config";
+import {
+  canonicalMvpMarketKeys,
   EVENT_LIFECYCLE_STATES,
+  opportunityWarningCodes,
   participantSelectionKey,
   type EntityId,
 } from "@find-the-edge/domain";
@@ -38,10 +46,15 @@ export interface ApiRequest {
     | "experiment-detail"
     | "experiment-approve"
     | "experiment-promote"
-    | "experiment-rollback";
+    | "experiment-rollback"
+    | "opportunity-list"
+    | "opportunity-detail";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
+  readonly sportKey?: string;
+  readonly opportunityId?: string;
+  readonly requestId?: string;
   readonly query?: Readonly<Record<string, string | undefined>>;
   readonly method?: "GET" | "POST";
   readonly contentType?: string;
@@ -70,6 +83,7 @@ export const createEventHandler =
     retrospectiveRepository?: RetrospectiveRepository,
     strategyExperimentRepository?: StrategyExperimentRepository,
     oddsHistoryRepository?: OddsHistoryRepository,
+    rankedOpportunityRepository?: RankedOpportunityRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -95,7 +109,134 @@ export const createEventHandler =
       sportsbooks: number;
       points: number;
     } | null = null;
+    let opportunityCounts: {
+      discovered: number;
+      returned: number;
+      filtered: number;
+      stale: number;
+      joinFailure: number;
+      cursorRejected: number;
+    } | null = null;
     try {
+      if (request.route.startsWith("opportunity-")) {
+        if (!rankedOpportunityRepository)
+          throw new Error("ranked-opportunity-repository-not-configured");
+        const sportKey = request.sportKey ?? "";
+        if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(sportKey))
+          throw new EventInputError("ranked-opportunity-sport-invalid");
+        if (request.route === "opportunity-detail") {
+          if (
+            Object.keys(request.query ?? {}).length > 0 ||
+            !/^opportunity:[a-f0-9]{64}$/.test(request.opportunityId ?? "")
+          )
+            throw new EventInputError("ranked-opportunity-detail-invalid");
+          const item = await rankedOpportunityRepository.detail(
+            sportKey,
+            request.opportunityId ?? "",
+          );
+          if (!item) return response((status = 404), { error: "not-found" });
+          opportunityCounts = {
+            discovered: 1,
+            returned: 1,
+            filtered: 0,
+            stale: 0,
+            joinFailure: 0,
+            cursorRejected: 0,
+          };
+          return response(200, item);
+        }
+        const query = request.query ?? {};
+        const allowed = [
+          "market",
+          "target",
+          "competition",
+          "warning",
+          "kickoffFrom",
+          "kickoffTo",
+          "minEv",
+          "minBooks",
+          "maxAge",
+          "limit",
+          "cursor",
+        ];
+        const number = (value: string | undefined) =>
+          value === undefined
+            ? undefined
+            : /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)
+              ? Number(value)
+              : Number.NaN;
+        const kickoffFrom = query["kickoffFrom"];
+        const kickoffTo = query["kickoffTo"];
+        const minEv = number(query["minEv"]);
+        const minBooks = number(query["minBooks"]);
+        const maxAge = number(query["maxAge"]);
+        const limit = number(query["limit"]) ?? 20;
+        const canonicalTimestamp = (value: string | undefined) =>
+          value === undefined ||
+          (Number.isFinite(Date.parse(value)) &&
+            new Date(value).toISOString() === value);
+        if (
+          Object.keys(query).some((key) => !allowed.includes(key)) ||
+          (query["market"] !== undefined &&
+            !canonicalMvpMarketKeys.includes(query["market"] as never)) ||
+          (query["target"] !== undefined &&
+            !Object.hasOwn(approvedSportsbookCollection, query["target"])) ||
+          (query["competition"] !== undefined &&
+            !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(query["competition"])) ||
+          (query["warning"] !== undefined &&
+            !opportunityWarningCodes.includes(query["warning"] as never)) ||
+          !canonicalTimestamp(kickoffFrom) ||
+          !canonicalTimestamp(kickoffTo) ||
+          (kickoffFrom !== undefined &&
+            kickoffTo !== undefined &&
+            (Date.parse(kickoffFrom) > Date.parse(kickoffTo) ||
+              Date.parse(kickoffTo) - Date.parse(kickoffFrom) >
+                31 * 24 * 60 * 60 * 1_000)) ||
+          (minEv !== undefined && (!Number.isFinite(minEv) || minEv < 0)) ||
+          (minBooks !== undefined &&
+            (!Number.isSafeInteger(minBooks) ||
+              minBooks < 1 ||
+              minBooks > 100)) ||
+          (maxAge !== undefined &&
+            (!Number.isFinite(maxAge) ||
+              maxAge < 0 ||
+              maxAge >
+                defaultOpportunityRankingPolicy.maximumFilterAgeMinutes)) ||
+          !Number.isSafeInteger(limit) ||
+          limit < 1 ||
+          limit > 50 ||
+          (query["cursor"] !== undefined &&
+            (query["cursor"].length < 1 || query["cursor"].length > 4096))
+        )
+          throw new EventInputError("ranked-opportunity-filter-invalid");
+        const page = await rankedOpportunityRepository.list({
+          sportKey,
+          limit,
+          ...(query["market"] ? { marketKey: query["market"] } : {}),
+          ...(query["target"] ? { targetSportsbookId: query["target"] } : {}),
+          ...(query["competition"]
+            ? { competitionKey: query["competition"] }
+            : {}),
+          ...(query["warning"]
+            ? { warningCode: query["warning"] as never }
+            : {}),
+          ...(kickoffFrom ? { kickoffFrom } : {}),
+          ...(kickoffTo ? { kickoffTo } : {}),
+          ...(minEv !== undefined ? { minimumExpectedValue: minEv } : {}),
+          ...(minBooks !== undefined ? { minimumBooks: minBooks } : {}),
+          ...(maxAge !== undefined ? { maximumAgeMinutes: maxAge } : {}),
+          ...(query["cursor"] ? { cursor: query["cursor"] } : {}),
+        });
+        opportunityCounts = {
+          discovered: page.evaluatedCount,
+          returned: page.items.length,
+          filtered: page.filteredCount,
+          stale: page.staleCount,
+          joinFailure: page.joinFailureCount,
+          cursorRejected: 0,
+        };
+        return response(200, page);
+      }
       if (request.route.startsWith("experiment-")) {
         if (!strategyExperimentRepository)
           throw new Error("strategy-experiment-repository-not-configured");
@@ -592,11 +733,25 @@ export const createEventHandler =
       return response(200, { ...page, items });
     } catch (error) {
       if (
+        request.route.startsWith("opportunity-") &&
+        error instanceof EventCursorError
+      )
+        opportunityCounts = {
+          discovered: 0,
+          returned: 0,
+          filtered: 0,
+          stale: 0,
+          joinFailure: 0,
+          cursorRejected: 1,
+        };
+      if (
         error instanceof EventInputError ||
         error instanceof EventCursorError ||
         error instanceof OddsHistoryInputError
       )
         return response((status = 400), { error: "invalid-request" });
+      if (error instanceof RankedOpportunityUnavailableError)
+        return response((status = 503), { error: "temporarily-unavailable" });
       if (
         error instanceof RetrospectiveNotFoundError ||
         error instanceof StrategyExperimentNotFoundError
@@ -622,6 +777,7 @@ export const createEventHandler =
       const retrospectiveRoute = request.route.startsWith("retrospective-");
       const experimentRoute = request.route.startsWith("experiment-");
       const reviewRoute = request.route === "retrospective-review";
+      const opportunityRoute = request.route.startsWith("opportunity-");
       const metrics = [
         { Name: "Requests", Unit: "Count" },
         { Name: "Latency", Unit: "Milliseconds" },
@@ -671,6 +827,17 @@ export const createEventHandler =
               { Name: "OddsHistoryPoints", Unit: "Count" },
             ]
           : []),
+        ...(opportunityRoute
+          ? [
+              { Name: "OpportunityLatency", Unit: "Milliseconds" },
+              { Name: "OpportunityDiscovered", Unit: "Count" },
+              { Name: "OpportunityReturned", Unit: "Count" },
+              { Name: "OpportunityFiltered", Unit: "Count" },
+              { Name: "OpportunityStaleRead", Unit: "Count" },
+              { Name: "OpportunityJoinFailure", Unit: "Count" },
+              { Name: "OpportunityCursorRejected", Unit: "Count" },
+            ]
+          : []),
       ];
       log({
         _aws: {
@@ -684,6 +851,9 @@ export const createEventHandler =
           ],
         },
         Route: request.route,
+        ...(request.requestId
+          ? { RequestId: request.requestId.slice(0, 128) }
+          : {}),
         Status: status,
         Requests: 1,
         Latency: Date.now() - started,
@@ -729,6 +899,17 @@ export const createEventHandler =
               OddsHistorySeries: oddsHistoryCounts.series,
               OddsHistorySportsbooks: oddsHistoryCounts.sportsbooks,
               OddsHistoryPoints: oddsHistoryCounts.points,
+            }
+          : {}),
+        ...(opportunityRoute
+          ? {
+              OpportunityLatency: Date.now() - started,
+              OpportunityDiscovered: opportunityCounts?.discovered ?? 0,
+              OpportunityReturned: opportunityCounts?.returned ?? 0,
+              OpportunityFiltered: opportunityCounts?.filtered ?? 0,
+              OpportunityStaleRead: opportunityCounts?.stale ?? 0,
+              OpportunityJoinFailure: opportunityCounts?.joinFailure ?? 0,
+              OpportunityCursorRejected: opportunityCounts?.cursorRejected ?? 0,
             }
           : {}),
       });

@@ -2,6 +2,7 @@ export * from "./feed-coverage";
 export * from "./evaluation-policy";
 export * from "./paper-pick-schedule";
 export * from "./performance-policy";
+export * from "./opportunity-ranking-policy";
 export * from "./sportsbooks";
 
 export type RuntimeEnvironment = "development" | "test" | "production";

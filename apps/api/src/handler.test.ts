@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   assessEventMetadata,
   type GameOddsCellDto,
@@ -10,9 +10,11 @@ import {
   EventCursorCodec,
   MemoryCohortRepository,
   MemoryOddsHistoryRepository,
+  RankedOpportunityUnavailableError,
   type GamesRepository,
   type EventRepository,
   type OddsHistoryRepository,
+  type RankedOpportunityRepository,
 } from "@find-the-edge/database";
 import { createEventHandler } from "./handler";
 import { parseCursorSecretRing } from "./secrets";
@@ -1092,5 +1094,166 @@ describe("event API", () => {
     expect(serialized).toContain('"Dimensions":[["Route"]]');
     expect(serialized).toContain('"Name":"Caught5xx","Unit":"Count"');
     expect(serialized).toContain('"Route":"list"');
+  });
+
+  const opportunityHandler = (
+    ranked: RankedOpportunityRepository,
+    log: (entry: Readonly<Record<string, unknown>>) => void = () => {},
+  ) =>
+    createEventHandler(
+      repository,
+      undefined,
+      log,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      ranked,
+    );
+
+  it("serves ranked opportunities publicly without restoring the removed login wall", async () => {
+    const list = vi.fn().mockResolvedValue({
+      schemaVersion: "ranked-opportunity-page-v1",
+      rankingPolicy: { id: "rank", version: "1.0.0" },
+      items: [],
+      nextCursor: null,
+      snapshotAt: "2026-08-06T12:00:00.000Z",
+      evaluationState: "complete",
+      hasMoreUnknown: false,
+      evaluatedCount: 0,
+      filteredCount: 0,
+      staleCount: 0,
+      joinFailureCount: 0,
+    });
+    const ranked = {
+      list,
+      detail: () => Promise.reject(new Error("unexpected-detail")),
+      reconcileActive: () => Promise.reject(new Error("unexpected-reconcile")),
+    } satisfies RankedOpportunityRepository;
+    const result = await opportunityHandler(ranked)({
+      route: "opportunity-list",
+      sportKey: "mlb",
+    });
+    expect(result.statusCode).toBe(200);
+    expect(list).toHaveBeenCalledWith({ sportKey: "mlb", limit: 20 });
+  });
+
+  it("strictly validates and forwards bounded opportunity filters", async () => {
+    let received: unknown;
+    const ranked: RankedOpportunityRepository = {
+      list: (input) => {
+        received = input;
+        return Promise.resolve({
+          schemaVersion: "ranked-opportunity-page-v1",
+          rankingPolicy: { id: "rank", version: "1.0.0" },
+          items: [],
+          nextCursor: null,
+          snapshotAt: "2026-08-06T12:00:00.000Z",
+          evaluationState: "complete",
+          hasMoreUnknown: false,
+          evaluatedCount: 4,
+          filteredCount: 4,
+          staleCount: 0,
+          joinFailureCount: 0,
+        });
+      },
+      detail: () => Promise.resolve(null),
+      reconcileActive: () => Promise.reject(new Error("unexpected-reconcile")),
+    };
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const result = await opportunityHandler(ranked, (entry) =>
+      logs.push(entry),
+    )({
+      route: "opportunity-list",
+      sportKey: "mlb",
+      subject: "user",
+      scopes: ["events/events:read"],
+      requestId: "request-123",
+      query: {
+        market: "moneyline",
+        target: "hardrock",
+        kickoffFrom: "2026-08-06T00:00:00.000Z",
+        kickoffTo: "2026-08-31T00:00:00.000Z",
+        minEv: "0.025",
+        minBooks: "3",
+        maxAge: "10",
+        limit: "17",
+      },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(received).toEqual({
+      sportKey: "mlb",
+      limit: 17,
+      marketKey: "moneyline",
+      targetSportsbookId: "hardrock",
+      kickoffFrom: "2026-08-06T00:00:00.000Z",
+      kickoffTo: "2026-08-31T00:00:00.000Z",
+      minimumExpectedValue: 0.025,
+      minimumBooks: 3,
+      maximumAgeMinutes: 10,
+    });
+    expect(logs.at(-1)).toMatchObject({
+      Route: "opportunity-list",
+      RequestId: "request-123",
+      OpportunityDiscovered: 4,
+      OpportunityFiltered: 4,
+    });
+
+    for (const query of [
+      { extra: "x" },
+      {
+        kickoffFrom: "2026-08-01T00:00:00.000Z",
+        kickoffTo: "2026-09-02T00:00:00.000Z",
+      },
+      {
+        kickoffFrom: "+010000-01-01T00:00:00.000Z",
+        kickoffTo: "9999-12-31T00:00:00.000Z",
+      },
+      { maxAge: "16" },
+      { minBooks: "0" },
+    ])
+      expect(
+        (
+          await opportunityHandler(ranked)({
+            route: "opportunity-list",
+            sportKey: "mlb",
+            subject: "user",
+            scopes: ["events/events:read"],
+            query,
+          })
+        ).statusCode,
+      ).toBe(400);
+  });
+
+  it("returns honest detail absence and temporary join unavailability", async () => {
+    const missing: RankedOpportunityRepository = {
+      list: () =>
+        Promise.reject(
+          new RankedOpportunityUnavailableError("event-projection-unavailable"),
+        ),
+      detail: () => Promise.resolve(null),
+      reconcileActive: () => Promise.reject(new Error("unexpected-reconcile")),
+    };
+    const base = {
+      sportKey: "mlb",
+    };
+    expect(
+      (
+        await opportunityHandler(missing)({
+          ...base,
+          route: "opportunity-detail",
+          opportunityId: `opportunity:${"a".repeat(64)}`,
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await opportunityHandler(missing)({
+          ...base,
+          route: "opportunity-list",
+        })
+      ).statusCode,
+    ).toBe(503);
   });
 });
