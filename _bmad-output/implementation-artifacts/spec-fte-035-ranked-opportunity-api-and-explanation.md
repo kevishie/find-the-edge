@@ -2,8 +2,9 @@
 title: 'FTE-035: Ranked Opportunity API and Explanation'
 type: 'feature'
 created: '2026-08-06'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'a3dcf898627d6ee3c09445a0dc865ece658070b4'
+final_revision: 'a798c79ab3cf61b26c44b3768978a7f429e39b25'
 review_loop_iteration: 1
 followup_review_recommended: false
 context:
@@ -49,7 +50,7 @@ warnings:
 - `packages/database/src/opportunities/` -- atomic projection persistence, rank-index query, strong joins, bounded reconciliation, and opportunity cursor codec.
 - `apps/workers/src/opportunities/` -- lifecycle projection/reconciliation integration.
 - `apps/api/src/handler.ts` and `apps/api/src/lambda.ts` -- public list/detail routes, filters, envelopes, and telemetry.
-- `infra/cdk/src/foundation.ts` -- rank GSI, JWT routes, permissions, and alarms.
+- `infra/cdk/src/foundation.ts` -- rank GSI, public read routes, permissions, and alarms.
 
 ## Tasks & Acceptance
 
@@ -60,7 +61,7 @@ warnings:
 - [x] `apps/workers/src/opportunities/opportunity-lifecycle-service.ts` and tests -- supply the versioned ranking policy on candidate/sweep transitions and expose idempotent bounded projection reconciliation without weakening lifecycle correctness.
 - [x] `apps/api/src/handler.ts`, `apps/api/src/lambda.ts`, and tests -- add public `GET /sports/{sportKey}/opportunities` and `GET /sports/{sportKey}/opportunities/{opportunityId}` routes consistent with the removed login wall; validate the matrix filters; return versioned no-store envelopes; emit low-cardinality latency/discovered/returned/filtered/stale/join/cursor metrics.
 - [x] `infra/cdk/src/foundation.ts` and tests -- provision the KEYS_ONLY rank GSI, exact index IAM, both scoped routes, request-ID plumbing, and failure/stale-read alarms.
-- [x] Focused fixtures and full repository verification -- prove ranking precedence, ties, atomic active/inactive changes, lagging-index isolation, reconciliation, encrypted cursor tamper/expiry/filter rejection, auth, safe 404/503/500 behavior, and absence of internal fields.
+- [x] Focused fixtures and full repository verification -- prove ranking precedence, ties, atomic active/inactive changes, lagging-index isolation, reconciliation, encrypted cursor tamper/expiry/filter rejection, public access, safe 404/503/500 behavior, and absence of internal fields.
 
 **Acceptance Criteria:**
 - Given qualified active opportunities across a sport, when the list endpoint is called, then results follow the approved total order across the full rank partition and every item explains EV, confidence score/bucket/components, live freshness, coverage, agreement, contributing books, warnings, and timestamps.
@@ -117,6 +118,6 @@ The rank key uses canonical descending sortable numeric encodings, not a weighte
 **Commands:**
 - `pnpm --filter @find-the-edge/config test && pnpm --filter @find-the-edge/domain test`
 - `pnpm --filter @find-the-edge/database test && pnpm --filter @find-the-edge/workers test`
-- `pnpm --filter @find-the-edge/api test && pnpm --filter @find-the-edge/infra test`
-- `pnpm --filter @find-the-edge/infra synth`
+- `pnpm --filter @find-the-edge/api test && pnpm --filter @find-the-edge/infra-cdk test`
+- `FTE_EVENT_CURSOR_SECRET_ARN=arn:aws:secretsmanager:us-east-1:228246988391:secret:fte-local-cursor pnpm --filter @find-the-edge/infra-cdk synth`
 - `pnpm check && git diff --check`

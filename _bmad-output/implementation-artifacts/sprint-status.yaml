@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-035
+nextReadyStory: FTE-036
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -681,7 +681,7 @@ stories:
   - id: FTE-035
     title: Ranked Opportunity API and Explanation
     epic: +EV opportunity lifecycle and dashboard
-    status: backlog
+    status: done
     dependencies: [FTE-033, FTE-034]
     risk: Medium
     approvalRequiredBeforeMerge: false
