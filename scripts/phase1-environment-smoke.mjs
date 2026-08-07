@@ -243,15 +243,34 @@ export function resolveLiveIngestionLogicalResourceId(resources, environment) {
   return candidates[0].LogicalResourceId;
 }
 
+const LIVE_INGESTION_SKIPPED_REASONS = new Set([
+  "cadence-not-due",
+  "quota-reserve",
+  "provider-cooldown",
+  "provider-recovering",
+  "schedule-provider-cooldown",
+  "schedule-provider-recovering",
+]);
+
 export function isSafeLiveIngestionResult(result) {
   return (
     result &&
     typeof result === "object" &&
+    !Array.isArray(result) &&
+    [
+      "leagueKey,pages,providerId,quotaCost,status",
+      "leagueKey,pages,quotaCost,status",
+      "leagueKey,pages,providerId,quotaCost,reason,status",
+      "leagueKey,pages,quotaCost,reason,status",
+    ].includes(Object.keys(result).sort().join(",")) &&
+    (result.providerId === undefined || result.providerId === "sharpapi") &&
     RELEASE_REFRESH_LEAGUES.has(result.leagueKey) &&
     ["completed", "skipped", "failed"].includes(result.status) &&
     (result.status === "completed"
       ? result.reason === undefined
-      : typeof result.reason === "string") &&
+      : result.status === "skipped"
+        ? LIVE_INGESTION_SKIPPED_REASONS.has(result.reason)
+        : typeof result.reason === "string") &&
     (result.reason === undefined ||
       [
         "provider-error",
@@ -284,10 +303,10 @@ export function isSafeLiveIngestionResult(result) {
       /^schedule-(stored-event-conflict|conflict-metric-pending|provider-error(?:-(?:initialize|health-read|checkpoint-read|ownership-claim|run-start|schedule-fetch|event-reconcile|schedule-page-commit|conflict-page-seal|conflict-page-commit|schedule-metrics|conflict-metrics|conflict-checkpoint|checkpoint-write|health-write|ownership-clear|invalid-event-reconciliation-lock|event-reconciliation-lock-timeout|event-reconciliation-ownership-lost|event-reconciliation-(?:acquisition|execution|renewal|cleanup)-(?:failed|storage-validation|storage-resource-missing|storage-access-denied|storage-transaction-cancelled|storage-unavailable)|identity-snapshot-unstable|dangling-identity-aggregate|stale-identity-aggregate|mapping-canonical-missing|mapping-canonical-scope-mismatch|mapping-scope-mismatch|multiple-current-event-projections|near-canonical-projection-stale|event-projection-pointer-missing|event-projection-pointer-corrupt|event-projection-active-missing|event-projection-active-corrupt|bootstrap-stale|bootstrap-failed|bootstrap-identity-already-exists|bootstrap-identity-snapshot-mismatch|bootstrap-response-conflict|identity-register-conflict|identity-snapshot-mismatch|identity-conflict-count-exhausted|canonical-revision-provider-limit|invalid-provider-revision-row|provider-revision-scope-mismatch))?|provider-unavailable|provider-rejected|rate-limited|unauthorized|not-entitled|invalid-response|coverage-missing|provider-request-ambiguous|provider-response-unsealed|quota-reserve|provider-cooldown|provider-recovering|schedule-dependency-failed|mapping-quarantine|pagination-invalid|transition-conflict|internal-failure)$/.test(
         result.reason,
       )) &&
-    (isOwnershipOverlapResult(result) ||
-      (Number.isSafeInteger(result.pages) && result.pages >= 0)) &&
-    (isOwnershipOverlapResult(result) ||
-      (Number.isSafeInteger(result.quotaCost) && result.quotaCost >= 0))
+    Number.isSafeInteger(result.pages) &&
+    result.pages >= 0 &&
+    Number.isSafeInteger(result.quotaCost) &&
+    result.quotaCost >= 0
   );
 }
 
@@ -295,20 +314,37 @@ const isOwnershipOverlapResult = (result) =>
   result?.status === "failed" &&
   result?.reason === "schedule-provider-recovering";
 
+const isCompactOwnershipRecoverySummary = (summary) => {
+  if (
+    !Array.isArray(summary) ||
+    summary.length !== RELEASE_REFRESH_LEAGUES.size
+  )
+    return false;
+  const leagues = new Set(RELEASE_REFRESH_LEAGUES);
+  return (
+    summary.every((result) => {
+      if (
+        !result ||
+        typeof result !== "object" ||
+        Array.isArray(result) ||
+        ![
+          "leagueKey,reason,status",
+          "leagueKey,providerId,reason,status",
+        ].includes(Object.keys(result).sort().join(",")) ||
+        (result.providerId !== undefined && result.providerId !== "sharpapi") ||
+        !leagues.delete(result.leagueKey)
+      )
+        return false;
+      return isOwnershipOverlapResult(result);
+    }) && leagues.size === 0
+  );
+};
+
 export function assertLiveIngestionSummary(summary) {
   if (Array.isArray(summary)) {
     const expectedLeagues = RELEASE_REFRESH_LEAGUES;
     const isOwnershipOverlap = isOwnershipOverlapResult;
-    const ownershipOverlapLeagues = summary.map((result) => result?.leagueKey);
-    if (
-      summary.length === expectedLeagues.size &&
-      new Set(ownershipOverlapLeagues).size === expectedLeagues.size &&
-      ownershipOverlapLeagues.every((leagueKey) =>
-        expectedLeagues.has(leagueKey),
-      ) &&
-      summary.every(isOwnershipOverlap)
-    )
-      return;
+    if (isCompactOwnershipRecoverySummary(summary)) return;
     const safeResult = isSafeLiveIngestionResult;
     const leagues = summary.map((result) => result?.leagueKey);
     if (
@@ -398,8 +434,23 @@ export function isTransientLiveIngestionSummary(summary) {
     summary.length !== RELEASE_REFRESH_LEAGUES.size
   )
     return false;
+  if (isCompactOwnershipRecoverySummary(summary)) return true;
   const leagues = new Set(RELEASE_REFRESH_LEAGUES);
-  let recovering = false;
+  let recoverableFailure = false;
+  const recoveryOnlyReasons = new Set([
+    "provider-cooldown",
+    "provider-recovering",
+    "schedule-provider-cooldown",
+    "schedule-provider-recovering",
+  ]);
+  const retryableFailureReasons = new Set([
+    "invalid-response",
+    "provider-unavailable",
+    "rate-limited",
+    "schedule-invalid-response",
+    "schedule-provider-unavailable",
+    "schedule-rate-limited",
+  ]);
   return (
     summary.every((result) => {
       if (
@@ -420,14 +471,15 @@ export function isTransientLiveIngestionSummary(summary) {
       )
         return false;
       if (result.status === "completed") return result.reason === undefined;
-      const isRecovering =
+      const isRecoveryOnly =
         ["failed", "skipped"].includes(result.status) &&
-        ["provider-recovering", "schedule-provider-recovering"].includes(
-          result.reason,
-        );
-      recovering ||= isRecovering;
-      return isRecovering;
-    }) && recovering
+        recoveryOnlyReasons.has(result.reason);
+      const isRetryableFailure =
+        result.status === "failed" &&
+        retryableFailureReasons.has(result.reason);
+      recoverableFailure ||= isRecoveryOnly || isRetryableFailure;
+      return isRecoveryOnly || isRetryableFailure;
+    }) && recoverableFailure
   );
 }
 
@@ -439,11 +491,17 @@ export function liveIngestionRecoveryAction({
   recoveryDeadline,
   recoveryDelayMs,
 }) {
-  if (!isTransientLiveIngestionSummary(summary)) return "complete";
-  return invocation === recoveryAttempts ||
-    now + recoveryDelayMs > recoveryDeadline
-    ? "exhausted"
-    : "retry";
+  if (isTransientLiveIngestionSummary(summary))
+    return invocation === recoveryAttempts ||
+      now + recoveryDelayMs > recoveryDeadline
+      ? "exhausted"
+      : "retry";
+  try {
+    assertLiveIngestionSummary(summary);
+    return "complete";
+  } catch {
+    return "terminal";
+  }
 }
 
 export function assertLiveGame(game, sport) {

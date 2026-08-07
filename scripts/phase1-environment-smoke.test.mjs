@@ -561,6 +561,48 @@ test("live ingestion retries bounded schedule and provider recovery", () => {
       ),
     ),
   );
+  const compactRecovering = recovering.map(
+    ({ pages: _pages, quotaCost: _quotaCost, ...result }) => result,
+  );
+  assert.equal(isTransientLiveIngestionSummary(compactRecovering), true);
+  assert.equal(
+    isTransientLiveIngestionSummary(
+      compactRecovering.map((result) => ({
+        ...result,
+        providerId: "sharpapi",
+      })),
+    ),
+    true,
+  );
+  assert.equal(
+    isTransientLiveIngestionSummary(
+      compactRecovering.map((result, index) =>
+        index === 0 ? { ...result, extra: true } : result,
+      ),
+    ),
+    false,
+  );
+  assert.throws(() =>
+    assertLiveIngestionSummary(
+      compactRecovering.map((result, index) =>
+        index === 0 ? { ...result, extra: true } : result,
+      ),
+    ),
+  );
+  assert.equal(
+    isSafeLiveIngestionResult({
+      ...recovering[0],
+      providerId: "other",
+    }),
+    false,
+  );
+  assert.throws(() =>
+    assertLiveIngestionSummary(
+      compactRecovering.map((result, index) =>
+        index === 0 ? { ...result, providerId: "other" } : result,
+      ),
+    ),
+  );
   assert.equal(
     isTransientLiveIngestionSummary(
       recovering.map((result) => ({ ...result, providerId: "sharpapi" })),
@@ -592,6 +634,105 @@ test("live ingestion retries bounded schedule and provider recovery", () => {
         },
   );
   assert.equal(isTransientLiveIngestionSummary(providerRecovering), true);
+  const transientInvalidResponse = [
+    {
+      leagueKey: "epl",
+      status: "completed",
+      providerId: "sharpapi",
+      pages: 1,
+      quotaCost: 1,
+    },
+    {
+      leagueKey: "liga-mx",
+      status: "failed",
+      reason: "invalid-response",
+      pages: 2,
+      quotaCost: 4,
+    },
+    {
+      leagueKey: "mlb",
+      status: "skipped",
+      reason: "provider-recovering",
+      pages: 0,
+      quotaCost: 0,
+    },
+    {
+      leagueKey: "mls",
+      status: "completed",
+      providerId: "sharpapi",
+      pages: 1,
+      quotaCost: 1,
+    },
+    {
+      leagueKey: "uefa-champions-league",
+      status: "failed",
+      reason: "provider-recovering",
+      pages: 0,
+      quotaCost: 0,
+    },
+  ];
+  assert.equal(isTransientLiveIngestionSummary(transientInvalidResponse), true);
+  assert.throws(() => assertLiveIngestionSummary(transientInvalidResponse));
+  for (const reason of [
+    "provider-cooldown",
+    "provider-recovering",
+    "schedule-provider-cooldown",
+    "schedule-provider-recovering",
+  ])
+    for (const status of ["failed", "skipped"])
+      assert.equal(
+        isTransientLiveIngestionSummary(
+          transientInvalidResponse.map((result) =>
+            result.leagueKey === "liga-mx"
+              ? { ...result, status, reason }
+              : result,
+          ),
+        ),
+        true,
+      );
+  for (const reason of [
+    "provider-unavailable",
+    "rate-limited",
+    "schedule-invalid-response",
+    "schedule-provider-unavailable",
+    "schedule-rate-limited",
+  ])
+    assert.equal(
+      isTransientLiveIngestionSummary(
+        transientInvalidResponse.map((result) =>
+          result.leagueKey === "liga-mx"
+            ? { ...result, status: "failed", reason }
+            : result,
+        ),
+      ),
+      true,
+    );
+  for (const reason of [
+    "unauthorized",
+    "not-entitled",
+    "provider-rejected",
+    "mapping-quarantine",
+    "pagination-invalid",
+    "internal-failure",
+  ])
+    assert.equal(
+      isTransientLiveIngestionSummary(
+        transientInvalidResponse.map((result) =>
+          result.leagueKey === "liga-mx" ? { ...result, reason } : result,
+        ),
+      ),
+      false,
+    );
+  assert.equal(
+    isTransientLiveIngestionSummary(
+      transientInvalidResponse.map((result) =>
+        result.leagueKey === "liga-mx"
+          ? { ...result, status: "skipped" }
+          : result,
+      ),
+    ),
+    false,
+  );
   assert.equal(
     isTransientLiveIngestionSummary(
       providerRecovering.map((result) => ({
@@ -618,6 +759,31 @@ test("live ingestion retries bounded schedule and provider recovery", () => {
     false,
   );
   assert.equal(isTransientLiveIngestionSummary({}), false);
+  const completed = [
+    "mlb",
+    "mls",
+    "epl",
+    "liga-mx",
+    "uefa-champions-league",
+  ].map((leagueKey) => ({
+    leagueKey,
+    status: "completed",
+    providerId: "sharpapi",
+    pages: 1,
+    quotaCost: 1,
+  }));
+  const withSkippedReason = (reason) =>
+    completed.map((result, index) =>
+      index === 0
+        ? {
+            ...result,
+            status: "skipped",
+            reason,
+            pages: 0,
+            quotaCost: 0,
+          }
+        : result,
+    );
   const recoveryInput = {
     summary: recovering,
     invocation: 1,
@@ -626,7 +792,75 @@ test("live ingestion retries bounded schedule and provider recovery", () => {
     recoveryDeadline: 100_000,
     recoveryDelayMs: 30_000,
   };
+  for (const reason of [
+    "unauthorized",
+    "provider-rejected",
+    "mapping-quarantine",
+    "pagination-invalid",
+    "internal-failure",
+    "invalid-response",
+  ]) {
+    const summary = withSkippedReason(reason);
+    assert.equal(isSafeLiveIngestionResult(summary[0]), false);
+    assert.equal(isTransientLiveIngestionSummary(summary), false);
+    assert.throws(() => assertLiveIngestionSummary(summary));
+    assert.equal(
+      liveIngestionRecoveryAction({ ...recoveryInput, summary }),
+      "terminal",
+    );
+  }
+  for (const reason of ["cadence-not-due", "quota-reserve"]) {
+    const summary = withSkippedReason(reason);
+    assert.doesNotThrow(() => assertLiveIngestionSummary(summary));
+    assert.equal(
+      liveIngestionRecoveryAction({ ...recoveryInput, summary }),
+      "complete",
+    );
+  }
+  for (const reason of [
+    "provider-cooldown",
+    "provider-recovering",
+    "schedule-provider-cooldown",
+    "schedule-provider-recovering",
+  ]) {
+    const summary = withSkippedReason(reason);
+    assert.doesNotThrow(() => assertLiveIngestionSummary(summary));
+    assert.equal(
+      liveIngestionRecoveryAction({ ...recoveryInput, summary }),
+      "retry",
+    );
+  }
   assert.equal(liveIngestionRecoveryAction(recoveryInput), "retry");
+  assert.equal(
+    liveIngestionRecoveryAction({
+      ...recoveryInput,
+      summary: compactRecovering,
+    }),
+    "retry",
+  );
+  assert.equal(
+    liveIngestionRecoveryAction({
+      ...recoveryInput,
+      summary: compactRecovering,
+      invocation: 3,
+    }),
+    "exhausted",
+  );
+  assert.equal(
+    liveIngestionRecoveryAction({
+      ...recoveryInput,
+      summary: transientInvalidResponse,
+    }),
+    "retry",
+  );
+  assert.equal(
+    liveIngestionRecoveryAction({
+      ...recoveryInput,
+      summary: transientInvalidResponse,
+      invocation: 3,
+    }),
+    "exhausted",
+  );
   assert.equal(
     liveIngestionRecoveryAction({ ...recoveryInput, invocation: 3 }),
     "exhausted",
@@ -638,13 +872,7 @@ test("live ingestion retries bounded schedule and provider recovery", () => {
   assert.equal(
     liveIngestionRecoveryAction({
       ...recoveryInput,
-      summary: recovering.map((result) => ({
-        leagueKey: result.leagueKey,
-        status: "completed",
-        providerId: "sharpapi",
-        pages: 1,
-        quotaCost: 1,
-      })),
+      summary: completed,
     }),
     "complete",
   );
