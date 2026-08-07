@@ -74,12 +74,19 @@ export interface ApiRequest {
   readonly strategyPromoterAuthorized?: boolean;
 }
 
+// SharpAPI's consensus scope already aggregates DraftKings and Circa, so
+// publishing those two beside it repeats every game once per member book.
+// Books the consensus does not cover stand alone and stay published.
+const consensusMemberScopes = new Set(["draftkings", "circa"]);
+
 export const publishedSplitScopes = <T extends { readonly scope?: string }>(
   splits: readonly T[],
 ) => {
   const scopes = new Set(splits.map(({ scope }) => scope?.toLowerCase()));
   return scopes.has("consensus")
-    ? splits.filter(({ scope }) => scope?.toLowerCase() === "consensus")
+    ? splits.filter(
+        ({ scope }) => !consensusMemberScopes.has(scope?.toLowerCase() ?? ""),
+      )
     : splits;
 };
 export interface ApiResponse {

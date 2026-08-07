@@ -1431,10 +1431,41 @@ function SplitBar({
   );
 }
 
+// SharpAPI reports DraftKings and Circa only as one combined consensus scope,
+// so they share a single chip. Books it does not aggregate filter on their own.
+const splitBookGroups = [
+  {
+    id: "consensus",
+    label: "Circa/DK",
+    logoScope: "consensus",
+    scopes: ["consensus", "draftkings", "circa"],
+  },
+  {
+    id: "betmgm",
+    label: "BetMGM",
+    logoScope: "betmgm",
+    scopes: ["betmgm"],
+  },
+] as const;
+
+type SplitBookGroup = (typeof splitBookGroups)[number];
+
+// Anything the provider does not scope to its own book belongs to the default
+// consensus board, so unscoped evidence is never silently dropped.
+const splitBookGroupFor = (scope: string | undefined): SplitBookGroup => {
+  const key = sportsbookScopeKey(scope ?? "");
+  return (
+    splitBookGroups.find((group) =>
+      (group.scopes as readonly string[]).includes(key),
+    ) ?? splitBookGroups[0]
+  );
+};
+
 function SplitsExplorer() {
   const client = useContext(GamesClientContext);
   const [sport, setSport] = useState<GamesSport>("mlb");
   const [day, setDay] = useState(() => currentEasternDay());
+  const [book, setBook] = useState<SplitBookGroup["id"]>("consensus");
   const [state, setState] = useState<
     | { readonly kind: "loading" }
     | {
@@ -1525,8 +1556,24 @@ function SplitsExplorer() {
     if (key === "circa") return 2;
     return 3;
   };
+  // Only offer a book the board can actually fill, and fall back to whatever
+  // this day does carry so a stale selection never blanks the whole table.
+  const availableBooks = splitBookGroups.filter((group) =>
+    games.some((game) =>
+      game.splits.some(
+        (split) =>
+          hasSplitPercent(split) && splitBookGroupFor(split.scope) === group,
+      ),
+    ),
+  );
+  const selectedBook =
+    availableBooks.find(({ id }) => id === book) ?? availableBooks[0];
   const boards = games.map((game) => {
-    const usableSplits = game.splits.filter(hasSplitPercent);
+    const usableSplits = game.splits.filter(
+      (split) =>
+        hasSplitPercent(split) &&
+        (!selectedBook || splitBookGroupFor(split.scope) === selectedBook),
+    );
     const splitByMarketSelection = new Map<
       string,
       (typeof usableSplits)[number]
@@ -1543,7 +1590,15 @@ function SplitsExplorer() {
         splitByMarketSelection.set(key, split);
     }
     const splits = [...splitByMarketSelection.values()];
-    return { game, splits, emptyLabel: "No split data" };
+    return {
+      game,
+      splits,
+      // Naming the book only helps once the reader has a book to switch to.
+      emptyLabel:
+        selectedBook && availableBooks.length > 1
+          ? `No ${selectedBook.label} data`
+          : "No split data",
+    };
   });
   const coveredGames = new Set(
     boards.filter(({ splits }) => splits.length > 0).map(({ game }) => game.id),
@@ -1658,6 +1713,27 @@ function SplitsExplorer() {
           />
         </label>
       </section>
+      {availableBooks.length > 1 && (
+        <section
+          className="sportsbook-filters splits-scope-filters"
+          aria-label="Sportsbook"
+        >
+          {availableBooks.map((group) => (
+            <button
+              key={group.id}
+              type="button"
+              className={selectedBook === group ? "selected" : ""}
+              // The logo art names the provider's book, not this group, so the
+              // group label is the authoritative accessible name.
+              aria-label={group.label}
+              aria-pressed={selectedBook === group}
+              onClick={() => setBook(group.id)}
+            >
+              <SportsbookLogo scope={group.logoScope} />
+            </button>
+          ))}
+        </section>
+      )}
       {state.kind === "ready" && games.length > 0 && (
         <section className="splits-toolbar" aria-label="Splits summary">
           <div>
@@ -1672,7 +1748,9 @@ function SplitsExplorer() {
           <dl>
             <div>
               <dt>Source</dt>
-              <dd>SharpAPI consensus</dd>
+              <dd>
+                {selectedBook ? selectedBook.label : "SharpAPI consensus"}
+              </dd>
             </div>
             <div>
               <dt>Freshest evidence</dt>
@@ -1693,7 +1771,8 @@ function SplitsExplorer() {
       )}
       {state.kind === "ready" && games.length > 0 && coveredGames === 0 && (
         <p className="splits-no-data-notice" role="status">
-          No split percentages are available from SharpAPI consensus. The
+          No split percentages are available from{" "}
+          {selectedBook ? selectedBook.label : "SharpAPI consensus"}. The
           complete schedule remains below.
         </p>
       )}
@@ -1838,7 +1917,9 @@ function SplitsExplorer() {
                               )}
                               {rowIndex === 0 && splits.length > 0 && (
                                 <span className="split-scope">
-                                  SharpAPI consensus
+                                  {selectedBook
+                                    ? selectedBook.label
+                                    : "SharpAPI consensus"}
                                 </span>
                               )}
                             </th>

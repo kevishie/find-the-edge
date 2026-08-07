@@ -48,6 +48,19 @@ it("publishes the provider consensus instead of its underlying book history", ()
   expect(publishedSplitScopes(values.slice(1))).toEqual(values.slice(1));
 });
 
+it("keeps books the consensus does not aggregate", () => {
+  const values = [
+    { id: "consensus", scope: "consensus" },
+    { id: "dk", scope: "draftkings" },
+    { id: "circa", scope: "Circa" },
+    { id: "mgm", scope: "betmgm" },
+  ];
+  expect(publishedSplitScopes(values).map(({ id }) => id)).toEqual([
+    "consensus",
+    "mgm",
+  ]);
+});
+
 it("serves the public provider-status contract without query parameters", async () => {
   const providerStatus = vi.fn(() =>
     Promise.resolve({

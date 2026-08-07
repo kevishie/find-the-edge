@@ -77,12 +77,10 @@ test("projects one SharpAPI consensus board across every scheduled MLB game", as
     api.expectedGameCount,
   );
   await expect(
-    page
-      .getByLabel("Splits summary")
-      .getByText("SharpAPI consensus", { exact: true }),
+    page.getByLabel("Splits summary").getByText("Circa/DK", { exact: true }),
   ).toBeVisible();
   await expect(page.locator(".split-scope:not(.split-no-data)")).toHaveText(
-    "SharpAPI consensus",
+    "Circa/DK",
   );
   await expect(page.getByText("Game details →")).toHaveCount(0);
 

@@ -1874,7 +1874,7 @@ describe("Betting splits", () => {
     expect(screen.getByText("+26")).toBeInTheDocument();
     expect(screen.getByText("−26")).toBeInTheDocument();
     expect(screen.getAllByText("No line")).toHaveLength(2);
-    expect(screen.getAllByText("SharpAPI consensus")).toHaveLength(2);
+    expect(screen.getAllByText("Circa/DK")).toHaveLength(2);
     expect(
       screen.getByText("Consensus is context—not a pick."),
     ).toBeInTheDocument();
@@ -2335,7 +2335,7 @@ describe("Betting splits", () => {
     expect(
       await screen.findByText(/Freshness unknown splits board/),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("SharpAPI consensus")).toHaveLength(2);
+    expect(screen.getAllByText("Circa/DK")).toHaveLength(2);
   });
 
   it("shows scheduled games without observations in the consensus board", async () => {
@@ -2425,7 +2425,7 @@ describe("Betting splits", () => {
     expect(screen.getByText("Timestamp unavailable")).toBeInTheDocument();
   });
 
-  it("does not expose source-specific sportsbook controls", async () => {
+  it("offers no book chip when only one book covers the day", async () => {
     const betmgmSplits = splitGame.splits.map((split, index) => ({
       ...split,
       scope: index % 2 === 0 ? " betmgm " : "BETMGM",
@@ -2442,9 +2442,54 @@ describe("Betting splits", () => {
 
     await screen.findByText("Boston");
     expect(
-      screen.queryByRole("button", { name: /DraftKings|Circa|FanDuel/ }),
+      screen.queryByRole("button", { name: /Circa\/DK|BetMGM/ }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("BetMGM")).not.toBeInTheDocument();
-    expect(screen.getAllByText("SharpAPI consensus")).toHaveLength(2);
+    expect(screen.getAllByText("BetMGM")).toHaveLength(2);
+  });
+
+  it("filters the board between the consensus and BetMGM without duplicating games", async () => {
+    const consensusSplits = splitGame.splits.map((split) => ({
+      ...split,
+      scope: "consensus",
+    }));
+    const betmgmSplits = splitGame.splits.map((split) => ({
+      ...split,
+      id: `${split.id}-betmgm`,
+      scope: "betmgm",
+      betPercent: 11,
+      moneyPercent: 89,
+    }));
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(
+        splitsPage([
+          { ...splitGame, splits: [...consensusSplits, ...betmgmSplits] },
+        ]),
+      );
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+
+    // One row-label per game proves the second book adds a chip, not a copy.
+    expect(
+      await screen.findByText("1 games · 1 with data · 6 observations"),
+    ).toBeInTheDocument();
+    expect(document.querySelectorAll(".split-scope")).toHaveLength(1);
+    expect(document.querySelector(".split-scope")).toHaveTextContent(
+      "Circa/DK",
+    );
+    expect(screen.queryByText("11%")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "BetMGM" }));
+
+    expect(
+      screen.getByText("1 games · 1 with data · 6 observations"),
+    ).toBeInTheDocument();
+    expect(document.querySelectorAll(".split-scope")).toHaveLength(1);
+    expect(document.querySelector(".split-scope")).toHaveTextContent("BetMGM");
+    expect(screen.getAllByText("11%").length).toBeGreaterThan(0);
   });
 });

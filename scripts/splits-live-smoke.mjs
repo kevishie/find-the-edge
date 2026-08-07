@@ -166,9 +166,12 @@ export async function runSplitsLiveSmoke({
         typeof observation.id !== "string" ||
         observationIds.has(observation.id) ||
         observation.canonicalEventId !== game.id ||
+        // BetMGM publishes beside the consensus rather than inside it, so a
+        // board carrying it is still valid evidence.
         ![
           "draftkings",
           "circa",
+          "betmgm",
           ...(allowConsensusFallback ? ["consensus"] : []),
         ].includes(observation.scope) ||
         !finitePercentage(observation.betPercent) ||
