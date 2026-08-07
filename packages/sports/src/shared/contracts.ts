@@ -11,6 +11,7 @@ import type {
 
 import type { SportAnalysisPolicy } from "./analysis";
 import type { SportScoutingInputContract } from "./scouting-input";
+import type { SportScoutingReportContract } from "./scouting-report";
 
 export interface ValidationResult<T = unknown> {
   valid: boolean;
@@ -117,6 +118,7 @@ export interface SportModule {
   validationSchemaId: string;
   analysisPolicy: SportAnalysisPolicy;
   scoutingInputContract: Readonly<SportScoutingInputContract>;
+  scoutingReportContract: Readonly<SportScoutingReportContract>;
   ui: UiTerminology;
   validateInput(input: unknown): ValidationResult;
   normalizeEvent(raw: unknown): ValidationResult<Event>;

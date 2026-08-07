@@ -285,6 +285,9 @@ importers:
       '@find-the-edge/domain':
         specifier: workspace:*
         version: link:../domain
+      '@find-the-edge/odds':
+        specifier: workspace:*
+        version: link:../odds
       '@find-the-edge/sports':
         specifier: workspace:*
         version: link:../sports

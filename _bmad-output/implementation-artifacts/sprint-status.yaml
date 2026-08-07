@@ -723,7 +723,7 @@ stories:
   - id: FTE-041
     title: AI Report Provider Interface and Structured Report Schema
     epic: Manual scouting workflow
-    status: backlog
+    status: in-progress
     dependencies: [FTE-040, FTE-031]
     risk: High
     approvalRequiredBeforeMerge: false

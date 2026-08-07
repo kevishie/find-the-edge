@@ -3,6 +3,7 @@ import type { SportKey } from "@find-the-edge/domain";
 import { createDeclarativeSportModule } from "../shared/create-module";
 import { createPlannedAnalysisPolicy } from "../shared/analysis";
 import { createUnavailableScoutingInputContract } from "../shared/scouting-input";
+import { createUnavailableScoutingReportContract } from "../shared/scouting-report";
 
 function planned(
   keyValue: string,
@@ -59,6 +60,14 @@ function planned(
       participantMaximum: keyValue === "tennis" ? 4 : 2,
       ...(keyValue === "tennis" ? { participantAllowedCounts: [2, 4] } : {}),
       capabilityKeys: categories,
+    }),
+    scoutingReportContract: createUnavailableScoutingReportContract({
+      sportKey: key,
+      schemaVersion: "0",
+      sections: categories.map((category) => ({
+        key: category,
+        title: category.replaceAll("-", " "),
+      })),
     }),
     ui: {
       event: keyValue === "tennis" ? "Match" : "Game",

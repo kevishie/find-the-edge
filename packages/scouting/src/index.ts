@@ -3,3 +3,7 @@ export * from "./prompt-bundle";
 export * from "./model-adapter";
 export * from "./retrospective";
 export * from "./scouting-input";
+export * from "./report-model-port";
+export * from "./report-prompt";
+export * from "./trusted-instructions";
+export * from "./scouting-report";

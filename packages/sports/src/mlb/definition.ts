@@ -3,6 +3,7 @@ import type { SportKey } from "@find-the-edge/domain";
 import { createDeclarativeSportModule } from "../shared/create-module";
 import type { StrategyDefinition } from "../shared/contracts";
 import { createUnavailableScoutingInputContract } from "../shared/scouting-input";
+import { createUnavailableScoutingReportContract } from "../shared/scouting-report";
 
 export const mlbAnalysisPolicy = {
   enabled: true,
@@ -211,6 +212,11 @@ export const mlbModule = createDeclarativeSportModule({
       "travel-rest",
       "market-intelligence",
     ],
+  }),
+  scoutingReportContract: createUnavailableScoutingReportContract({
+    sportKey: key,
+    schemaVersion: "1",
+    sections: [{ key: "report-unavailable", title: "Report Unavailable" }],
   }),
   ui: {
     event: "Game",
