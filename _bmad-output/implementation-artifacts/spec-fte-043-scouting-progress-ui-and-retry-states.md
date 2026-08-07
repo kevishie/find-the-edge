@@ -2,11 +2,12 @@
 title: 'FTE-043: Scouting Progress UI and Retry States'
 type: 'feature'
 created: '2026-08-07'
-status: 'in-review'
+status: 'done'
 baseline_revision: '7471d9970e0932f8d0a16a1f7d8f142461c3f047'
 baseline_commit: '7471d9970e0932f8d0a16a1f7d8f142461c3f047'
 review_loop_iteration: 0
 followup_review_recommended: false
+final_revision: 'd5d3d96dc8123f98cb1439d37b4ff52d66641719'
 context:
   - '_bmad-output/implementation-artifacts/epic-7-context.md'
   - '_bmad-output/implementation-artifacts/spec-fte-038-scout-event-api-idempotent-job-model-sqs-and-step-functions.md'
