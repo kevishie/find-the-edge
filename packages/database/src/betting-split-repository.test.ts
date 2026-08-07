@@ -72,6 +72,18 @@ describe("betting split evidence", () => {
       normalizeBettingSplitObservation(split({ americanOdds: 99 })),
     ).toThrow("betting-split-odds-invalid");
   });
+  it("reads valid pre-moneyline split identities without rewriting them", () => {
+    const legacyId =
+      "split:e48f5b87895177d7217cf5210ccc09f057fc6a68e97c99b04ca87d5cc4924a4f";
+    expect(normalizeBettingSplitObservation(split({ id: legacyId })).id).toBe(
+      legacyId,
+    );
+    expect(() =>
+      normalizeBettingSplitObservation(
+        split({ id: legacyId, americanOdds: 145 }),
+      ),
+    ).toThrow("betting-split-id-invalid");
+  });
   it("returns the freshest logical splits across harmless event version bumps", async () => {
     const repository = new MemoryBettingSplitRepository();
     await repository.persist(split({ canonicalEventVersion: 8 }));

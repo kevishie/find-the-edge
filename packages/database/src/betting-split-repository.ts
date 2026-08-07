@@ -89,9 +89,29 @@ export function normalizeBettingSplitObservation(
     input.scope ?? null,
   ]);
   const id = `split:${createHash("sha256").update(material).digest("hex")}`;
-  if (input.id !== undefined && input.id !== id)
-    throw new BettingSplitValidationError("betting-split-id-invalid");
-  return { ...input, id };
+  if (input.id !== undefined && input.id !== id) {
+    const legacyMaterial = JSON.stringify([
+      input.providerId,
+      input.providerEventId,
+      input.canonicalEventId,
+      input.canonicalEventVersion,
+      input.sportKey,
+      input.leagueKey,
+      input.marketKey,
+      input.selectionKey,
+      input.point ?? null,
+      input.betPercent ?? null,
+      input.moneyPercent ?? null,
+      input.betCount ?? null,
+      input.moneyAmount ?? null,
+      input.providerTimestamp,
+      input.scope ?? null,
+    ]);
+    const legacyId = `split:${createHash("sha256").update(legacyMaterial).digest("hex")}`;
+    if (input.americanOdds !== undefined || input.id !== legacyId)
+      throw new BettingSplitValidationError("betting-split-id-invalid");
+  }
+  return { ...input, id: input.id ?? id };
 }
 
 export interface BettingSplitPersistResult {
