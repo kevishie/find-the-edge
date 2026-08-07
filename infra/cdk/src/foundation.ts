@@ -10,6 +10,7 @@ import {
 import {
   AttributeType,
   BillingMode,
+  ProjectionType,
   StreamViewType,
   Table,
 } from "aws-cdk-lib/aws-dynamodb";
@@ -139,6 +140,12 @@ export class FoundationStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
       timeToLiveAttribute: "expiresAt",
       stream: StreamViewType.NEW_IMAGE,
+    });
+    table.addGlobalSecondaryIndex({
+      indexName: "opportunity-active-v1",
+      partitionKey: { name: "activePk", type: AttributeType.STRING },
+      sortKey: { name: "activeSk", type: AttributeType.STRING },
+      projectionType: ProjectionType.KEYS_ONLY,
     });
     const performanceWorker = new NodejsFunction(this, "PerformanceWorker", {
       runtime: Runtime.NODEJS_22_X,
@@ -707,6 +714,66 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "CompletedResultsFunctionName", {
       value: completedResults.functionName,
     });
+    const opportunityExpirationLogs = new LogGroup(
+      this,
+      "OpportunityExpirationLogs",
+      {
+        retention: RetentionDays.ONE_MONTH,
+        removalPolicy: RemovalPolicy.DESTROY,
+      },
+    );
+    const opportunityExpiration = new NodejsFunction(
+      this,
+      "OpportunityExpirationWorker",
+      {
+        entry: path.resolve(
+          directory,
+          "../../../apps/workers/src/opportunities/opportunity-expiration-lambda.ts",
+        ),
+        handler: "handler",
+        runtime: Runtime.NODEJS_24_X,
+        timeout: Duration.minutes(2),
+        memorySize: 256,
+        reservedConcurrentExecutions: 1,
+        logGroup: opportunityExpirationLogs,
+        environment: {
+          FTE_EVENT_TABLE: table.tableName,
+          FTE_OPPORTUNITY_SPORT_KEYS: "mlb,soccer,tennis,nfl,nba,ncaaf",
+        },
+        bundling: { minify: true, sourceMap: true },
+      },
+    );
+    opportunityExpiration.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:TransactWriteItems",
+        ],
+        resources: [
+          table.tableArn,
+          `${table.tableArn}/index/opportunity-active-v1`,
+        ],
+      }),
+    );
+    const opportunityExpirationSchedule = new Rule(
+      this,
+      "OpportunityExpirationSchedule",
+      {
+        enabled: props.schedulerEnabled,
+        schedule: Schedule.rate(Duration.minutes(5)),
+      },
+    );
+    opportunityExpirationSchedule.addTarget(
+      new LambdaFunction(opportunityExpiration, {
+        retryAttempts: 2,
+        maxEventAge: Duration.minutes(5),
+      }),
+    );
+    new CfnOutput(this, "OpportunityExpirationFunctionName", {
+      value: opportunityExpiration.functionName,
+    });
     const worker = new NodejsFunction(this, "UpcomingEventsWorker", {
       entry: path.resolve(directory, "../../../apps/workers/src/lambda.ts"),
       handler: "handler",
@@ -1118,6 +1185,26 @@ export class FoundationStack extends Stack {
       ),
       new Alarm(this, "CompletedResultsErrorsAlarm", {
         metric: completedResults.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "OpportunityExpirationFailuresAlarm", {
+        metric: opportunityExpiration.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "OpportunityStaleActiveAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/OpportunityLifecycle",
+          metricName: "StaleActiveCount",
+          dimensionsMap: { Cause: "sweep", Outcome: "transition" },
+          statistic: "Sum",
+          period: Duration.minutes(5),
+        }),
         threshold: 1,
         evaluationPeriods: 1,
         comparisonOperator:

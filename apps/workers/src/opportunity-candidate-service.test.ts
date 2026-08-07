@@ -17,6 +17,7 @@ import {
   OpportunityCandidateService,
   StaticOpportunityProviderHealthSource,
   type OpportunityCandidateTelemetry,
+  type OpportunityCandidateLifecycleProjector,
   type OpportunityGenerationEvent,
   type OpportunityProviderHealthSource,
 } from "./opportunity-candidate-service";
@@ -146,6 +147,7 @@ function service(input?: {
   providerHealth?: OpportunityProviderHealthSource;
   healthy?: boolean;
   emit?: OpportunityCandidateTelemetry["emit"];
+  lifecycle?: OpportunityCandidateLifecycleProjector;
 }) {
   const candidates =
     input?.candidates ?? new MemoryOpportunityCandidateRepository();
@@ -164,6 +166,9 @@ function service(input?: {
           "sharpapi",
           input?.healthy ?? true,
         ),
+      lifecycle:
+        input?.lifecycle ??
+        ({ projectCandidate: vi.fn().mockResolvedValue(undefined) } as const),
       ...(input?.emit ? { telemetry: { emit: input.emit } } : {}),
     }),
   };
@@ -431,6 +436,30 @@ describe("opportunity candidate service", () => {
     await expect(
       instance.value.generate({ evaluatedAt, events: [event] }),
     ).rejects.toThrow("throttled");
+  });
+
+  it("persists before lifecycle projection and converges projection on redelivery", async () => {
+    const candidates = new MemoryOpportunityCandidateRepository();
+    const projectCandidate = vi
+      .fn<OpportunityCandidateLifecycleProjector["projectCandidate"]>()
+      .mockRejectedValueOnce(new Error("projection-temporary"))
+      .mockResolvedValue(undefined);
+    const instance = service({
+      candidates,
+      lifecycle: { projectCandidate },
+    });
+    await expect(
+      instance.value.generate({ evaluatedAt, events: [event] }),
+    ).rejects.toThrow("projection-temporary");
+    const replay = await instance.value.generate({
+      evaluatedAt,
+      events: [event],
+    });
+    expect(replay.duplicateCount).toBe(1);
+    expect(projectCandidate).toHaveBeenCalledTimes(3);
+    expect(projectCandidate.mock.calls[0]?.[0].occurrenceId).toBe(
+      projectCandidate.mock.calls[1]?.[0].occurrenceId,
+    );
   });
 
   it("reports bounded partial progress when a later write fails", async () => {

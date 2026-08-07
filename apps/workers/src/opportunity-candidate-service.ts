@@ -76,6 +76,12 @@ export interface OpportunityCandidateTelemetry {
     readonly calculationVersion: string;
   }): void;
 }
+export interface OpportunityCandidateLifecycleProjector {
+  projectCandidate(
+    candidate: OpportunityCandidate,
+    occurredAt: string,
+  ): Promise<unknown>;
+}
 export interface OpportunityGenerationResult {
   readonly candidates: readonly OpportunityCandidate[];
   readonly createdCount: number;
@@ -183,6 +189,7 @@ export class OpportunityCandidateService {
       readonly evidence: OpportunityEvidenceRepository;
       readonly candidates: OpportunityCandidateRepository;
       readonly providerHealth: OpportunityProviderHealthSource;
+      readonly lifecycle: OpportunityCandidateLifecycleProjector;
       readonly telemetry?: OpportunityCandidateTelemetry;
       readonly resolveSportModule?: (sportKey: string) => SportModule;
       readonly resolveStrategy?: (
@@ -476,6 +483,10 @@ export class OpportunityCandidateService {
             candidates.push(persisted.candidate);
             for (const reason of persisted.candidate.reasonCodes)
               reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+            await this.dependencies.lifecycle.projectCandidate(
+              persisted.candidate,
+              command.evaluatedAt,
+            );
           }
         }
       }

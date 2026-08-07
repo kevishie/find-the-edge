@@ -19,3 +19,5 @@ export * from "./retrospective-builder";
 export * from "./walk-forward-experiment";
 export * from "./strategy-promotion";
 export * from "./opportunity-candidate-service";
+export * from "./opportunities/opportunity-lifecycle-service";
+export * from "./opportunities/opportunity-expiration-worker";
