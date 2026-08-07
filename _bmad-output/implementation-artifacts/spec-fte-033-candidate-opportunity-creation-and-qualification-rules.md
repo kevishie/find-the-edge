@@ -2,8 +2,9 @@
 title: 'FTE-033 Candidate Opportunity Creation and Qualification Rules'
 type: 'feature'
 created: '2026-08-06'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'a9236f0cf6a328f56f7d503e38c816191626ef0b'
+final_revision: '693b665d50aca3dd6be5672359d5b5ec06844e54'
 review_loop_iteration: 3
 followup_review_recommended: false
 context:

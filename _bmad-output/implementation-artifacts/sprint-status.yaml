@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-033
+nextReadyStory: FTE-034
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -667,7 +667,7 @@ stories:
   - id: FTE-033
     title: Candidate Opportunity Creation and Qualification Rules
     epic: +EV opportunity lifecycle and dashboard
-    status: backlog
+    status: done
     dependencies: [FTE-021, FTE-028, FTE-029, FTE-032]
     risk: High
     approvalRequiredBeforeMerge: false
