@@ -102,7 +102,7 @@ test("combines lifecycle and participant filters and opens canonical detail", as
   await expect(page.getByRole("button", { name: "Scout" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Watchlist" })).toBeDisabled();
   await expect(
-    page.getByText("Unavailable: Scout API is not built yet."),
+    page.getByText("Scouting is unavailable in this environment."),
   ).toBeVisible();
   await expect(
     page.getByText("Unavailable: Watchlist API is not built yet."),
