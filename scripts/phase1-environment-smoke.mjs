@@ -13,6 +13,7 @@ const REQUIRED = [
   "FTE_PHASE1_STACK_ID",
   "FTE_WEB_ASSETS_BUCKET_NAME",
   "FTE_PHASE1_BROWSER_BASE_URL",
+  "FTE_COGNITO_DOMAIN",
   "FTE_EVENT_CURSOR_SECRET_ARN",
 ];
 const AUTHORIZED_ACCOUNT = "228246988391";
@@ -141,12 +142,16 @@ export function validateEnvironment(environment) {
   let api;
   let origin;
   let browser;
+  let cognito;
   try {
     api = new URL(environment.FTE_PHASE1_API_BASE);
     origin = new URL(environment.FTE_WEB_ORIGIN);
     browser = new URL(environment.FTE_PHASE1_BROWSER_BASE_URL);
+    cognito = new URL(environment.FTE_COGNITO_DOMAIN);
   } catch {
-    throw new Error("API, browser, and web origin must be valid URLs");
+    throw new Error(
+      "API, browser, Cognito domain, and web origin must be valid URLs",
+    );
   }
   if (
     api.protocol !== "https:" ||
@@ -167,6 +172,13 @@ export function validateEnvironment(environment) {
     browser.href !== `${environment.FTE_WEB_ORIGIN}/`
   )
     throw new Error("Browser base must exactly match FTE_WEB_ORIGIN");
+  if (
+    cognito.protocol !== "https:" ||
+    cognito.username ||
+    cognito.password ||
+    cognito.origin !== environment.FTE_COGNITO_DOMAIN
+  )
+    throw new Error("FTE_COGNITO_DOMAIN must be an exact safe HTTPS origin");
   const arn = environment.FTE_EVENT_CURSOR_SECRET_ARN;
   if (
     !new RegExp(
@@ -487,7 +499,9 @@ export function assertWrongOriginDenied(headers) {
 }
 
 export function assertHostedIndexHeaders(headers, environment) {
-  const expectedCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${environment.FTE_PHASE1_API_BASE.replace(/\/dev\/?$/, "")}; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
+  const apiOrigin = new URL(environment.FTE_PHASE1_API_BASE).origin;
+  const cognitoOrigin = new URL(environment.FTE_COGNITO_DOMAIN).origin;
+  const expectedCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${apiOrigin} ${cognitoOrigin}; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
   const exactHeaders = {
     "content-security-policy": expectedCsp,
     "strict-transport-security": "max-age=31536000; includeSubDomains; preload",

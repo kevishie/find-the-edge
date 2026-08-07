@@ -102,6 +102,12 @@ test("rejects unsafe full-smoke inputs before any AWS command", () => {
     { FTE_PHASE1_API_BASE: "https://user:pass@api.example.com/dev" },
     { FTE_PHASE1_API_BASE: "https://api.example.com/dev?token=x" },
     { FTE_PHASE1_BROWSER_BASE_URL: "https://other.example.com" },
+    { FTE_COGNITO_DOMAIN: "http://domain.example.com" },
+    { FTE_COGNITO_DOMAIN: "https://user:pass@domain.example.com" },
+    { FTE_COGNITO_DOMAIN: "https://domain.example.com/path" },
+    { FTE_COGNITO_DOMAIN: "https://domain.example.com/" },
+    { FTE_COGNITO_DOMAIN: "https://domain.example.com?client=secret" },
+    { FTE_COGNITO_DOMAIN: "not-a-url" },
     { AWS_REGION: "not-a-region" },
     { AWS_ACCOUNT_ID: "123456789012" },
     { AWS_REGION: "us-west-2" },
@@ -650,7 +656,7 @@ test("wrong-origin and hosting header proofs reject every weakening", () => {
     );
   const headers = new Headers({
     "content-security-policy":
-      "default-src 'self'; base-uri 'none'; connect-src 'self' https://api.example.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+      "default-src 'self'; base-uri 'none'; connect-src 'self' https://api.example.com https://domain.auth.us-east-1.amazoncognito.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
     "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
     "x-frame-options": "DENY",
     "x-content-type-options": "nosniff",
@@ -664,6 +670,15 @@ test("wrong-origin and hosting header proofs reject every weakening", () => {
   for (const name of headers.keys()) {
     const weakened = new Headers(headers);
     weakened.delete(name);
+    assert.throws(() => assertHostedIndexHeaders(weakened, validEnvironment));
+  }
+  for (const csp of [
+    "default-src 'self'; base-uri 'none'; connect-src 'self' https://api.example.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+    "default-src 'self'; base-uri 'none'; connect-src 'self' https://api.example.com https://domain.auth.us-east-1.amazoncognito.com https://unexpected.example.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+    "default-src 'self'; base-uri 'none'; connect-src 'self' https://api.example.com http://domain.auth.us-east-1.amazoncognito.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+  ]) {
+    const weakened = new Headers(headers);
+    weakened.set("content-security-policy", csp);
     assert.throws(() => assertHostedIndexHeaders(weakened, validEnvironment));
   }
 });
