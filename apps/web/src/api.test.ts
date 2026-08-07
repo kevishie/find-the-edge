@@ -208,7 +208,8 @@ describe("scouting browser client", () => {
   it.each([200, 202])(
     "creates from an authoritative %s convergence response with exact headers",
     async (status) => {
-      installProvider();
+      const accessToken = token();
+      installProvider(accessToken);
       const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
         new Response(JSON.stringify(job), {
           status,
@@ -237,7 +238,7 @@ describe("scouting browser client", () => {
         body: "{}",
       });
       const headers = new Headers(request?.headers);
-      expect(headers.get("authorization")).toBe(`Bearer ${token()}`);
+      expect(headers.get("authorization")).toBe(`Bearer ${accessToken}`);
       expect(headers.get("content-type")).toBe("application/json");
       expect(headers.get("idempotency-key")).toBe("create-key-1");
     },
