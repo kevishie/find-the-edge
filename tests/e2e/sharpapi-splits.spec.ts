@@ -22,7 +22,7 @@ test.beforeEach(async ({ page }) => {
   }, api.apiBase);
 });
 
-test("projects SharpAPI history scopes across every scheduled MLB game", async ({
+test("projects one SharpAPI consensus board across every scheduled MLB game", async ({
   page,
 }) => {
   await page.goto("/splits");
@@ -56,7 +56,7 @@ test("projects SharpAPI history scopes across every scheduled MLB game", async (
 
   await expect(
     page.getByText(
-      `${api.expectedGameCount} games · 1 with data · 4 observations`,
+      `${api.expectedGameCount} games · 1 with data · 2 observations`,
     ),
   ).toBeVisible();
   await expect(page.getByText("No split data")).toHaveCount(
@@ -64,41 +64,31 @@ test("projects SharpAPI history scopes across every scheduled MLB game", async (
   );
   await expect(page.getByText("Current splits board")).toBeVisible();
 
-  const draftKings = page.getByRole("button", {
-    name: "Show DraftKings splits",
-  });
-  const circa = page.getByRole("button", {
-    name: "Show Circa Sports splits",
-  });
-  await expect(draftKings).toBeVisible();
-  await expect(circa).toBeVisible();
-
-  await draftKings.click();
+  await expect(page.getByText("All books")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: /Show (DraftKings|Circa Sports) splits/ }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("img", {
       name: /Moneyline for Chicago White Sox: 65% handle, 55% bets, 10 percentage points money-heavy/,
     }),
   ).toBeVisible();
-  await expect(page.getByText("No DraftKings data")).toHaveCount(
-    api.expectedGameCount - 1,
-  );
   await expect(page.locator(".split-game-group")).toHaveCount(
     api.expectedGameCount,
   );
-
-  await circa.click();
   await expect(
-    page.getByRole("img", {
-      name: /Moneyline for Chicago White Sox: 58% handle, 48% bets, 10 percentage points money-heavy/,
-    }),
+    page
+      .getByLabel("Splits summary")
+      .getByText("SharpAPI consensus", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("No Circa Sports data")).toHaveCount(
-    api.expectedGameCount - 1,
+  await expect(page.locator(".split-scope:not(.split-no-data)")).toHaveText(
+    "SharpAPI consensus",
   );
+  await expect(page.getByText("Game details →")).toHaveCount(0);
 
   const uncoveredGame = page
     .locator(".split-game-group")
-    .filter({ hasText: "No Circa Sports data" })
+    .filter({ hasText: "No split data" })
     .first();
   await expect(uncoveredGame.getByText("—")).toHaveCount(6);
   await expect(

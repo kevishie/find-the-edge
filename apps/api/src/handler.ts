@@ -78,8 +78,8 @@ export const publishedSplitScopes = <T extends { readonly scope?: string }>(
   splits: readonly T[],
 ) => {
   const scopes = new Set(splits.map(({ scope }) => scope?.toLowerCase()));
-  return scopes.has("draftkings") && scopes.has("circa")
-    ? splits.filter(({ scope }) => scope?.toLowerCase() !== "consensus")
+  return scopes.has("consensus")
+    ? splits.filter(({ scope }) => scope?.toLowerCase() === "consensus")
     : splits;
 };
 export interface ApiResponse {

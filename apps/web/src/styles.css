@@ -884,14 +884,43 @@ footer {
   max-width: 100%;
 }
 
+.split-reading-guide {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #25212c;
+  color: #aaa2b5;
+  background: #100e14;
+}
+
+.split-reading-guide > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 260px;
+}
+
+.split-reading-guide strong {
+  color: #d7c4ff;
+  font:
+    600 11px "IBM Plex Mono",
+    monospace;
+  letter-spacing: 0.3px;
+}
+
+.split-reading-guide > div:first-child span {
+  font:
+    10px/1.5 "IBM Plex Mono",
+    monospace;
+}
+
 .split-bar-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 10px 20px;
-  padding: 11px 14px;
-  border-bottom: 1px solid #25212c;
+  justify-content: flex-end;
   color: #aaa2b5;
-  background: #100e14;
   font:
     9px "IBM Plex Mono",
     monospace;
@@ -3161,8 +3190,19 @@ footer {
   }
 
   .split-bar-legend {
+    justify-content: flex-start;
     gap: 8px 14px;
-    padding: 9px 11px;
+  }
+
+  .split-reading-guide {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+    padding: 10px 11px;
+  }
+
+  .split-reading-guide > div:first-child {
+    min-width: 0;
   }
 
   .split-board {

@@ -36,17 +36,16 @@ const repository: EventRepository = {
   },
 };
 
-it("publishes book-scoped splits instead of a redundant provider consensus", () => {
+it("publishes the provider consensus instead of its underlying book history", () => {
   const values = [
     { id: "consensus", scope: "consensus" },
     { id: "dk", scope: "draftkings" },
     { id: "circa", scope: "circa" },
   ];
   expect(publishedSplitScopes(values).map(({ id }) => id)).toEqual([
-    "dk",
-    "circa",
+    "consensus",
   ]);
-  expect(publishedSplitScopes(values.slice(0, 2))).toEqual(values.slice(0, 2));
+  expect(publishedSplitScopes(values.slice(1))).toEqual(values.slice(1));
 });
 
 it("serves the public provider-status contract without query parameters", async () => {

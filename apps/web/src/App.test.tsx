@@ -1874,16 +1874,19 @@ describe("Betting splits", () => {
     expect(screen.getByText("+26")).toBeInTheDocument();
     expect(screen.getByText("−26")).toBeInTheDocument();
     expect(screen.getAllByText("No line")).toHaveLength(2);
-    expect(screen.getByText("DK + Circa Consensus")).toBeInTheDocument();
-    expect(screen.getByText("One signal, not the answer.")).toBeInTheDocument();
+    expect(screen.getAllByText("SharpAPI consensus")).toHaveLength(2);
     expect(
-      screen.getByText(/No sharp sportsbook publishes splits/),
+      screen.getByText("Consensus is context—not a pick."),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("link", {
-        name: /View Boston versus New York game details/,
-      }),
-    ).toHaveAttribute("href", expect.stringContaining("sport=mlb"));
+      screen.getByText(/combines its public-betting data into one consensus/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("note", { name: "How to read split bars" }),
+    ).toHaveTextContent(
+      "Fill is handle (money). The white notch is bets (tickets).",
+    );
+    expect(screen.queryByText("Game details →")).not.toBeInTheDocument();
   });
 
   it("renders signed American odds in populated moneyline line cells", async () => {
@@ -2096,7 +2099,7 @@ describe("Betting splits", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows every scope in All books and filters without hiding the schedule", async () => {
+  it("collapses source history into one canonical consensus row", async () => {
     const base = splitGame.splits[0]!;
     const listSplits = vi
       .fn<NonNullable<GamesClient["listSplits"]>>()
@@ -2105,8 +2108,24 @@ describe("Betting splits", () => {
           {
             ...splitGame,
             splits: [
-              { ...base, id: "scope-b", scope: "Book B", moneyPercent: 29 },
-              { ...base, id: "scope-a", scope: "Book A", moneyPercent: 71 },
+              {
+                ...base,
+                id: "circa-history",
+                scope: "circa",
+                moneyPercent: 29,
+              },
+              {
+                ...base,
+                id: "draftkings-history",
+                scope: "draftkings",
+                moneyPercent: 71,
+              },
+              {
+                ...base,
+                id: "provider-consensus",
+                scope: "consensus",
+                moneyPercent: 64,
+              },
             ],
           },
         ]),
@@ -2118,22 +2137,20 @@ describe("Betting splits", () => {
       />,
     );
 
-    const bookButtons = await screen.findAllByRole("button", {
-      name: /Show Book [AB] splits/,
-    });
-    expect(
-      bookButtons.map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["Show Book A splits", "Show Book B splits"]);
-    expect(screen.getByText("71%")).toBeInTheDocument();
-    expect(screen.getByText("29%")).toBeInTheDocument();
-    expect(screen.getAllByText("Boston")).toHaveLength(2);
-    fireEvent.click(screen.getByRole("button", { name: "Show Book B splits" }));
-    expect(screen.getByText("29%")).toBeInTheDocument();
+    expect(await screen.findByText("64%")).toBeInTheDocument();
     expect(screen.queryByText("71%")).not.toBeInTheDocument();
+    expect(screen.queryByText("29%")).not.toBeInTheDocument();
     expect(screen.getAllByText("Boston")).toHaveLength(1);
+    expect(
+      screen.getByText("1 games · 1 with data · 1 observations"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("All books")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Show .* splits/ }),
+    ).not.toBeInTheDocument();
   });
 
-  it("orders DraftKings and Circa controls and names selected-source gaps", async () => {
+  it("uses a deterministic fallback when only source history is available", async () => {
     const base = splitGame.splits[0]!;
     const circaGame = {
       ...splitGame,
@@ -2183,35 +2200,16 @@ describe("Betting splits", () => {
       />,
     );
 
-    const sourceButtons = await screen.findAllByRole("button", {
-      name: /Show (DraftKings|Circa Sports) splits/,
-    });
-    expect(
-      sourceButtons.map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["Show DraftKings splits", "Show Circa Sports splits"]);
-    expect(screen.getByAltText("DraftKings")).toBeInTheDocument();
-    expect(screen.getByAltText("Circa Sports")).toBeInTheDocument();
-    expect(screen.getAllByText("DraftKings")).toHaveLength(1);
-    expect(screen.getAllByText("Circa Sports")).toHaveLength(2);
-    expect(screen.getByText("71%")).toBeInTheDocument();
-    expect(screen.getByText("29%")).toBeInTheDocument();
+    expect(await screen.findByText("71%")).toBeInTheDocument();
+    expect(screen.queryByText("29%")).not.toBeInTheDocument();
     expect(screen.getByText("43%")).toBeInTheDocument();
-    expect(screen.getAllByText("Boston")).toHaveLength(2);
+    expect(screen.getAllByText("Boston")).toHaveLength(1);
     expect(
-      screen.getByText("2 games · 2 with data · 3 observations"),
+      screen.getByText("2 games · 2 with data · 2 observations"),
     ).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Show DraftKings splits" }),
-    );
-    expect(screen.getByText("No DraftKings data")).toBeInTheDocument();
     expect(screen.getByText("Chicago")).toBeInTheDocument();
     expect(screen.getByText("Detroit")).toBeInTheDocument();
-    expect(screen.queryByText("29%")).not.toBeInTheDocument();
-    expect(screen.queryByText("43%")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("2 games · 1 with data · 1 observations"),
-    ).toBeInTheDocument();
+    expect(screen.queryByText("All books")).not.toBeInTheDocument();
   });
 
   it("shows multiple games in the same comparison terminal", async () => {
@@ -2337,10 +2335,10 @@ describe("Betting splits", () => {
     expect(
       await screen.findByText(/Freshness unknown splits board/),
     ).toBeInTheDocument();
-    expect(screen.getByText("Scope unavailable")).toBeInTheDocument();
+    expect(screen.getAllByText("SharpAPI consensus")).toHaveLength(2);
   });
 
-  it("shows scheduled games without observations and uses accessible logo fallbacks", async () => {
+  it("shows scheduled games without observations in the consensus board", async () => {
     const uncovered = {
       ...splitGame,
       id: "event:mlb:uncovered",
@@ -2370,12 +2368,8 @@ describe("Betting splits", () => {
     expect(screen.getByText("Detroit")).toBeInTheDocument();
     expect(screen.getByText("No split data")).toBeInTheDocument();
     expect(screen.getAllByText("Boston")).toHaveLength(1);
-    const fallback = screen.getByRole("button", {
-      name: "Show Local Book splits",
-    });
-    expect(fallback).toHaveAttribute("title", "Local Book");
-    fireEvent.click(fallback);
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Local Book")).not.toBeInTheDocument();
   });
 
   it("shows all eight scheduled games when only one has split coverage", async () => {
@@ -2431,7 +2425,7 @@ describe("Betting splits", () => {
     expect(screen.getByText("Timestamp unavailable")).toBeInTheDocument();
   });
 
-  it("shows only returned sportsbook controls and falls back when a known logo fails", async () => {
+  it("does not expose source-specific sportsbook controls", async () => {
     const betmgmSplits = splitGame.splits.map((split, index) => ({
       ...split,
       scope: index % 2 === 0 ? " betmgm " : "BETMGM",
@@ -2446,16 +2440,11 @@ describe("Betting splits", () => {
       />,
     );
 
-    const betmgm = await screen.findByRole("button", {
-      name: "Show BetMGM splits",
-    });
+    await screen.findByText("Boston");
     expect(
       screen.queryByRole("button", { name: /DraftKings|Circa|FanDuel/ }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getAllByRole("button", { name: "Show BetMGM splits" }),
-    ).toHaveLength(1);
-    fireEvent.error(screen.getByAltText("BetMGM"));
-    expect(betmgm).toHaveTextContent("B");
+    expect(screen.queryByText("BetMGM")).not.toBeInTheDocument();
+    expect(screen.getAllByText("SharpAPI consensus")).toHaveLength(2);
   });
 });

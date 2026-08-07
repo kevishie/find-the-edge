@@ -1435,7 +1435,6 @@ function SplitsExplorer() {
   const client = useContext(GamesClientContext);
   const [sport, setSport] = useState<GamesSport>("mlb");
   const [day, setDay] = useState(() => currentEasternDay());
-  const [selectedScope, setSelectedScope] = useState<string | null>(null);
   const [state, setState] = useState<
     | { readonly kind: "loading" }
     | {
@@ -1519,68 +1518,32 @@ function SplitsExplorer() {
   }, [client, day, sport]);
 
   const games = state.kind === "ready" ? state.items : [];
-  const scopeLabel = (scope: string | undefined) =>
-    scope?.trim() || "Scope unavailable";
-  const compareSplitScopes = (left: string, right: string) => {
-    const priority = (scope: string) => {
-      const key = sportsbookScopeKey(scope);
-      if (key === "draftkings") return 0;
-      if (key === "circa") return 1;
-      if (key === "consensus") return 2;
-      return 3;
-    };
-    return (
-      priority(left) - priority(right) ||
-      sportsbookMetadata(left).name.localeCompare(
-        sportsbookMetadata(right).name,
-      )
-    );
+  const splitScopePriority = (scope: string | undefined) => {
+    const key = sportsbookScopeKey(scope ?? "");
+    if (key === "consensus") return 0;
+    if (key === "draftkings") return 1;
+    if (key === "circa") return 2;
+    return 3;
   };
-  const scopes = [
-    ...new Map(
-      games
-        .flatMap((game) =>
-          game.splits
-            .filter(hasSplitPercent)
-            .map((split) => scopeLabel(split.scope)),
-        )
-        .map((scope) => [sportsbookScopeKey(scope), scope]),
-    ).values(),
-  ].sort(compareSplitScopes);
-  const boards = games.flatMap((game) => {
+  const boards = games.map((game) => {
     const usableSplits = game.splits.filter(hasSplitPercent);
-    const gameScopes = [
-      ...new Map(
-        usableSplits.map((split) => {
-          const scope = scopeLabel(split.scope);
-          return [sportsbookScopeKey(scope), scope];
-        }),
-      ).values(),
-    ].sort(compareSplitScopes);
-    const displayedScopes: readonly (string | undefined)[] =
-      selectedScope !== null
-        ? [selectedScope]
-        : gameScopes.length > 0
-          ? gameScopes
-          : [undefined];
-    return displayedScopes.map((scope) => {
-      const splits = scope
-        ? usableSplits.filter(
-            (split) =>
-              sportsbookScopeKey(scopeLabel(split.scope)) ===
-              sportsbookScopeKey(scope),
-          )
-        : [];
-      return {
-        game,
-        scope,
-        splits,
-        emptyLabel:
-          splits.length === 0 && selectedScope
-            ? `No ${sportsbookMetadata(selectedScope).name} data`
-            : "No split data",
-      };
-    });
+    const splitByMarketSelection = new Map<
+      string,
+      (typeof usableSplits)[number]
+    >();
+    for (const split of [...usableSplits].sort(
+      (left, right) =>
+        splitScopePriority(left.scope) - splitScopePriority(right.scope) ||
+        Date.parse(right.providerTimestamp) -
+          Date.parse(left.providerTimestamp) ||
+        left.id.localeCompare(right.id),
+    )) {
+      const key = `${split.marketKey}:${split.selectionKey}`;
+      if (!splitByMarketSelection.has(key))
+        splitByMarketSelection.set(key, split);
+    }
+    const splits = [...splitByMarketSelection.values()];
+    return { game, splits, emptyLabel: "No split data" };
   });
   const coveredGames = new Set(
     boards.filter(({ splits }) => splits.length > 0).map(({ game }) => game.id),
@@ -1646,21 +1609,21 @@ function SplitsExplorer() {
     <>
       <header className="explorer-header">
         <div>
-          <p className="eyebrow">PUBLIC MONEY · PROVIDER-TIMESTAMPED</p>
+          <p className="eyebrow">PUBLIC BETTING · SHARPAPI CONSENSUS</p>
           <h1>Betting splits</h1>
           <p className="lede">
-            Compare ticket percentage with money percentage from SharpAPI's
-            sportsbook public-betting feeds.
+            See how betting tickets and money are distributed across each
+            market.
           </p>
         </div>
-        <span className="maturity beta">SharpAPI Pro</span>
+        <span className="maturity beta">SharpAPI Consensus</span>
       </header>
       <aside className="split-signal-context" aria-label="How to use splits">
-        <strong>One signal, not the answer.</strong>
+        <strong>Consensus is context—not a pick.</strong>
         <span>
-          DraftKings reflects recreational betting; Circa is sharp-adjacent. No
-          sharp sportsbook publishes splits, so compare this evidence with line
-          movement and +EV analysis before acting.
+          SharpAPI combines its public-betting data into one consensus view.
+          Compare bet percentage with handle percentage to spot imbalances,
+          then confirm the signal with line movement and price value.
         </span>
       </aside>
       <section
@@ -1668,7 +1631,7 @@ function SplitsExplorer() {
         aria-label="Split filters"
       >
         <fieldset>
-          <legend>Sport</legend>
+          <legend className="sr-only">Sport</legend>
           {(Object.keys(sportLabels) as GamesSport[]).map((key) => (
             <button
               key={key}
@@ -1676,7 +1639,6 @@ function SplitsExplorer() {
               className={sport === key ? "selected" : ""}
               onClick={() => {
                 setState({ kind: "loading" });
-                setSelectedScope(null);
                 setSport(key);
               }}
             >
@@ -1685,52 +1647,17 @@ function SplitsExplorer() {
           ))}
         </fieldset>
         <label>
-          <span>Eastern calendar day</span>
+          <span className="sr-only">Eastern calendar day</span>
           <input
             type="date"
             value={day}
             onChange={(event) => {
               setState({ kind: "loading" });
-              setSelectedScope(null);
               setDay(event.currentTarget.value);
             }}
           />
         </label>
       </section>
-      {state.kind === "ready" && games.length > 0 && (
-        <section
-          className="sportsbook-filters splits-scope-filters"
-          aria-label="Sportsbook scope"
-        >
-          <button
-            type="button"
-            className={selectedScope === null ? "selected" : ""}
-            aria-pressed={selectedScope === null}
-            onClick={() => setSelectedScope(null)}
-          >
-            <span className="all-books-mark" aria-hidden="true">
-              ALL
-            </span>
-            <span>All books</span>
-          </button>
-          {scopes.map((scope) => {
-            const name = sportsbookMetadata(scope).name;
-            return (
-              <button
-                key={scope}
-                type="button"
-                className={selectedScope === scope ? "selected" : ""}
-                aria-label={`Show ${name} splits`}
-                title={name}
-                aria-pressed={selectedScope === scope}
-                onClick={() => setSelectedScope(scope)}
-              >
-                <SportsbookLogo scope={scope} />
-              </button>
-            );
-          })}
-        </section>
-      )}
       {state.kind === "ready" && games.length > 0 && (
         <section className="splits-toolbar" aria-label="Splits summary">
           <div>
@@ -1744,12 +1671,8 @@ function SplitsExplorer() {
           </div>
           <dl>
             <div>
-              <dt>Selected book</dt>
-              <dd>
-                {selectedScope
-                  ? sportsbookMetadata(selectedScope).name
-                  : "All books"}
-              </dd>
+              <dt>Source</dt>
+              <dd>SharpAPI consensus</dd>
             </div>
             <div>
               <dt>Freshest evidence</dt>
@@ -1770,11 +1693,8 @@ function SplitsExplorer() {
       )}
       {state.kind === "ready" && games.length > 0 && coveredGames === 0 && (
         <p className="splits-no-data-notice" role="status">
-          No split percentages are available
-          {selectedScope
-            ? ` from ${sportsbookMetadata(selectedScope).name}`
-            : " from the returned sportsbooks"}
-          . The complete schedule remains below.
+          No split percentages are available from SharpAPI consensus. The
+          complete schedule remains below.
         </p>
       )}
       <section className="splits-terminal" aria-label="Betting splits">
@@ -1787,23 +1707,36 @@ function SplitsExplorer() {
         </div>
         {state.kind === "ready" && games.length > 0 && (
           <>
-            <div className="split-bar-legend" aria-label="Split bar legend">
-              <span>
-                <i className="split-legend-handle" aria-hidden="true" />
-                Handle % fill
-              </span>
-              <span>
-                <i className="split-legend-bets" aria-hidden="true" />
-                Bets % notch
-              </span>
-              <span>
-                <i className="split-legend-money" aria-hidden="true" />+
-                Money-heavy
-              </span>
-              <span>
-                <i className="split-legend-ticket" aria-hidden="true" />−
-                Ticket-heavy
-              </span>
+            <div
+              className="split-reading-guide"
+              role="note"
+              aria-label="How to read split bars"
+            >
+              <div>
+                <strong>How to read this</strong>
+                <span>
+                  Fill is handle (money). The white notch is bets (tickets).
+                  The gap shows which one is leading.
+                </span>
+              </div>
+              <div className="split-bar-legend">
+                <span>
+                  <i className="split-legend-handle" aria-hidden="true" />
+                  Handle % fill
+                </span>
+                <span>
+                  <i className="split-legend-bets" aria-hidden="true" />
+                  Bets % notch
+                </span>
+                <span>
+                  <i className="split-legend-money" aria-hidden="true" />+
+                  Money-heavy
+                </span>
+                <span>
+                  <i className="split-legend-ticket" aria-hidden="true" />−
+                  Ticket-heavy
+                </span>
+              </div>
             </div>
             <div
               className="market-scroll splits-scroll"
@@ -1850,7 +1783,7 @@ function SplitsExplorer() {
                     )}
                   </tr>
                 </thead>
-                {boards.map(({ game, scope, splits, emptyLabel }) => {
+                {boards.map(({ game, splits, emptyLabel }) => {
                   const hasDraw = game.sportKey === "soccer";
                   const rows = [
                     {
@@ -1866,10 +1799,7 @@ function SplitsExplorer() {
                       : []),
                   ];
                   return (
-                    <tbody
-                      key={`${game.id}:${scope ? sportsbookScopeKey(scope) : "no-data"}`}
-                      className="split-game-group"
-                    >
+                    <tbody key={game.id} className="split-game-group">
                       {rows.map((row, rowIndex) => {
                         const spread =
                           row.key === "draw"
@@ -1906,31 +1836,10 @@ function SplitsExplorer() {
                                   {emptyLabel}
                                 </span>
                               )}
-                              {rowIndex === 0 && splits.length > 0 && scope && (
+                              {rowIndex === 0 && splits.length > 0 && (
                                 <span className="split-scope">
-                                  {sportsbookMetadata(scope).name}
+                                  SharpAPI consensus
                                 </span>
-                              )}
-                              {rowIndex === rows.length - 1 && (
-                                <Link
-                                  className="split-game-link"
-                                  to="/games/$gameId"
-                                  params={{ gameId: game.id }}
-                                  search={{
-                                    sport,
-                                    day,
-                                    status: "scheduled",
-                                    competition: "",
-                                    query: "",
-                                    sort: "kickoff",
-                                    direction: "asc",
-                                  }}
-                                  aria-label={`View ${game.participants
-                                    .map(({ label }) => label)
-                                    .join(" versus ")} game details`}
-                                >
-                                  Game details →
-                                </Link>
                               )}
                             </th>
                             {cells.flatMap((split, marketIndex) => {
