@@ -57,6 +57,19 @@ export const stackResourceListingArguments = (stackId, region) => [
   "json",
 ];
 
+export const stackResourceDetailArguments = (stackId, logicalId, region) => [
+  "cloudformation",
+  "describe-stack-resource",
+  "--stack-name",
+  stackId,
+  "--logical-resource-id",
+  logicalId,
+  "--region",
+  region,
+  "--output",
+  "json",
+];
+
 function decodeJwtPart(value) {
   try {
     if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
@@ -212,6 +225,22 @@ export function assertLiveIngestionResourceBinding(resources, environment) {
     )
   )
     throw new Error("Live ingestion is not the intended stack Lambda");
+}
+
+export function resolveLiveIngestionLogicalResourceId(resources, environment) {
+  if (!Array.isArray(resources))
+    throw new Error("Live ingestion is not the intended stack Lambda");
+  const candidates = resources.filter(
+    (resource) =>
+      resource?.ResourceType === "AWS::Lambda::Function" &&
+      resource?.PhysicalResourceId ===
+        environment.FTE_LIVE_ODDS_FUNCTION_NAME &&
+      typeof resource?.LogicalResourceId === "string" &&
+      /^[A-Za-z0-9]{1,255}$/.test(resource.LogicalResourceId),
+  );
+  if (candidates.length !== 1)
+    throw new Error("Live ingestion is not the intended stack Lambda");
+  return candidates[0].LogicalResourceId;
 }
 
 export function isSafeLiveIngestionResult(result) {
@@ -605,7 +634,7 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
         environment.AWS_REGION !== "us-east-1"
       )
         throw new Error("AWS identity guard rejected the seed mutation");
-      const stackResources = JSON.parse(
+      const stackResourceSummaries = JSON.parse(
         run(
           "aws",
           stackResourceListingArguments(
@@ -615,7 +644,25 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
           { capture: true, env: environment },
         ),
       ).StackResourceSummaries;
-      assertLiveIngestionResourceBinding(stackResources ?? [], environment);
+      const liveIngestionLogicalId = resolveLiveIngestionLogicalResourceId(
+        stackResourceSummaries,
+        environment,
+      );
+      const stackResourceDetail = JSON.parse(
+        run(
+          "aws",
+          stackResourceDetailArguments(
+            environment.FTE_PHASE1_STACK_ID,
+            liveIngestionLogicalId,
+            environment.AWS_REGION,
+          ),
+          { capture: true, env: environment },
+        ),
+      ).StackResourceDetail;
+      assertLiveIngestionResourceBinding(
+        stackResourceDetail === undefined ? [] : [stackResourceDetail],
+        environment,
+      );
       const responseFile = resolve(
         temporary,
         `seed-response-${String(invocation)}.json`,

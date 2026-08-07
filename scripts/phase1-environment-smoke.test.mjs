@@ -14,6 +14,8 @@ import {
   liveIngestionRecoveryAction,
   liveOddsInvocationArguments,
   phase1EnvironmentSmoke,
+  resolveLiveIngestionLogicalResourceId,
+  stackResourceDetailArguments,
   stackResourceListingArguments,
   validateEnvironment,
   validateWrongScopeToken,
@@ -195,22 +197,15 @@ test("wrong-scope JWT signature and claims are validated before use", async () =
     );
 });
 
-test("live ingestion binding finds the intended Lambda beyond the first resource page", () => {
+test("live ingestion binding rejects a missing or wrong exact stack resource detail", () => {
   const intended = {
     StackId: validEnvironment.FTE_PHASE1_STACK_ID,
     StackName: "FindTheEdge-dev-Foundation",
     ResourceType: "AWS::Lambda::Function",
     PhysicalResourceId: validEnvironment.FTE_LIVE_ODDS_FUNCTION_NAME,
   };
-  const exact = [
-    ...Array.from({ length: 100 }, (_, index) => ({
-      ...intended,
-      PhysicalResourceId: `unrelated-${String(index)}`,
-    })),
-    intended,
-  ];
   assert.doesNotThrow(() =>
-    assertLiveIngestionResourceBinding(exact, validEnvironment),
+    assertLiveIngestionResourceBinding([intended], validEnvironment),
   );
   for (const resource of [
     undefined,
@@ -224,6 +219,37 @@ test("live ingestion binding finds the intended Lambda beyond the first resource
         resource === undefined ? [] : [resource],
         validEnvironment,
       ),
+    );
+});
+
+test("live ingestion lookup finds one exact Lambda beyond the first resource page", () => {
+  const intended = {
+    LogicalResourceId: "LiveOddsIngestionC2F62D3F",
+    ResourceType: "AWS::Lambda::Function",
+    PhysicalResourceId: validEnvironment.FTE_LIVE_ODDS_FUNCTION_NAME,
+  };
+  const summaries = [
+    ...Array.from({ length: 100 }, (_, index) => ({
+      ...intended,
+      LogicalResourceId: `Unrelated${String(index)}`,
+      PhysicalResourceId: `unrelated-${String(index)}`,
+    })),
+    intended,
+  ];
+  assert.equal(
+    resolveLiveIngestionLogicalResourceId(summaries, validEnvironment),
+    intended.LogicalResourceId,
+  );
+  for (const resources of [
+    [],
+    undefined,
+    [{ ...intended, ResourceType: "AWS::Lambda::Version" }],
+    [{ ...intended, PhysicalResourceId: "unrelated" }],
+    [{ ...intended, LogicalResourceId: "invalid/logical-id" }],
+    [intended, { ...intended }],
+  ])
+    assert.throws(() =>
+      resolveLiveIngestionLogicalResourceId(resources, validEnvironment),
     );
 });
 
@@ -245,6 +271,25 @@ test("stack resource lookup relies on AWS CLI automatic pagination", () => {
   assert.equal(argumentsList.includes("--no-paginate"), false);
   assert.equal(argumentsList.includes("--max-items"), false);
   assert.equal(argumentsList.includes("--starting-token"), false);
+  assert.deepEqual(
+    stackResourceDetailArguments(
+      validEnvironment.FTE_PHASE1_STACK_ID,
+      "LiveOddsIngestionC2F62D3F",
+      validEnvironment.AWS_REGION,
+    ),
+    [
+      "cloudformation",
+      "describe-stack-resource",
+      "--stack-name",
+      validEnvironment.FTE_PHASE1_STACK_ID,
+      "--logical-resource-id",
+      "LiveOddsIngestionC2F62D3F",
+      "--region",
+      validEnvironment.AWS_REGION,
+      "--output",
+      "json",
+    ],
+  );
 });
 
 test("release refresh payload is attached only to the Lambda invocation", () => {
