@@ -46,6 +46,17 @@ export const liveOddsInvocationArguments = (
   responseFile,
 ];
 
+export const stackResourceListingArguments = (stackId, region) => [
+  "cloudformation",
+  "list-stack-resources",
+  "--stack-name",
+  stackId,
+  "--region",
+  region,
+  "--output",
+  "json",
+];
+
 function decodeJwtPart(value) {
   try {
     if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
@@ -597,19 +608,13 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       const stackResources = JSON.parse(
         run(
           "aws",
-          [
-            "cloudformation",
-            "describe-stack-resources",
-            "--stack-name",
+          stackResourceListingArguments(
             environment.FTE_PHASE1_STACK_ID,
-            "--region",
             environment.AWS_REGION,
-            "--output",
-            "json",
-          ],
+          ),
           { capture: true, env: environment },
         ),
-      ).StackResources;
+      ).StackResourceSummaries;
       assertLiveIngestionResourceBinding(stackResources ?? [], environment);
       const responseFile = resolve(
         temporary,

@@ -14,6 +14,7 @@ import {
   liveIngestionRecoveryAction,
   liveOddsInvocationArguments,
   phase1EnvironmentSmoke,
+  stackResourceListingArguments,
   validateEnvironment,
   validateWrongScopeToken,
 } from "./phase1-environment-smoke.mjs";
@@ -194,24 +195,56 @@ test("wrong-scope JWT signature and claims are validated before use", async () =
     );
 });
 
-test("live ingestion binding rejects unrelated same-account Lambda names", () => {
+test("live ingestion binding finds the intended Lambda beyond the first resource page", () => {
+  const intended = {
+    StackId: validEnvironment.FTE_PHASE1_STACK_ID,
+    StackName: "FindTheEdge-dev-Foundation",
+    ResourceType: "AWS::Lambda::Function",
+    PhysicalResourceId: validEnvironment.FTE_LIVE_ODDS_FUNCTION_NAME,
+  };
   const exact = [
-    {
-      StackId: validEnvironment.FTE_PHASE1_STACK_ID,
-      StackName: "FindTheEdge-dev-Foundation",
-      ResourceType: "AWS::Lambda::Function",
-      PhysicalResourceId: validEnvironment.FTE_LIVE_ODDS_FUNCTION_NAME,
-    },
+    ...Array.from({ length: 100 }, (_, index) => ({
+      ...intended,
+      PhysicalResourceId: `unrelated-${String(index)}`,
+    })),
+    intended,
   ];
   assert.doesNotThrow(() =>
     assertLiveIngestionResourceBinding(exact, validEnvironment),
   );
-  assert.throws(() =>
-    assertLiveIngestionResourceBinding(
-      [{ ...exact[0], PhysicalResourceId: "unrelated" }],
-      validEnvironment,
-    ),
+  for (const resource of [
+    undefined,
+    { ...intended, StackId: `${intended.StackId}-wrong` },
+    { ...intended, StackName: "UnrelatedStack" },
+    { ...intended, ResourceType: "AWS::Lambda::Version" },
+    { ...intended, PhysicalResourceId: "unrelated" },
+  ])
+    assert.throws(() =>
+      assertLiveIngestionResourceBinding(
+        resource === undefined ? [] : [resource],
+        validEnvironment,
+      ),
+    );
+});
+
+test("stack resource lookup relies on AWS CLI automatic pagination", () => {
+  const argumentsList = stackResourceListingArguments(
+    validEnvironment.FTE_PHASE1_STACK_ID,
+    validEnvironment.AWS_REGION,
   );
+  assert.deepEqual(argumentsList, [
+    "cloudformation",
+    "list-stack-resources",
+    "--stack-name",
+    validEnvironment.FTE_PHASE1_STACK_ID,
+    "--region",
+    validEnvironment.AWS_REGION,
+    "--output",
+    "json",
+  ]);
+  assert.equal(argumentsList.includes("--no-paginate"), false);
+  assert.equal(argumentsList.includes("--max-items"), false);
+  assert.equal(argumentsList.includes("--starting-token"), false);
 });
 
 test("release refresh payload is attached only to the Lambda invocation", () => {
