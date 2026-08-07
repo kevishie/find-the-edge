@@ -1,4 +1,11 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
   assessEventMetadata,
@@ -1601,7 +1608,7 @@ describe("Games", () => {
     expect(
       screen.getByText(/available only for scheduled events.*completed/i),
     ).toBeVisible();
-    expect(sessionStorage.getItem(resumeKey)).toBeNull();
+    await waitFor(() => expect(sessionStorage.getItem(resumeKey)).toBeNull());
     expect(createScoutingJob).not.toHaveBeenCalled();
   });
 
