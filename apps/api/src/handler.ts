@@ -85,6 +85,11 @@ export const createEventHandler =
       partial: number;
       unavailable: number;
     } | null = null;
+    let detailOddsCounts: {
+      stale: number;
+      partial: number;
+      suspendedOrUnavailable: number;
+    } | null = null;
     let oddsHistoryCounts: {
       series: number;
       sportsbooks: number;
@@ -485,9 +490,9 @@ export const createEventHandler =
         return response(200, page);
       }
       if (request.route === "detail") {
-        const result = gamesRepository?.detail
-          ? await gamesRepository.detail(request.eventId ?? "")
-          : await repository.detail(request.eventId ?? "");
+        if (!gamesRepository?.detail)
+          throw new Error("games-detail-repository-not-configured");
+        const result = await gamesRepository.detail(request.eventId ?? "");
         if (result.projectionState === "uninitialized") {
           metadataCounts = { stale: 0, partial: 0, unavailable: 1 };
           return response(200, result);
@@ -500,6 +505,22 @@ export const createEventHandler =
           unavailable:
             result.item.metadata.availability === "unavailable" ? 1 : 0,
         };
+        detailOddsCounts = {
+          stale: 0,
+          partial: 0,
+          suspendedOrUnavailable: 0,
+        };
+        for (const market of result.item.oddsComparison.markets)
+          for (const selection of market.selections)
+            for (const cell of Object.values(selection.cells)) {
+              if (cell.state === "stale") detailOddsCounts.stale += 1;
+              else if (cell.state === "partial") detailOddsCounts.partial += 1;
+              else if (
+                cell.state === "suspended" ||
+                cell.state === "unavailable"
+              )
+                detailOddsCounts.suspendedOrUnavailable += 1;
+            }
         return response(200, result);
       }
       const query = request.query ?? {};
@@ -633,6 +654,16 @@ export const createEventHandler =
               { Name: "UnavailableEventMetadata", Unit: "Count" },
             ]
           : []),
+        ...(detailOddsCounts
+          ? [
+              { Name: "StaleOddsCells", Unit: "Count" },
+              { Name: "PartialOddsCells", Unit: "Count" },
+              {
+                Name: "SuspendedOrUnavailableOddsCells",
+                Unit: "Count",
+              },
+            ]
+          : []),
         ...(oddsHistoryCounts
           ? [
               { Name: "OddsHistorySeries", Unit: "Count" },
@@ -683,6 +714,14 @@ export const createEventHandler =
               StaleEventMetadata: metadataCounts.stale,
               PartialEventMetadata: metadataCounts.partial,
               UnavailableEventMetadata: metadataCounts.unavailable,
+            }
+          : {}),
+        ...(detailOddsCounts
+          ? {
+              StaleOddsCells: detailOddsCounts.stale,
+              PartialOddsCells: detailOddsCounts.partial,
+              SuspendedOrUnavailableOddsCells:
+                detailOddsCounts.suspendedOrUnavailable,
             }
           : {}),
         ...(oddsHistoryCounts

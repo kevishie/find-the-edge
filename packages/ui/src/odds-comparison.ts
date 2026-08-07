@@ -26,7 +26,11 @@ const marketLabel = (key: string) =>
       ? "Spread"
       : key === "total"
         ? "Total"
-        : key;
+        : key === "btts"
+          ? "Both Teams to Score"
+          : key === "team_total"
+            ? "Team Total"
+            : key;
 
 const betterCell = <
   T extends {

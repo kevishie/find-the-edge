@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { assessEventMetadata } from "@find-the-edge/domain";
+import {
+  assessEventMetadata,
+  type GameOddsCellDto,
+  type GameOddsComparisonDto,
+} from "@find-the-edge/domain";
 import { impliedProbability } from "@find-the-edge/odds";
 import {
   EventStorageError,
@@ -29,6 +33,38 @@ const repository: EventRepository = {
     return { projectionState: "ready", item: null, unavailableReason: null };
   },
 };
+const gamesWithDetail = (
+  detail: NonNullable<GamesRepository["detail"]>,
+): GamesRepository => ({
+  list: () => Promise.reject(new Error("unexpected-games-list")),
+  detail,
+});
+const withOddsComparison = <T extends object>(
+  item: T,
+  cells: Readonly<Record<string, GameOddsCellDto>> = {},
+): T & Pick<GameOddsComparisonDto, "oddsComparison"> => ({
+  ...item,
+  oddsComparison: {
+    targetSportsbookId: "hardrock",
+    targetQualified: false,
+    generatedAt: "2026-08-01T15:00:00.000Z",
+    sportsbooks: [{ id: "hardrock", label: "Hard Rock Bet", target: true }],
+    markets: Object.keys(cells).length
+      ? [
+          {
+            marketKey: "moneyline",
+            selections: [
+              {
+                selectionKey: "away",
+                selectionLabel: "Away",
+                cells,
+              },
+            ],
+          },
+        ]
+      : [],
+  },
+});
 const historyEventRepository: EventRepository = {
   ...repository,
   detail: async (eventId) => {
@@ -122,6 +158,13 @@ describe("event API", () => {
       };
       const result = await createEventHandler(
         events,
+        gamesWithDetail(() =>
+          Promise.resolve({
+            projectionState: "ready",
+            item: withOddsComparison(item),
+            unavailableReason: null,
+          }),
+        ),
         () => undefined,
       )({
         route: "detail",
@@ -152,8 +195,16 @@ describe("event API", () => {
           unavailableReason: "projection-uninitialized",
         }),
     };
-    const result = await createEventHandler(events, (entry) =>
-      logs.push(entry),
+    const result = await createEventHandler(
+      events,
+      gamesWithDetail(() =>
+        Promise.resolve({
+          projectionState: "uninitialized",
+          item: null,
+          unavailableReason: "projection-uninitialized",
+        }),
+      ),
+      (entry) => logs.push(entry),
     )({
       route: "detail",
       eventId: "event:one",
@@ -164,6 +215,93 @@ describe("event API", () => {
       unavailableReason: "projection-uninitialized",
     });
     expect(logs.at(-1)).toMatchObject({ UnavailableEventMetadata: 1 });
+  });
+
+  it("emits bounded odds-cell degradation while preserving metadata metrics", async () => {
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const evaluatedAt = "2026-08-01T15:00:00.000Z";
+    const item = withOddsComparison(
+      {
+        id: "event:telemetry-secret",
+        version: 1,
+        sportKey: "mlb",
+        leagueKey: "mlb",
+        competition: { key: "mlb", state: "provisional" as const },
+        participants: [
+          { id: "away", label: "Away" },
+          { id: "home", label: "Home" },
+        ],
+        startsAt: "2026-08-01T20:00:00.000Z",
+        eastern: {
+          timeZone: "America/New_York" as const,
+          calendarDay: "2026-08-01",
+          display: "Aug 1",
+        },
+        status: "unknown" as const,
+        freshness: "2026-08-01T12:00:00.000Z",
+        metadata: assessEventMetadata(
+          "unknown",
+          "2026-08-01T12:00:00.000Z",
+          evaluatedAt,
+        ),
+      },
+      {
+        hardrock: {
+          state: "stale",
+          eligible: false,
+          reason: "price-stale",
+          evidenceAt: "2026-08-01T12:00:00.000Z",
+          americanOdds: 120,
+          observedAt: "2026-08-01T12:00:00.000Z",
+          retrievedAt: "2026-08-01T12:00:01.000Z",
+        },
+        draftkings: {
+          state: "partial",
+          eligible: false,
+          reason: "market-incomplete",
+          evidenceAt: "2026-08-01T12:05:00.000Z",
+        },
+        fanduel: {
+          state: "suspended",
+          eligible: false,
+          reason: "market-suspended",
+          evidenceAt: "2026-08-01T12:06:00.000Z",
+        },
+        betmgm: {
+          state: "unavailable",
+          eligible: false,
+          reason: "price-unavailable",
+          evidenceAt: null,
+        },
+      },
+    );
+    const result = await createEventHandler(
+      repository,
+      gamesWithDetail(() =>
+        Promise.resolve({
+          projectionState: "ready",
+          item,
+          unavailableReason: null,
+        }),
+      ),
+      (entry) => logs.push(entry),
+    )({ route: "detail", eventId: item.id });
+
+    expect(result.statusCode).toBe(200);
+    expect(logs.at(-1)).toMatchObject({
+      StaleEventMetadata: 1,
+      PartialEventMetadata: 1,
+      UnavailableEventMetadata: 0,
+      StaleOddsCells: 1,
+      PartialOddsCells: 1,
+      SuspendedOrUnavailableOddsCells: 2,
+    });
+    const serialized = JSON.stringify(logs.at(-1));
+    expect(serialized).not.toContain(item.id);
+    expect(serialized).not.toContain("hardrock");
+    expect(serialized).toContain(
+      '"Name":"SuspendedOrUnavailableOddsCells","Unit":"Count"',
+    );
   });
 
   it("emits only bounded aggregate metadata counts", async () => {
@@ -800,7 +938,7 @@ describe("event API", () => {
     expect(unknown.statusCode).toBe(400);
     expect(reads).toBe(6);
   });
-  it("keeps internal listing scoped while serving public detail", async () => {
+  it("keeps internal listing scoped and fails closed without joined detail", async () => {
     expect(
       (await createEventHandler(repository)({ route: "list" })).statusCode,
     ).toBe(401);
@@ -815,7 +953,37 @@ describe("event API", () => {
     ).toBe(403);
     expect(
       (await createEventHandler(repository)({ route: "detail" })).statusCode,
-    ).toBe(404);
+    ).toBe(500);
+  });
+  it("does not fall back to the legacy event-detail envelope", async () => {
+    let legacyDetailReads = 0;
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const legacy: EventRepository = {
+      ...repository,
+      detail: async () => {
+        await Promise.resolve();
+        legacyDetailReads += 1;
+        return {
+          projectionState: "ready",
+          item: null,
+          unavailableReason: null,
+        };
+      },
+    };
+    const result = await createEventHandler(legacy, (entry) =>
+      logs.push(entry),
+    )({ route: "detail", eventId: "event:one" });
+
+    expect(result.statusCode).toBe(500);
+    expect(result.body).toBe('{"error":"internal-error"}');
+    expect(result.body).not.toContain("games-detail-repository-not-configured");
+    expect(legacyDetailReads).toBe(0);
+    expect(logs[0]).toMatchObject({
+      event: "event-api-internal-failure",
+      route: "detail",
+      errorName: "Error",
+      errorMessage: "games-detail-repository-not-configured",
+    });
   });
   it("maps only input errors to 400 and redacts storage errors", async () => {
     expect(

@@ -2,6 +2,26 @@ import { describe, expect, it } from "vitest";
 import { buildOddsComparisonViewModel } from "./odds-comparison";
 
 describe("odds comparison view model", () => {
+  it("labels canonical BTTS and team-total markets", () => {
+    const model = buildOddsComparisonViewModel({
+      oddsComparison: {
+        targetSportsbookId: "hardrock",
+        targetQualified: true,
+        generatedAt: "2026-08-04T12:00:00.000Z",
+        sportsbooks: [{ id: "hardrock", label: "Hard Rock Bet", target: true }],
+        markets: [
+          { marketKey: "btts", selections: [] },
+          { marketKey: "team_total", selections: [] },
+        ],
+      },
+    } as never);
+
+    expect(model.markets.map(({ label }) => label)).toEqual([
+      "Both Teams to Score",
+      "Team Total",
+    ]);
+  });
+
   it("orders the target first and excludes blocked prices from best", () => {
     const model = buildOddsComparisonViewModel({
       oddsComparison: {

@@ -457,6 +457,9 @@ it("renders independent accessible lifecycle and freshness badges on games and d
     screen.getByText("Market suspended").closest("td")?.querySelector("time"),
   ).toHaveAttribute("datetime", "2026-08-01T12:15:00.000Z");
   expect(
+    screen.getByText("Evidence Aug 1, 2026, 8:15 AM Eastern"),
+  ).toBeVisible();
+  expect(
     await screen.findByRole("group", {
       name: "Implied probability movement across 2 sportsbooks",
     }),
@@ -736,6 +739,27 @@ it("keeps not-found detail distinct from retryable outages", async () => {
   expect(
     screen.queryByRole("button", { name: "Retry" }),
   ).not.toBeInTheDocument();
+});
+
+it("settles on a detail configuration error instead of reverting to loading", async () => {
+  render(
+    <App
+      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      gamesClient={{
+        ok: false,
+        error: new GamesClientError(
+          "configuration",
+          "The API address is not configured.",
+        ),
+      }}
+    />,
+  );
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Game details are unavailable.",
+  );
+  await act(async () => Promise.resolve());
+  expect(screen.queryByText("Loading game details…")).not.toBeInTheDocument();
 });
 
 it("never considers a prior deferred detail result visible after route identity changes", () => {

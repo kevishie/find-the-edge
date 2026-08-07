@@ -220,6 +220,129 @@ describe("games client", () => {
     ).resolves.toMatchObject({ oddsComparison: { targetQualified: true } });
   });
 
+  it.each(["mlb", "soccer"] as const)(
+    "accepts canonical optional markets for %s",
+    async (sportKey) => {
+      const detailItem = detailFixture();
+      const participants =
+        sportKey === "soccer"
+          ? [
+              { id: "participant:soccer:miami", label: "Miami" },
+              { id: "participant:soccer:atlanta", label: "Atlanta" },
+            ]
+          : payload.items[0]!.participants;
+      const eventId =
+        sportKey === "soccer"
+          ? "event:soccer%3Amls:fixture-1"
+          : payload.items[0]!.id;
+      detailItem["id"] = eventId;
+      detailItem["sportKey"] = sportKey;
+      detailItem["leagueKey"] = sportKey === "soccer" ? "mls" : "mlb";
+      detailItem["competition"] = {
+        key: sportKey === "soccer" ? "mls" : "mlb",
+        state: "provisional",
+      };
+      detailItem["participants"] = participants;
+      const comparison = mutableRecord(detailItem["oddsComparison"]);
+      const participantIds = participants.map(({ id }) => id as EntityId);
+      const sides = participantIds.map((participantId) =>
+        participantSelectionKey(participantId),
+      );
+      const active = (point?: number) => ({
+        state: "active",
+        eligible: true,
+        ...(point === undefined ? {} : { point }),
+        americanOdds: 110,
+        observedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:00:01.000Z",
+      });
+      const market = (
+        marketKey: string,
+        selectionKeys: readonly string[],
+        point?: number,
+      ) => ({
+        marketKey,
+        selections: selectionKeys.map((selectionKey) => ({
+          selectionKey,
+          selectionLabel: selectionKey,
+          cells: { hardrock: active(point) },
+        })),
+      });
+      comparison["markets"] = [
+        market(
+          "moneyline",
+          sportKey === "soccer" ? [sides[0]!, "draw", sides[1]!] : sides,
+        ),
+        market("spread", sides, 1.5),
+        market("total", ["over", "under"], 8.5),
+        ...(sportKey === "soccer" ? [market("btts", ["yes", "no"])] : []),
+        market(
+          "team_total",
+          participantIds.flatMap((participantId) => [
+            participantSelectionKey(participantId, "over"),
+            participantSelectionKey(participantId, "under"),
+          ]),
+          2.5,
+        ),
+      ];
+      const client = createGamesClient(
+        { ok: true, value: bootstrap() },
+        vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              projectionState: "ready",
+              item: detailItem,
+              unavailableReason: null,
+            }),
+          ),
+        ),
+      );
+      if (!client.ok) throw client.error;
+
+      const detail = await client.value.detail!(
+        eventId,
+        new AbortController().signal,
+      );
+      expect(
+        detail?.oddsComparison.markets.map(({ marketKey }) => marketKey),
+      ).toEqual(
+        sportKey === "soccer"
+          ? ["moneyline", "spread", "total", "btts", "team_total"]
+          : ["moneyline", "spread", "total", "team_total"],
+      );
+    },
+  );
+
+  it("accepts fail-closed target qualification for a non-actionable event", async () => {
+    const item = detailFixture();
+    item["status"] = "started";
+    item["metadata"] = assessEventMetadata(
+      "started",
+      "2026-08-01T12:30:00.000Z",
+      "2026-08-01T12:30:00.000Z",
+    );
+    mutableRecord(item["oddsComparison"])["targetQualified"] = false;
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            projectionState: "ready",
+            item,
+            unavailableReason: null,
+          }),
+        ),
+      ),
+    );
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.detail!(String(item["id"]), new AbortController().signal),
+    ).resolves.toMatchObject({
+      status: "started",
+      oddsComparison: { targetQualified: false },
+    });
+  });
+
   it("loads strictly ordered immutable multi-book odds history", async () => {
     const eventId = payload.items[0]!.id;
     const history = {
@@ -622,6 +745,57 @@ describe("games client", () => {
           americanOdds: 100_001,
           observedAt: "2026-08-01T12:00:00.000Z",
           retrievedAt: "2026-08-01T12:00:00.000Z",
+        };
+      },
+    ],
+    [
+      "out-of-domain active point",
+      (item: Record<string, unknown>) => {
+        const markets = mutableArray(
+          mutableRecord(item["oddsComparison"])["markets"],
+        );
+        const selections = mutableArray(
+          mutableRecord(markets[1])["selections"],
+        );
+        const hardrock = mutableRecord(
+          mutableRecord(mutableRecord(selections[0])["cells"])["hardrock"],
+        );
+        hardrock["point"] = 10_001;
+      },
+    ],
+    [
+      "retained point without a price tuple",
+      (item: Record<string, unknown>) => {
+        const comparison = mutableRecord(item["oddsComparison"]);
+        comparison["targetQualified"] = false;
+        const markets = mutableArray(comparison["markets"]);
+        const selections = mutableArray(
+          mutableRecord(markets[0])["selections"],
+        );
+        mutableRecord(mutableRecord(selections[0])["cells"])["hardrock"] = {
+          state: "unavailable",
+          eligible: false,
+          reason: "price-unavailable",
+          evidenceAt: null,
+          point: 1.5,
+        };
+      },
+    ],
+    [
+      "partial retained price tuple",
+      (item: Record<string, unknown>) => {
+        const comparison = mutableRecord(item["oddsComparison"]);
+        comparison["targetQualified"] = false;
+        const markets = mutableArray(comparison["markets"]);
+        const selections = mutableArray(
+          mutableRecord(markets[0])["selections"],
+        );
+        mutableRecord(mutableRecord(selections[0])["cells"])["hardrock"] = {
+          state: "suspended",
+          eligible: false,
+          reason: "market-suspended",
+          evidenceAt: "2026-08-01T12:01:00.000Z",
+          americanOdds: 120,
         };
       },
     ],

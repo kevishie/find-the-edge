@@ -468,16 +468,25 @@ export type GameOddsCellDto =
       readonly observedAt: string;
       readonly retrievedAt: string;
     }
-  | {
+  | ({
       readonly state: "stale" | "suspended" | "partial" | "unavailable";
       readonly eligible: false;
       readonly reason: string;
       readonly evidenceAt: string | null;
-      readonly point?: number;
-      readonly americanOdds?: number;
-      readonly observedAt?: string;
-      readonly retrievedAt?: string;
-    };
+    } & (
+      | {
+          readonly point?: number;
+          readonly americanOdds: number;
+          readonly observedAt: string;
+          readonly retrievedAt: string;
+        }
+      | {
+          readonly point?: never;
+          readonly americanOdds?: never;
+          readonly observedAt?: never;
+          readonly retrievedAt?: never;
+        }
+    ));
 
 export interface GameOddsComparisonDto extends EventDisplayDto {
   readonly oddsComparison: {

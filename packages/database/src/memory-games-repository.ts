@@ -19,7 +19,7 @@ export class MemoryGamesRepository extends JoinedGamesRepository {
       sportsbookIds,
       now,
       undefined,
-      undefined,
+      detailSportsbooks?.[0]?.id ?? sportsbookIds[0] ?? "fixture-book",
       undefined,
       detailSportsbooks,
     );

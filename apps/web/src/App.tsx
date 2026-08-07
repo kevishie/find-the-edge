@@ -2918,18 +2918,23 @@ function GameDetail() {
 
   useEffect(() => {
     const controller = new AbortController();
+    const detailClient = client.ok && client.value.detail ? client.value : null;
+    if (!detailClient) {
+      queueMicrotask(() => {
+        if (controller.signal.aborted) return;
+        setState({ kind: "error", message: "Game details are unavailable." });
+        setActiveMarket("");
+      });
+      return () => controller.abort();
+    }
     queueMicrotask(() => {
       if (controller.signal.aborted) return;
       setState({ kind: "loading" });
       setActiveMarket("");
     });
     const load = async () => {
-      if (!client.ok || !client.value.detail) {
-        setState({ kind: "error", message: "Game details are unavailable." });
-        return;
-      }
       try {
-        const game = await client.value.detail(gameId, controller.signal);
+        const game = await detailClient.detail!(gameId, controller.signal);
         if (!controller.signal.aborted)
           setState(
             game
@@ -3087,34 +3092,35 @@ function GameDetail() {
                   <tr key={selection.key}>
                     <th scope="row">{selection.label}</th>
                     {selection.cells.map(
-                      ({ bookId, cell, stateLabel, best }) => (
-                        <td
-                          key={bookId}
-                          className={`${bookId === game.oddsComparison.targetSportsbookId ? "target-book" : ""} odds-cell state-${cell.state}`}
-                        >
-                          <strong>
-                            {cell.americanOdds === undefined
-                              ? "—"
-                              : `${cell.point === undefined ? "" : `${linePoint(cell.point)} · `}${oddsPrice(cell.americanOdds)}`}
-                          </strong>
-                          <span>
-                            {best ? "Best eligible · " : ""}
-                            {stateLabel}
-                          </span>
-                          {!cell.eligible && (
-                            <small className="odds-cell-reason">
-                              {oddsCellReason(cell.reason)}
-                            </small>
-                          )}
-                          <time dateTime={oddsCellTimestamp(cell) ?? undefined}>
-                            {oddsCellTimestamp(cell)
-                              ? new Date(
-                                  oddsCellTimestamp(cell)!,
-                                ).toLocaleString()
-                              : "No timestamp"}
-                          </time>
-                        </td>
-                      ),
+                      ({ bookId, cell, stateLabel, best }) => {
+                        const timestamp = oddsCellTimestamp(cell);
+                        return (
+                          <td
+                            key={bookId}
+                            className={`${bookId === game.oddsComparison.targetSportsbookId ? "target-book" : ""} odds-cell state-${cell.state}`}
+                          >
+                            <strong>
+                              {cell.americanOdds === undefined
+                                ? "—"
+                                : `${cell.point === undefined ? "" : `${linePoint(cell.point)} · `}${oddsPrice(cell.americanOdds)}`}
+                            </strong>
+                            <span>
+                              {best ? "Best eligible · " : ""}
+                              {stateLabel}
+                            </span>
+                            {!cell.eligible && (
+                              <small className="odds-cell-reason">
+                                {oddsCellReason(cell.reason)}
+                              </small>
+                            )}
+                            <time dateTime={timestamp ?? undefined}>
+                              {timestamp
+                                ? `Evidence ${easternDisplay(timestamp)} Eastern`
+                                : "No evidence timestamp"}
+                            </time>
+                          </td>
+                        );
+                      },
                     )}
                   </tr>
                 ))}

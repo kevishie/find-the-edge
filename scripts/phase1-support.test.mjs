@@ -857,6 +857,26 @@ test("template validation structurally binds public reads, outputs, and scoped I
     () => validateTemplate(wildcardIam, templateConfig),
     /exact event table/,
   );
+  const exactIndexIam = structuredClone(template);
+  exactIndexIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Resource =
+    [
+      { "Fn::GetAtt": ["Table", "Arn"] },
+      {
+        "Fn::Join": [
+          "",
+          [{ "Fn::GetAtt": ["Table", "Arn"] }, "/index/opportunity-active-v1"],
+        ],
+      },
+    ];
+  assert.doesNotThrow(() => validateTemplate(exactIndexIam, templateConfig));
+  const unsafeIndexIam = structuredClone(exactIndexIam);
+  unsafeIndexIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Resource[1][
+    "Fn::Join"
+  ][1][1] = "/index/../../other";
+  assert.throws(
+    () => validateTemplate(unsafeIndexIam, templateConfig),
+    /exact event table/,
+  );
   const scanIam = structuredClone(template);
   scanIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Action.push(
     "dynamodb:Scan",

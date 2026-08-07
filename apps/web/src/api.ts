@@ -822,8 +822,12 @@ const validAmericanOdds = (value: unknown): value is number =>
   Number.isSafeInteger(value) &&
   Math.abs(Number(value)) >= 100 &&
   Math.abs(Number(value)) <= 100_000;
+const validOddsPoint = (value: unknown): value is number =>
+  typeof value === "number" &&
+  Number.isFinite(value) &&
+  Math.abs(value) <= 10_000;
 
-const validOddsComparisonCell = (value: unknown) => {
+const validOddsComparisonCell = (value: unknown, requiresPoint: boolean) => {
   if (!plain(value) || typeof value["state"] !== "string") return false;
   if (value["state"] === "active")
     return (
@@ -839,7 +843,9 @@ const validOddsComparisonCell = (value: unknown) => {
       validAmericanOdds(value["americanOdds"]) &&
       iso(value["observedAt"]) &&
       iso(value["retrievedAt"]) &&
-      (value["point"] === undefined || typeof value["point"] === "number")
+      (requiresPoint
+        ? validOddsPoint(value["point"])
+        : value["point"] === undefined || validOddsPoint(value["point"]))
     );
   if (
     !["stale", "suspended", "partial", "unavailable"].includes(value["state"])
@@ -851,16 +857,22 @@ const validOddsComparisonCell = (value: unknown) => {
     "observedAt",
     "retrievedAt",
   ].filter((key) => Object.hasOwn(value, key));
+  const hasPrice = Object.hasOwn(value, "americanOdds");
+  const hasObservedAt = Object.hasOwn(value, "observedAt");
+  const hasRetrievedAt = Object.hasOwn(value, "retrievedAt");
+  const hasCompletePriceTuple = hasPrice && hasObservedAt && hasRetrievedAt;
+  const hasNoPriceTuple = !hasPrice && !hasObservedAt && !hasRetrievedAt;
   return (
     exact(value, ["state", "eligible", "reason", "evidenceAt", ...optional]) &&
     value["eligible"] === false &&
     boundedString(value["reason"], 256) &&
     (value["evidenceAt"] === null || iso(value["evidenceAt"])) &&
-    (value["point"] === undefined || typeof value["point"] === "number") &&
-    (value["americanOdds"] === undefined ||
-      validAmericanOdds(value["americanOdds"])) &&
-    (value["observedAt"] === undefined || iso(value["observedAt"])) &&
-    (value["retrievedAt"] === undefined || iso(value["retrievedAt"]))
+    (hasCompletePriceTuple || hasNoPriceTuple) &&
+    (!Object.hasOwn(value, "point") ||
+      (hasPrice && validOddsPoint(value["point"]))) &&
+    (!hasPrice || validAmericanOdds(value["americanOdds"])) &&
+    (!hasObservedAt || iso(value["observedAt"])) &&
+    (!hasRetrievedAt || iso(value["retrievedAt"]))
   );
 };
 
@@ -868,6 +880,8 @@ const validOddsComparison = (
   value: unknown,
   sportKey: unknown,
   participants: unknown,
+  status: unknown,
+  metadata: unknown,
 ) => {
   if (
     !plain(value) ||
@@ -928,19 +942,35 @@ const validOddsComparison = (
         String((participant as Record<string, unknown>)["id"]) as EntityId,
       ),
     );
+  const teamTotalSelections = participants
+    .slice(0, 2)
+    .flatMap((participant) => {
+      const participantId = String(
+        (participant as Record<string, unknown>)["id"],
+      ) as EntityId;
+      return [
+        participantSelectionKey(participantId, "over"),
+        participantSelectionKey(participantId, "under"),
+      ];
+    });
   const expected: Readonly<Record<string, readonly string[]>> = {
     moneyline: sportKey === "soccer" ? [sides[0]!, "draw", sides[1]!] : sides,
     spread: sides,
     total: ["over", "under"],
+    ...(sportKey === "soccer" ? { btts: ["yes", "no"] } : {}),
+    team_total: teamTotalSelections,
   };
   const markets = value["markets"];
   const marketKeys = markets.map((market) =>
     plain(market) ? market["marketKey"] : undefined,
   );
   if (
-    marketKeys.length !== 3 ||
-    new Set(marketKeys).size !== 3 ||
-    !Object.keys(expected).every((key) => marketKeys.includes(key))
+    marketKeys.length < 3 ||
+    new Set(marketKeys).size !== marketKeys.length ||
+    marketKeys.some(
+      (marketKey) => typeof marketKey !== "string" || !expected[marketKey],
+    ) ||
+    !["moneyline", "spread", "total"].every((key) => marketKeys.includes(key))
   )
     return false;
   for (const market of markets) {
@@ -977,30 +1007,50 @@ const validOddsComparison = (
         !bookIds.every((id) =>
           validOddsComparisonCell(
             (selection["cells"] as Record<string, unknown>)[id],
+            ["spread", "total", "team_total"].includes(
+              String(market["marketKey"]),
+            ),
           ),
         )
       )
         return false;
     }
   }
-  const computedQualified = markets.every(
-    (market) =>
-      (market as Record<string, unknown>)["selections"] instanceof Array &&
-      (
-        (market as Record<string, unknown>)["selections"] as Record<
-          string,
-          unknown
-        >[]
-      ).every(
-        (selection) =>
-          (
-            (selection["cells"] as Record<string, unknown>)[targetId] as Record<
-              string,
-              unknown
-            >
-          )["eligible"] === true,
-      ),
-  );
+  const eventEligible =
+    status === "scheduled" &&
+    plain(metadata) &&
+    metadata["availability"] === "complete" &&
+    plain(metadata["lifecycle"]) &&
+    metadata["lifecycle"]["state"] === "scheduled" &&
+    plain(metadata["freshness"]) &&
+    metadata["freshness"]["state"] === "current";
+  const computedQualified =
+    eventEligible &&
+    markets.every((market) => {
+      if (!plain(market) || !Array.isArray(market["selections"])) return false;
+      const selections = market["selections"] as Record<string, unknown>[];
+      const required = ["moneyline", "spread", "total"].includes(
+        String(market["marketKey"]),
+      );
+      const applicable =
+        required ||
+        selections.some((selection) =>
+          Object.values(selection["cells"] as Record<string, unknown>).some(
+            (cell) => plain(cell) && cell["eligible"] === true,
+          ),
+        );
+      return (
+        !applicable ||
+        selections.every(
+          (selection) =>
+            (
+              (selection["cells"] as Record<string, unknown>)[
+                targetId
+              ] as Record<string, unknown>
+            )["eligible"] === true,
+        )
+      );
+    });
   return value["targetQualified"] === computedQualified;
 };
 
@@ -2121,6 +2171,8 @@ export function createGamesClient(
             comparison,
             item["sportKey"],
             item["participants"],
+            item["status"],
+            item["metadata"],
           ) ||
           !validGame(
             { ...eventFields, odds: { state: "unavailable" } },

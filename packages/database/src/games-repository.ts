@@ -94,6 +94,32 @@ const marketSpecifications = (event: EventPage["items"][number]) => {
   throw new EventStorageError("unsupported-games-sport");
 };
 
+const detailMarketSpecifications = (event: EventPage["items"][number]) => {
+  const participantTotals = event.participants
+    .slice(0, 2)
+    .flatMap(({ id }) => [
+      participantSelectionKey(id as EntityId, "over"),
+      participantSelectionKey(id as EntityId, "under"),
+    ]);
+  return [
+    ...marketSpecifications(event),
+    ...(event.sportKey === "soccer"
+      ? [
+          {
+            marketKey: "btts",
+            selectionKeys: ["yes", "no"] as const,
+            required: false,
+          },
+        ]
+      : []),
+    {
+      marketKey: "team_total",
+      selectionKeys: participantTotals,
+      required: false,
+    },
+  ] as const;
+};
+
 const canonicalSelectionLabel = (
   event: EventPage["items"][number],
   selectionKey: string,
@@ -105,8 +131,61 @@ const canonicalSelectionLabel = (
   if (selectionKey === "over") return "Over";
   if (selectionKey === "under") return "Under";
   if (selectionKey === "draw") return "Draw";
+  if (selectionKey === "yes") return "Yes";
+  if (selectionKey === "no") return "No";
+  for (const { id, label } of event.participants.slice(0, 2)) {
+    if (participantSelectionKey(id as EntityId, "over") === selectionKey)
+      return `${label} Over`;
+    if (participantSelectionKey(id as EntityId, "under") === selectionKey)
+      return `${label} Under`;
+  }
   throw new EventStorageError("unsupported-detail-selection");
 };
+
+const canonicalSnapshotValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalSnapshotValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [
+        key,
+        canonicalSnapshotValue((value as Record<string, unknown>)[key]),
+      ]),
+  );
+};
+
+const sameDetailSnapshot = (
+  left: ReadonlyMap<string, unknown>,
+  right: ReadonlyMap<string, unknown>,
+) =>
+  left.size === right.size &&
+  [...left].every(
+    ([identity, row]) =>
+      right.has(identity) &&
+      JSON.stringify(canonicalSnapshotValue(row)) ===
+        JSON.stringify(canonicalSnapshotValue(right.get(identity))),
+  );
+
+const blockingCellState = (
+  blocker: FixtureOddsAvailabilityEvidence | null | undefined,
+): "partial" | "suspended" | "unavailable" =>
+  blocker?.state === "incomplete"
+    ? "partial"
+    : blocker?.state === "suspended" || blocker?.state === "closed"
+      ? "suspended"
+      : "unavailable";
+
+const pointRequired = (marketKey: string) =>
+  marketKey === "spread" || marketKey === "total" || marketKey === "team_total";
+
+const canonicalInstant = (value: unknown): value is string =>
+  typeof value === "string" &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(value).toISOString() === value;
+
+const boundedEvidenceText = (value: unknown, maximum: number) =>
+  typeof value === "string" && value.length > 0 && value.length <= maximum;
 
 const currentKey = (
   event: EventPage["items"][number],
@@ -217,13 +296,23 @@ export class JoinedGamesRepository implements GamesRepository {
     readonly detailSportsbooks: readonly GameDetailSportsbook[] = sportsbookIds.map(
       (id) => ({ id, label: id }),
     ),
-  ) {}
+  ) {
+    if (!Number.isFinite(freshnessWindowMs) || freshnessWindowMs < 0)
+      throw new EventStorageError("invalid-detail-freshness-window");
+    if (!Number.isFinite(clockSkewToleranceMs) || clockSkewToleranceMs < 0)
+      throw new EventStorageError("invalid-detail-clock-skew-tolerance");
+  }
   async detail(eventId: string) {
     const detail = await this.events.detail(eventId);
     if (detail.projectionState === "uninitialized" || !detail.item)
       return { ...detail, item: null };
     const event = detail.item;
-    const readAt = this.now().getTime();
+    const capturedAt = this.now();
+    if (!(capturedAt instanceof Date))
+      throw new EventStorageError("invalid-detail-clock");
+    const readAt = capturedAt.getTime();
+    if (!Number.isFinite(readAt))
+      throw new EventStorageError("invalid-detail-clock");
     if (
       new Set(this.detailSportsbooks.map(({ id }) => id)).size !==
         this.detailSportsbooks.length ||
@@ -234,7 +323,7 @@ export class JoinedGamesRepository implements GamesRepository {
         .length !== 1
     )
       throw new EventStorageError("invalid-detail-sportsbook-roster");
-    const specifications = marketSpecifications(event);
+    const specifications = detailMarketSpecifications(event);
     const requested = this.detailSportsbooks.flatMap(({ id: sportsbookId }) =>
       specifications.flatMap((specification) => [
         ...specification.selectionKeys.flatMap((selectionKey) => {
@@ -258,23 +347,32 @@ export class JoinedGamesRepository implements GamesRepository {
         },
       ]),
     );
-    let rows: readonly unknown[];
-    try {
-      rows = await this.odds.batchGet(requested);
-    } catch (error) {
-      throw new EventStorageError("detail-odds-read-failed", { cause: error });
-    }
     const allowed = new Set(requested.map(({ pk, sk }) => `${pk}|${sk}`));
-    const byKey = new Map<string, unknown>();
-    for (const row of rows) {
-      if (!row || typeof row !== "object" || Array.isArray(row))
-        throw new EventStorageError("invalid-detail-odds-row");
-      const record = row as Record<string, unknown>;
-      const identity = `${String(record["pk"])}|${String(record["sk"])}`;
-      if (!allowed.has(identity) || byKey.has(identity))
-        throw new EventStorageError("unexpected-detail-odds-row");
-      byKey.set(identity, row);
-    }
+    const readSnapshot = async () => {
+      let rows: readonly unknown[];
+      try {
+        rows = await this.odds.batchGet(requested);
+      } catch (error) {
+        throw new EventStorageError("detail-odds-read-failed", {
+          cause: error,
+        });
+      }
+      const snapshot = new Map<string, unknown>();
+      for (const row of rows) {
+        if (!row || typeof row !== "object" || Array.isArray(row))
+          throw new EventStorageError("invalid-detail-odds-row");
+        const record = row as Record<string, unknown>;
+        const identity = `${String(record["pk"])}|${String(record["sk"])}`;
+        if (!allowed.has(identity) || snapshot.has(identity))
+          throw new EventStorageError("unexpected-detail-odds-row");
+        snapshot.set(identity, row);
+      }
+      return snapshot;
+    };
+    const byKey = await readSnapshot();
+    const stableByKey = await readSnapshot();
+    if (!sameDetailSnapshot(byKey, stableByKey))
+      throw new EventStorageError("detail-odds-snapshot-unstable");
     const availability = (pk: string) => {
       const row = byKey.get(`${pk}|AVAILABILITY`);
       if (row === undefined) return null;
@@ -300,13 +398,16 @@ export class JoinedGamesRepository implements GamesRepository {
           "incomplete",
           "unavailable",
         ].includes((value as FixtureOddsAvailabilityEvidence).state) ||
-        typeof (value as FixtureOddsAvailabilityEvidence).observedAt !==
-          "string" ||
-        typeof (value as FixtureOddsAvailabilityEvidence).evidenceId !==
-          "string" ||
-        typeof (value as FixtureOddsAvailabilityEvidence).reason !== "string" ||
-        !Number.isFinite(
-          Date.parse((value as FixtureOddsAvailabilityEvidence).observedAt),
+        !canonicalInstant(
+          (value as FixtureOddsAvailabilityEvidence).observedAt,
+        ) ||
+        !boundedEvidenceText(
+          (value as FixtureOddsAvailabilityEvidence).evidenceId,
+          256,
+        ) ||
+        !boundedEvidenceText(
+          (value as FixtureOddsAvailabilityEvidence).reason,
+          256,
         ) ||
         Date.parse((value as FixtureOddsAvailabilityEvidence).observedAt) >
           readAt + this.clockSkewToleranceMs
@@ -314,7 +415,7 @@ export class JoinedGamesRepository implements GamesRepository {
         throw new EventStorageError("invalid-detail-availability-row");
       return value as FixtureOddsAvailabilityEvidence;
     };
-    const generatedAt = this.now().toISOString();
+    const generatedAt = capturedAt.toISOString();
     const markets = specifications.map((specification) => ({
       marketKey: specification.marketKey,
       selections: specification.selectionKeys.map((selectionKey) => {
@@ -340,18 +441,15 @@ export class JoinedGamesRepository implements GamesRepository {
           );
           if (raw === undefined) {
             const blocker = [exact, group]
-              .filter(Boolean)
+              .filter(
+                (item): item is FixtureOddsAvailabilityEvidence =>
+                  !!item && item.state !== "active",
+              )
               .sort(
-                (a, b) => Date.parse(b!.observedAt) - Date.parse(a!.observedAt),
+                (a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt),
               )[0];
             cells[sportsbookId] = {
-              state:
-                blocker?.state === "incomplete"
-                  ? "partial"
-                  : blocker?.state === "suspended" ||
-                      blocker?.state === "closed"
-                    ? "suspended"
-                    : "unavailable",
+              state: blockingCellState(blocker),
               eligible: false,
               reason: blocker?.reason ?? "price-unavailable",
               evidenceAt: blocker?.observedAt ?? null,
@@ -385,39 +483,36 @@ export class JoinedGamesRepository implements GamesRepository {
               (a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt),
             )[0];
           const stale =
-            this.now().getTime() - Date.parse(price.observedAt) >
-            this.freshnessWindowMs;
+            readAt - Date.parse(price.observedAt) > this.freshnessWindowMs;
           const missingAvailability = !exact || !group;
+          const staleBinding = [exact, group]
+            .filter(
+              (item): item is FixtureOddsAvailabilityEvidence =>
+                !!item &&
+                item.state === "active" &&
+                Date.parse(item.observedAt) < Date.parse(price.observedAt),
+            )
+            .sort(
+              (a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt),
+            )[0];
           if (
             !exact ||
             !group ||
             latestBlocker ||
             exact.state !== "active" ||
             group.state !== "active" ||
-            Date.parse(exact.observedAt) < Date.parse(price.observedAt) ||
-            Date.parse(group.observedAt) < Date.parse(price.observedAt) ||
+            staleBinding ||
             stale
           ) {
-            const blocker =
-              latestBlocker ??
-              (!exact || !group
-                ? null
-                : Date.parse(exact.observedAt) < Date.parse(group.observedAt)
-                  ? group
-                  : exact);
+            const blocker = latestBlocker ?? staleBinding;
             cells[sportsbookId] = {
               state:
-                stale && !latestBlocker && !missingAvailability
+                stale && !latestBlocker && !staleBinding && !missingAvailability
                   ? "stale"
-                  : blocker?.state === "incomplete"
-                    ? "partial"
-                    : blocker?.state === "suspended" ||
-                        blocker?.state === "closed"
-                      ? "suspended"
-                      : "unavailable",
+                  : blockingCellState(blocker),
               eligible: false,
               reason:
-                stale && !latestBlocker && !missingAvailability
+                stale && !latestBlocker && !staleBinding && !missingAvailability
                   ? "price-stale"
                   : (blocker?.reason ?? "availability-evidence-missing"),
               evidenceAt: blocker?.observedAt ?? null,
@@ -426,7 +521,20 @@ export class JoinedGamesRepository implements GamesRepository {
               observedAt: price.observedAt,
               retrievedAt: price.retrievedAt,
             };
-          } else
+          } else if (
+            pointRequired(specification.marketKey) &&
+            price.point === undefined
+          )
+            cells[sportsbookId] = {
+              state: "unavailable",
+              eligible: false,
+              reason: "point-required",
+              evidenceAt: price.observedAt,
+              americanOdds: price.americanOdds,
+              observedAt: price.observedAt,
+              retrievedAt: price.retrievedAt,
+            };
+          else
             cells[sportsbookId] = {
               state: "active",
               eligible: true,
@@ -447,12 +555,30 @@ export class JoinedGamesRepository implements GamesRepository {
         ...event,
         oddsComparison: {
           targetSportsbookId,
-          targetQualified: markets.every((market) =>
-            market.selections.every(
-              (selection) =>
-                selection.cells[targetSportsbookId]?.eligible === true,
-            ),
-          ),
+          targetQualified:
+            event.status === "scheduled" &&
+            event.metadata.lifecycle.state === "scheduled" &&
+            event.metadata.availability === "complete" &&
+            event.metadata.freshness.state === "current" &&
+            markets.every((market) => {
+              const required = ["moneyline", "spread", "total"].includes(
+                market.marketKey,
+              );
+              const applicable =
+                required ||
+                market.selections.some((selection) =>
+                  Object.values(selection.cells).some(
+                    (cell) => cell.eligible === true,
+                  ),
+                );
+              return (
+                !applicable ||
+                market.selections.every(
+                  (selection) =>
+                    selection.cells[targetSportsbookId]?.eligible === true,
+                )
+              );
+            }),
           generatedAt,
           sportsbooks: this.detailSportsbooks.map(({ id, label }) => ({
             id,

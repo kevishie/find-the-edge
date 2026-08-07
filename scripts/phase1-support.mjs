@@ -147,6 +147,25 @@ function referencedRoleId(lambda) {
     : undefined;
 }
 
+function isExactTableOrIndexArn(value, tableId) {
+  if (isGetAtt(value, tableId, "Arn")) return true;
+  const parts = value?.["Fn::Join"];
+  if (
+    !Array.isArray(parts) ||
+    parts[0] !== "" ||
+    !Array.isArray(parts[1]) ||
+    parts[1].length !== 2 ||
+    !isGetAtt(parts[1][0], tableId, "Arn")
+  )
+    return false;
+  const suffix = parts[1][1];
+  return (
+    suffix === "/index/*" ||
+    (typeof suffix === "string" &&
+      /^\/index\/[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/.test(suffix))
+  );
+}
+
 function dynamoActionsForRole(template, roleId, tableId) {
   const actions = new Set();
   for (const [, policy] of entriesOfType(template, "AWS::IAM::Policy")) {
@@ -163,22 +182,10 @@ function dynamoActionsForRole(template, roleId, tableId) {
       const resources = Array.isArray(statement.Resource)
         ? statement.Resource
         : [statement.Resource];
-      const exactTableOrIndexes = (value) => {
-        if (isGetAtt(value, tableId, "Arn")) return true;
-        const parts = value?.["Fn::Join"];
-        return (
-          Array.isArray(parts) &&
-          parts[0] === "" &&
-          Array.isArray(parts[1]) &&
-          parts[1].length === 2 &&
-          isGetAtt(parts[1][0], tableId, "Arn") &&
-          parts[1][1] === "/index/*"
-        );
-      };
       if (
         resources.length < 1 ||
         resources.length > 2 ||
-        !resources.every(exactTableOrIndexes) ||
+        !resources.every((value) => isExactTableOrIndexArn(value, tableId)) ||
         !resources.some((value) => isGetAtt(value, tableId, "Arn"))
       )
         throw new Error(
@@ -760,22 +767,10 @@ export function validateTemplate(template, config) {
           ) &&
           resources.length === 1 &&
           isGetAtt(resources[0], tableId, "StreamArn");
-        const exactTableOrIndexes = (value) => {
-          if (isGetAtt(value, tableId, "Arn")) return true;
-          const parts = value?.["Fn::Join"];
-          return (
-            Array.isArray(parts) &&
-            parts[0] === "" &&
-            Array.isArray(parts[1]) &&
-            parts[1].length === 2 &&
-            isGetAtt(parts[1][0], tableId, "Arn") &&
-            parts[1][1] === "/index/*"
-          );
-        };
         const exactTableAccess =
           resources.length >= 1 &&
           resources.length <= 2 &&
-          resources.every(exactTableOrIndexes) &&
+          resources.every((value) => isExactTableOrIndexArn(value, tableId)) &&
           resources.some((value) => isGetAtt(value, tableId, "Arn"));
         if (!streamDiscoveryOnly && !streamReadOnly && !exactTableAccess)
           throw new Error(
