@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-041
+nextReadyStory: FTE-042
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -723,7 +723,7 @@ stories:
   - id: FTE-041
     title: AI Report Provider Interface and Structured Report Schema
     epic: Manual scouting workflow
-    status: in-progress
+    status: done
     dependencies: [FTE-040, FTE-031]
     risk: High
     approvalRequiredBeforeMerge: false

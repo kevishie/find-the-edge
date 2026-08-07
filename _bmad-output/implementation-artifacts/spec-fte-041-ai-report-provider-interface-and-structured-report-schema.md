@@ -2,8 +2,9 @@
 title: 'FTE-041: AI Report Provider Interface and Structured Report Schema'
 type: 'feature'
 created: '2026-08-07'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'af4213a4ca98cda85dbbc0995bbc988b8ff9d3ec'
+final_revision: '417767c'
 review_loop_iteration: 7
 followup_review_recommended: true
 context:

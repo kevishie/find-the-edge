@@ -2,8 +2,9 @@
 title: 'Recover Phase 1 Transient SharpAPI Contract Failures'
 type: 'bugfix'
 created: '2026-08-07T10:25:00-04:00'
-status: 'in-review'
+status: 'done'
 baseline_commit: 'e80ed6c7c09ccd30a07866f73bdab6056983f3fc'
+final_revision: '33106f5'
 review_loop_iteration: 3
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/spec-fte-data-003c-production-odds-collection-control-plane.md'
