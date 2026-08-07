@@ -983,3 +983,4 @@ export * from "./clv";
 export * from "./versions";
 export * from "./precision";
 export * from "./provenance";
+export * from "./opportunity-qualification";

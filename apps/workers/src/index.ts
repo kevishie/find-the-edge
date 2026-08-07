@@ -18,3 +18,4 @@ export * from "./performance-metrics";
 export * from "./retrospective-builder";
 export * from "./walk-forward-experiment";
 export * from "./strategy-promotion";
+export * from "./opportunity-candidate-service";

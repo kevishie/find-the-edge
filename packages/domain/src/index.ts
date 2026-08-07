@@ -8,6 +8,7 @@ export * from "./retrospective.js";
 export * from "./strategy-experiment.js";
 export * from "./paper-pick-run.js";
 export * from "./evaluation-attempt.js";
+export * from "./opportunity-candidate.js";
 export type EntityId = string & { readonly __entityId: unique symbol };
 export type IsoTimestamp = string & { readonly __isoTimestamp: unique symbol };
 

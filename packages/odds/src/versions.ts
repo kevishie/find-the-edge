@@ -38,6 +38,12 @@ export const ALGORITHM_VERSIONS = Object.freeze({
     CLOSING_CONSENSUS_CLV_CALCULATION_VERSION,
   ),
   precision: ref("display-precision", DISPLAY_PRECISION_POLICY_VERSION),
+  opportunityQualification: ref(
+    "opportunity-qualification",
+    OPPORTUNITY_QUALIFICATION_VERSION,
+  ),
 } as const);
 
 export type AlgorithmVersionKey = keyof typeof ALGORITHM_VERSIONS;
+import { OPPORTUNITY_QUALIFICATION_VERSION } from "@find-the-edge/domain";
+export { OPPORTUNITY_QUALIFICATION_VERSION } from "@find-the-edge/domain";
