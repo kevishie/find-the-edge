@@ -1520,6 +1520,24 @@ Every story below includes: Story ID, title, epic, user/system outcome, context,
 - Risk: High.
 - Approval required before merge: Yes.
 
+#### FTE-059: Production and Staging Environments, Custom Domains, and Branch Deployments
+
+- Epic: Reliability, security, and production readiness.
+- Outcome: Merges to protected `staging` and `main` mainlines deploy isolated staging and production environments at the approved `kevishie.com` web/API hostnames.
+- Context: The repository currently deploys `main` to a single AWS `dev` stack and has no custom domains. The live apex is already routed elsewhere and requires an explicit, rollback-ready cutover.
+- In scope: `staging` and `prod` environment contracts; `staging` and `main` promotion flow; custom CloudFront and API Gateway domains; certificate/DNS preparation; isolated GitHub Environments, OIDC roles, secrets, locks, stacks, smoke, provenance, rollback, and operator documentation.
+- Out of scope: Feature-branch preview environments; deleting or repurposing the retained dev stack; registrar/nameserver or apex mutation without explicit approval; cross-account migration; application feature changes.
+- Dependencies: FTE-MVP-001D, FTE-MVP-001E. Related: FTE-058 consumes this story's environment and promotion results in the final release checklist.
+- Acceptance criteria: `staging` deploys only to `staging.kevishie.com` and `api-staging.kevishie.com`; approved `main` deploys only to `kevishie.com` and `api.kevishie.com`; both deploy the exact CI-verified head SHA; resources/secrets/roles are isolated; DNS cutover preserves unrelated records and has a tested rollback; environment smoke proves host, API, TLS, CORS/CSP, Git SHA, and no cross-environment binding.
+- Required automated tests: CDK environment/domain assertions; workflow/OIDC structural tests; preflight/smoke/rollback tests for both stages; negative tests for stale SHA, wrong branch/host/account, wildcard trust/CORS, cross-stage references, unsafe DNS, and destructive retained-resource changes.
+- Likely files/packages affected: `infra/cdk`, `.github/workflows/*`, `infra/github-actions-deploy-role.yml`, deployment/preflight/smoke scripts, `docs/phase1-deployment.md` or `docs/environment-promotion.md`.
+- Observability: Releases emit environment, stack, commit, result, smoke, and rollback metadata without credentials or licensed payloads.
+- Security: Production approval; exact GitHub Environment/branch OIDC subjects; least-privilege environment roles; stage-isolated secrets; no static AWS keys.
+- Data migration/backfill impact: None authorized. Existing retained `dev` resources are inventoried and preserved until a separate migration/disposition decision.
+- Definition of done: Staging is deployed and proven from `staging`; production is deployed from approved `main`; all four HTTPS hostnames resolve correctly; rollback and promotion/hotfix procedures are documented and tested.
+- Risk: High.
+- Approval required before merge: Yes.
+
 ## 7. Initial Sprint Status Recommendation
 
 Only FTE-001 should start as `ready`. All other stories should remain `backlog` until their dependencies and approval gates are satisfied. FTE-002 may become ready immediately after FTE-001 is complete.
@@ -1535,6 +1553,7 @@ Stories requiring human approval before merge:
 - FTE-053: User Settings for Sportsbook, Markets, Thresholds, Weights, and Timezone.
 - FTE-056: Secrets, IAM, Encryption, Throttling, and Audit Hardening.
 - FTE-058: Production Deployment, Rollback, Cost, and Release Checklist.
+- FTE-059: Production and Staging Environments, Custom Domains, and Branch Deployments.
 
 ## 9. Prototype Alignment Notes
 

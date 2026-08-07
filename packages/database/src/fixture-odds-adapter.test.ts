@@ -14,6 +14,7 @@ import {
   FixtureOddsBindingConflictError,
   FixtureOddsStorageError,
   FixtureOddsTransactionCanceledError,
+  validateFixtureOddsSnapshotItem,
   type FixtureOddsCurrentWrite,
   type FixtureOddsDynamoGateway,
   type FixtureOddsItem,
@@ -440,6 +441,75 @@ describe("DynamoFixtureOddsAdapter", () => {
     await expect(
       new DynamoFixtureOddsAdapter(gateway).persist(input()),
     ).rejects.toThrow(/stored odds row is forged|identity maps/);
+  });
+
+  it("validates snapshots when DynamoDB reorders provenance map fields", () => {
+    const snapshot = normalizeFixtureOddsObservation({
+      ...input().observation,
+      provenance: {
+        providerId: "sharpapi",
+        policyVersion: "v1",
+        bookRole: "collected",
+        sourceState: "active",
+      },
+    });
+    const reordered = {
+      ...snapshot,
+      provenance: {
+        sourceState: snapshot.provenance!.sourceState,
+        providerId: snapshot.provenance!.providerId,
+        bookRole: snapshot.provenance!.bookRole,
+        policyVersion: snapshot.provenance!.policyVersion,
+      },
+    };
+
+    expect(
+      validateFixtureOddsSnapshotItem(
+        { pk: snapshot.partitionKey, sk: snapshot.sortKey, value: reordered },
+        snapshot.partitionKey,
+        snapshot.sortKey,
+      ),
+    ).toEqual(snapshot);
+  });
+
+  it("accepts reordered immutable index maps and validates indexed reads", async () => {
+    const snapshot = normalizeFixtureOddsObservation({
+      ...input().observation,
+      provenance: {
+        providerId: "sharpapi",
+        policyVersion: "v1",
+        bookRole: "collected",
+        sourceState: "stale",
+      },
+    });
+    const reordered = {
+      ...snapshot,
+      provenance: {
+        sourceState: snapshot.provenance!.sourceState,
+        providerId: snapshot.provenance!.providerId,
+        bookRole: snapshot.provenance!.bookRole,
+        policyVersion: snapshot.provenance!.policyVersion,
+      },
+    };
+    const send = vi.fn((raw: unknown) => {
+      const command = raw as { constructor: { name: string } };
+      if (command.constructor.name === "PutCommand") {
+        const error = new Error("already exists");
+        error.name = "ConditionalCheckFailedException";
+        return Promise.reject(error);
+      }
+      return Promise.resolve({ Item: { value: reordered } });
+    });
+    const repository = new DynamoExactOddsSnapshotRepository(
+      { send } as unknown as DynamoDBDocumentClient,
+      "events",
+    );
+
+    await expect(repository.prepare(snapshot)).resolves.toBeUndefined();
+    await expect(repository.get(snapshot.snapshotId)).resolves.toMatchObject({
+      snapshotId: snapshot.snapshotId,
+      state: "suspended",
+    });
   });
 
   it("stores late history independently while retaining the newer CURRENT", async () => {

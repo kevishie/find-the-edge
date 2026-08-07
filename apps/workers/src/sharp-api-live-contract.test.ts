@@ -3,17 +3,23 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
   DynamoExactOddsSnapshotRepository,
   DynamoFixtureOddsAdapter,
+  EventCursorCodec,
   FixtureOddsTransactionCanceledError,
+  JoinedOddsHistoryRepository,
   MemoryBettingSplitRepository,
   MemoryEventIngestionStore,
   MemoryOddsControlPlaneStore,
+  oddsHistoryPartition,
   type FixtureOddsCurrentWrite,
   type FixtureOddsDynamoGateway,
   type FixtureOddsItem,
   type FixtureOddsSnapshotTransaction,
 } from "@find-the-edge/database";
 import type { FixtureOddsAvailabilityEvidence } from "@find-the-edge/domain";
-import { productionOddsCollectionPolicies } from "@find-the-edge/config";
+import {
+  productionOddsCollectionPolicies,
+  sportsbookRegistry,
+} from "@find-the-edge/config";
 import {
   fetchSharpApiAccount,
   fetchSharpApiOddsPage,
@@ -163,24 +169,33 @@ class LocalExactSnapshotClient {
     this.items.set(key, structuredClone(item));
     return Promise.resolve({});
   }
+
+  historyRows() {
+    return [...this.items.values()]
+      .filter(({ pk }) => String(pk).startsWith("ODDS_HISTORY#"))
+      .map((item) => structuredClone(item)) as {
+      readonly pk: string;
+      readonly sk: string;
+      readonly value: unknown;
+    }[];
+  }
 }
 
 describe("SharpAPI live contract", () => {
-  const odds: SharpApiOddsPersister = {
-    persist: ({ observation }) =>
-      Promise.resolve({
-        snapshot: "created",
-        current: "advanced",
-        value: observation as never,
-      }),
-    persistAvailability: () => Promise.resolve(),
-  };
-
   it.skipIf(!canRunLiveContracts)(
     "persists the current MLB schedule, odds, and splits locally",
     async () => {
       const events = new MemoryEventIngestionStore();
       const splits = new MemoryBettingSplitRepository();
+      const oddsGateway = new LocalFixtureOddsGateway(events);
+      const exactClient = new LocalExactSnapshotClient();
+      const recordingOdds = new DynamoFixtureOddsAdapter(
+        oddsGateway,
+        new DynamoExactOddsSnapshotRepository(
+          exactClient as unknown as DynamoDBDocumentClient,
+          "local-live-contract",
+        ),
+      );
       const league = sharpApiLeagueByKey("mlb");
       const schedule = await fetchSharpApiSchedulePage(league, apiKey!);
       for (const raw of schedule.events)
@@ -218,7 +233,7 @@ describe("SharpAPI live contract", () => {
         .providers.find(({ providerId }) => providerId === "sharpapi")!;
       const persisted = await persistSharpApiOddsPage(
         events,
-        odds,
+        recordingOdds,
         league,
         page,
         policy.books,
@@ -248,6 +263,61 @@ describe("SharpAPI live contract", () => {
         expect(persisted.observations).toBeGreaterThan(0);
       else expect(persisted.observations).toBe(0);
       expect(persisted.canonicalOddsEvents).toHaveLength(persisted.events);
+      const historyRows = exactClient.historyRows();
+      expect(historyRows).toHaveLength(persisted.observations);
+      const approvedSportsbooks = Object.fromEntries(
+        sportsbookRegistry.flatMap(({ id, name }) =>
+          id === "consensus" ? [] : [[id, name]],
+        ),
+      );
+      const history = new JoinedOddsHistoryRepository(
+        {
+          query: async (input) => {
+            await Promise.resolve();
+            const matching = historyRows
+              .filter(
+                ({ pk, sk }) =>
+                  pk === input.pk &&
+                  sk >= input.fromSk &&
+                  sk <= input.toSk &&
+                  (!input.startSk || sk > input.startSk),
+              )
+              .sort((left, right) => left.sk.localeCompare(right.sk));
+            return {
+              items: matching.slice(0, input.limit),
+              hasMore: matching.length > input.limit,
+            };
+          },
+        },
+        new EventCursorCodec({
+          current: { id: "live-contract", secret: new Uint8Array(32).fill(9) },
+        }),
+        approvedSportsbooks,
+        (americanOdds) =>
+          americanOdds < 0
+            ? -americanOdds / (-americanOdds + 100)
+            : 100 / (americanOdds + 100),
+        () => new Date(page.retrievedAt),
+      );
+      for (const eventId of new Set(
+        historyRows.map(({ pk }) => pk.slice("ODDS_HISTORY#".length)),
+      )) {
+        const rows = historyRows.filter(
+          ({ pk }) => pk === oddsHistoryPartition(eventId),
+        );
+        const observed = rows.map(({ value }) =>
+          String((value as { observedAt?: unknown }).observedAt),
+        );
+        await expect(
+          history.list({
+            eventId,
+            canonicalEventVersion: 1,
+            from: observed.sort()[0]!,
+            to: observed.sort().at(-1)!,
+            limit: Math.min(200, rows.length),
+          }),
+        ).resolves.toMatchObject({ eventId });
+      }
       const account = await fetchSharpApiAccount(apiKey!);
       if (account.features.includes("splits")) {
         const splitPage = await fetchSharpApiSplitsPage(league, apiKey!);

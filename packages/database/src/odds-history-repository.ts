@@ -239,7 +239,12 @@ export class JoinedOddsHistoryRepository implements OddsHistoryRepository {
     const newestLabelEvidence = new Map<string, string>();
     const seenEvidence = new Set<string>();
     for (const snapshot of snapshots) {
-      const sportsbookLabel = this.approvedSportsbooks[snapshot.sportsbookId];
+      const sportsbookLabel = Object.hasOwn(
+        this.approvedSportsbooks,
+        snapshot.sportsbookId,
+      )
+        ? this.approvedSportsbooks[snapshot.sportsbookId]
+        : undefined;
       if (
         !sportsbookLabel ||
         snapshot.provenance?.providerId !== "sharpapi" ||

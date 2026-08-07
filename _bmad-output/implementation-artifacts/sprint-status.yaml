@@ -730,7 +730,7 @@ stories:
   - id: FTE-042
     title: Report Persistence, Versioning, and Source Provenance
     epic: Manual scouting workflow
-    status: backlog
+    status: in-progress
     dependencies: [FTE-041]
     risk: High
     approvalRequiredBeforeMerge: false
@@ -844,5 +844,14 @@ stories:
     epic: Reliability, security, and production readiness
     status: backlog
     dependencies: [FTE-055, FTE-056, FTE-057]
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-059
+    title: Production and Staging Environments, Custom Domains, and Branch Deployments
+    epic: Reliability, security, and production readiness
+    status: in-progress
+    dependencies: [FTE-MVP-001D, FTE-MVP-001E]
+    validationCommands: [pnpm check, "pnpm phase1:test", "pnpm phase1:preflight"]
+    blockerReason:
     risk: High
     approvalRequiredBeforeMerge: true

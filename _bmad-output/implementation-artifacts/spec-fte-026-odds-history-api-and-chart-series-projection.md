@@ -2,9 +2,9 @@
 title: 'Odds History API and Chart-Series Projection'
 type: 'feature'
 created: '2026-08-06'
-status: 'done'
+status: 'in-review'
 baseline_commit: 'a912633841319793365103b62af5dc96365d841c'
-review_loop_iteration: 1
+review_loop_iteration: 0
 followup_review_recommended: false
 context:
   - '_bmad-output/implementation-artifacts/epic-4-context.md'
@@ -144,3 +144,17 @@ Close the shared contract and storage/API correctness first, then hand the exact
 
 - 2026-08-06: Reconstructed the missing in-progress story file from the approved Epic 4 plan and audited the existing implementation against its acceptance criteria.
 - 2026-08-06: Completed, adversarially reviewed, and locally verified the immutable SharpAPI odds-history contract and chart-series projection.
+
+## Review Triage Log
+
+### 2026-08-07 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 4: (high 4, medium 0, low 0)
+- defer: 9: (high 3, medium 5, low 1)
+- reject: 2: (high 1, medium 1, low 0)
+- addressed_findings:
+  - `[high]` `[patch]` Canonicalize unordered DynamoDB provenance maps before immutable snapshot equality checks.
+  - `[high]` `[patch]` Validate exact snapshot-index values and compare their content-derived immutable identity on retries and reads.
+  - `[high]` `[patch]` Keep every non-active provenance state non-actionable when projecting closing candidates.
+  - `[high]` `[patch]` Require own-property membership before projecting an unfiltered sportsbook history series.

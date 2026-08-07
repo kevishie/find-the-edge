@@ -6,7 +6,24 @@ import {
 import type { NormalizedFixtureOddsSnapshot } from "@find-the-edge/domain";
 import { FixtureOddsStateCorruptionError } from "@find-the-edge/domain";
 import type { ClosingCandidate } from "./closing-odds-repository.js";
+import { validateFixtureOddsSnapshotItem } from "./fixture-odds-adapter.js";
 import { oddsHistoryPartition } from "./odds-history-repository.js";
+
+const validateIndexedSnapshot = (
+  value: unknown,
+): NormalizedFixtureOddsSnapshot => {
+  const candidate = value as NormalizedFixtureOddsSnapshot | undefined;
+  if (!candidate)
+    throw new FixtureOddsStateCorruptionError("snapshot-index-corrupt");
+  const validated = validateFixtureOddsSnapshotItem(
+    { pk: candidate.partitionKey, sk: candidate.sortKey, value: candidate },
+    candidate.partitionKey,
+    candidate.sortKey,
+  );
+  if (!validated)
+    throw new FixtureOddsStateCorruptionError("snapshot-index-corrupt");
+  return validated;
+};
 
 export interface ExactOddsSnapshotIndex {
   put(snapshot: NormalizedFixtureOddsSnapshot): Promise<void>;
@@ -70,7 +87,13 @@ export class DynamoExactOddsSnapshotRepository implements ExactOddsSnapshotIndex
           ConsistentRead: true,
         }),
       );
-      if (JSON.stringify(existing.Item?.["value"]) !== JSON.stringify(snapshot))
+      let validated: NormalizedFixtureOddsSnapshot;
+      try {
+        validated = validateIndexedSnapshot(existing.Item?.["value"]);
+      } catch {
+        throw new FixtureOddsStateCorruptionError("snapshot-index-conflict");
+      }
+      if (validated.snapshotId !== snapshot.snapshotId)
         throw new FixtureOddsStateCorruptionError("snapshot-index-conflict");
     }
   }
@@ -84,11 +107,10 @@ export class DynamoExactOddsSnapshotRepository implements ExactOddsSnapshotIndex
         ConsistentRead: true,
       }),
     );
-    const value = response.Item?.["value"] as
-      NormalizedFixtureOddsSnapshot | undefined;
-    if (!value) return null;
+    if (!response.Item?.["value"]) return null;
+    const value = validateIndexedSnapshot(response.Item["value"]);
     if (value.snapshotId !== snapshotId)
-      throw new Error("snapshot-index-corrupt");
+      throw new FixtureOddsStateCorruptionError("snapshot-index-corrupt");
     return {
       partitionKey: value.partitionKey,
       snapshotId: value.snapshotId,
@@ -102,7 +124,7 @@ export class DynamoExactOddsSnapshotRepository implements ExactOddsSnapshotIndex
       americanOdds: value.americanOdds,
       observedAt: value.observedAt,
       state:
-        value.provenance?.sourceState === "suspended" ? "suspended" : "active",
+        value.provenance?.sourceState === "active" ? "active" : "suspended",
     };
   }
 }

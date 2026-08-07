@@ -229,7 +229,7 @@ describe("scouting browser client", () => {
         ),
       ).resolves.toEqual(job);
       expect(fetcher.mock.calls[0]?.[0]).toBe(
-        `https://api.example.test/events/${encodeURIComponent(job.eventId)}/scout`,
+        `https://api.example.test/events/${encodeURIComponent(encodeURIComponent(job.eventId))}/scout`,
       );
       const request = fetcher.mock.calls[0]?.[1];
       expect(request).toMatchObject({
@@ -915,6 +915,9 @@ describe("games client", () => {
     await expect(
       client.value.detail!(payload.items[0]!.id, new AbortController().signal),
     ).resolves.toMatchObject({ oddsComparison: { targetQualified: true } });
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `https://api.example.test/events/${encodeURIComponent(encodeURIComponent(payload.items[0]!.id))}`,
+    );
   });
 
   it.each(["mlb", "soccer"] as const)(
@@ -1127,7 +1130,7 @@ describe("games client", () => {
     });
     const request = new URL(requestHref(fetcher.mock.calls[0]![0]));
     expect(`${request.origin}${request.pathname}`).toBe(
-      `https://api.example.test/games/${encodeURIComponent(eventId)}/odds-history`,
+      `https://api.example.test/games/${encodeURIComponent(encodeURIComponent(eventId))}/odds-history`,
     );
     expect(request.searchParams.get("limit")).toBe("200");
     const from = Date.parse(request.searchParams.get("from") ?? "");

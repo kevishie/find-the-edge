@@ -29,6 +29,12 @@ import type {
   RuntimeConfigError,
 } from "./runtime-config";
 
+// API Gateway decodes path parameters before they reach the Lambda. Canonical
+// event IDs already contain encoded semantic segments, so encode the complete
+// ID twice to preserve those inner escapes through the gateway boundary.
+const encodeCanonicalEventPathSegment = (eventId: string) =>
+  encodeURIComponent(encodeURIComponent(eventId));
+
 export type GamesSport = "mlb" | "soccer";
 
 export interface RankedOpportunityPageDto {
@@ -2592,7 +2598,7 @@ export function createGamesClient(
                 expectedClientId: scoutingAuth.clientId,
                 fetcher,
                 operation: "create",
-                path: `/events/${encodeURIComponent(eventId)}/scout`,
+                path: `/events/${encodeCanonicalEventPathSegment(eventId)}/scout`,
                 signal,
                 idempotencyKey,
                 body: {},
@@ -2894,7 +2900,7 @@ export function createGamesClient(
         let response: Response;
         try {
           response = await fetcher(
-            `${bootstrap.value.config.apiBase}/events/${encodeURIComponent(eventId)}`,
+            `${bootstrap.value.config.apiBase}/events/${encodeCanonicalEventPathSegment(eventId)}`,
             { signal },
           );
         } catch (error) {
@@ -2980,7 +2986,7 @@ export function createGamesClient(
           let response: Response;
           try {
             response = await fetcher(
-              `${bootstrap.value.config.apiBase}/games/${encodeURIComponent(eventId)}/odds-history?${query}`,
+              `${bootstrap.value.config.apiBase}/games/${encodeCanonicalEventPathSegment(eventId)}/odds-history?${query}`,
               { signal },
             );
           } catch (error) {

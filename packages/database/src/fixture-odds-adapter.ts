@@ -304,7 +304,18 @@ const snapshotObservation = (
   americanOdds: stored.americanOdds,
   observedAt: stored.observedAt,
   retrievedAt: stored.retrievedAt,
-  ...(stored.provenance === undefined ? {} : { provenance: stored.provenance }),
+  ...(stored.provenance === undefined
+    ? {}
+    : {
+        // DynamoDB maps are unordered. Rebuild provenance in canonical field
+        // order before comparing normalized snapshot content.
+        provenance: {
+          providerId: stored.provenance.providerId,
+          policyVersion: stored.provenance.policyVersion,
+          bookRole: stored.provenance.bookRole,
+          sourceState: stored.provenance.sourceState,
+        },
+      }),
 });
 
 const conditionalOnlyAt = (

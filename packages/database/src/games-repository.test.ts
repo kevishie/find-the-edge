@@ -73,6 +73,7 @@ const current = (
   sportsbookId = "draftkings",
   observedAt = "2026-08-01T12:00:00.000Z",
   point?: number,
+  retrievedAt = "2026-08-01T12:00:00.000Z",
 ) => {
   const canonicalSelectionKey =
     selectionKey === "away"
@@ -92,7 +93,7 @@ const current = (
     ...(point === undefined ? {} : { point }),
     americanOdds: selectionKey === "home" ? -135 : 120,
     observedAt,
-    retrievedAt: "2026-08-01T12:00:00.000Z",
+    retrievedAt,
   });
 };
 const row = (value: ReturnType<typeof current>) => ({
@@ -958,6 +959,41 @@ describe("joined games repository", () => {
     });
   });
 
+  it("joins current sides from the same sportsbook when their provider timestamps differ", async () => {
+    const away = current(
+      event,
+      "away",
+      "Boston Red Sox",
+      "moneyline",
+      "draftkings",
+      "2026-08-01T12:00:00.000Z",
+      undefined,
+      "2026-08-01T12:00:02.000Z",
+    );
+    const home = current(
+      event,
+      "home",
+      "New York Yankees",
+      "moneyline",
+      "draftkings",
+      "2026-08-01T12:00:01.000Z",
+      undefined,
+      "2026-08-01T12:00:03.000Z",
+    );
+
+    const page = await new JoinedGamesRepository(events([event]), {
+      batchGet: () => Promise.resolve([row(away), row(home)]),
+    }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+
+    expect(page.items[0]?.odds).toMatchObject({
+      state: "available",
+      selections: [
+        { selectionKey: participantKey("bos"), observedAt: away.observedAt },
+        { selectionKey: participantKey("nyy"), observedAt: home.observedAt },
+      ],
+    });
+  });
+
   it("uses every configured approved sportsbook in the Dynamo list projection", async () => {
     const requested: { readonly pk: string; readonly sk: string }[] = [];
     const away = current(
@@ -1152,29 +1188,12 @@ describe("joined games repository", () => {
     }
   });
 
-  it("hides partial and mixed-timestamp markets during ingestion", async () => {
+  it("hides a partial required market during ingestion", async () => {
     const away = current(event, "away", "Boston Red Sox");
-    for (const rows of [
-      [row(away)],
-      [
-        row(away),
-        row(
-          current(
-            event,
-            "home",
-            "New York Yankees",
-            "moneyline",
-            "draftkings",
-            "2026-08-01T12:01:00.000Z",
-          ),
-        ),
-      ],
-    ]) {
-      const page = await new JoinedGamesRepository(events(), {
-        batchGet: () => Promise.resolve(rows),
-      }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
-      expect(page.items[0]?.odds).toEqual({ state: "unavailable" });
-    }
+    const page = await new JoinedGamesRepository(events(), {
+      batchGet: () => Promise.resolve([row(away)]),
+    }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+    expect(page.items[0]?.odds).toEqual({ state: "unavailable" });
   });
 
   it("requests exact keys for four preferred books on a maximum soccer page", async () => {

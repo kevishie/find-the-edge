@@ -471,7 +471,12 @@ describe("odds history repository", () => {
       selectionKey: "participant:club%3A42",
     });
     const repository = new MemoryOddsHistoryRepository(
-      [encoded],
+      [
+        encoded,
+        snapshot("constructor", "2026-08-05T12:01:00.000Z", -115, {
+          selectionKey: "participant:club%3A42",
+        }),
+      ],
       cursor,
       { draftkings: "DraftKings" },
       impliedProbability,
