@@ -198,6 +198,10 @@ interface SharpPageMaterial {
   readonly page: SharpApiOddsPage;
 }
 
+type CanonicalSharpOddsEvents = Awaited<
+  ReturnType<typeof persistSharpApiOddsPage>
+>["canonicalOddsEvents"];
+
 const digest = (value: unknown) => sha256Hex(JSON.stringify(value));
 
 const checkpointScheduleBindings = (
@@ -1252,6 +1256,10 @@ export async function runProductionOddsControlPlane(input: {
   };
   const starts = new Map<string, string[]>();
   const expectedProviderEvents = new Map<string, string[]>();
+  const canonicalOddsEventsByLeague = new Map<
+    string,
+    CanonicalSharpOddsEvents
+  >();
   const seenScheduleEvents = new Set<string>();
   const sharpScheduleHealthy = new Set<string>();
   const scheduleReady = new Set<string>();
@@ -1651,6 +1659,7 @@ export async function runProductionOddsControlPlane(input: {
           for (const reason of [
             "participant-out-of-scope",
             "same-club-matchup",
+            "catalogue-derivative",
           ] as const) {
             const count =
               page.exclusions?.filter((item) => item.reason === reason)
@@ -1945,6 +1954,7 @@ export async function runProductionOddsControlPlane(input: {
                     );
                 },
                 expectedBooks,
+                new Set(expectedEvents),
               );
               input.metrics?.emit(
                 "OddsNormalizedObservation",
@@ -2069,6 +2079,10 @@ export async function runProductionOddsControlPlane(input: {
                 merged.retrievedAt,
                 omitted,
                 expectedBooks,
+              );
+              canonicalOddsEventsByLeague.set(
+                policy.leagueKey,
+                persisted.canonicalOddsEvents,
               );
               return gaps;
             },
@@ -2604,7 +2618,7 @@ export async function runProductionOddsControlPlane(input: {
                   input.splits,
                   league,
                   splitPage,
-                  [],
+                  canonicalOddsEventsByLeague.get(league.leagueKey) ?? [],
                 );
                 await input.control.commitPage(
                   runId,

@@ -559,6 +559,12 @@ describe("SharpAPI activation boundary", () => {
     expect(page.events.map(({ providerEventId }) => providerEventId)).toEqual([
       "mlb_mets_pirates_2026-08-07_b3",
     ]);
+    expect(page.exclusions).toContainEqual(
+      expect.objectContaining({
+        providerEventId: "mlb_brewers_pirates_2026-08-07_b1",
+        reason: "catalogue-derivative",
+      }),
+    );
   });
 
   it("defensively excludes contaminated MLB odds identities", () => {

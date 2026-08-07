@@ -3,6 +3,7 @@ export type CanonicalSportsbookId =
   | "draftkings"
   | "fanduel"
   | "betmgm"
+  | "bet365"
   | "caesars"
   | "pinnacle"
   | "ballybet"
@@ -68,6 +69,11 @@ export const sportsbookRegistry: readonly SportsbookRegistration[] =
       logo: "/sportsbooks/betmgm.svg",
       aliases: ["betmgm", "bet mgm", "mgm"],
       productionRole: "comparison",
+    },
+    {
+      id: "bet365",
+      name: "Bet365",
+      aliases: ["bet365", "bet365 us", "bet365us"],
     },
     {
       id: "caesars",
@@ -200,6 +206,7 @@ export const approvedSportsbookCollection = Object.freeze({
   draftkings: "comparison",
   fanduel: "comparison",
   betmgm: "comparison",
+  bet365: "collected",
   caesars: "comparison",
   pinnacle: "collected",
   circa: "collected",

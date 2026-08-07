@@ -103,6 +103,43 @@ const normalizedParticipant = (value: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
+const splitParticipantsMatchCanonical = (
+  canonical: CanonicalEvent,
+  awayTeam: string,
+  homeTeam: string,
+) =>
+  canonical.participantLabels?.length === 2 &&
+  normalizedParticipant(canonical.participantLabels[0]!) ===
+    normalizedParticipant(awayTeam) &&
+  normalizedParticipant(canonical.participantLabels[1]!) ===
+    normalizedParticipant(homeTeam);
+
+const splitIdentityMatchesCanonical = (
+  canonical: CanonicalEvent,
+  providerEventId: string,
+  awayTeam: string,
+  homeTeam: string,
+  leagueKey: SharpApiLeague["leagueKey"],
+) => {
+  if (!splitParticipantsMatchCanonical(canonical, awayTeam, homeTeam))
+    return false;
+  if (leagueKey !== "mlb") return true;
+  const splitDay = providerEventDay(providerEventId);
+  return splitDay !== undefined && easternDay(canonical.startsAt) === splitDay;
+};
+
+const uniqueCanonicalSplitCandidate = (
+  candidates: readonly CanonicalEvent[],
+) => {
+  const distinct = new Map<string, CanonicalEvent>();
+  for (const canonical of candidates) {
+    const current = distinct.get(canonical.id);
+    if (!current || canonical.version > current.version)
+      distinct.set(canonical.id, canonical);
+  }
+  return distinct.size === 1 ? [...distinct.values()][0]! : null;
+};
+
 const splitProviderEventAliases = (
   providerEventId: string,
   leagueKey: SharpApiLeague["leagueKey"],
@@ -323,6 +360,7 @@ export async function persistSharpApiOddsPage(
     readonly mirrorFailure?: true;
   }) => void,
   expectedBookMarkets?: Readonly<Record<string, readonly string[]>>,
+  acceptedProviderEventIds?: ReadonlySet<string>,
 ) {
   const comparableParticipant = (value: string) =>
     value
@@ -436,6 +474,43 @@ export async function persistSharpApiOddsPage(
       (rejectionCounts[rejection.reason] ?? 0) + 1;
   for (const raw of page.events) {
     if (isSharpDerivativeMatchup(raw.awayTeam, raw.homeTeam)) continue;
+    // Sharp can expose thin sportsbook derivatives on both its schedule and
+    // odds endpoints. When a completed schedule scan is available, MLB odds
+    // may only create/persist an event whose exact source ID survived that
+    // schedule classifier.
+    if (
+      league.leagueKey === "mlb" &&
+      acceptedProviderEventIds &&
+      !acceptedProviderEventIds.has(raw.providerEventId)
+    ) {
+      // A featured full-game board can lead the schedule catalogue. Preserve
+      // that legitimate bootstrap only when an approved sportsbook supplies
+      // a complete primary market; thin unregistered-book derivatives fail
+      // closed and cannot recreate a rejected schedule row.
+      const completeApprovedBooks = raw.bookmakers.filter((book) => {
+        const normalized = normalizeSportsbook(book.id);
+        if (normalized.kind === "rejected") return false;
+        const role = bookRoles
+          ? bookRoles[normalized.sportsbook.id]
+          : normalized.sportsbook.productionRole;
+        if (!role) return false;
+        return (
+          completeMainPrices(
+            book.prices.filter(
+              (price) =>
+                price.isMainLine &&
+                !price.isAlternateLine &&
+                !price.isPlayerProp &&
+                !price.isStalePregamePrice &&
+                price.isActive !== false &&
+                !price.isSuspended,
+            ),
+            league.leagueKey,
+          ).prices.length > 0
+        );
+      }).length;
+      if (completeApprovedBooks < 2) continue;
+    }
     const eventRetrievedAt =
       page.eventRetrievedAt?.[raw.providerEventId] ?? page.retrievedAt;
     const event = providerEvent(league, raw, eventRetrievedAt);
@@ -948,29 +1023,57 @@ export async function persistSharpApiSplitPage(
       sportKey: league.sportKey,
       leagueKey: league.leagueKey,
     });
-    if (!canonical)
+    if (
+      canonical &&
+      !splitIdentityMatchesCanonical(
+        canonical,
+        raw.providerEventId,
+        raw.awayTeam,
+        raw.homeTeam,
+        league.leagueKey,
+      )
+    )
+      canonical = null;
+    if (!canonical) {
+      canonical = uniqueCanonicalSplitCandidate(
+        canonicalOddsEvents
+          .filter(({ canonical: candidate }) =>
+            splitIdentityMatchesCanonical(
+              candidate,
+              raw.providerEventId,
+              raw.awayTeam,
+              raw.homeTeam,
+              league.leagueKey,
+            ),
+          )
+          .map(({ canonical: candidate }) => candidate),
+      );
+    }
+    if (!canonical) {
+      const exactAliasCandidates: CanonicalEvent[] = [];
       for (const providerEventId of splitProviderEventAliases(
         raw.providerEventId,
         league.leagueKey,
       )) {
-        canonical = await store.resolveExactCanonicalBinding({
+        const candidate = await store.resolveExactCanonicalBinding({
           providerId: SHARP_API_PROVIDER_ID,
           providerEventId,
           sportKey: league.sportKey,
           leagueKey: league.leagueKey,
         });
-        if (canonical) break;
+        if (
+          candidate &&
+          splitIdentityMatchesCanonical(
+            candidate,
+            raw.providerEventId,
+            raw.awayTeam,
+            raw.homeTeam,
+            league.leagueKey,
+          )
+        )
+          exactAliasCandidates.push(candidate);
       }
-    if (!canonical) {
-      const splitDay = providerEventDay(raw.providerEventId);
-      const candidates = canonicalOddsEvents.filter(
-        ({ raw: oddsEvent }) =>
-          oddsEvent.awayTeam === raw.awayTeam &&
-          oddsEvent.homeTeam === raw.homeTeam &&
-          splitDay !== undefined &&
-          easternDay(oddsEvent.startsAt) === splitDay,
-      );
-      if (candidates.length === 1) canonical = candidates[0]!.canonical;
+      canonical = uniqueCanonicalSplitCandidate(exactAliasCandidates);
     }
     if (!canonical) {
       await splitRepository.persistGap({
@@ -984,11 +1087,13 @@ export async function persistSharpApiSplitPage(
       continue;
     }
     if (
-      canonical.participantLabels?.length !== 2 ||
-      normalizedParticipant(canonical.participantLabels[0]!) !==
-        normalizedParticipant(raw.awayTeam) ||
-      normalizedParticipant(canonical.participantLabels[1]!) !==
-        normalizedParticipant(raw.homeTeam)
+      !splitIdentityMatchesCanonical(
+        canonical,
+        raw.providerEventId,
+        raw.awayTeam,
+        raw.homeTeam,
+        league.leagueKey,
+      )
     ) {
       await splitRepository.persistGap({
         providerId: SHARP_API_PROVIDER_ID,
@@ -1089,6 +1194,9 @@ export async function ingestSharpApi(
       sharpApiPolicy.books,
       undefined,
       sharpApiPolicy.expectedBooks,
+      new Set(
+        scheduleResult.events.map(({ providerEventId }) => providerEventId),
+      ),
     );
     const { canonicalOddsEvents } = persisted;
     events += persisted.events;

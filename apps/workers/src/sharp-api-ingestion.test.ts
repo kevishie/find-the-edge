@@ -331,12 +331,50 @@ describe("SharpAPI primary ingestion", () => {
         },
       ],
     };
+    const phantomBinding = {
+      ...binding,
+      providerEventId: "mlb_brewers_pirates_2026-08-05_b1",
+    };
+    const phantomResult = await persistSharpApiOddsPage(
+      store,
+      { persist },
+      league,
+      {
+        ...oddsPage,
+        events: oddsPage.events.map((event) => ({
+          ...event,
+          providerEventId: phantomBinding.providerEventId,
+          providerEventUuid: `${phantomBinding.providerEventId}:uuid`,
+          awayTeam: "Pittsburgh Pirates",
+          homeTeam: "Milwaukee Brewers",
+          awayClubKey: "pirates",
+          homeClubKey: "brewers",
+          bookmakers: event.bookmakers.map((book) => ({
+            ...book,
+            id: "bet365 us",
+            label: "Bet365 US",
+          })),
+        })),
+      },
+      { pinnacle: "collected" },
+      undefined,
+      undefined,
+      new Set([binding.providerEventId]),
+    );
+    expect(phantomResult).toMatchObject({ events: 0, observations: 0 });
+    await expect(
+      store.resolveExactCanonicalBinding(phantomBinding),
+    ).resolves.toBeNull();
+
     const result = await persistSharpApiOddsPage(
       store,
       { persist },
       league,
       oddsPage,
       { pinnacle: "collected" },
+      undefined,
+      undefined,
+      new Set([binding.providerEventId]),
     );
 
     const canonical = await store.resolveExactCanonicalBinding(binding);
@@ -1043,14 +1081,17 @@ describe("SharpAPI primary ingestion", () => {
       id: "event:mlb:cardinals-yankees",
       version: 4,
       sportKey: "mlb",
+      startsAt: "2026-08-04T20:00:00.000Z",
       participantLabels: ["St. Louis Cardinals", "New York Yankees"],
     } as unknown as CanonicalEvent;
     const resolveExactCanonicalBinding = vi.fn(
       ({ providerEventId }: { readonly providerEventId: string }) =>
         Promise.resolve(
-          providerEventId === "mlb_cardinals_yankees_2026-08-04_b3"
-            ? canonical
-            : null,
+          providerEventId === "mlb_cardinals_yankees_2026-08-04_b1"
+            ? { ...canonical, version: 3 }
+            : providerEventId === "mlb_cardinals_yankees_2026-08-04_b3"
+              ? canonical
+              : null,
         ),
     );
     const persist = vi.fn(() =>
@@ -1100,8 +1141,203 @@ describe("SharpAPI primary ingestion", () => {
     expect(persist).toHaveBeenCalledWith(
       expect.objectContaining({
         canonicalEventId: canonical.id,
+        canonicalEventVersion: 4,
         scope: "consensus",
       }),
+    );
+  });
+
+  it("does not attach a suffixless split when exact aliases identify different games", async () => {
+    const canonical = (id: string) =>
+      ({
+        id,
+        version: 1,
+        sportKey: "mlb",
+        startsAt: "2026-08-04T20:00:00.000Z",
+        participantLabels: ["St. Louis Cardinals", "New York Yankees"],
+      }) as unknown as CanonicalEvent;
+    const persist = vi.fn();
+    const persistGap = vi.fn();
+
+    const persisted = await persistSharpApiSplitPage(
+      {
+        resolveExactCanonicalBinding: vi.fn(
+          ({ providerEventId }: { readonly providerEventId: string }) =>
+            Promise.resolve(
+              providerEventId.endsWith("_b1")
+                ? canonical("event:one")
+                : providerEventId.endsWith("_b3")
+                  ? canonical("event:two")
+                  : null,
+            ),
+        ),
+      } as unknown as EventIngestionStore,
+      {
+        persist,
+        persistGap,
+      } as unknown as BettingSplitRepository,
+      {
+        sportKey: "mlb",
+        leagueKey: "mlb",
+      } as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-04T12:00:01.000Z" as IsoTimestamp,
+        items: [
+          {
+            providerEventId: "mlb_cardinals_yankees_2026-08-04",
+            sport: "baseball",
+            league: "mlb",
+            sportsbookId: "consensus",
+            awayTeam: "ST Louis Cardinals",
+            homeTeam: "New York Yankees",
+            providerTimestamp: "2026-08-04T12:00:00.000Z" as IsoTimestamp,
+            markets: [
+              {
+                marketKey: "moneyline",
+                selections: [{ selectionKey: "away", betPercent: 42 }],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(persisted).toBe(0);
+    expect(persist).not.toHaveBeenCalled();
+    expect(persistGap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerEventId: "mlb_cardinals_yankees_2026-08-04",
+        reason: "event-unmapped",
+      }),
+    );
+  });
+
+  it("does not attach a suffixless split through an exact alias on another Eastern day", async () => {
+    const persist = vi.fn();
+    const persistGap = vi.fn();
+    const persisted = await persistSharpApiSplitPage(
+      {
+        resolveExactCanonicalBinding: vi.fn(
+          ({ providerEventId }: { readonly providerEventId: string }) =>
+            Promise.resolve(
+              providerEventId.endsWith("_b3")
+                ? ({
+                    id: "event:next-day",
+                    version: 1,
+                    sportKey: "mlb",
+                    startsAt: "2026-08-05T20:00:00.000Z",
+                    participantLabels: [
+                      "St. Louis Cardinals",
+                      "New York Yankees",
+                    ],
+                  } as unknown as CanonicalEvent)
+                : null,
+            ),
+        ),
+      } as unknown as EventIngestionStore,
+      { persist, persistGap } as unknown as BettingSplitRepository,
+      { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-04T12:00:01.000Z" as IsoTimestamp,
+        items: [
+          {
+            providerEventId: "mlb_cardinals_yankees_2026-08-04",
+            sport: "baseball",
+            league: "mlb",
+            sportsbookId: "consensus",
+            awayTeam: "ST Louis Cardinals",
+            homeTeam: "New York Yankees",
+            providerTimestamp: "2026-08-04T12:00:00.000Z" as IsoTimestamp,
+            markets: [
+              {
+                marketKey: "moneyline",
+                selections: [{ selectionKey: "away", betPercent: 42 }],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(persisted).toBe(0);
+    expect(persist).not.toHaveBeenCalled();
+    expect(persistGap).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "event-unmapped" }),
+    );
+  });
+
+  it("does not attach suffixless splits to current-run candidates from another game or day", async () => {
+    const candidate = (
+      id: string,
+      awayTeam: string,
+      homeTeam: string,
+      startsAt: IsoTimestamp,
+    ) => ({
+      raw: {
+        providerEventId: id,
+        providerEventUuid: `${id}:uuid`,
+        awayTeam,
+        homeTeam,
+        startsAt,
+        bookmakers: [],
+      },
+      canonical: {
+        id: `canonical:${id}`,
+        version: 1,
+        sportKey: "mlb",
+        startsAt,
+        participantLabels: [awayTeam, homeTeam],
+      } as unknown as CanonicalEvent,
+    });
+    const persist = vi.fn();
+    const persistGap = vi.fn();
+
+    const persisted = await persistSharpApiSplitPage(
+      {
+        resolveExactCanonicalBinding: vi.fn().mockResolvedValue(null),
+      } as unknown as EventIngestionStore,
+      { persist, persistGap } as unknown as BettingSplitRepository,
+      { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-04T12:00:01.000Z" as IsoTimestamp,
+        items: [
+          {
+            providerEventId: "mlb_cardinals_yankees_2026-08-04",
+            sport: "baseball",
+            league: "mlb",
+            sportsbookId: "consensus",
+            awayTeam: "ST Louis Cardinals",
+            homeTeam: "New York Yankees",
+            providerTimestamp: "2026-08-04T12:00:00.000Z" as IsoTimestamp,
+            markets: [
+              {
+                marketKey: "moneyline",
+                selections: [{ selectionKey: "away", betPercent: 42 }],
+              },
+            ],
+          },
+        ],
+      },
+      [
+        candidate(
+          "wrong-team",
+          "Boston Red Sox",
+          "New York Yankees",
+          "2026-08-04T20:00:00.000Z" as IsoTimestamp,
+        ),
+        candidate(
+          "wrong-day",
+          "St. Louis Cardinals",
+          "New York Yankees",
+          "2026-08-05T20:00:00.000Z" as IsoTimestamp,
+        ),
+      ],
+    );
+
+    expect(persisted).toBe(0);
+    expect(persist).not.toHaveBeenCalled();
+    expect(persistGap).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "event-unmapped" }),
     );
   });
 

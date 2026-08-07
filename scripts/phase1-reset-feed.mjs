@@ -16,6 +16,8 @@ export const RESET_ENABLED_LEAGUES = Object.freeze([
   "uefa-champions-league",
 ]);
 export const RESET_MAX_MANIFEST_KEYS = 250_000;
+export const RESET_MAX_DELETE_KEYS = 250_000;
+export const RESET_MAX_SCAN_PAGE_KEYS = 25_000;
 
 const boundedText = (value, maximum = 2048) =>
   typeof value === "string" && value.length > 0 && value.length <= maximum;
@@ -258,6 +260,11 @@ export function classifyFeedKey(key) {
   return { disposition: "unexpected", family: "unknown-key-family" };
 }
 
+const compareFeedKeys = (left, right) =>
+  left.pk === right.pk
+    ? left.sk.localeCompare(right.sk)
+    : left.pk.localeCompare(right.pk);
+
 export function buildFeedManifest(keys) {
   if (!Array.isArray(keys)) throw new Error("reset-key-list-invalid");
   if (keys.length > RESET_MAX_MANIFEST_KEYS)
@@ -271,11 +278,7 @@ export function buildFeedManifest(keys) {
     if (unique.has(identity)) throw new Error("reset-scan-key-duplicate");
     unique.set(identity, { pk: key.pk, sk: key.sk, ...classification });
   }
-  const rows = [...unique.values()].sort((left, right) =>
-    left.pk === right.pk
-      ? left.sk.localeCompare(right.sk)
-      : left.pk.localeCompare(right.pk),
-  );
+  const rows = [...unique.values()].sort(compareFeedKeys);
   const deleteKeys = rows
     .filter(({ disposition }) => disposition === "delete")
     .map(({ pk, sk }) => ({ pk, sk }));
@@ -647,6 +650,168 @@ export async function scanAllKeys(scanPage, options = {}) {
   throw new Error("reset-scan-page-limit");
 }
 
+const DIGEST_MODULUS = 1n << 256n;
+const emptyDigestEvidence = () => ({ count: 0, xor: 0n, sum: 0n });
+const addDigestEvidence = (evidence, pk, sk) => {
+  const value = BigInt(
+    `0x${createHash("sha256").update(`${pk}\0${sk}`).digest("hex")}`,
+  );
+  evidence.count += 1;
+  evidence.xor ^= value;
+  evidence.sum = (evidence.sum + value) % DIGEST_MODULUS;
+};
+const digestEvidence = ({ count, xor, sum }) =>
+  createHash("sha256")
+    .update(
+      [
+        "fte-phase1-reset-manifest-v2",
+        String(count),
+        xor.toString(16).padStart(64, "0"),
+        sum.toString(16).padStart(64, "0"),
+      ].join("\0"),
+    )
+    .digest("hex");
+
+/** Builds a deterministic manifest while retaining only the bounded delete
+ * set. Immutable history can grow without making a guarded reset impossible. */
+export async function scanFeedManifest(scanPage, options = {}) {
+  const maxDeleteKeys = options.maxDeleteKeys ?? RESET_MAX_DELETE_KEYS;
+  const maxPageKeys = options.maxPageKeys ?? RESET_MAX_SCAN_PAGE_KEYS;
+  if (
+    !Number.isSafeInteger(maxDeleteKeys) ||
+    maxDeleteKeys < 1 ||
+    !Number.isSafeInteger(maxPageKeys) ||
+    maxPageKeys < 1
+  )
+    throw new Error("reset-scan-key-limit-invalid");
+  const deleteKeys = [];
+  const deleteIdentities = new Set();
+  const deleteEvidence = emptyDigestEvidence();
+  const preserveEvidence = emptyDigestEvidence();
+  const counts = {};
+  const preserveCounts = {};
+  let scanned = 0;
+  let cursor;
+  const seenCursors = new Set();
+  for (let page = 0; page < 100_000; page += 1) {
+    options.check?.();
+    const result = await scanPage(cursor);
+    if (
+      !result ||
+      !Array.isArray(result.keys) ||
+      result.keys.length > maxPageKeys
+    )
+      throw new Error("reset-scan-page-invalid");
+    const pageIdentities = new Set();
+    for (const key of result.keys) {
+      const classification = classifyFeedKey(key);
+      if (classification.disposition === "unexpected")
+        throw new Error(
+          `reset-key-family-unclassified:${classification.family}`,
+        );
+      const identity = `${key.pk}\0${key.sk}`;
+      if (pageIdentities.has(identity))
+        throw new Error("reset-scan-key-duplicate");
+      pageIdentities.add(identity);
+      scanned += 1;
+      if (classification.disposition === "delete") {
+        if (deleteIdentities.has(identity))
+          throw new Error("reset-scan-key-duplicate");
+        if (deleteKeys.length >= maxDeleteKeys)
+          throw new Error("reset-delete-key-limit");
+        deleteIdentities.add(identity);
+        deleteKeys.push({ pk: key.pk, sk: key.sk });
+        counts[classification.family] =
+          (counts[classification.family] ?? 0) + 1;
+        addDigestEvidence(deleteEvidence, key.pk, key.sk);
+      } else {
+        preserveCounts[classification.family] =
+          (preserveCounts[classification.family] ?? 0) + 1;
+        addDigestEvidence(preserveEvidence, key.pk, key.sk);
+      }
+    }
+    if (result.cursor === undefined) {
+      deleteKeys.sort(compareFeedKeys);
+      return {
+        manifestVersion: 2,
+        scanned,
+        deleteCount: deleteEvidence.count,
+        preserveCount: preserveEvidence.count,
+        counts: Object.fromEntries(Object.entries(counts).sort()),
+        preserveCounts: Object.fromEntries(
+          Object.entries(preserveCounts).sort(),
+        ),
+        digest: digestEvidence(deleteEvidence),
+        preserveDigest: digestEvidence(preserveEvidence),
+        deleteKeys,
+      };
+    }
+    const encoded = JSON.stringify(result.cursor);
+    if (seenCursors.has(encoded)) throw new Error("reset-scan-cursor-cycle");
+    seenCursors.add(encoded);
+    cursor = result.cursor;
+  }
+  throw new Error("reset-scan-page-limit");
+}
+
+const normalizeFeedManifest = (value) => {
+  if (Array.isArray(value)) return buildFeedManifest(value);
+  if (
+    !value ||
+    value.manifestVersion !== 2 ||
+    !Number.isSafeInteger(value.scanned) ||
+    value.scanned < 0 ||
+    !Number.isSafeInteger(value.deleteCount) ||
+    value.deleteCount < 0 ||
+    !Number.isSafeInteger(value.preserveCount) ||
+    value.preserveCount < 0 ||
+    value.scanned !== value.deleteCount + value.preserveCount ||
+    !Array.isArray(value.deleteKeys) ||
+    value.deleteKeys.length !== value.deleteCount ||
+    value.deleteKeys.length > RESET_MAX_DELETE_KEYS ||
+    !HEX_64.test(value.digest) ||
+    !HEX_64.test(value.preserveDigest) ||
+    !value.counts ||
+    typeof value.counts !== "object" ||
+    Array.isArray(value.counts) ||
+    !value.preserveCounts ||
+    typeof value.preserveCounts !== "object" ||
+    Array.isArray(value.preserveCounts)
+  )
+    throw new Error("reset-manifest-invalid");
+  const validCounts = (counts, expected) => {
+    let total = 0;
+    for (const [family, count] of Object.entries(counts)) {
+      if (
+        !/^[a-z0-9-]{1,80}$/.test(family) ||
+        !Number.isSafeInteger(count) ||
+        count < 1
+      )
+        return false;
+      total += count;
+    }
+    return Number.isSafeInteger(total) && total === expected;
+  };
+  if (
+    !validCounts(value.counts, value.deleteCount) ||
+    !validCounts(value.preserveCounts, value.preserveCount)
+  )
+    throw new Error("reset-manifest-invalid");
+  const evidence = emptyDigestEvidence();
+  let previous;
+  for (const item of value.deleteKeys) {
+    if (classifyFeedKey(item).disposition !== "delete")
+      throw new Error("reset-manifest-invalid");
+    if (previous !== undefined && compareFeedKeys(previous, item) >= 0)
+      throw new Error("reset-manifest-invalid");
+    previous = item;
+    addDigestEvidence(evidence, item.pk, item.sk);
+  }
+  if (digestEvidence(evidence) !== value.digest)
+    throw new Error("reset-manifest-invalid");
+  return value;
+};
+
 const easternDay = (instant) => {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/New_York",
@@ -974,6 +1139,11 @@ export async function verifyPublicFeed({
 export async function executeReset(mode, operations) {
   if (!RESET_MODES.has(mode)) throw new Error("reset-mode-invalid");
   const containsAllPreserved = (expected, actual) => {
+    if (!expected.preservedKeys || !actual.preservedKeys)
+      return (
+        expected.preserveCount === actual.preserveCount &&
+        expected.preserveDigest === actual.preserveDigest
+      );
     const available = new Set(
       actual.preservedKeys.map(({ pk, sk }) => `${pk}\0${sk}`),
     );
@@ -983,7 +1153,7 @@ export async function executeReset(mode, operations) {
   };
   let first;
   try {
-    first = buildFeedManifest(await operations.scan());
+    first = normalizeFeedManifest(await operations.scan());
     await operations.report(first, mode);
   } catch (error) {
     if (safeErrorCode(error) === "reset-operation-failed")
@@ -995,7 +1165,7 @@ export async function executeReset(mode, operations) {
   let primaryError;
   try {
     prior = await operations.quiesce();
-    const stable = buildFeedManifest(await operations.scan());
+    const stable = normalizeFeedManifest(await operations.scan());
     if (
       stable.digest !== first.digest ||
       stable.deleteCount !== first.deleteCount ||
@@ -1005,13 +1175,17 @@ export async function executeReset(mode, operations) {
     await operations.requirePitr();
     const backup = await operations.backup();
     await operations.delete(stable.deleteKeys);
-    const remaining = buildFeedManifest(await operations.scan());
+    const remaining = normalizeFeedManifest(await operations.scan());
     if (remaining.deleteCount !== 0) throw new Error("reset-feed-rows-remain");
     if (!containsAllPreserved(stable, remaining))
       throw new Error("reset-preserved-rows-changed");
     const ingestion = await operations.ingest(prior);
-    const afterIngestion = buildFeedManifest(await operations.scan());
-    if (!containsAllPreserved(stable, afterIngestion))
+    const afterIngestion = normalizeFeedManifest(await operations.scan());
+    if (
+      afterIngestion.preserveCount < stable.preserveCount ||
+      (afterIngestion.preserveCount === stable.preserveCount &&
+        !containsAllPreserved(stable, afterIngestion))
+    )
       throw new Error("reset-preserved-rows-changed");
     const verification = await operations.verify();
     return { mode, manifest: stable, backup, ingestion, verification };
@@ -1126,7 +1300,7 @@ const decodeDynamoKey = (item) => {
 const encodeDynamoKey = ({ pk, sk }) => ({ pk: { S: pk }, sk: { S: sk } });
 
 const scanTarget = (target, environment, check) =>
-  scanAllKeys(
+  scanFeedManifest(
     async (cursor) => {
       const page = awsJson(
         [

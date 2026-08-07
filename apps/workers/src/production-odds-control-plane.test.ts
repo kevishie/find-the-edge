@@ -334,6 +334,153 @@ describe("production odds control-plane composition", () => {
     });
   });
 
+  it("carries canonical odds candidates into suffixless MLB split persistence", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const events = new MemoryEventIngestionStore();
+    const persistOdds = vi.fn().mockResolvedValue({
+      snapshot: "created",
+      current: "advanced",
+    });
+    const persistSplit = vi.fn().mockResolvedValue({
+      history: "inserted",
+      current: "advanced",
+    });
+    const persistGap = vi.fn();
+    const providerEventId = "sharp-opaque-mlb-event";
+    const startsAt = "2026-08-03T20:00:00.000Z" as IsoTimestamp;
+    const prices = (["away", "home"] as const).map((selectionKey, index) => ({
+      providerPriceId: `price-${selectionKey}`,
+      marketKey: "moneyline" as const,
+      outcomeStructure: "two-way" as const,
+      providerMarketType: "moneyline",
+      providerMarketId: "market-moneyline",
+      selectionKey,
+      selectionLabel:
+        selectionKey === "away" ? "St. Louis Cardinals" : "New York Yankees",
+      providerSelectionId: `selection-${selectionKey}`,
+      americanOdds: index === 0 ? 110 : -120,
+      decimalOdds: index === 0 ? 2.1 : 1.83,
+      impliedProbability: index === 0 ? 0.476 : 0.545,
+      isLive: false,
+      isMainLine: true,
+      isAlternateLine: false,
+      isPlayerProp: false,
+      isStalePregamePrice: false,
+      observedAt: at,
+    }));
+
+    await runProductionOddsControlPlane({
+      events,
+      odds: { persist: persistOdds },
+      splits: {
+        persist: persistSplit,
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap,
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      clock: () => now,
+      fetchSharpSchedule: vi.fn((league: SharpApiLeague) =>
+        Promise.resolve({
+          events:
+            league.leagueKey === "mlb"
+              ? [
+                  {
+                    providerEventId,
+                    awayTeam: "St. Louis Cardinals",
+                    homeTeam: "New York Yankees",
+                    startsAt,
+                    status: "scheduled" as const,
+                  },
+                ]
+              : [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+      ),
+      fetchSharpOdds: vi.fn((league: SharpApiLeague) =>
+        Promise.resolve({
+          events:
+            league.leagueKey === "mlb"
+              ? [
+                  {
+                    providerEventId,
+                    providerEventUuid: "sharp-opaque-mlb-uuid",
+                    awayTeam: "St. Louis Cardinals",
+                    homeTeam: "New York Yankees",
+                    startsAt,
+                    bookmakers: [
+                      {
+                        id: "draftkings",
+                        label: "DraftKings",
+                        prices,
+                      },
+                    ],
+                  },
+                ]
+              : [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+      ),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: ["splits"],
+        requestsPerMinute: 300,
+        maxBooks: 25,
+        streamingEnabled: false,
+      }),
+      fetchSharpSplits: vi.fn((league: SharpApiLeague) =>
+        Promise.resolve({
+          items:
+            league.leagueKey === "mlb"
+              ? [
+                  {
+                    providerEventId: "mlb_cardinals_yankees_2026-08-03",
+                    sport: "baseball",
+                    league: "mlb",
+                    sportsbookId: "consensus",
+                    awayTeam: "ST Louis Cardinals",
+                    homeTeam: "New York Yankees",
+                    providerTimestamp: at,
+                    markets: [
+                      {
+                        marketKey: "moneyline" as const,
+                        selections: [
+                          { selectionKey: "away" as const, betPercent: 42 },
+                          { selectionKey: "home" as const, betPercent: 58 },
+                        ],
+                      },
+                    ],
+                  },
+                ]
+              : [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+      ),
+    });
+
+    const canonicalEventId = (
+      persistOdds.mock.calls[0]![0] as FixtureOddsIngestInput
+    ).observation.canonicalEventId;
+    expect(persistSplit).toHaveBeenCalledTimes(2);
+    expect(persistSplit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerEventId: "mlb_cardinals_yankees_2026-08-03",
+        canonicalEventId,
+        scope: "consensus",
+      }),
+    );
+    expect(persistGap).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerEventId: "mlb_cardinals_yankees_2026-08-03",
+      }),
+    );
+  });
+
   it("rejects invalid replayed account capacity before telemetry", async () => {
     const control = new MemoryOddsControlPlaneStore();
     const metrics = { emit: vi.fn() };

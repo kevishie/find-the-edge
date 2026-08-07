@@ -9,6 +9,7 @@ import {
 } from "@find-the-edge/domain";
 import { EventStorageError } from "./event-errors";
 import type { EventRepository } from "./event-repository";
+import { DynamoGamesRepository } from "./dynamodb-games-repository";
 import { JoinedGamesRepository } from "./games-repository";
 import { MemoryGamesRepository } from "./memory-games-repository";
 
@@ -953,6 +954,55 @@ describe("joined games repository", () => {
       selections: [
         { selectionKey: participantKey("bos"), americanOdds: 120 },
         { selectionKey: participantKey("nyy"), americanOdds: -135 },
+      ],
+    });
+  });
+
+  it("uses every configured approved sportsbook in the Dynamo list projection", async () => {
+    const requested: { readonly pk: string; readonly sk: string }[] = [];
+    const away = current(
+      event,
+      "away",
+      "Boston Red Sox",
+      "moneyline",
+      "pinnacle",
+    );
+    const home = current(
+      event,
+      "home",
+      "New York Yankees",
+      "moneyline",
+      "pinnacle",
+    );
+    const page = await new DynamoGamesRepository(
+      events(),
+      {
+        batchGet: (keys) => {
+          requested.push(...keys);
+          return Promise.resolve([row(home), row(away)]);
+        },
+      },
+      [
+        { id: "hardrock", label: "Hard Rock Bet" },
+        { id: "draftkings", label: "DraftKings" },
+        { id: "pinnacle", label: "Pinnacle" },
+      ],
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+
+    expect(requested).toContainEqual({
+      pk: away.partitionKey,
+      sk: "CURRENT",
+    });
+    expect(requested).toContainEqual({
+      pk: home.partitionKey,
+      sk: "CURRENT",
+    });
+    expect(requested).toHaveLength(18);
+    expect(page.items[0]?.odds).toMatchObject({
+      state: "available",
+      selections: [
+        { sportsbookId: "pinnacle", selectionKey: participantKey("bos") },
+        { sportsbookId: "pinnacle", selectionKey: participantKey("nyy") },
       ],
     });
   });

@@ -13,6 +13,7 @@ describe("sportsbook registry", () => {
     ["DK", "draftkings", "comparison"],
     ["Fan Duel", "fanduel", "comparison"],
     ["MGM", "betmgm", "comparison"],
+    ["Bet365 US", "bet365", undefined],
     ["William Hill", "caesars", "comparison"],
     ["Pinnacle Sports", "pinnacle", undefined],
     ["PINNACLE-SPORTS", "pinnacle", undefined],

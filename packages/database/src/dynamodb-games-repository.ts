@@ -14,7 +14,7 @@ export class DynamoGamesRepository extends JoinedGamesRepository {
     super(
       events,
       gateway,
-      undefined,
+      detailSportsbooks?.map(({ id }) => id),
       undefined,
       undefined,
       undefined,

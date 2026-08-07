@@ -16,6 +16,7 @@ import {
   resourceState,
   safeErrorCode,
   scanAllKeys,
+  scanFeedManifest,
   setResourceState,
   validateAwsIdentity,
   validateForcedIngestion,
@@ -494,6 +495,97 @@ test("key scan follows cursors, rejects cycles, and enforces its memory cap", as
     }),
     /key-limit/,
   );
+});
+
+test("streaming manifest is deterministic and retains only deletable keys", async () => {
+  const rows = [
+    key("RESULT#keep-two"),
+    key("EVENT#two"),
+    key(fixturePk, snapshotSk),
+    key("EVENT#one"),
+  ];
+  const scan = async (ordered) =>
+    scanFeedManifest(async (cursor) => {
+      const offset = cursor ?? 0;
+      const keys = ordered.slice(offset, offset + 2);
+      return {
+        keys,
+        ...(offset + 2 < ordered.length ? { cursor: offset + 2 } : {}),
+      };
+    });
+  const first = await scan(rows);
+  const reordered = await scan([...rows].reverse());
+  assert.equal(first.manifestVersion, 2);
+  assert.equal(first.scanned, 4);
+  assert.equal(first.deleteCount, 2);
+  assert.equal(first.preserveCount, 2);
+  assert.equal(first.digest, reordered.digest);
+  assert.equal(first.preserveDigest, reordered.preserveDigest);
+  assert.deepEqual(first.deleteKeys, [key("EVENT#one"), key("EVENT#two")]);
+  assert.equal("preservedKeys" in first, false);
+});
+
+test("streaming manifest scans beyond the legacy total-key cap with bounded retention", async () => {
+  const pageSize = 1_000;
+  const pageCount = Math.floor(RESET_MAX_MANIFEST_KEYS / pageSize) + 1;
+  const manifest = await scanFeedManifest(
+    async (cursor) => {
+      const page = cursor ?? 0;
+      const keys = Array.from({ length: pageSize }, (_, index) =>
+        key(`RESULT#keep-${page}-${index}`),
+      );
+      if (page === 0) keys[0] = key("EVENT#delete-me");
+      return {
+        keys,
+        ...(page + 1 < pageCount ? { cursor: page + 1 } : {}),
+      };
+    },
+    { maxPageKeys: pageSize },
+  );
+  assert.ok(manifest.scanned > RESET_MAX_MANIFEST_KEYS);
+  assert.equal(manifest.deleteCount, 1);
+  assert.equal(manifest.preserveCount, manifest.scanned - 1);
+  assert.deepEqual(manifest.deleteKeys, [key("EVENT#delete-me")]);
+});
+
+test("streaming manifest fails closed on an unsafe key or oversized delete set", async () => {
+  await assert.rejects(
+    scanFeedManifest(async () => ({ keys: [key("UNKNOWN#one")] })),
+    /unclassified/,
+  );
+  await assert.rejects(
+    scanFeedManifest(
+      async () => ({ keys: [key("EVENT#one"), key("EVENT#two")] }),
+      { maxDeleteKeys: 1 },
+    ),
+    /delete-key-limit/,
+  );
+});
+
+test("reset accepts a streaming plan and never mutates before it is complete", async () => {
+  const calls = [];
+  const streamed = await scanFeedManifest(async () => ({
+    keys: [key("EVENT#one"), key("RESULT#keep")],
+  }));
+  const result = await executeReset("dry-run", {
+    scan: async () => (calls.push("scan"), streamed),
+    report: async () => calls.push("report"),
+    quiesce: async () => calls.push("quiesce"),
+  });
+  assert.equal(result.manifest.manifestVersion, 2);
+  assert.deepEqual(calls, ["scan", "report"]);
+
+  calls.length = 0;
+  await assert.rejects(
+    executeReset("apply", {
+      scan: async () =>
+        scanFeedManifest(async () => ({ keys: [key("UNKNOWN#one")] })),
+      report: async () => calls.push("report"),
+      quiesce: async () => calls.push("quiesce"),
+    }),
+    /unclassified/,
+  );
+  assert.deepEqual(calls, []);
 });
 
 const ingestionSummary = () =>

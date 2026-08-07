@@ -249,7 +249,8 @@ export interface SharpApiSchedulePage {
 
 export interface SharpApiScheduleExclusion {
   readonly providerEventId: string;
-  readonly reason: "participant-out-of-scope" | "same-club-matchup";
+  readonly reason:
+    "participant-out-of-scope" | "same-club-matchup" | "catalogue-derivative";
   readonly auditId: string;
 }
 
@@ -1182,8 +1183,14 @@ export function parseSharpApiSchedulePage(
       Array.isArray(markets) &&
       !markets.includes("moneyline") &&
       !markets.includes("total_runs")
-    )
+    ) {
+      exclusions.push({
+        providerEventId: value["id"],
+        reason: "catalogue-derivative",
+        auditId: auditId(value["id"]),
+      });
       continue;
+    }
     if (awayTeam === homeTeam) {
       exclusions.push({
         providerEventId: value["id"],
