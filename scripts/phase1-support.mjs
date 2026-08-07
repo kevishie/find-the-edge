@@ -726,7 +726,7 @@ export function validateTemplate(template, config) {
   );
   const liveRules = entriesOfType(template, "AWS::Events::Rule").filter(
     ([, value]) =>
-      value.Properties?.ScheduleExpression === "rate(15 minutes)" &&
+      value.Properties?.ScheduleExpression === "rate(5 minutes)" &&
       value.Properties?.State === "ENABLED" &&
       value.Properties?.Targets?.some((target) =>
         [...liveQueueIds].some((queueId) =>
@@ -736,7 +736,7 @@ export function validateTemplate(template, config) {
   );
   if (liveRules.length !== 1)
     throw new Error(
-      "Live odds ingestion must have one enabled 15-minute rule feeding its control-plane queue",
+      "Live odds ingestion must have one enabled 5-minute rule feeding its control-plane queue",
     );
   if (
     !Array.isArray(apiOutput?.["Fn::Join"]) ||
