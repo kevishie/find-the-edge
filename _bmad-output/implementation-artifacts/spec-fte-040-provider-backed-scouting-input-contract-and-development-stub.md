@@ -2,8 +2,9 @@
 title: 'FTE-040: Provider-Backed Scouting Input Contract and Development Stub'
 type: 'feature'
 created: '2026-08-07'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'c6505781d085662a21ff7f945f083f60118ccd00'
+final_revision: '3c3968c99d5046fcada8de6801111b2ad2cfb74a'
 review_loop_iteration: 1
 followup_review_recommended: true
 context:
