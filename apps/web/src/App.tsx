@@ -1622,8 +1622,8 @@ function SplitsExplorer() {
         <strong>Consensus is context—not a pick.</strong>
         <span>
           SharpAPI combines its public-betting data into one consensus view.
-          Compare bet percentage with handle percentage to spot imbalances,
-          then confirm the signal with line movement and price value.
+          Compare bet percentage with handle percentage to spot imbalances, then
+          confirm the signal with line movement and price value.
         </span>
       </aside>
       <section
@@ -1715,8 +1715,8 @@ function SplitsExplorer() {
               <div>
                 <strong>How to read this</strong>
                 <span>
-                  Fill is handle (money). The white notch is bets (tickets).
-                  The gap shows which one is leading.
+                  Fill is handle (money). The white notch is bets (tickets). The
+                  gap shows which one is leading.
                 </span>
               </div>
               <div className="split-bar-legend">
