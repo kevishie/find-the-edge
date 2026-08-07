@@ -2,8 +2,9 @@
 title: 'FTE-039: Soccer Enrichment Provider Evaluation'
 type: 'chore'
 created: '2026-08-07'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'd24f7f962c319dcf1860abd761a03bafa5767928'
+final_revision: '332c0b3aa3d56a2220b727e8bd5723990970ed65'
 review_loop_iteration: 3
 followup_review_recommended: false
 context:
@@ -105,3 +106,23 @@ The staged decision prevents a false binary between a cheap self-service API and
 **Manual checks:**
 - Every scorecard row and decisive claim links to a current official provider page or is labeled unknown; all research checklist items are answered.
 - The ADR contains no credentials, provider payloads, confidential commercial terms, unsupported legal conclusions, or production-adapter implementation.
+
+## Auto Run Result
+
+### Summary
+
+Completed the four-provider soccer-enrichment evaluation and accepted a staged architecture: Sportmonks is the provisional non-production trial candidate, Sportradar is the premium fallback evaluation path, Stats Perform/Opta remains an analytics-depth option, and API-Football is rejected for production. SharpAPI remains the sole schedule and odds authority, and production enrichment remains disabled.
+
+### Review Findings
+
+- Three review passes processed 44 unique findings: 42 patched, 2 rejected, 0 deferred.
+- The final pass found no unresolved high or medium issue after aligning mandatory capabilities, reproducible samples, correction counts, privacy/licensing controls, and provider-exit behavior.
+- Follow-up review recommendation: false.
+
+### Verification
+
+Prettier, tracked and staged patch hygiene, evidence/secret scans, source-link review, and accepted-ADR consistency checks passed. No runtime code or production infrastructure changed in this spike.
+
+### Residual Risk
+
+No subscription, credential, adapter, trial, or production activation has been authorized. Exact four-competition entitlements, premium expected-lineup access, reproducible source retention, betting-support rights, privacy basis, support/SLA, price, and field-level quality must still be proven through written terms and the bounded field trial before production.

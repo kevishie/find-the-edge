@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-039
+nextReadyStory: FTE-040
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -709,7 +709,7 @@ stories:
   - id: FTE-039
     title: Spike - Soccer Enrichment Provider Evaluation
     epic: Manual scouting workflow
-    status: in-progress
+    status: done
     dependencies: [FTE-019]
     risk: High
     approvalRequiredBeforeMerge: true
