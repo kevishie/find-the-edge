@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { IsoTimestamp, SportKey } from "@find-the-edge/domain";
 import {
+  DynamoBettingSplitRepository,
   MemoryBettingSplitRepository,
   normalizeBettingSplitObservation,
 } from "./betting-split-repository";
@@ -83,6 +84,42 @@ describe("betting split evidence", () => {
         split({ id: legacyId, americanOdds: 145 }),
       ),
     ).toThrow("betting-split-id-invalid");
+  });
+  it("replays identical Dynamo evidence regardless of map key order", async () => {
+    let stored: Record<string, unknown> | undefined;
+    const client = {
+      send(command: {
+        constructor: { name: string };
+        input: Record<string, unknown>;
+      }) {
+        if (command.constructor.name === "PutCommand") {
+          const item = command.input["Item"] as Record<string, unknown>;
+          if (String(item["sk"]).startsWith("HISTORY#")) {
+            if (!stored) {
+              stored = item;
+              return Promise.resolve({});
+            }
+            const error = new Error("conditional");
+            error.name = "ConditionalCheckFailedException";
+            return Promise.reject(error);
+          }
+          return Promise.resolve({});
+        }
+        if (command.constructor.name === "GetCommand") {
+          const value = stored?.["value"] as Record<string, unknown>;
+          return Promise.resolve({
+            Item: {
+              ...stored,
+              value: Object.fromEntries(Object.entries(value).reverse()),
+            },
+          });
+        }
+        throw new Error(command.constructor.name);
+      },
+    };
+    const repository = new DynamoBettingSplitRepository(client as never, "t");
+    expect((await repository.persist(split())).history).toBe("inserted");
+    expect((await repository.persist(split())).history).toBe("duplicate");
   });
   it("returns the freshest logical splits across harmless event version bumps", async () => {
     const repository = new MemoryBettingSplitRepository();

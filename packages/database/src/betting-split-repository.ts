@@ -186,11 +186,26 @@ const latestLogicalCurrent = (
     logicalCurrentKey(left).localeCompare(logicalCurrentKey(right)),
   );
 };
-const replayValue = (value: BettingSplitObservation) => {
-  const { retrievedAt, ...stable } = value;
-  void retrievedAt;
-  return JSON.stringify(stable);
-};
+const replayValue = (value: BettingSplitObservation) =>
+  JSON.stringify([
+    value.id,
+    value.providerId,
+    value.providerEventId,
+    value.canonicalEventId,
+    value.canonicalEventVersion,
+    value.sportKey,
+    value.leagueKey,
+    value.marketKey,
+    value.selectionKey,
+    value.point ?? null,
+    value.americanOdds ?? null,
+    value.betPercent ?? null,
+    value.moneyPercent ?? null,
+    value.betCount ?? null,
+    value.moneyAmount ?? null,
+    value.providerTimestamp,
+    value.scope ?? null,
+  ]);
 
 export class MemoryBettingSplitRepository implements BettingSplitRepository {
   readonly #history = new Map<string, BettingSplitObservation>();
