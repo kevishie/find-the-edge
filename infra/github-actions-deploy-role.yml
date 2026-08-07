@@ -46,6 +46,7 @@ Resources:
                   - sns:*
                   - sqs:*
                   - states:*
+                  - sts:AssumeRole
                   - sts:GetCallerIdentity
                 Resource: "*"
       Tags:
@@ -92,6 +93,7 @@ Resources:
                   - sns:*
                   - sqs:*
                   - states:*
+                  - sts:AssumeRole
                   - sts:GetCallerIdentity
                 Resource: "*"
       Tags:

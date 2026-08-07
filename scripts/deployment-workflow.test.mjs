@@ -46,7 +46,7 @@ test("OIDC bootstrap has isolated environment subjects and no administrator poli
   assert.doesNotMatch(template, /pull_request|environment:\*/);
 });
 
-test("promotion runbook records DNS, approval, rollback, and legacy-dev boundaries", async () => {
+test("promotion runbook records automatic branch deployments, DNS, rollback, and legacy-dev boundaries", async () => {
   const runbook = await read("docs/environment-promotion.md");
   for (const required of [
     "staging.kevishie.com",
@@ -55,7 +55,7 @@ test("promotion runbook records DNS, approval, rollback, and legacy-dev boundari
     "api.kevishie.com",
     "ns-cloud-d1.googledomains.com",
     "173.230.142.141",
-    "Required reviewer",
+    "automatically deploys",
     "hotfix",
     "rollback",
     "FindTheEdge-dev-Foundation",
@@ -65,4 +65,5 @@ test("promotion runbook records DNS, approval, rollback, and legacy-dev boundari
       runbook.includes(required),
       `missing runbook contract: ${required}`,
     );
+  assert.doesNotMatch(runbook, /Required reviewer|manual production-dispatch/i);
 });

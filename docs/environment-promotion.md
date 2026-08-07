@@ -49,7 +49,7 @@ Create GitHub Environments named `staging` and `production`.
 
 - Restrict `staging` deployments to the `main` branch.
 - Restrict `production` deployments to the `production` branch.
-- Add a Required reviewer to `production` and disable administrator bypass where the repository plan supports it. If reviewer protection is unavailable, disable automatic production deployment and use a reviewed `workflow_dispatch` from `production`.
+- A successful quality run on `main` automatically deploys staging. A successful quality run on `production` automatically deploys production. No additional GitHub Environment reviewer gate is required for this two-engineer repository.
 - Configure these variables separately in each Environment:
   - `AWS_DEPLOY_ROLE_ARN`
   - `WEB_CERTIFICATE_ARN`
@@ -80,14 +80,14 @@ The templates must emit `WebDnsTarget`, `ApiDnsTarget`, `ApiDnsHostedZoneId`, `D
 4. Publish the staging DNS targets only after certificates are issued. Verify DNS through at least two public resolvers, then rerun smoke against both staging hostnames.
 5. Record the Git SHA, workflow run, CloudFormation stack ID, DNS answers, certificate status, smoke result, and alarm state.
 
-Do not request production approval until staging proves the exact custom web/API origins, TLS, CORS, CSP, authentication callback, direct-S3 denial, representative data reads, stage marker, and release SHA.
+Do not promote a revision to `production` until staging proves the exact custom web/API origins, TLS, CORS, CSP, authentication callback, direct-S3 denial, representative data reads, stage marker, and release SHA.
 
 ## Production promotion and cutover
 
 1. Open a pull request from `main` to `production`; do not cherry-pick an unproven substitute revision.
-2. After required checks and review, merge. The production GitHub Environment approval must occur before its variables, secret, or OIDC identity are available.
+2. After required checks, merge. The successful quality run automatically enters the production GitHub Environment and deploys the exact verified `production` SHA.
 3. Deploy `FindTheEdge-prod-Foundation` and verify its generated targets without moving the apex.
-4. Obtain explicit human approval for the captured DNS change. Preserve all unrelated MX, TXT, CAA, verification, and subdomain records.
+4. For the initial DNS cutover, preserve all unrelated MX, TXT, CAA, verification, and subdomain records and retain the captured rollback values.
 5. Point `api.kevishie.com` to the API Gateway custom domain and `kevishie.com` to the production CloudFront distribution using Route 53 aliases or the current provider's supported equivalent.
 6. Confirm authoritative and recursive answers from multiple resolvers, then run production smoke and record provenance.
 
