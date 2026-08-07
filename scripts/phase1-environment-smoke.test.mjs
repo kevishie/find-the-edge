@@ -19,7 +19,45 @@ import {
   stackResourceListingArguments,
   validateEnvironment,
   validateWrongScopeToken,
+  waitForSplitsEvidence,
 } from "./phase1-environment-smoke.mjs";
+
+test("splits release waits for fresh book-scoped evidence", async () => {
+  let calls = 0;
+  let delays = 0;
+  const result = await waitForSplitsEvidence("https://api.example.com/dev", {
+    attempts: 3,
+    delayMs: 1,
+    smoke: async ({ apiBase, maxAgeMinutes, timeoutMs }) => {
+      calls += 1;
+      assert.equal(apiBase, "https://api.example.com/dev");
+      assert.equal(maxAgeMinutes, 15);
+      assert.equal(timeoutMs, 15_000);
+      if (calls < 3) throw new Error("splits-evidence-stale");
+      return { mode: "book-scoped" };
+    },
+    delay: async () => {
+      delays += 1;
+    },
+  });
+  assert.deepEqual(result, { mode: "book-scoped" });
+  assert.equal(calls, 3);
+  assert.equal(delays, 2);
+});
+
+test("splits release fails closed after its bounded wait", async () => {
+  await assert.rejects(
+    waitForSplitsEvidence("https://api.example.com/dev", {
+      attempts: 2,
+      delayMs: 1,
+      smoke: async () => {
+        throw new Error("splits-required-scopes-missing");
+      },
+      delay: async () => {},
+    }),
+    /live splits did not become ready \(splits-required-scopes-missing\)/,
+  );
+});
 
 test("bounds Lambda invocation failures to safe machine codes", () => {
   assert.equal(

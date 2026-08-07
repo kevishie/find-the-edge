@@ -3,6 +3,7 @@ import { createPublicKey, verify } from "node:crypto";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { run } from "./phase1-support.mjs";
+import { runSplitsLiveSmoke } from "./splits-live-smoke.mjs";
 import { deploymentEnvironment } from "./environment-contract.mjs";
 
 const REQUIRED = [
@@ -638,6 +639,34 @@ export function assertHostedIndexHeaders(headers, environment) {
       throw new Error(`Hosted index has invalid ${name}`);
 }
 
+export async function waitForSplitsEvidence(
+  apiBase,
+  {
+    attempts = 19,
+    delayMs = 30_000,
+    smoke = runSplitsLiveSmoke,
+    delay = (milliseconds) =>
+      new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+  } = {},
+) {
+  let lastFailure;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await smoke({
+        apiBase,
+        maxAgeMinutes: 15,
+        timeoutMs: 15_000,
+      });
+    } catch (error) {
+      lastFailure = error;
+      if (attempt < attempts) await delay(delayMs);
+    }
+  }
+  const reason =
+    lastFailure instanceof Error ? lastFailure.message : "unknown-error";
+  throw new Error(`live splits did not become ready (${reason})`);
+}
+
 export async function phase1EnvironmentSmoke(environment = process.env) {
   if (environment.FTE_PHASE1_SMOKE !== "1")
     return {
@@ -697,104 +726,119 @@ export async function phase1EnvironmentSmoke(environment = process.env) {
       throw new Error(
         "Hosted hashed asset cache/compression policy is invalid",
       );
-    // Production provider health uses a 15-minute cooldown. The deployment
-    // proof must be able to outlive that exact window without bypassing it or
-    // issuing overlapping paid requests.
-    const recoveryAttempts = 31;
-    const recoveryDelayMs = 30_000;
-    const recoveryDeadline = Date.now() + 17 * 60_000;
-    let ingestionDiagnostic = "summary-unavailable";
-    for (let invocation = 1; invocation <= recoveryAttempts; invocation += 1) {
-      const mutationIdentity = JSON.parse(
-        run("aws", ["sts", "get-caller-identity", "--output", "json"], {
-          capture: true,
-          env: environment,
-        }),
-      );
-      if (
-        mutationIdentity.Account !== environment.AWS_ACCOUNT_ID ||
-        environment.AWS_REGION !== "us-east-1"
-      )
-        throw new Error("AWS identity guard rejected the seed mutation");
-      const stackResourceSummaries = JSON.parse(
-        run(
-          "aws",
-          stackResourceListingArguments(
-            environment.FTE_PHASE1_STACK_ID,
-            environment.AWS_REGION,
-          ),
-          { capture: true, env: environment },
-        ),
-      ).StackResourceSummaries;
-      const liveIngestionLogicalId = resolveLiveIngestionLogicalResourceId(
-        stackResourceSummaries,
-        environment,
-      );
-      const stackResourceDetail = JSON.parse(
-        run(
-          "aws",
-          stackResourceDetailArguments(
-            environment.FTE_PHASE1_STACK_ID,
-            liveIngestionLogicalId,
-            environment.AWS_REGION,
-          ),
-          { capture: true, env: environment },
-        ),
-      ).StackResourceDetail;
-      assertLiveIngestionResourceBinding(
-        stackResourceDetail === undefined ? [] : [stackResourceDetail],
-        environment,
-      );
-      const responseFile = resolve(
-        temporary,
-        `seed-response-${String(invocation)}.json`,
-      );
-      const invocationResult = JSON.parse(
-        run(
-          "aws",
-          liveOddsInvocationArguments(
-            environment.FTE_LIVE_ODDS_FUNCTION_NAME,
-            environment.AWS_REGION,
-            responseFile,
-          ),
-          { capture: true, env: environment },
-        ),
-      );
-      const responsePayload = JSON.parse(await readFile(responseFile, "utf8"));
-      if (invocationResult.StatusCode !== 200 || invocationResult.FunctionError)
-        throw new Error(
-          `live ingestion Lambda invocation failed:${boundedLiveIngestionInvocationFailure(responsePayload)}`,
+    const splitsRelease = environment.FTE_SPLITS_RELEASE === "1";
+    let ingestionDiagnostic = splitsRelease
+      ? "splits-release"
+      : "summary-unavailable";
+    if (!splitsRelease) {
+      // Production provider health uses a 15-minute cooldown. The deployment
+      // proof must be able to outlive that exact window without bypassing it or
+      // issuing overlapping paid requests.
+      const recoveryAttempts = 31;
+      const recoveryDelayMs = 30_000;
+      const recoveryDeadline = Date.now() + 17 * 60_000;
+      for (
+        let invocation = 1;
+        invocation <= recoveryAttempts;
+        invocation += 1
+      ) {
+        const mutationIdentity = JSON.parse(
+          run("aws", ["sts", "get-caller-identity", "--output", "json"], {
+            capture: true,
+            env: environment,
+          }),
         );
-      const summary = responsePayload;
-      ingestionDiagnostic = boundedLiveIngestionDiagnostic(summary);
-      try {
-        assertLiveIngestionSummary(summary);
-        const recoveryAction = liveIngestionRecoveryAction({
-          summary,
-          invocation,
-          recoveryAttempts,
-          now: Date.now(),
-          recoveryDeadline,
-          recoveryDelayMs,
-        });
-        if (recoveryAction === "complete") break;
-        if (recoveryAction === "exhausted")
-          throw new Error(
-            `live ingestion remained in provider recovery (${ingestionDiagnostic})`,
-          );
-      } catch (error) {
         if (
-          invocation === recoveryAttempts ||
-          Date.now() + recoveryDelayMs > recoveryDeadline ||
-          !isTransientLiveIngestionSummary(summary)
+          mutationIdentity.Account !== environment.AWS_ACCOUNT_ID ||
+          environment.AWS_REGION !== "us-east-1"
         )
-          throw error;
+          throw new Error("AWS identity guard rejected the seed mutation");
+        const stackResourceSummaries = JSON.parse(
+          run(
+            "aws",
+            stackResourceListingArguments(
+              environment.FTE_PHASE1_STACK_ID,
+              environment.AWS_REGION,
+            ),
+            { capture: true, env: environment },
+          ),
+        ).StackResourceSummaries;
+        const liveIngestionLogicalId = resolveLiveIngestionLogicalResourceId(
+          stackResourceSummaries,
+          environment,
+        );
+        const stackResourceDetail = JSON.parse(
+          run(
+            "aws",
+            stackResourceDetailArguments(
+              environment.FTE_PHASE1_STACK_ID,
+              liveIngestionLogicalId,
+              environment.AWS_REGION,
+            ),
+            { capture: true, env: environment },
+          ),
+        ).StackResourceDetail;
+        assertLiveIngestionResourceBinding(
+          stackResourceDetail === undefined ? [] : [stackResourceDetail],
+          environment,
+        );
+        const responseFile = resolve(
+          temporary,
+          `seed-response-${String(invocation)}.json`,
+        );
+        const invocationResult = JSON.parse(
+          run(
+            "aws",
+            liveOddsInvocationArguments(
+              environment.FTE_LIVE_ODDS_FUNCTION_NAME,
+              environment.AWS_REGION,
+              responseFile,
+            ),
+            { capture: true, env: environment },
+          ),
+        );
+        const responsePayload = JSON.parse(
+          await readFile(responseFile, "utf8"),
+        );
+        if (
+          invocationResult.StatusCode !== 200 ||
+          invocationResult.FunctionError
+        )
+          throw new Error(
+            `live ingestion Lambda invocation failed:${boundedLiveIngestionInvocationFailure(responsePayload)}`,
+          );
+        const summary = responsePayload;
+        ingestionDiagnostic = boundedLiveIngestionDiagnostic(summary);
+        try {
+          assertLiveIngestionSummary(summary);
+          const recoveryAction = liveIngestionRecoveryAction({
+            summary,
+            invocation,
+            recoveryAttempts,
+            now: Date.now(),
+            recoveryDeadline,
+            recoveryDelayMs,
+          });
+          if (recoveryAction === "complete") break;
+          if (recoveryAction === "exhausted")
+            throw new Error(
+              `live ingestion remained in provider recovery (${ingestionDiagnostic})`,
+            );
+        } catch (error) {
+          if (
+            invocation === recoveryAttempts ||
+            Date.now() + recoveryDelayMs > recoveryDeadline ||
+            !isTransientLiveIngestionSummary(summary)
+          )
+            throw error;
+        }
+        await new Promise((resolveDelay) =>
+          setTimeout(resolveDelay, recoveryDelayMs),
+        );
       }
-      await new Promise((resolveDelay) =>
-        setTimeout(resolveDelay, recoveryDelayMs),
-      );
     }
     const apiBase = environment.FTE_PHASE1_API_BASE.replace(/\/$/, "");
+    if (splitsRelease) await waitForSplitsEvidence(apiBase);
     let liveGames = 0;
     let fullMarketGames = 0;
     for (const sport of ["mlb", "soccer"]) {

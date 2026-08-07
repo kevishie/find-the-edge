@@ -117,5 +117,6 @@ jobs:
           FTE_EVENT_CURSOR_SECRET_ARN: ${{ vars.EVENT_CURSOR_SECRET_ARN }}
           FTE_PHASE1_LAUNCH: "1"
           FTE_RELEASE_SHA: ${{ needs.target.outputs.sha }}
+          FTE_SPLITS_RELEASE: "1"
           FTE_WEB_CERTIFICATE_ARN: ${{ vars.WEB_CERTIFICATE_ARN }}
         run: pnpm phase1:launch
