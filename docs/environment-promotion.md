@@ -1,0 +1,100 @@
+# Environment promotion and custom-domain runbook
+
+This runbook prepares and operates two isolated persistent environments:
+
+| Mainline     | AWS stage | GitHub Environment | Web                            | API                                |
+| ------------ | --------- | ------------------ | ------------------------------ | ---------------------------------- |
+| `main`       | `staging` | `staging`          | `https://staging.kevishie.com` | `https://api-staging.kevishie.com` |
+| `production` | `prod`    | `production`       | `https://kevishie.com`         | `https://api.kevishie.com`         |
+
+Feature branches merge into `main`. After the exact deployed staging SHA passes live smoke, promote it with a pull request from `main` to `production`. A production hotfix must be merged back into `main` immediately so the mainlines do not diverge.
+
+## Safety boundary and current DNS observation
+
+As observed on 2026-08-07, `kevishie.com` used `ns-cloud-d1.googledomains.com` through `ns-cloud-d4.googledomains.com`, and its apex resolved to `173.230.142.141`. These are observations, not deployment constants. Re-query and export the complete zone immediately before certificate validation or traffic changes.
+
+```sh
+dig +noall +answer NS kevishie.com
+dig +noall +answer A kevishie.com
+dig +noall +answer AAAA kevishie.com
+dig +noall +answer MX kevishie.com
+dig +noall +answer TXT kevishie.com
+dig +noall +answer CAA kevishie.com
+```
+
+Capture every record, TTL, registrar name server, and prior target in an approved change record. Lower relevant TTLs ahead of the cutover where the current provider allows it. Do not change registrar delegation, authoritative name servers, or the apex from CI.
+
+The preferred steady state is an authoritative Route 53 public hosted zone with alias `A` and `AAAA` records to CloudFront and API Gateway. If DNS remains external, add the exact ACM validation CNAMEs and endpoint records printed by AWS. Never publish a CNAME at the zone apex unless the authoritative provider explicitly implements a safe apex-alias feature.
+
+## Legacy development inventory
+
+`FindTheEdge-dev-Foundation` contains retained DynamoDB, Cognito, S3, and CloudWatch Logs resources plus its existing Lambda, API Gateway, CloudFront, queue, workflow, alarm, and scheduler resources. It also references `find-the-edge/dev/*` secrets. The new stages create new `FindTheEdge-staging-Foundation` and `FindTheEdge-prod-Foundation` stacks and distinct secret prefixes.
+
+Do not delete, rename, import, empty, or repurpose the legacy stack or its retained resources in this rollout. Data migration and legacy-dev disposition require a separate reviewed plan after both new environments are proven.
+
+## One-time AWS preparation
+
+1. Confirm the active identity is account `228246988391` in `us-east-1`.
+2. Bootstrap CDK in that account/region if it is not already bootstrapped.
+3. Request or import certificates:
+   - CloudFront certificate in `us-east-1`, covering the environment's exact web hostname.
+   - Regional API Gateway certificate in `us-east-1`, covering the environment's exact API hostname.
+4. Add ACM validation records to the current authoritative DNS and wait for both certificates to reach `ISSUED`. Do not point application traffic yet.
+5. Deploy `infra/github-actions-deploy-role.yml`. It creates separate OIDC roles for the GitHub `staging` and `production` Environment subjects and does not use static AWS keys or `AdministratorAccess`.
+6. Review the role policy before production. It is service-scoped but retains `Resource: "*"` for CDK resource creation; further resource-level reduction is a security-hardening follow-up where AWS APIs permit predictable ARNs.
+
+## One-time GitHub preparation
+
+Create GitHub Environments named `staging` and `production`.
+
+- Restrict `staging` deployments to the `main` branch.
+- Restrict `production` deployments to the `production` branch.
+- Add a Required reviewer to `production` and disable administrator bypass where the repository plan supports it. If reviewer protection is unavailable, disable automatic production deployment and use a reviewed `workflow_dispatch` from `production`.
+- Configure these variables separately in each Environment:
+  - `AWS_DEPLOY_ROLE_ARN`
+  - `WEB_CERTIFICATE_ARN`
+  - `API_CERTIFICATE_ARN`
+  - `EVENT_CURSOR_SECRET_ARN`
+- Configure `SHARP_API_KEY` as an Environment secret. Never use one environment's secret or cursor ARN in the other.
+
+Protect both `main` and `production`: require pull requests and the Quality gates checks, disable force pushes and branch deletion, and dismiss stale approvals when the head changes. Repository settings are external control-plane state and must be verified in GitHub after configuration.
+
+## Credential-free verification
+
+Run both synth/preflight paths before requesting cloud credentials:
+
+```sh
+FTE_AWS_STAGE=staging pnpm phase1:preflight
+FTE_AWS_STAGE=prod pnpm phase1:preflight
+pnpm phase1:test
+pnpm check
+```
+
+The templates must emit `WebDnsTarget`, `ApiDnsTarget`, `ApiDnsHostedZoneId`, `DeploymentStage`, and `ReleaseSha`, use `find-the-edge/<stage>/*` secrets, and contain no cross-environment domain or identifier.
+
+## Staging rollout
+
+1. Confirm `main` contains the intended reviewed baseline and enable its staging-mainline branch protection.
+2. Merge the implementation through a pull request. Quality gates must pass for the exact head SHA.
+3. The deployment workflow enters only the GitHub `staging` Environment, assumes only the staging OIDC role, deploys `FindTheEdge-staging-Foundation`, uploads the versioned web bundle, awaits invalidation, and runs live smoke.
+4. Publish the staging DNS targets only after certificates are issued. Verify DNS through at least two public resolvers, then rerun smoke against both staging hostnames.
+5. Record the Git SHA, workflow run, CloudFormation stack ID, DNS answers, certificate status, smoke result, and alarm state.
+
+Do not request production approval until staging proves the exact custom web/API origins, TLS, CORS, CSP, authentication callback, direct-S3 denial, representative data reads, stage marker, and release SHA.
+
+## Production promotion and cutover
+
+1. Open a pull request from `main` to `production`; do not cherry-pick an unproven substitute revision.
+2. After required checks and review, merge. The production GitHub Environment approval must occur before its variables, secret, or OIDC identity are available.
+3. Deploy `FindTheEdge-prod-Foundation` and verify its generated targets without moving the apex.
+4. Obtain explicit human approval for the captured DNS change. Preserve all unrelated MX, TXT, CAA, verification, and subdomain records.
+5. Point `api.kevishie.com` to the API Gateway custom domain and `kevishie.com` to the production CloudFront distribution using Route 53 aliases or the current provider's supported equivalent.
+6. Confirm authoritative and recursive answers from multiple resolvers, then run production smoke and record provenance.
+
+## Rollback
+
+Application rollback restores the prior versioned S3 release, waits for CloudFront invalidation, and leaves retained data untouched. Infrastructure rollback uses a reviewed CDK/CloudFormation change and must pass the retained-resource guard.
+
+DNS rollback restores the captured prior apex and API records with their prior values and TTLs. If authoritative name servers were migrated, restore the prior registrar delegation only from the approved snapshot and confirm all unrelated records still resolve. A failed production smoke is not permission to delete DynamoDB, Cognito, S3, logs, secrets, queues, or immutable odds history.
+
+After rollback, disable spend-producing schedules if needed, preserve evidence, link the failed Git SHA and workflow, and reconcile any production hotfix or rollback commit back into `main` before further promotion.

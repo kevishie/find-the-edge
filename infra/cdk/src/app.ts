@@ -1,4 +1,5 @@
 import { createFoundationApp } from "./foundation.js";
+import { resolveEnvironment } from "./environments.js";
 
 const launchAccount = "228246988391";
 const launchRegion = "us-east-1";
@@ -14,6 +15,9 @@ if (
   throw new Error(`CDK_DEFAULT_REGION must be ${launchRegion}`);
 
 const stage = process.env["FTE_AWS_STAGE"] ?? "local";
+const deploymentEnvironment = resolveEnvironment(stage, {
+  allowLegacyDev: process.env["FTE_ALLOW_LEGACY_DEV"] === "1",
+});
 const rawSchedulerEnabled = process.env["FTE_UPCOMING_SCHEDULER_ENABLED"];
 const rawFixtureOddsSeedEnabled = process.env["FTE_FIXTURE_ODDS_SEED_ENABLED"];
 const rawPaperPickSchedulerEnabled =
@@ -52,6 +56,17 @@ if (
   );
 const { app } = createFoundationApp({
   stage,
+  ...(process.env["FTE_RELEASE_SHA"]
+    ? { releaseSha: process.env["FTE_RELEASE_SHA"] }
+    : {}),
+  ...(deploymentEnvironment.webDomainName
+    ? {
+        webDomainName: deploymentEnvironment.webDomainName,
+        apiDomainName: deploymentEnvironment.apiDomainName!,
+        webCertificateArn: process.env["FTE_WEB_CERTIFICATE_ARN"] ?? "",
+        apiCertificateArn: process.env["FTE_API_CERTIFICATE_ARN"] ?? "",
+      }
+    : {}),
   schedulerEnabled: rawSchedulerEnabled === "true",
   fixtureOddsSeedEnabled: rawFixtureOddsSeedEnabled === "true",
   paperPickSchedulerEnabled: rawPaperPickSchedulerEnabled === "true",

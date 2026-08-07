@@ -14,7 +14,9 @@ import {
   projectRoot,
   run,
   safeDevConfig,
+  safeDeploymentConfig,
   validateSafeDevConfig,
+  validateSafeDeploymentConfig,
 } from "./phase1-support.mjs";
 
 export async function assertSafeBundleOutput(root, output) {
@@ -66,8 +68,14 @@ export function assertRuntimeScriptOrder(html) {
 }
 
 export async function buildPhase1Web(environment = process.env) {
-  const config = safeDevConfig(environment);
-  validateSafeDevConfig(config);
+  const deploymentStage = environment.FTE_AWS_STAGE;
+  const config =
+    deploymentStage === "staging" || deploymentStage === "prod"
+      ? safeDeploymentConfig(environment)
+      : safeDevConfig(environment);
+  if (deploymentStage === "staging" || deploymentStage === "prod")
+    validateSafeDeploymentConfig(config);
+  else validateSafeDevConfig(config);
   const output = resolve(projectRoot, "dist/phase1-web");
   const build = resolve(projectRoot, "apps/web/dist");
   await assertSafeBundleOutput(projectRoot, output);
@@ -94,7 +102,7 @@ export async function buildPhase1Web(environment = process.env) {
   const digestMap = await checksums(output, new Set(["phase1-manifest.json"]));
   const manifest = {
     schemaVersion: 1,
-    stage: "dev",
+    stage: config.stage,
     apiBase: config.apiBase,
     algorithm: "sha256",
     files: digestMap,

@@ -3,14 +3,14 @@ import { resolve } from "node:path";
 import {
   projectRoot,
   run,
-  safeDevConfig,
-  validateSafeDevConfig,
+  safeDeploymentConfig,
+  validateSafeDeploymentConfig,
   validateTemplate,
 } from "./phase1-support.mjs";
 
 export async function phase1Preflight(environment = process.env) {
-  const config = safeDevConfig(environment);
-  validateSafeDevConfig(config);
+  const config = safeDeploymentConfig(environment);
+  const target = validateSafeDeploymentConfig(config);
   const [major, minor] = process.versions.node.split(".").map(Number);
   if (major < 20 || (major === 20 && minor < 19))
     throw new Error("Node 20.19 or newer is required");
@@ -31,6 +31,8 @@ export async function phase1Preflight(environment = process.env) {
     FTE_JWT_ISSUER: config.issuer,
     FTE_JWT_AUDIENCE: config.audience,
     FTE_EVENT_CURSOR_SECRET_ARN: config.cursorSecretArn,
+    FTE_WEB_CERTIFICATE_ARN: config.webCertificateArn,
+    FTE_API_CERTIFICATE_ARN: config.apiCertificateArn,
     FTE_WEB_ORIGIN: config.webOrigin,
     FTE_FIXTURE_ODDS_SEED_ENABLED: "false",
     FTE_UPCOMING_SCHEDULER_ENABLED: "true",
@@ -42,7 +44,7 @@ export async function phase1Preflight(environment = process.env) {
   });
   const templatePath = resolve(
     projectRoot,
-    "infra/cdk/cdk.out/FindTheEdge-dev-Foundation.template.json",
+    `infra/cdk/cdk.out/${target.stack}.template.json`,
   );
   const template = JSON.parse(await readFile(templatePath, "utf8"));
   validateTemplate(template, config);

@@ -12,6 +12,92 @@ const eventConfig = {
 };
 
 describe("foundation CDK app", () => {
+  it.each(["staging", "prod"])(
+    "scopes %s secrets and release provenance",
+    (stage) => {
+      const { stack } = createFoundationApp({
+        stage,
+        releaseSha: "0123456789abcdef0123456789abcdef01234567",
+        ...eventConfig,
+      });
+      const template = Template.fromStack(stack);
+      template.hasOutput("DeploymentStage", { Value: stage });
+      template.hasOutput("ReleaseSha", {
+        Value: "0123456789abcdef0123456789abcdef01234567",
+      });
+      template.hasOutput("SharpApiSecretName", {
+        Value: `find-the-edge/${stage}/sharpapi`,
+      });
+    },
+  );
+
+  it.each([
+    ["staging", "staging.kevishie.com", "api-staging.kevishie.com"],
+    ["prod", "kevishie.com", "api.kevishie.com"],
+  ])("binds %s to exact custom web and API domains", (stage, web, api) => {
+    const { stack } = createFoundationApp({
+      stage,
+      webDomainName: web,
+      apiDomainName: api,
+      webCertificateArn:
+        "arn:aws:acm:us-east-1:123456789012:certificate/11111111-1111-4111-8111-111111111111",
+      apiCertificateArn:
+        "arn:aws:acm:us-east-1:123456789012:certificate/22222222-2222-4222-8222-222222222222",
+      account: "123456789012",
+      region: "us-east-1",
+      ...eventConfig,
+    });
+    const template = Template.fromStack(stack);
+    template.hasResourceProperties("AWS::CloudFront::Distribution", {
+      DistributionConfig: Match.objectLike({ Aliases: [web] }),
+    });
+    template.hasResourceProperties("AWS::ApiGatewayV2::DomainName", {
+      DomainName: api,
+      DomainNameConfigurations: [
+        Match.objectLike({
+          EndpointType: "REGIONAL",
+          SecurityPolicy: "TLS_1_2",
+        }),
+      ],
+    });
+    template.resourceCountIs("AWS::ApiGatewayV2::ApiMapping", 1);
+    template.hasOutput("WebOrigin", { Value: `https://${web}` });
+    template.hasOutput("EventsApiEndpoint", { Value: `https://${api}` });
+    template.hasOutput("ApiDnsTarget", {});
+    template.hasOutput("ApiDnsHostedZoneId", {});
+    template.hasOutput("WebDnsTarget", {});
+  });
+
+  it("rejects partial, unsafe, or cross-region custom-domain configuration", () => {
+    const base = { stage: "staging", ...eventConfig };
+    expect(() =>
+      createFoundationApp({ ...base, webDomainName: "staging.kevishie.com" }),
+    ).toThrow(/custom domain/i);
+    expect(() =>
+      createFoundationApp({
+        ...base,
+        webDomainName: "https://staging.kevishie.com",
+        apiDomainName: "api-staging.kevishie.com",
+        webCertificateArn:
+          "arn:aws:acm:us-east-1:123456789012:certificate/11111111-1111-4111-8111-111111111111",
+        apiCertificateArn:
+          "arn:aws:acm:us-east-1:123456789012:certificate/22222222-2222-4222-8222-222222222222",
+      }),
+    ).toThrow(/domain/i);
+    expect(() =>
+      createFoundationApp({
+        ...base,
+        webDomainName: "staging.kevishie.com",
+        apiDomainName: "api-staging.kevishie.com",
+        webCertificateArn:
+          "arn:aws:acm:us-west-2:123456789012:certificate/11111111-1111-4111-8111-111111111111",
+        apiCertificateArn:
+          "arn:aws:acm:us-east-1:123456789012:certificate/22222222-2222-4222-8222-222222222222",
+        region: "us-east-1",
+      }),
+    ).toThrow(/us-east-1/i);
+  });
+
   it("creates the fixture seed only for explicitly enabled dev", () => {
     const { stack } = createFoundationApp({
       stage: "dev",

@@ -21,6 +21,7 @@ import {
   planReleaseRollback,
   validateStackOutputs,
   validateLaunchEnvironment,
+  selectLaunchTarget,
   waitForStackDriftResult,
   waitForDynamoGsiActive,
 } from "./phase1-launch.mjs";
@@ -48,6 +49,43 @@ test("launch requires explicit opt-in and exact account/region", () => {
     () => validateLaunchEnvironment({ ...valid, AWS_REGION: "us-west-2" }),
     /restricted/,
   );
+});
+test("launch binds verified branches, stages, certificates, and release provenance", () => {
+  const certificate =
+    "arn:aws:acm:us-east-1:228246988391:certificate/11111111-1111-4111-8111-111111111111";
+  const staging = {
+    ...valid,
+    FTE_AWS_STAGE: "staging",
+    FTE_DEPLOY_BRANCH: "main",
+    FTE_RELEASE_SHA: "0123456789abcdef0123456789abcdef01234567",
+    FTE_WEB_CERTIFICATE_ARN: certificate,
+    FTE_API_CERTIFICATE_ARN: certificate,
+  };
+  assert.equal(
+    selectLaunchTarget(staging).stack,
+    "FindTheEdge-staging-Foundation",
+  );
+  assert.throws(
+    () =>
+      validateLaunchEnvironment({
+        ...staging,
+        FTE_DEPLOY_BRANCH: "production",
+      }),
+    /branch/,
+  );
+  assert.throws(
+    () => validateLaunchEnvironment({ ...staging, FTE_RELEASE_SHA: "latest" }),
+    /verified commit/,
+  );
+  assert.throws(
+    () =>
+      validateLaunchEnvironment({
+        ...staging,
+        FTE_API_CERTIFICATE_ARN: certificate.replace("us-east-1", "us-west-2"),
+      }),
+    /certificate/,
+  );
+  selectLaunchTarget(valid);
 });
 test("release snapshots request only latest rollback material", () => {
   const arguments_ = releaseSnapshotArguments("safe-versioned-bucket");
@@ -1222,6 +1260,31 @@ test("launch binds every discovered output to intended targets", () => {
     { ScoutingWriteScope: "other" },
   ])
     assert.throws(() => validateStackOutputs({ ...outputs, ...change }));
+});
+test("custom-domain outputs bind the selected stage and exact release", () => {
+  const target = {
+    stage: "staging",
+    stack: "FindTheEdge-staging-Foundation",
+    secretPrefix: "find-the-edge/staging",
+    webOrigin: "https://staging.kevishie.com",
+    apiBase: "https://api-staging.kevishie.com",
+  };
+  const staged = {
+    ...outputs,
+    WebOrigin: target.webOrigin,
+    EventsApiEndpoint: target.apiBase,
+    CognitoCallbackUrl: `${target.webOrigin}/auth/callback`,
+    SharpApiSecretName: "find-the-edge/staging/sharpapi",
+    DeploymentStage: "staging",
+    ReleaseSha: "0123456789abcdef0123456789abcdef01234567",
+  };
+  assert.doesNotThrow(() => validateStackOutputs(staged, target));
+  assert.throws(() =>
+    validateStackOutputs({ ...staged, DeploymentStage: "prod" }, target),
+  );
+  assert.throws(() =>
+    validateStackOutputs({ ...staged, ReleaseSha: "latest" }, target),
+  );
 });
 test("deployed output bindings require exact physical resources and distribution", () => {
   const resources = [

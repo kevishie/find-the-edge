@@ -3,7 +3,7 @@ name: Quality gates
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, production]
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.ref }}

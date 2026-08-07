@@ -4,40 +4,73 @@ on:
   workflow_run:
     workflows: [Quality gates]
     types: [completed]
-    branches: [main]
+    branches: [main, production]
   workflow_dispatch:
-
-concurrency:
-  group: phase1-development-environment
-  cancel-in-progress: false
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  deploy:
-    name: Deploy and run live smoke
+  target:
+    name: Resolve protected deployment target
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main')
+      (github.event.workflow_run.head_branch == 'main' ||
+      github.event.workflow_run.head_branch == 'production'))
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.target.outputs.branch }}
+      github_environment: ${{ steps.target.outputs.github_environment }}
+      sha: ${{ steps.target.outputs.sha }}
+      stage: ${{ steps.target.outputs.stage }}
+    steps:
+      - id: target
+        name: Bind branch to environment
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          case "$BRANCH" in
+            main)
+              echo "stage=staging" >> "$GITHUB_OUTPUT"
+              echo "github_environment=staging" >> "$GITHUB_OUTPUT"
+              ;;
+            production)
+              echo "stage=prod" >> "$GITHUB_OUTPUT"
+              echo "github_environment=production" >> "$GITHUB_OUTPUT"
+              ;;
+            *) exit 1 ;;
+          esac
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "sha=$VERIFIED_SHA" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy ${{ needs.target.outputs.github_environment }} and run live smoke
+    needs: target
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: ${{ needs.target.outputs.github_environment }}
+    concurrency:
+      group: phase1-${{ needs.target.outputs.stage }}-environment
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Refuse to deploy an outdated main revision
-        if: github.event_name == 'workflow_run'
+      - name: Refuse to deploy an outdated branch revision
         env:
+          BRANCH: ${{ needs.target.outputs.branch }}
           GH_TOKEN: ${{ github.token }}
-          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+          VERIFIED_SHA: ${{ needs.target.outputs.sha }}
         run: |
-          latest_sha=$(gh api repos/${{ github.repository }}/commits/main --jq .sha)
+          latest_sha=$(gh api "repos/${{ github.repository }}/commits/$BRANCH" --jq .sha)
           test "$VERIFIED_SHA" = "$latest_sha"
 
       - name: Check out verified revision
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.target.outputs.sha }}
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -54,28 +87,35 @@ jobs:
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Assume AWS deployment role
+      - name: Assume isolated AWS deployment role
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::228246988391:role/github-actions-find-the-edge-deploy
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: Install SharpAPI credential in AWS Secrets Manager
+      - name: Install environment SharpAPI credential
         env:
+          FTE_AWS_STAGE: ${{ needs.target.outputs.stage }}
           SHARP_API_KEY: ${{ secrets.SHARP_API_KEY }}
         run: |
           test -n "$SHARP_API_KEY"
+          secret_name="find-the-edge/$FTE_AWS_STAGE/sharpapi"
           secret_json=$(jq -cn --arg apiKey "$SHARP_API_KEY" '{apiKey:$apiKey}')
-          if aws secretsmanager describe-secret --secret-id find-the-edge/dev/sharpapi >/dev/null 2>&1; then
-            aws secretsmanager put-secret-value --secret-id find-the-edge/dev/sharpapi --secret-string "$secret_json" >/dev/null
+          if aws secretsmanager describe-secret --secret-id "$secret_name" >/dev/null 2>&1; then
+            aws secretsmanager put-secret-value --secret-id "$secret_name" --secret-string "$secret_json" >/dev/null
           else
-            aws secretsmanager create-secret --name find-the-edge/dev/sharpapi --secret-string "$secret_json" >/dev/null
+            aws secretsmanager create-secret --name "$secret_name" --secret-string "$secret_json" >/dev/null
           fi
 
-      - name: Deploy Phase 1 and run live smoke
+      - name: Deploy and run environment smoke
         env:
           AWS_ACCOUNT_ID: "228246988391"
           AWS_REGION: us-east-1
-          FTE_EVENT_CURSOR_SECRET_ARN: arn:aws:secretsmanager:us-east-1:228246988391:secret:find-the-edge/dev/event-cursor-signing-rI0Nea
+          FTE_AWS_STAGE: ${{ needs.target.outputs.stage }}
+          FTE_API_CERTIFICATE_ARN: ${{ vars.API_CERTIFICATE_ARN }}
+          FTE_DEPLOY_BRANCH: ${{ needs.target.outputs.branch }}
+          FTE_EVENT_CURSOR_SECRET_ARN: ${{ vars.EVENT_CURSOR_SECRET_ARN }}
           FTE_PHASE1_LAUNCH: "1"
+          FTE_RELEASE_SHA: ${{ needs.target.outputs.sha }}
+          FTE_WEB_CERTIFICATE_ARN: ${{ vars.WEB_CERTIFICATE_ARN }}
         run: pnpm phase1:launch

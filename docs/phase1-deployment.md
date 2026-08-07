@@ -1,5 +1,7 @@
 # Phase1 deployment and environment smoke
 
+For staging/production branches, custom domains, certificates, GitHub Environments, DNS cutover, promotion, and rollback, follow [Environment promotion and custom-domain runbook](./environment-promotion.md). The dev commands below remain a fenced legacy path and must not be used to infer production targets.
+
 Phase1 packages the public live-games UI. SharpAPI is the sole production MLB/MLS schedule and odds source; no development fixtures are part of the production read path.
 
 The games and odds UI and its read-only API are public and require no account or
@@ -193,15 +195,16 @@ Rollback first by disabling the projector event-source mapping while leaving syn
 
 ## Automatic deployment from GitHub
 
-Pushes to `main` first run `.github/workflows/ci.yml`. After that workflow
-finishes successfully, `.github/workflows/deploy-phase1.yml` checks out the exact
-verified commit, assumes the repository-specific AWS role through GitHub OIDC,
-and runs the same guarded `pnpm phase1:launch` command documented above. A failed
-quality workflow never receives deployment credentials and never deploys.
+Pushes to `main` and `production` first run `.github/workflows/ci.yml`. After that
+workflow finishes successfully, `.github/workflows/deploy-phase1.yml` checks out
+the exact verified commit, maps `main` to staging and `production` to production,
+assumes the environment-specific AWS role through GitHub OIDC, and runs the same
+guarded `pnpm phase1:launch` command documented above. A failed quality workflow
+never receives deployment credentials and never deploys.
 
 The one-time role bootstrap is tracked in
 `infra/github-actions-deploy-role.yml`. Deploy it only from the authorized AWS
-account after reviewing the main-branch-only trust policy:
+account after reviewing the isolated GitHub Environment trust policies:
 
 ```sh
 aws cloudformation deploy \
@@ -211,13 +214,11 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-The role currently has administrator permissions because the guarded launch can
-create and update IAM, CloudFormation, Lambda, API Gateway, Cognito, DynamoDB,
-S3, CloudFront, logs, alarms, queues, and deployment assets. Its OIDC trust is
-restricted to the immutable GitHub owner/repository IDs for
-`kevishie/find-the-edge` on `refs/heads/main`; no static AWS access keys are
-stored in GitHub. Protect the `main` branch so only reviewed commits can reach
-this role.
+The template creates separate service-scoped staging and production roles. Its
+OIDC trust is restricted to the immutable GitHub owner/repository IDs and exact
+GitHub Environment subjects for `kevishie/find-the-edge`; no static AWS access
+keys are stored in GitHub. Protect `main` and `production` so only reviewed
+commits can reach their respective deployment environments.
 
 ## Rollback
 

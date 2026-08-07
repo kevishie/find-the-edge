@@ -5,10 +5,23 @@ import { resolve } from "node:path";
 import { buildPhase1Web } from "./build-phase1-web.mjs";
 import { phase1EnvironmentSmoke } from "./phase1-environment-smoke.mjs";
 import { run } from "./phase1-support.mjs";
+import {
+  deploymentEnvironment,
+  validateDeploymentBranch,
+} from "./environment-contract.mjs";
 
 export const LAUNCH_ACCOUNT = "228246988391";
 export const LAUNCH_REGION = "us-east-1";
-export const LAUNCH_STACK = "FindTheEdge-dev-Foundation";
+export let LAUNCH_STACK = "FindTheEdge-dev-Foundation";
+const legacyLaunchTarget = {
+  stage: "dev",
+  branch: "main",
+  stack: LAUNCH_STACK,
+  secretPrefix: "find-the-edge/dev",
+  webOrigin: undefined,
+  apiBase: undefined,
+};
+let activeLaunchTarget = legacyLaunchTarget;
 export const MAX_INTERMEDIATE_GSI_STAGES = 8;
 export const DYNAMO_GSI_ACTIVE_ATTEMPTS = 360;
 
@@ -92,6 +105,34 @@ export function validateLaunchEnvironment(environment) {
     throw new Error(
       "The cursor secret must belong to the authorized account and region",
     );
+  if (environment.FTE_AWS_STAGE) {
+    const target = validateDeploymentBranch(
+      environment.FTE_AWS_STAGE,
+      environment.FTE_DEPLOY_BRANCH,
+    );
+    if (!/^[0-9a-f]{40}$/.test(environment.FTE_RELEASE_SHA ?? ""))
+      throw new Error(
+        "FTE_RELEASE_SHA must identify the exact verified commit",
+      );
+    for (const name of ["FTE_WEB_CERTIFICATE_ARN", "FTE_API_CERTIFICATE_ARN"])
+      if (
+        !new RegExp(
+          `^arn:aws:acm:${LAUNCH_REGION}:${LAUNCH_ACCOUNT}:certificate/[0-9a-f-]{36}$`,
+        ).test(environment[name] ?? "")
+      )
+        throw new Error(
+          `${name} must identify an ACM certificate in us-east-1`,
+        );
+    return target;
+  }
+  return legacyLaunchTarget;
+}
+
+export function selectLaunchTarget(environment) {
+  const target = validateLaunchEnvironment(environment);
+  activeLaunchTarget = target;
+  LAUNCH_STACK = target.stack;
+  return target;
 }
 
 function verifyIdentity(environment) {
@@ -1095,7 +1136,12 @@ async function verifyStackDrift(environment) {
   assertStackResourceDriftsSafe(drifts ?? []);
 }
 
-export function assertDeployedOutputBindings(outputs, resources, distribution) {
+export function assertDeployedOutputBindings(
+  outputs,
+  resources,
+  distribution,
+  target = activeLaunchTarget,
+) {
   const expected = [
     ["AWS::S3::Bucket", outputs.WebAssetsBucketName],
     ["AWS::CloudFront::Distribution", outputs.WebDistributionId],
@@ -1104,8 +1150,15 @@ export function assertDeployedOutputBindings(outputs, resources, distribution) {
     ["AWS::Cognito::UserPoolClient", outputs.ReviewerCognitoClientId],
     ["AWS::Lambda::Function", outputs.LiveOddsIngestionFunctionName],
   ];
-  const apiId = new URL(outputs.EventsApiEndpoint).hostname.split(".")[0];
+  const apiId =
+    outputs.EventsApiId ??
+    new URL(outputs.EventsApiEndpoint).hostname.split(".")[0];
   expected.push(["AWS::ApiGatewayV2::Api", apiId]);
+  const distributionOwnsWebOrigin = target.webOrigin
+    ? distribution?.DistributionConfig?.Aliases?.Items?.includes(
+        new URL(target.webOrigin).hostname,
+      )
+    : `https://${distribution?.DomainName}` === outputs.WebOrigin;
   if (
     expected.some(
       ([type, physicalId]) =>
@@ -1116,7 +1169,7 @@ export function assertDeployedOutputBindings(outputs, resources, distribution) {
         ),
     ) ||
     distribution?.Id !== outputs.WebDistributionId ||
-    `https://${distribution?.DomainName}` !== outputs.WebOrigin ||
+    !distributionOwnsWebOrigin ||
     !distribution?.ARN?.startsWith(
       `arn:aws:cloudfront::${LAUNCH_ACCOUNT}:distribution/`,
     )
@@ -1159,7 +1212,7 @@ function verifyDeployedOutputBindings(outputs, environment) {
   assertDeployedOutputBindings(outputs, resources ?? [], distribution);
 }
 
-export function validateStackOutputs(outputs) {
+export function validateStackOutputs(outputs, target = activeLaunchTarget) {
   const web = new URL(outputs.WebOrigin);
   const api = new URL(outputs.EventsApiEndpoint);
   const issuer = new URL(outputs.CognitoIssuer);
@@ -1167,14 +1220,19 @@ export function validateStackOutputs(outputs) {
   if (
     web.protocol !== "https:" ||
     web.origin !== outputs.WebOrigin ||
-    !/^[a-z0-9]+\.cloudfront\.net$/.test(web.hostname) ||
+    (target.webOrigin
+      ? outputs.WebOrigin !== target.webOrigin
+      : !/^[a-z0-9]+\.cloudfront\.net$/.test(web.hostname)) ||
     web.pathname !== "/"
   )
     throw new Error("WebOrigin is not the exact intended CloudFront origin");
   if (
     api.protocol !== "https:" ||
-    !/^[a-z0-9]+\.execute-api\.us-east-1\.amazonaws\.com$/.test(api.hostname) ||
-    api.pathname !== "/dev" ||
+    (target.apiBase
+      ? outputs.EventsApiEndpoint !== target.apiBase
+      : !/^[a-z0-9]+\.execute-api\.us-east-1\.amazonaws\.com$/.test(
+          api.hostname,
+        ) || api.pathname !== "/dev") ||
     api.search ||
     api.hash
   )
@@ -1209,7 +1267,10 @@ export function validateStackOutputs(outputs) {
     !/^[A-Za-z0-9_-]{1,128}$/.test(outputs.CognitoClientId) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(outputs.ReviewerCognitoClientId) ||
     !/^[A-Za-z0-9-_]{1,64}$/.test(outputs.LiveOddsIngestionFunctionName) ||
-    outputs.SharpApiSecretName !== "find-the-edge/dev/sharpapi"
+    outputs.SharpApiSecretName !== `${target.secretPrefix}/sharpapi` ||
+    (target.stage !== "dev" &&
+      (outputs.DeploymentStage !== target.stage ||
+        !/^[0-9a-f]{40}$/.test(outputs.ReleaseSha ?? "")))
   )
     throw new Error("A launch output has an invalid target identifier");
 }
@@ -1426,13 +1487,13 @@ export function combineLaunchAndCleanupFailures(primary, cleanup) {
 }
 
 export async function phase1Launch(environment = process.env) {
-  validateLaunchEnvironment(environment);
+  const target = selectLaunchTarget(environment);
   verifyIdentity(environment);
   const deployEnvironment = {
     ...environment,
     CDK_DEFAULT_ACCOUNT: LAUNCH_ACCOUNT,
     CDK_DEFAULT_REGION: LAUNCH_REGION,
-    FTE_AWS_STAGE: "dev",
+    FTE_AWS_STAGE: target.stage,
     FTE_FIXTURE_ODDS_SEED_ENABLED: "false",
     FTE_UPCOMING_SCHEDULER_ENABLED: "true",
   };
@@ -1636,6 +1697,7 @@ export async function phase1Launch(environment = process.env) {
   const outputs = stackOutputs(deployEnvironment);
   const required = [
     "EventsApiEndpoint",
+    "EventsApiId",
     "WebOrigin",
     "WebDistributionId",
     "WebAssetsBucketName",
@@ -1650,12 +1712,21 @@ export async function phase1Launch(environment = process.env) {
     "CognitoCallbackUrl",
     "LiveOddsIngestionFunctionName",
     "SharpApiSecretName",
+    ...(target.stage === "dev"
+      ? []
+      : [
+          "DeploymentStage",
+          "ReleaseSha",
+          "ApiDnsTarget",
+          "ApiDnsHostedZoneId",
+          "WebDnsTarget",
+        ]),
   ];
   if (required.some((key) => !outputs[key]))
     throw new Error(
       "Deployed stack did not return all required launch outputs",
     );
-  validateStackOutputs(outputs);
+  validateStackOutputs(outputs, target);
   verifyDeployedOutputBindings(outputs, deployEnvironment);
   const bundleEnvironment = {
     ...deployEnvironment,
@@ -1733,6 +1804,8 @@ export async function phase1Launch(environment = process.env) {
       FTE_LIVE_ODDS_FUNCTION_NAME: outputs.LiveOddsIngestionFunctionName,
       FTE_PHASE1_BROWSER_BASE_URL: outputs.WebOrigin,
       FTE_PHASE1_STACK_ID: outputs.StackId,
+      FTE_DEPLOYED_STAGE: outputs.DeploymentStage ?? "dev",
+      FTE_DEPLOYED_RELEASE_SHA: outputs.ReleaseSha ?? "legacy-dev",
       FTE_WEB_ASSETS_BUCKET_NAME: outputs.WebAssetsBucketName,
     });
     return { webOrigin: outputs.WebOrigin, outputs };

@@ -90,12 +90,17 @@ import {
 import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
+  ApiMapping,
   CfnStage,
+  DomainName,
+  EndpointType,
   HttpApi,
   HttpMethod,
   HttpStage,
   LogGroupLogDestination,
+  SecurityPolicy,
 } from "aws-cdk-lib/aws-apigatewayv2";
+import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
@@ -110,6 +115,11 @@ import { fileURLToPath } from "node:url";
 
 export interface FoundationConfig {
   stage: string;
+  releaseSha?: string;
+  webDomainName?: string;
+  apiDomainName?: string;
+  webCertificateArn?: string;
+  apiCertificateArn?: string;
   account?: string;
   region?: string;
   schedulerEnabled?: boolean;
@@ -127,6 +137,11 @@ interface FoundationStackProps extends StackProps {
   paperPickGenerationMinutes: number;
   alarmTopicArn?: string;
   stageName: string;
+  releaseSha?: string;
+  webDomainName?: string;
+  apiDomainName?: string;
+  webCertificateArn?: string;
+  apiCertificateArn?: string;
   cursorSecretArn: string;
   fixtureOddsSeedEnabled: boolean;
 }
@@ -446,9 +461,19 @@ export class FoundationStack extends Stack {
         "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
       ),
     });
+    const webCertificate = props.webCertificateArn
+      ? Certificate.fromCertificateArn(
+          this,
+          "WebCertificate",
+          props.webCertificateArn,
+        )
+      : undefined;
     const distribution = new Distribution(this, "WebDistribution", {
       defaultRootObject: "index.html",
       minimumProtocolVersion: SecurityPolicyProtocol.TLS_V1_2_2021,
+      ...(props.webDomainName && webCertificate
+        ? { domainNames: [props.webDomainName], certificate: webCertificate }
+        : {}),
       defaultBehavior: {
         origin: webAssetOrigin,
         viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -474,7 +499,9 @@ export class FoundationStack extends Stack {
         },
       },
     });
-    const webOrigin = `https://${distribution.distributionDomainName}`;
+    const webOrigin = props.webDomainName
+      ? `https://${props.webDomainName}`
+      : `https://${distribution.distributionDomainName}`;
     const callbackUrl = `${webOrigin}/auth/callback`;
     const userPoolClient = new UserPoolClient(this, "MvpWebClient", {
       userPool,
@@ -1212,7 +1239,10 @@ export class FoundationStack extends Stack {
     const api = new HttpApi(this, "EventsHttpApi", {
       createDefaultStage: false,
     });
-    const exactCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${api.apiEndpoint} ${domain.baseUrl()}; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
+    const apiOrigin = props.apiDomainName
+      ? `https://${props.apiDomainName}`
+      : api.apiEndpoint;
+    const exactCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${apiOrigin} ${domain.baseUrl()}; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
     for (const policy of [securityHeaders, immutableHeaders]) {
       const resource = policy.node.defaultChild as CfnResponseHeadersPolicy;
       resource.addPropertyOverride(
@@ -1388,12 +1418,45 @@ export class FoundationStack extends Stack {
       throttlingBurstLimit: 100,
       throttlingRateLimit: 50,
     };
+    if (props.apiDomainName && props.apiCertificateArn) {
+      const apiCertificate = Certificate.fromCertificateArn(
+        this,
+        "ApiCertificate",
+        props.apiCertificateArn,
+      );
+      const apiDomain = new DomainName(this, "EventsApiDomain", {
+        domainName: props.apiDomainName,
+        certificate: apiCertificate,
+        endpointType: EndpointType.REGIONAL,
+        securityPolicy: SecurityPolicy.TLS_1_2,
+      });
+      new ApiMapping(this, "EventsApiMapping", {
+        api,
+        domainName: apiDomain,
+        stage: eventApiStage,
+      });
+      new CfnOutput(this, "ApiDnsTarget", {
+        value: apiDomain.regionalDomainName,
+      });
+      new CfnOutput(this, "ApiDnsHostedZoneId", {
+        value: apiDomain.regionalHostedZoneId,
+      });
+    }
     new CfnOutput(this, "EventsApiEndpoint", {
-      value: `${api.apiEndpoint}/${props.stageName}`,
+      value: props.apiDomainName
+        ? `https://${props.apiDomainName}`
+        : `${api.apiEndpoint}/${props.stageName}`,
     });
+    new CfnOutput(this, "EventsApiId", { value: api.apiId });
+    new CfnOutput(this, "DeploymentStage", { value: props.stageName });
+    if (props.releaseSha)
+      new CfnOutput(this, "ReleaseSha", { value: props.releaseSha });
     new CfnOutput(this, "WebOrigin", { value: webOrigin });
     new CfnOutput(this, "WebDistributionId", {
       value: distribution.distributionId,
+    });
+    new CfnOutput(this, "WebDnsTarget", {
+      value: distribution.distributionDomainName,
     });
     new CfnOutput(this, "WebAssetsBucketName", { value: assets.bucketName });
     new CfnOutput(this, "CognitoIssuer", {
@@ -1882,6 +1945,40 @@ export function createFoundationApp(config: FoundationConfig): {
       "FTE_AWS_STAGE must start with a lowercase letter and contain only lowercase letters, numbers, or hyphens",
     );
   }
+  if (config.releaseSha && !/^[0-9a-f]{40}$/.test(config.releaseSha))
+    throw new Error("FTE_RELEASE_SHA must be a lowercase 40-character Git SHA");
+  const customDomainValues = [
+    config.webDomainName,
+    config.apiDomainName,
+    config.webCertificateArn,
+    config.apiCertificateArn,
+  ];
+  const customDomainsEnabled = customDomainValues.every(Boolean);
+  if (customDomainValues.some(Boolean) && !customDomainsEnabled)
+    throw new Error(
+      "Custom domain configuration requires both domain names and both certificate ARNs",
+    );
+  if (customDomainsEnabled) {
+    const domainPattern =
+      /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+    if (
+      !domainPattern.test(config.webDomainName!) ||
+      !domainPattern.test(config.apiDomainName!) ||
+      config.webDomainName === config.apiDomainName
+    )
+      throw new Error("Custom domain names must be distinct safe DNS names");
+    const certificatePattern =
+      /^arn:aws:acm:([a-z0-9-]+):(\d{12}):certificate\/[0-9a-f-]{36}$/;
+    const webCertificate = config.webCertificateArn!.match(certificatePattern);
+    const apiCertificate = config.apiCertificateArn!.match(certificatePattern);
+    if (!webCertificate || webCertificate[1] !== "us-east-1")
+      throw new Error("The CloudFront certificate must be in us-east-1");
+    if (
+      !apiCertificate ||
+      (config.region && apiCertificate[1] !== config.region)
+    )
+      throw new Error("The API certificate must be in the API stack region");
+  }
   if (config.fixtureOddsSeedEnabled && config.stage !== "dev")
     throw new Error("fixture odds seed can only be enabled for the dev stage");
   const paperPickGenerationMinutes = config.paperPickGenerationMinutes ?? 15;
@@ -1939,6 +2036,15 @@ export function createFoundationApp(config: FoundationConfig): {
       paperPickSchedulerEnabled: config.paperPickSchedulerEnabled ?? false,
       paperPickGenerationMinutes,
       stageName: config.stage,
+      ...(config.releaseSha ? { releaseSha: config.releaseSha } : {}),
+      ...(customDomainsEnabled
+        ? {
+            webDomainName: config.webDomainName!,
+            apiDomainName: config.apiDomainName!,
+            webCertificateArn: config.webCertificateArn!,
+            apiCertificateArn: config.apiCertificateArn!,
+          }
+        : {}),
       cursorSecretArn: config.cursorSecretArn,
       fixtureOddsSeedEnabled: config.fixtureOddsSeedEnabled ?? false,
       ...(config.alarmTopicArn ? { alarmTopicArn: config.alarmTopicArn } : {}),

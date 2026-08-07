@@ -3,6 +3,7 @@ import { createPublicKey, verify } from "node:crypto";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { run } from "./phase1-support.mjs";
+import { deploymentEnvironment } from "./environment-contract.mjs";
 
 const REQUIRED = [
   "AWS_ACCOUNT_ID",
@@ -25,6 +26,17 @@ const RELEASE_REFRESH_LEAGUES = new Set([
   "liga-mx",
   "uefa-champions-league",
 ]);
+
+function smokeTarget(environment) {
+  return environment.FTE_AWS_STAGE
+    ? deploymentEnvironment(environment.FTE_AWS_STAGE)
+    : {
+        stage: "dev",
+        stack: "FindTheEdge-dev-Foundation",
+        webOrigin: undefined,
+        apiBase: undefined,
+      };
+}
 
 export const liveOddsInvocationArguments = (
   functionName,
@@ -141,6 +153,7 @@ export async function validateWrongScopeToken(
 }
 
 export function validateEnvironment(environment) {
+  const target = smokeTarget(environment);
   const missing = REQUIRED.filter((name) => !environment[name]);
   if (missing.length > 0)
     throw new Error(`missing required environment: ${missing.join(", ")}`);
@@ -151,7 +164,7 @@ export function validateEnvironment(environment) {
     throw new Error("Smoke is restricted to the authorized account and region");
   if (
     !environment.FTE_PHASE1_STACK_ID.startsWith(
-      `arn:aws:cloudformation:${AUTHORIZED_REGION}:${AUTHORIZED_ACCOUNT}:stack/FindTheEdge-dev-Foundation/`,
+      `arn:aws:cloudformation:${AUTHORIZED_REGION}:${AUTHORIZED_ACCOUNT}:stack/${target.stack}/`,
     )
   )
     throw new Error("FTE_PHASE1_STACK_ID must identify the intended stack");
@@ -197,6 +210,16 @@ export function validateEnvironment(environment) {
   )
     throw new Error("Browser base must exactly match FTE_WEB_ORIGIN");
   if (
+    target.stage !== "dev" &&
+    (environment.FTE_WEB_ORIGIN !== target.webOrigin ||
+      environment.FTE_PHASE1_API_BASE !== target.apiBase ||
+      environment.FTE_DEPLOYED_STAGE !== target.stage ||
+      !/^[0-9a-f]{40}$/.test(environment.FTE_DEPLOYED_RELEASE_SHA ?? ""))
+  )
+    throw new Error(
+      "Smoke hostnames, deployed stage, and release SHA must match the selected environment",
+    );
+  if (
     cognito.protocol !== "https:" ||
     cognito.username ||
     cognito.password ||
@@ -215,11 +238,12 @@ export function validateEnvironment(environment) {
 }
 
 export function assertLiveIngestionResourceBinding(resources, environment) {
+  const target = smokeTarget(environment);
   if (
     !resources.some(
       (resource) =>
         resource.StackId === environment.FTE_PHASE1_STACK_ID &&
-        resource.StackName === "FindTheEdge-dev-Foundation" &&
+        resource.StackName === target.stack &&
         resource.ResourceType === "AWS::Lambda::Function" &&
         resource.PhysicalResourceId === environment.FTE_LIVE_ODDS_FUNCTION_NAME,
     )

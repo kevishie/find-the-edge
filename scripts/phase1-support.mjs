@@ -3,6 +3,7 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { COGNITO_SCOPES } from "./generate-web-runtime-config.mjs";
+import { deploymentEnvironment } from "./environment-contract.mjs";
 
 export const projectRoot = resolve(new URL("..", import.meta.url).pathname);
 
@@ -36,6 +37,50 @@ export function safeDevConfig(environment = process.env) {
       environment.FTE_UPCOMING_SCHEDULER_ENABLED === "true",
     localMode: environment.FTE_PHASE1_LOCAL_MODE === "1",
   };
+}
+
+export function safeDeploymentConfig(environment = process.env) {
+  const target = deploymentEnvironment(environment.FTE_AWS_STAGE ?? "staging");
+  return {
+    ...safeDevConfig({
+      ...environment,
+      FTE_AWS_STAGE: target.stage,
+      FTE_PHASE1_API_BASE: environment.FTE_PHASE1_API_BASE ?? target.apiBase,
+      FTE_WEB_ORIGIN: environment.FTE_WEB_ORIGIN ?? target.webOrigin,
+      FTE_COGNITO_CALLBACK_URL:
+        environment.FTE_COGNITO_CALLBACK_URL ??
+        `${target.webOrigin}/auth/callback`,
+      FTE_COGNITO_LOGOUT_URL:
+        environment.FTE_COGNITO_LOGOUT_URL ?? target.webOrigin,
+    }),
+    target,
+    webCertificateArn:
+      environment.FTE_WEB_CERTIFICATE_ARN ??
+      "arn:aws:acm:us-east-1:000000000000:certificate/11111111-1111-4111-8111-111111111111",
+    apiCertificateArn:
+      environment.FTE_API_CERTIFICATE_ARN ??
+      "arn:aws:acm:us-east-1:000000000000:certificate/22222222-2222-4222-8222-222222222222",
+  };
+}
+
+export function validateSafeDeploymentConfig(config) {
+  const target = deploymentEnvironment(config.stage);
+  validateSafeDevConfig({ ...config, stage: "dev" });
+  if (
+    config.webOrigin !== target.webOrigin ||
+    config.apiBase !== target.apiBase ||
+    config.callbackUrl !== `${target.webOrigin}/auth/callback` ||
+    config.logoutUrl !== target.webOrigin
+  )
+    throw new Error("Deployment URLs must exactly match the selected stage");
+  const certificatePattern =
+    /^arn:aws:acm:us-east-1:\d{12}:certificate\/[0-9a-f-]{36}$/;
+  if (
+    !certificatePattern.test(config.webCertificateArn) ||
+    !certificatePattern.test(config.apiCertificateArn)
+  )
+    throw new Error("Deployment certificates must be ACM ARNs in us-east-1");
+  return target;
 }
 
 export function validateSafeDevConfig(config) {
@@ -223,6 +268,7 @@ function requireActions(actual, expected, label) {
 }
 
 export function validateTemplate(template, config) {
+  const selectedStage = config.stage ?? "dev";
   const exactSpaCode =
     "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const tables = entriesOfType(template, "AWS::DynamoDB::Table");
@@ -304,16 +350,27 @@ export function validateTemplate(template, config) {
   const [distributionId, distribution] = distributions[0];
   const [spaFunctionId, spaFunction] = cloudFrontFunctions[0];
   const [, oac] = oacs[0];
+  const customDeployment =
+    selectedStage === "staging" || selectedStage === "prod";
+  const cspPrefix = customDeployment
+    ? `default-src 'self'; base-uri 'none'; connect-src 'self' ${config.apiBase} https://`
+    : "default-src 'self'; base-uri 'none'; connect-src 'self' ";
   const expectedCsp = {
     "Fn::Join": [
       "",
-      [
-        "default-src 'self'; base-uri 'none'; connect-src 'self' ",
-        { "Fn::GetAtt": [apiId, "ApiEndpoint"] },
-        " https://",
-        { Ref: domainId },
-        ".auth.us-east-1.amazoncognito.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
-      ],
+      customDeployment
+        ? [
+            cspPrefix,
+            { Ref: domainId },
+            ".auth.us-east-1.amazoncognito.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+          ]
+        : [
+            cspPrefix,
+            { "Fn::GetAtt": [apiId, "ApiEndpoint"] },
+            " https://",
+            { Ref: domainId },
+            ".auth.us-east-1.amazoncognito.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+          ],
     ],
   };
   if (
@@ -329,12 +386,14 @@ export function validateTemplate(template, config) {
     throw new Error(
       "Every CloudFront behavior must use the exact restrictive launch CSP",
     );
-  const webOrigin = {
-    "Fn::Join": [
-      "",
-      ["https://", { "Fn::GetAtt": [distributionId, "DomainName"] }],
-    ],
-  };
+  const webOrigin = customDeployment
+    ? config.webOrigin
+    : {
+        "Fn::Join": [
+          "",
+          ["https://", { "Fn::GetAtt": [distributionId, "DomainName"] }],
+        ],
+      };
   if (
     pool.Properties?.AdminCreateUserConfig?.AllowAdminCreateUserOnly !== true ||
     pool.Properties?.Policies?.PasswordPolicy?.MinimumLength < 14
@@ -375,16 +434,18 @@ export function validateTemplate(template, config) {
   if (!isRef(cognitoDomain.Properties?.UserPoolId, poolId))
     throw new Error("Cognito domain must bind to the selected user pool");
   const exactCallbackUrls = [
-    {
-      "Fn::Join": [
-        "",
-        [
-          "https://",
-          { "Fn::GetAtt": [distributionId, "DomainName"] },
-          "/auth/callback",
-        ],
-      ],
-    },
+    customDeployment
+      ? `${config.webOrigin}/auth/callback`
+      : {
+          "Fn::Join": [
+            "",
+            [
+              "https://",
+              { "Fn::GetAtt": [distributionId, "DomainName"] },
+              "/auth/callback",
+            ],
+          ],
+        },
   ];
   const validWebClient = (oauth) =>
     oauth?.GenerateSecret === false &&
@@ -498,10 +559,13 @@ export function validateTemplate(template, config) {
     JSON.stringify(updateCors) !== createRendered ||
     corsResource.Properties?.Delete !== undefined ||
     !createRendered.includes(JSON.stringify({ Ref: apiId })) ||
-    !createRendered.includes(
-      JSON.stringify({ "Fn::GetAtt": [distributionId, "DomainName"] }),
-    ) ||
-    !createRendered.includes('\\"AllowOrigins\\":[\\"https://') ||
+    !(customDeployment
+      ? createRendered.includes(
+          `\\\"AllowOrigins\\\":[\\\"${config.webOrigin}\\\"]`,
+        )
+      : createRendered.includes(
+          JSON.stringify({ "Fn::GetAtt": [distributionId, "DomainName"] }),
+        ) && createRendered.includes('\\"AllowOrigins\\":[\\"https://')) ||
     !createRendered.includes(
       '\\"AllowMethods\\":[\\"GET\\",\\"POST\\",\\"OPTIONS\\"]',
     ) ||
@@ -738,18 +802,20 @@ export function validateTemplate(template, config) {
     throw new Error(
       "Live odds ingestion must have one enabled 5-minute rule feeding its control-plane queue",
     );
-  if (
-    !Array.isArray(apiOutput?.["Fn::Join"]) ||
-    apiOutput["Fn::Join"].length !== 2 ||
-    apiOutput["Fn::Join"][0] !== "" ||
-    !Array.isArray(apiOutput["Fn::Join"][1]) ||
-    apiOutput["Fn::Join"][1].length !== 2 ||
-    !isGetAtt(apiOutput["Fn::Join"][1][0], apiId, "ApiEndpoint") ||
-    apiOutput["Fn::Join"][1][1] !== "/dev"
-  )
-    throw new Error("API output must reference the real dev API endpoint");
+  const validApiOutput = customDeployment
+    ? apiOutput === config.apiBase
+    : Array.isArray(apiOutput?.["Fn::Join"]) &&
+      apiOutput["Fn::Join"].length === 2 &&
+      apiOutput["Fn::Join"][0] === "" &&
+      Array.isArray(apiOutput["Fn::Join"][1]) &&
+      apiOutput["Fn::Join"][1].length === 2 &&
+      isGetAtt(apiOutput["Fn::Join"][1][0], apiId, "ApiEndpoint") &&
+      apiOutput["Fn::Join"][1][1] === `/${selectedStage}`;
+  if (!validApiOutput)
+    throw new Error("API output must reference the selected stage endpoint");
   for (const outputName of [
     "WebOrigin",
+    "EventsApiId",
     "WebDistributionId",
     "WebAssetsBucketName",
     "CognitoIssuer",
@@ -768,22 +834,27 @@ export function validateTemplate(template, config) {
   if (
     JSON.stringify(template.Outputs.WebOrigin.Value) !==
       JSON.stringify(webOrigin) ||
+    !isRef(template.Outputs.EventsApiId.Value, apiId) ||
     !isRef(template.Outputs.WebDistributionId.Value, distributionId) ||
     !isRef(template.Outputs.WebAssetsBucketName.Value, bucketId) ||
     !isGetAtt(template.Outputs.CognitoIssuer.Value, poolId, "ProviderURL") ||
     !isRef(template.Outputs.CognitoClientId.Value, clientId) ||
     !isRef(template.Outputs.CognitoUserPoolId.Value, poolId) ||
     JSON.stringify(template.Outputs.CognitoCallbackUrl.Value) !==
-      JSON.stringify({
-        "Fn::Join": [
-          "",
-          [
-            "https://",
-            { "Fn::GetAtt": [distributionId, "DomainName"] },
-            "/auth/callback",
-          ],
-        ],
-      }) ||
+      JSON.stringify(
+        customDeployment
+          ? `${config.webOrigin}/auth/callback`
+          : {
+              "Fn::Join": [
+                "",
+                [
+                  "https://",
+                  { "Fn::GetAtt": [distributionId, "DomainName"] },
+                  "/auth/callback",
+                ],
+              ],
+            },
+      ) ||
     JSON.stringify(template.Outputs.CognitoDomain.Value) !==
       JSON.stringify({
         "Fn::Join": [

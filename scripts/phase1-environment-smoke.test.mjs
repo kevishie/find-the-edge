@@ -123,6 +123,34 @@ test("rejects unsafe full-smoke inputs before any AWS command", () => {
     );
 });
 
+test("staging smoke requires exact custom hosts, stack, stage, and release SHA", () => {
+  const staging = {
+    ...validEnvironment,
+    FTE_AWS_STAGE: "staging",
+    FTE_PHASE1_API_BASE: "https://api-staging.kevishie.com",
+    FTE_WEB_ORIGIN: "https://staging.kevishie.com",
+    FTE_PHASE1_BROWSER_BASE_URL: "https://staging.kevishie.com",
+    FTE_PHASE1_STACK_ID:
+      "arn:aws:cloudformation:us-east-1:228246988391:stack/FindTheEdge-staging-Foundation/12345678-1234-1234-1234-123456789012",
+    FTE_DEPLOYED_STAGE: "staging",
+    FTE_DEPLOYED_RELEASE_SHA: "0123456789abcdef0123456789abcdef01234567",
+  };
+  assert.doesNotThrow(() => validateEnvironment(staging));
+  assert.throws(
+    () =>
+      validateEnvironment({
+        ...staging,
+        FTE_WEB_ORIGIN: "https://kevishie.com",
+      }),
+    /Browser base|selected environment/,
+  );
+  assert.throws(
+    () =>
+      validateEnvironment({ ...staging, FTE_DEPLOYED_RELEASE_SHA: "latest" }),
+    /release SHA/,
+  );
+});
+
 test("wrong-scope JWT signature and claims are validated before use", async () => {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,

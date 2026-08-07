@@ -733,6 +733,7 @@ function validTemplate() {
       },
     },
     Outputs: {
+      EventsApiId: { Value: { Ref: "Api" } },
       EventsApiEndpoint: {
         Value: {
           "Fn::Join": ["", [{ "Fn::GetAtt": ["Api", "ApiEndpoint"] }, "/dev"]],
