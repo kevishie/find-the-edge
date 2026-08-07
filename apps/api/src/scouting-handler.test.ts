@@ -239,7 +239,11 @@ describe("scouting HTTP boundary", () => {
 
   it("creates exactly one retry for a retryable failed attempt", async () => {
     const jobs = new MemoryScoutingJobRepository(),
-      handler = createScoutingHttpHandler(events, jobs),
+      handler = createScoutingHttpHandler(
+        events,
+        jobs,
+        () => new Date("2026-08-07T13:00:00.000Z"),
+      ),
       created = await handler(create()),
       jobId = parsedJobId(created.body),
       job = await jobs.getJob(jobId);
@@ -284,7 +288,11 @@ describe("scouting HTTP boundary", () => {
 
   it("hides foreign retries and enforces the three-attempt limit", async () => {
     const jobs = new MemoryScoutingJobRepository();
-    const handler = createScoutingHttpHandler(events, jobs);
+    const handler = createScoutingHttpHandler(
+      events,
+      jobs,
+      () => new Date("2026-08-07T13:00:00.000Z"),
+    );
     const created = await handler(create());
     const jobId = parsedJobId(created.body);
     const failCurrent = async () => {
