@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-038
+nextReadyStory: FTE-039
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -702,7 +702,7 @@ stories:
   - id: FTE-038
     title: Scout Event API, Idempotent Job Model, SQS, and Step Functions
     epic: Manual scouting workflow
-    status: in-progress
+    status: done
     dependencies: [FTE-016, FTE-007]
     risk: High
     approvalRequiredBeforeMerge: false

@@ -2,8 +2,9 @@
 title: 'FTE-038: Scout Event API, Idempotent Job Model, SQS, and Step Functions'
 type: 'feature'
 created: '2026-08-07'
-status: 'in-review'
+status: 'done'
 baseline_revision: '6c31eecffd09544b404400c41ff85e152269c608'
+final_revision: 'd4fdb3eb128c85b39650fa59e8960499e53aee9b'
 review_loop_iteration: 1
 followup_review_recommended: true
 context:
@@ -146,3 +147,11 @@ Build the exact state machine and persistence contract first, then expose the pr
 
 - 2026-08-07: Advanced FTE-038 to in-progress after story discovery and specification.
 - 2026-08-07: Implemented the protected idempotent scouting workflow and closed the first adversarial review loop locally.
+- 2026-08-07: Closed FTE-038 at implementation revision `d4fdb3eb128c85b39650fa59e8960499e53aee9b` and advanced the sprint queue to FTE-039.
+
+## Auto Run Result
+
+- **Summary:** Delivered the protected Scout Event command path, immutable job/attempt state machine, transactional outbox, FIFO dispatch, deterministic Standard workflow, bounded recovery, and operational alarms without defining fake production scouting evidence.
+- **Review outcome:** 17 deduplicated findings reviewed; 16 patched and regression-tested; 1 shared-Lambda IAM finding rejected because scouting-only key conditions would break the function's existing routes. Dedicated scouting roles are key-prefix fenced and the shared role remains exact-table scoped.
+- **Verification:** 187 domain tests, 307 database tests, 63 API tests, 245 worker tests plus 4 opt-in live tests skipped, 9 infrastructure tests, the complete repository `pnpm check`, and diff hygiene all pass locally without deployment.
+- **Residual risk:** The workflow intentionally runs only `fixture-v1`; provider-backed scouting facts and structured reports begin in FTE-039 through FTE-042. Production usefulness therefore depends on completing those stories and performing an environment smoke after deployment.
