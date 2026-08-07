@@ -2,8 +2,9 @@
 title: 'FTE-034: Opportunity Lifecycle States and Expiration'
 type: 'feature'
 created: '2026-08-06'
-status: 'in-review'
+status: 'done'
 baseline_revision: '7cc3769e4caebc11565f374455bbb747a17ea649'
+final_revision: 'f78aac0c7d776080629ed35b4b9e56b51885ef71'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
