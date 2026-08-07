@@ -863,6 +863,66 @@ describe("foundation CDK app", () => {
       template.hasOutput(output, {});
   });
 
+  it("keeps both opportunity GSIs in the final template with index-scoped consumers", () => {
+    const { stack } = createFoundationApp({
+      stage: "gsi-contract",
+      ...eventConfig,
+    });
+    const rendered = Template.fromStack(stack).toJSON();
+    const resources = rendered.Resources as Record<
+      string,
+      { Type: string; Properties?: Record<string, unknown> }
+    >;
+    const table = Object.values(resources).find(
+      (resource) => resource.Type === "AWS::DynamoDB::Table",
+    );
+    const indexes = table?.Properties?.["GlobalSecondaryIndexes"] as
+      { IndexName: string }[] | undefined;
+    expect(indexes?.map(({ IndexName }) => IndexName).sort()).toEqual([
+      "opportunity-active-v1",
+      "opportunity-rank-v1",
+    ]);
+    const statements = Object.values(resources)
+      .filter((resource) => resource.Type === "AWS::IAM::Policy")
+      .flatMap((resource) => {
+        const policy = resource.Properties?.["PolicyDocument"] as
+          | {
+              Statement?: {
+                Action?: string | string[];
+                Resource?: unknown;
+              }[];
+            }
+          | undefined;
+        return policy?.Statement ?? [];
+      });
+    for (const indexName of ["opportunity-active-v1", "opportunity-rank-v1"]) {
+      const consumers = statements.filter((statement) =>
+        JSON.stringify(statement.Resource).includes(`"/index/${indexName}"`),
+      );
+      expect(consumers.length).toBeGreaterThan(0);
+      expect(
+        consumers.every((statement) =>
+          (Array.isArray(statement.Action)
+            ? statement.Action
+            : [statement.Action]
+          ).includes("dynamodb:Query"),
+        ),
+      ).toBe(true);
+      expect(
+        consumers.every(
+          (statement) =>
+            !JSON.stringify(statement.Action).includes("dynamodb:*"),
+        ),
+      ).toBe(true);
+    }
+    for (const output of [
+      "EventsApiEndpoint",
+      "WebOrigin",
+      "LiveOddsIngestionFunctionName",
+    ])
+      expect(rendered.Outputs).toHaveProperty(output);
+  });
+
   it("rejects unsafe stage names", () => {
     expect(() =>
       createFoundationApp({ stage: "Production!", ...eventConfig }),

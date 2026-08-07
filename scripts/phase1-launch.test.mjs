@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   assertRetainedResourcesSafe,
+  assertDeployedTemplateMatches,
   assertStackDriftSafe,
   assertStackResourceDriftsSafe,
   assertDeployedOutputBindings,
@@ -9,6 +11,10 @@ import {
   combineLaunchAndRollbackFailures,
   classifyReleaseVerificationFailure,
   cleanupTemporaryLaunch,
+  deployStagedDynamoGsiUpdates,
+  planDynamoGsiDeploymentStages,
+  resolveDynamoGsiBinding,
+  retargetCloudAssemblyTemplateAsset,
   requireInvalidationId,
   releaseSnapshotArguments,
   resolveExistingStackSummary,
@@ -16,6 +22,7 @@ import {
   validateStackOutputs,
   validateLaunchEnvironment,
   waitForStackDriftResult,
+  waitForDynamoGsiActive,
 } from "./phase1-launch.mjs";
 
 const valid = {
@@ -718,6 +725,423 @@ test("retained guard permits only GSI-backed additive attribute definitions", ()
       /protected properties/,
     );
   }
+});
+
+const stagedIndex = (name, partitionKey, sortKey) => ({
+  IndexName: name,
+  KeySchema: [
+    { AttributeName: partitionKey, KeyType: "HASH" },
+    { AttributeName: sortKey, KeyType: "RANGE" },
+  ],
+  Projection: { ProjectionType: "KEYS_ONLY" },
+});
+
+function stagedGsiTemplate(indexes) {
+  const attributeNames = new Set(["pk", "sk"]);
+  for (const index of indexes)
+    for (const key of index.KeySchema) attributeNames.add(key.AttributeName);
+  return {
+    Resources: {
+      EventIngestionTable: {
+        Type: "AWS::DynamoDB::Table",
+        Properties: {
+          AttributeDefinitions: [...attributeNames].map((AttributeName) => ({
+            AttributeName,
+            AttributeType: "S",
+          })),
+          KeySchema: [
+            { AttributeName: "pk", KeyType: "HASH" },
+            { AttributeName: "sk", KeyType: "RANGE" },
+          ],
+          GlobalSecondaryIndexes: structuredClone(indexes),
+        },
+        DeletionPolicy: "Retain",
+        UpdateReplacePolicy: "Retain",
+      },
+    },
+    Outputs: { ExistingOutput: { Value: "unchanged" } },
+  };
+}
+
+test("GSI stage planning deterministically leaves only one index for the final deploy", () => {
+  const existingIndex = stagedIndex("existing-v1", "pk", "sk");
+  const activeIndex = stagedIndex(
+    "opportunity-active-v1",
+    "activePk",
+    "activeSk",
+  );
+  const rankIndex = stagedIndex("opportunity-rank-v1", "rankPk", "rankSk");
+  const existing = stagedGsiTemplate([existingIndex]);
+  const target = stagedGsiTemplate([existingIndex, rankIndex, activeIndex]);
+  const stages = planDynamoGsiDeploymentStages(existing, target);
+  assert.equal(stages.length, 1);
+  assert.equal(stages[0].logicalId, "EventIngestionTable");
+  assert.equal(stages[0].indexName, "opportunity-active-v1");
+  assert.deepEqual(
+    stages[0].template.Resources.EventIngestionTable.Properties.GlobalSecondaryIndexes.map(
+      ({ IndexName }) => IndexName,
+    ),
+    ["existing-v1", "opportunity-active-v1"],
+  );
+  assert.deepEqual(stages[0].template.Outputs, existing.Outputs);
+  assert.deepEqual(
+    target.Resources.EventIngestionTable.Properties.GlobalSecondaryIndexes.map(
+      ({ IndexName }) => IndexName,
+    ),
+    ["existing-v1", "opportunity-rank-v1", "opportunity-active-v1"],
+  );
+  assert.equal(
+    planDynamoGsiDeploymentStages(stages[0].template, target).length,
+    0,
+  );
+});
+
+test("GSI stage planning fails closed on removals, mutations, ambiguity, and excessive stages", () => {
+  const existingIndex = stagedIndex("existing-v1", "pk", "sk");
+  const existing = stagedGsiTemplate([existingIndex]);
+  const additive = stagedGsiTemplate([
+    existingIndex,
+    stagedIndex("new-index-v1", "newPk", "newSk"),
+  ]);
+  const removed = stagedGsiTemplate([]);
+  assert.throws(
+    () => planDynamoGsiDeploymentStages(existing, removed),
+    /protected properties|index removal/,
+  );
+  const mutated = structuredClone(additive);
+  mutated.Resources.EventIngestionTable.Properties.GlobalSecondaryIndexes[0].Projection.ProjectionType =
+    "ALL";
+  assert.throws(
+    () => planDynamoGsiDeploymentStages(existing, mutated),
+    /protected properties|index mutation/,
+  );
+  for (const ambiguous of [
+    (() => {
+      const copy = structuredClone(additive);
+      delete copy.Resources.EventIngestionTable.Properties
+        .GlobalSecondaryIndexes[1].IndexName;
+      return copy;
+    })(),
+    (() => {
+      const copy = structuredClone(additive);
+      copy.Resources.EventIngestionTable.Properties.GlobalSecondaryIndexes.push(
+        structuredClone(
+          copy.Resources.EventIngestionTable.Properties
+            .GlobalSecondaryIndexes[1],
+        ),
+      );
+      return copy;
+    })(),
+  ])
+    assert.throws(
+      () => planDynamoGsiDeploymentStages(existing, ambiguous),
+      /protected properties|ambiguous/,
+    );
+  const ambiguousExisting = structuredClone(existing);
+  ambiguousExisting.Resources.EventIngestionTable.Properties.GlobalSecondaryIndexes[0].KeySchema =
+    [];
+  assert.throws(
+    () =>
+      planDynamoGsiDeploymentStages(
+        ambiguousExisting,
+        structuredClone(ambiguousExisting),
+      ),
+    /ambiguous/,
+  );
+  const tooMany = stagedGsiTemplate([
+    existingIndex,
+    ...Array.from({ length: 10 }, (_, index) =>
+      stagedIndex(`new-index-${index}`, `newPk${index}`, `newSk${index}`),
+    ),
+  ]);
+  assert.throws(
+    () => planDynamoGsiDeploymentStages(existing, tooMany),
+    /too many intermediate updates/,
+  );
+});
+
+function cloudAssemblyFixture(templateContents) {
+  const hash = createHash("sha256").update(templateContents).digest("hex");
+  return {
+    hash,
+    manifest: {
+      artifacts: {
+        "FindTheEdge-dev-Foundation": {
+          type: "aws:cloudformation:stack",
+          properties: {
+            templateFile: "FindTheEdge-dev-Foundation.template.json",
+            stackTemplateAssetObjectUrl: `s3://cdk-hnb659fds-assets-228246988391-us-east-1/${hash}.json`,
+            additionalDependencies: ["FindTheEdge-dev-Foundation.assets"],
+          },
+          dependencies: ["FindTheEdge-dev-Foundation.assets"],
+        },
+        "FindTheEdge-dev-Foundation.assets": {
+          type: "cdk:asset-manifest",
+          properties: { file: "FindTheEdge-dev-Foundation.assets.json" },
+        },
+      },
+    },
+    assets: {
+      files: {
+        [hash]: {
+          displayName: "FindTheEdge-dev-Foundation Template",
+          source: {
+            path: "FindTheEdge-dev-Foundation.template.json",
+            packaging: "file",
+          },
+          destinations: {
+            target: {
+              bucketName: "cdk-hnb659fds-assets-228246988391-us-east-1",
+              objectKey: `${hash}.json`,
+              region: "us-east-1",
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+test("staged CDK assembly retargets the content-addressed template asset on every update", () => {
+  const initial = cloudAssemblyFixture('{"stage":"target"}');
+  const firstContents = '{"stage":"first"}';
+  const first = retargetCloudAssemblyTemplateAsset(
+    initial.manifest,
+    initial.assets,
+    firstContents,
+  );
+  const firstHash = createHash("sha256").update(firstContents).digest("hex");
+  assert.equal(first.templateHash, firstHash);
+  assert.equal(first.assetManifest.files[initial.hash], undefined);
+  assert.equal(
+    first.manifest.artifacts["FindTheEdge-dev-Foundation"].properties
+      .stackTemplateAssetObjectUrl,
+    `s3://cdk-hnb659fds-assets-228246988391-us-east-1/${firstHash}.json`,
+  );
+  assert.equal(
+    first.assetManifest.files[firstHash].destinations.target.objectKey,
+    `${firstHash}.json`,
+  );
+  const secondContents = '{"stage":"second"}';
+  const second = retargetCloudAssemblyTemplateAsset(
+    first.manifest,
+    first.assetManifest,
+    Buffer.from(secondContents),
+  );
+  const secondHash = createHash("sha256").update(secondContents).digest("hex");
+  assert.equal(second.templateHash, secondHash);
+  assert.equal(second.assetManifest.files[firstHash], undefined);
+  assert.ok(second.assetManifest.files[secondHash]);
+  const inconsistent = structuredClone(first.assetManifest);
+  inconsistent.files[firstHash].destinations.target.objectKey =
+    "cached-target.json";
+  assert.throws(
+    () =>
+      retargetCloudAssemblyTemplateAsset(
+        first.manifest,
+        inconsistent,
+        secondContents,
+      ),
+    /destination is inconsistent/,
+  );
+});
+
+test("DynamoDB GSI readiness binds the exact stack table and waits for ACTIVE", async () => {
+  const stackId =
+    "arn:aws:cloudformation:us-east-1:228246988391:stack/FindTheEdge-dev-Foundation/id";
+  const binding = resolveDynamoGsiBinding(
+    {
+      StackResourceDetail: {
+        StackId: stackId,
+        LogicalResourceId: "EventIngestionTable",
+        PhysicalResourceId: "find-the-edge-events",
+        ResourceType: "AWS::DynamoDB::Table",
+        ResourceStatus: "UPDATE_COMPLETE",
+      },
+    },
+    {
+      stackId,
+      logicalId: "EventIngestionTable",
+      indexName: "opportunity-active-v1",
+    },
+  );
+  assert.deepEqual(binding, {
+    tableName: "find-the-edge-events",
+    tableArn:
+      "arn:aws:dynamodb:us-east-1:228246988391:table/find-the-edge-events",
+    indexName: "opportunity-active-v1",
+  });
+  const response = (TableStatus, IndexStatus) => ({
+    Table: {
+      TableName: binding.tableName,
+      TableArn: binding.tableArn,
+      TableStatus,
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: binding.indexName,
+          IndexArn: `${binding.tableArn}/index/${binding.indexName}`,
+          IndexStatus,
+        },
+      ],
+    },
+  });
+  const states = [
+    response("UPDATING", "CREATING"),
+    response("ACTIVE", "ACTIVE"),
+  ];
+  let delays = 0;
+  assert.equal(
+    (
+      await waitForDynamoGsiActive(() => states.shift(), binding, {
+        attempts: 2,
+        delay: async () => {
+          delays += 1;
+        },
+      })
+    ).Table.TableStatus,
+    "ACTIVE",
+  );
+  assert.equal(delays, 1);
+  for (const unsafe of [
+    {
+      ...response("ACTIVE", "ACTIVE"),
+      Table: {
+        ...response("ACTIVE", "ACTIVE").Table,
+        TableArn: `${binding.tableArn}-other`,
+      },
+    },
+    {
+      ...response("ACTIVE", "ACTIVE"),
+      Table: {
+        ...response("ACTIVE", "ACTIVE").Table,
+        GlobalSecondaryIndexes: [
+          {
+            ...response("ACTIVE", "ACTIVE").Table.GlobalSecondaryIndexes[0],
+            IndexArn: `${binding.tableArn}/index/other`,
+          },
+        ],
+      },
+    },
+    response("DELETING", "DELETING"),
+  ])
+    await assert.rejects(
+      waitForDynamoGsiActive(async () => unsafe, binding, {
+        attempts: 1,
+        delay: async () => {},
+      }),
+      /escaped|intended index|unsafe readiness state/,
+    );
+  await assert.rejects(
+    waitForDynamoGsiActive(
+      async () => response("UPDATING", "CREATING"),
+      binding,
+      { attempts: 2, delay: async () => {} },
+    ),
+    /did not become active in time/,
+  );
+  await assert.rejects(
+    waitForDynamoGsiActive(async () => {
+      throw new Error("provider details");
+    }, binding),
+    (error) => {
+      assert.equal(
+        error.message,
+        "DynamoDB GSI readiness could not be verified",
+      );
+      return true;
+    },
+  );
+  assert.throws(
+    () =>
+      resolveDynamoGsiBinding(
+        { StackResourceDetail: { PhysicalResourceId: "other" } },
+        { stackId, logicalId: "EventIngestionTable", indexName: "index-v1" },
+      ),
+    /intended DynamoDB table/,
+  );
+});
+
+test("staged GSI deployment waits, re-reads, and drift-checks every intermediate template", async () => {
+  const existingIndex = stagedIndex("existing-v1", "pk", "sk");
+  const target = stagedGsiTemplate([
+    existingIndex,
+    stagedIndex("opportunity-rank-v1", "rankPk", "rankSk"),
+    stagedIndex("opportunity-active-v1", "activePk", "activeSk"),
+    stagedIndex("opportunity-third-v1", "thirdPk", "thirdSk"),
+  ]);
+  const events = [];
+  let deployed;
+  const result = await deployStagedDynamoGsiUpdates({
+    deployedTemplate: stagedGsiTemplate([existingIndex]),
+    targetTemplate: target,
+    deployStage: async (stage) => {
+      events.push(`deploy:${stage.indexName}`);
+      deployed = structuredClone(stage.template);
+    },
+    waitForStackStability: async () => events.push("wait"),
+    waitForIndexActive: async () => events.push("active"),
+    readDeployedTemplate: async () => {
+      events.push("read");
+      return structuredClone(deployed);
+    },
+    verifyDeployedDrift: async () => events.push("drift"),
+  });
+  assert.deepEqual(result.completed, [
+    {
+      logicalId: "EventIngestionTable",
+      indexName: "opportunity-active-v1",
+    },
+    {
+      logicalId: "EventIngestionTable",
+      indexName: "opportunity-rank-v1",
+    },
+  ]);
+  assert.deepEqual(events, [
+    "deploy:opportunity-active-v1",
+    "wait",
+    "active",
+    "read",
+    "drift",
+    "deploy:opportunity-rank-v1",
+    "wait",
+    "active",
+    "read",
+    "drift",
+  ]);
+  assert.equal(
+    planDynamoGsiDeploymentStages(result.deployedTemplate, target).length,
+    0,
+  );
+});
+
+test("staged GSI deployment rejects an intermediate template mismatch before drift validation", async () => {
+  const existingIndex = stagedIndex("existing-v1", "pk", "sk");
+  const existing = stagedGsiTemplate([existingIndex]);
+  const target = stagedGsiTemplate([
+    existingIndex,
+    stagedIndex("new-a-v1", "aPk", "aSk"),
+    stagedIndex("new-b-v1", "bPk", "bSk"),
+  ]);
+  let driftChecks = 0;
+  await assert.rejects(
+    deployStagedDynamoGsiUpdates({
+      deployedTemplate: existing,
+      targetTemplate: target,
+      deployStage: async () => {},
+      waitForStackStability: async () => {},
+      waitForIndexActive: async () => {},
+      readDeployedTemplate: async () => existing,
+      verifyDeployedDrift: async () => {
+        driftChecks += 1;
+      },
+    }),
+    /did not match expectation/,
+  );
+  assert.equal(driftChecks, 0);
+  assert.throws(
+    () => assertDeployedTemplateMatches(target, existing),
+    /did not match expectation/,
+  );
 });
 
 test("retained guard permits only the additive NEW_IMAGE table stream transition", () => {

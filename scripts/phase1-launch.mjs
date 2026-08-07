@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { chmod, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { buildPhase1Web } from "./build-phase1-web.mjs";
@@ -9,6 +9,70 @@ import { run } from "./phase1-support.mjs";
 export const LAUNCH_ACCOUNT = "228246988391";
 export const LAUNCH_REGION = "us-east-1";
 export const LAUNCH_STACK = "FindTheEdge-dev-Foundation";
+export const MAX_INTERMEDIATE_GSI_STAGES = 8;
+export const DYNAMO_GSI_ACTIVE_ATTEMPTS = 360;
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical(value[key])]),
+    );
+  return value;
+}
+
+function same(left, right) {
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+function uniqueNamedMap(
+  items,
+  nameProperty,
+  validName = (name) => name.length > 0,
+) {
+  if (items === undefined) return new Map();
+  if (!Array.isArray(items)) return undefined;
+  const mapped = new Map();
+  for (const item of items) {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      return undefined;
+    const name = item[nameProperty];
+    if (typeof name !== "string" || !validName(name) || mapped.has(name))
+      return undefined;
+    mapped.set(name, item);
+  }
+  return mapped;
+}
+
+function validDynamoIndexName(name) {
+  return (
+    name.length >= 3 && name.length <= 255 && /^[A-Za-z0-9_.-]+$/.test(name)
+  );
+}
+
+function dynamoKeyAttributes(keySchema) {
+  if (!Array.isArray(keySchema) || keySchema.length < 1 || keySchema.length > 2)
+    return undefined;
+  const attributes = new Set();
+  const keyTypes = new Set();
+  for (const key of keySchema) {
+    if (!key || typeof key !== "object" || Array.isArray(key)) return undefined;
+    if (
+      typeof key.AttributeName !== "string" ||
+      key.AttributeName.length === 0 ||
+      (key.KeyType !== "HASH" && key.KeyType !== "RANGE") ||
+      attributes.has(key.AttributeName) ||
+      keyTypes.has(key.KeyType)
+    )
+      return undefined;
+    attributes.add(key.AttributeName);
+    keyTypes.add(key.KeyType);
+  }
+  if (!keyTypes.has("HASH")) return undefined;
+  return attributes;
+}
 
 export function validateLaunchEnvironment(environment) {
   if (environment.FTE_PHASE1_LAUNCH !== "1")
@@ -50,18 +114,6 @@ function guardedRun(command, arguments_, environment, options = {}) {
 }
 
 export function assertRetainedResourcesSafe(existing, proposed) {
-  const canonical = (value) => {
-    if (Array.isArray(value)) return value.map(canonical);
-    if (value && typeof value === "object")
-      return Object.fromEntries(
-        Object.keys(value)
-          .sort()
-          .map((key) => [key, canonical(value[key])]),
-      );
-    return value;
-  };
-  const same = (left, right) =>
-    JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
   const requireSame = (before, after, properties) => {
     for (const property of properties)
       if (!same(before[property], after[property])) return false;
@@ -75,26 +127,6 @@ export function assertRetainedResourcesSafe(existing, proposed) {
     (before[property] ?? []).every((item) =>
       (after[property] ?? []).some((candidate) => same(item, candidate)),
     );
-  const uniqueNamedMap = (
-    items,
-    nameProperty,
-    validName = (name) => name.length > 0,
-  ) => {
-    if (items === undefined) return new Map();
-    if (!Array.isArray(items)) return undefined;
-    const mapped = new Map();
-    for (const item of items) {
-      if (!item || typeof item !== "object" || Array.isArray(item))
-        return undefined;
-      const name = item[nameProperty];
-      if (typeof name !== "string" || !validName(name) || mapped.has(name))
-        return undefined;
-      mapped.set(name, item);
-    }
-    return mapped;
-  };
-  const validDynamoIndexName = (name) =>
-    name.length >= 3 && name.length <= 255 && /^[A-Za-z0-9_.-]+$/.test(name);
   const preservesNamedIndexes = (oldIndexes, newIndexes) => {
     const oldByName = uniqueNamedMap(
       oldIndexes,
@@ -112,32 +144,6 @@ export function assertRetainedResourcesSafe(existing, proposed) {
       if (!nextIndex || !same(oldIndex, nextIndex)) return false;
     }
     return true;
-  };
-  const dynamoKeyAttributes = (keySchema) => {
-    if (
-      !Array.isArray(keySchema) ||
-      keySchema.length < 1 ||
-      keySchema.length > 2
-    )
-      return undefined;
-    const attributes = new Set();
-    const keyTypes = new Set();
-    for (const key of keySchema) {
-      if (!key || typeof key !== "object" || Array.isArray(key))
-        return undefined;
-      if (
-        typeof key.AttributeName !== "string" ||
-        key.AttributeName.length === 0 ||
-        (key.KeyType !== "HASH" && key.KeyType !== "RANGE") ||
-        attributes.has(key.AttributeName) ||
-        keyTypes.has(key.KeyType)
-      )
-        return undefined;
-      attributes.add(key.AttributeName);
-      keyTypes.add(key.KeyType);
-    }
-    if (!keyTypes.has("HASH")) return undefined;
-    return attributes;
   };
   const preservesDynamoAttributeDefinitions = (before, after) => {
     const oldDefinitions = uniqueNamedMap(
@@ -367,6 +373,315 @@ export function assertRetainedResourcesSafe(existing, proposed) {
   }
 }
 
+function analyzeDynamoGsiChanges(existing, proposed) {
+  if (
+    !existing?.Resources ||
+    typeof existing.Resources !== "object" ||
+    Array.isArray(existing.Resources) ||
+    !proposed?.Resources ||
+    typeof proposed.Resources !== "object" ||
+    Array.isArray(proposed.Resources)
+  )
+    throw new Error("GSI staging requires unambiguous stack resources");
+  const additions = [];
+  for (const [logicalId, resource] of Object.entries(existing.Resources)) {
+    if (resource?.Type !== "AWS::DynamoDB::Table") continue;
+    const next = proposed.Resources[logicalId];
+    if (!next || next.Type !== "AWS::DynamoDB::Table")
+      throw new Error(`GSI staging rejected table removal ${logicalId}`);
+    const oldIndexes = uniqueNamedMap(
+      resource.Properties?.GlobalSecondaryIndexes,
+      "IndexName",
+      validDynamoIndexName,
+    );
+    const newIndexes = uniqueNamedMap(
+      next.Properties?.GlobalSecondaryIndexes,
+      "IndexName",
+      validDynamoIndexName,
+    );
+    const oldDefinitions = uniqueNamedMap(
+      resource.Properties?.AttributeDefinitions,
+      "AttributeName",
+    );
+    const newDefinitions = uniqueNamedMap(
+      next.Properties?.AttributeDefinitions,
+      "AttributeName",
+    );
+    if (!oldIndexes || !newIndexes || !oldDefinitions || !newDefinitions)
+      throw new Error(`GSI staging found ambiguous indexes on ${logicalId}`);
+    for (const definitions of [oldDefinitions, newDefinitions])
+      for (const definition of definitions.values())
+        if (!["S", "N", "B"].includes(definition.AttributeType))
+          throw new Error(
+            `GSI staging found ambiguous attributes on ${logicalId}`,
+          );
+    for (const [indexes, definitions] of [
+      [oldIndexes, oldDefinitions],
+      [newIndexes, newDefinitions],
+    ])
+      for (const [name, index] of indexes) {
+        const keyAttributes = dynamoKeyAttributes(index.KeySchema);
+        if (
+          !keyAttributes ||
+          [...keyAttributes].some((attribute) => !definitions.has(attribute))
+        )
+          throw new Error(
+            `GSI staging found ambiguous index ${logicalId}.${name}`,
+          );
+      }
+    for (const [name, definition] of oldDefinitions) {
+      const nextDefinition = newDefinitions.get(name);
+      if (
+        !nextDefinition ||
+        !same(definition.AttributeType, nextDefinition.AttributeType)
+      )
+        throw new Error(
+          `GSI staging rejected attribute mutation on ${logicalId}`,
+        );
+    }
+    for (const [name, index] of oldIndexes) {
+      const nextIndex = newIndexes.get(name);
+      if (!nextIndex)
+        throw new Error(`GSI staging rejected index removal on ${logicalId}`);
+      if (!same(index, nextIndex))
+        throw new Error(`GSI staging rejected index mutation on ${logicalId}`);
+    }
+    const addedKeyAttributes = new Set();
+    for (const [name, index] of newIndexes) {
+      if (oldIndexes.has(name)) continue;
+      const keyAttributes = dynamoKeyAttributes(index.KeySchema);
+      if (!keyAttributes)
+        throw new Error(
+          `GSI staging found ambiguous index ${logicalId}.${name}`,
+        );
+      for (const attributeName of keyAttributes) {
+        const definition = newDefinitions.get(attributeName);
+        if (!definition || !["S", "N", "B"].includes(definition.AttributeType))
+          throw new Error(
+            `GSI staging found ambiguous index attribute ${logicalId}.${name}`,
+          );
+        addedKeyAttributes.add(attributeName);
+      }
+      additions.push({
+        logicalId,
+        indexName: name,
+        index,
+        keyAttributes: [...keyAttributes],
+        targetDefinitions: newDefinitions,
+      });
+    }
+    for (const name of newDefinitions.keys())
+      if (!oldDefinitions.has(name) && !addedKeyAttributes.has(name))
+        throw new Error(
+          `GSI staging found ambiguous attributes on ${logicalId}`,
+        );
+  }
+  const compare = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
+  return additions.sort(
+    (left, right) =>
+      compare(left.logicalId, right.logicalId) ||
+      compare(left.indexName, right.indexName),
+  );
+}
+
+export function planDynamoGsiDeploymentStages(
+  existing,
+  proposed,
+  { maxIntermediateStages = MAX_INTERMEDIATE_GSI_STAGES } = {},
+) {
+  if (
+    !Number.isSafeInteger(maxIntermediateStages) ||
+    maxIntermediateStages < 0 ||
+    maxIntermediateStages > MAX_INTERMEDIATE_GSI_STAGES
+  )
+    throw new Error("GSI staging limit is invalid");
+  assertRetainedResourcesSafe(existing, proposed);
+  const additions = analyzeDynamoGsiChanges(existing, proposed);
+  const intermediateCount = Math.max(0, additions.length - 1);
+  if (intermediateCount > maxIntermediateStages)
+    throw new Error("GSI staging requires too many intermediate updates");
+  const rolling = structuredClone(existing);
+  const stages = [];
+  for (const addition of additions.slice(0, -1)) {
+    const before = structuredClone(rolling);
+    const properties = rolling.Resources[addition.logicalId].Properties ?? {};
+    rolling.Resources[addition.logicalId].Properties = properties;
+    properties.GlobalSecondaryIndexes = [
+      ...(properties.GlobalSecondaryIndexes ?? []),
+      structuredClone(addition.index),
+    ];
+    const definitions = uniqueNamedMap(
+      properties.AttributeDefinitions,
+      "AttributeName",
+    );
+    if (!definitions)
+      throw new Error(
+        `GSI staging found ambiguous attributes on ${addition.logicalId}`,
+      );
+    for (const attributeName of addition.keyAttributes) {
+      if (definitions.has(attributeName)) continue;
+      const definition = addition.targetDefinitions.get(attributeName);
+      properties.AttributeDefinitions = [
+        ...(properties.AttributeDefinitions ?? []),
+        structuredClone(definition),
+      ];
+      definitions.set(attributeName, definition);
+    }
+    assertRetainedResourcesSafe(before, rolling);
+    const stagedAdditions = analyzeDynamoGsiChanges(before, rolling);
+    if (
+      stagedAdditions.length !== 1 ||
+      stagedAdditions[0].logicalId !== addition.logicalId ||
+      stagedAdditions[0].indexName !== addition.indexName
+    )
+      throw new Error("GSI staging generated an unsafe intermediate update");
+    stages.push({
+      sequence: stages.length + 1,
+      logicalId: addition.logicalId,
+      indexName: addition.indexName,
+      template: structuredClone(rolling),
+    });
+  }
+  return stages;
+}
+
+export function assertDeployedTemplateMatches(expected, actual) {
+  if (!same(expected, actual))
+    throw new Error("Deployed GSI staging template did not match expectation");
+}
+
+export function retargetCloudAssemblyTemplateAsset(
+  manifest,
+  assetManifest,
+  templateContents,
+) {
+  const nextManifest = structuredClone(manifest);
+  const nextAssets = structuredClone(assetManifest);
+  const stackArtifact = nextManifest?.artifacts?.[LAUNCH_STACK];
+  const assetArtifact = nextManifest?.artifacts?.[`${LAUNCH_STACK}.assets`];
+  const templateFile = `${LAUNCH_STACK}.template.json`;
+  const assetManifestFile = `${LAUNCH_STACK}.assets.json`;
+  if (
+    stackArtifact?.type !== "aws:cloudformation:stack" ||
+    stackArtifact.properties?.templateFile !== templateFile ||
+    assetArtifact?.type !== "cdk:asset-manifest" ||
+    assetArtifact.properties?.file !== assetManifestFile ||
+    !stackArtifact.dependencies?.includes(`${LAUNCH_STACK}.assets`) ||
+    !stackArtifact.properties?.additionalDependencies?.includes(
+      `${LAUNCH_STACK}.assets`,
+    )
+  )
+    throw new Error("Staged CDK assembly has ambiguous stack artifacts");
+  let templateUrl;
+  try {
+    templateUrl = new URL(stackArtifact.properties.stackTemplateAssetObjectUrl);
+  } catch {
+    throw new Error("Staged CDK assembly has an invalid template asset URL");
+  }
+  if (
+    templateUrl.protocol !== "s3:" ||
+    !templateUrl.hostname ||
+    templateUrl.search ||
+    templateUrl.hash
+  )
+    throw new Error("Staged CDK assembly has an invalid template asset URL");
+  const files = nextAssets?.files;
+  if (!files || typeof files !== "object" || Array.isArray(files))
+    throw new Error("Staged CDK assembly has ambiguous template assets");
+  const candidates = Object.entries(files).filter(
+    ([, asset]) =>
+      asset?.displayName === `${LAUNCH_STACK} Template` &&
+      asset.source?.path === templateFile &&
+      asset.source?.packaging === "file",
+  );
+  if (candidates.length !== 1)
+    throw new Error("Staged CDK assembly has ambiguous template assets");
+  const [oldHash, oldAsset] = candidates[0];
+  if (
+    !/^[0-9a-f]{64}$/.test(oldHash) ||
+    templateUrl.pathname !== `/${oldHash}.json`
+  )
+    throw new Error("Staged CDK assembly template hash is inconsistent");
+  const destinations = oldAsset.destinations;
+  if (
+    !destinations ||
+    typeof destinations !== "object" ||
+    Array.isArray(destinations) ||
+    Object.keys(destinations).length === 0
+  )
+    throw new Error("Staged CDK assembly has ambiguous template destinations");
+  for (const destination of Object.values(destinations))
+    if (
+      destination?.bucketName !== templateUrl.hostname ||
+      destination.region !== LAUNCH_REGION ||
+      destination.objectKey !== `${oldHash}.json`
+    )
+      throw new Error(
+        "Staged CDK assembly template destination is inconsistent",
+      );
+  const newHash = createHash("sha256").update(templateContents).digest("hex");
+  if (oldHash !== newHash && files[newHash])
+    throw new Error("Staged CDK assembly template hash is ambiguous");
+  const newAsset = structuredClone(oldAsset);
+  for (const destination of Object.values(newAsset.destinations))
+    destination.objectKey = `${newHash}.json`;
+  delete files[oldHash];
+  files[newHash] = newAsset;
+  templateUrl.pathname = `/${newHash}.json`;
+  stackArtifact.properties.stackTemplateAssetObjectUrl = templateUrl.href;
+  return {
+    manifest: nextManifest,
+    assetManifest: nextAssets,
+    assetManifestFile,
+    templateFile,
+    templateHash: newHash,
+  };
+}
+
+export async function deployStagedDynamoGsiUpdates({
+  deployedTemplate,
+  targetTemplate,
+  deployStage,
+  waitForStackStability,
+  waitForIndexActive,
+  readDeployedTemplate,
+  verifyDeployedDrift,
+  maxIntermediateStages = MAX_INTERMEDIATE_GSI_STAGES,
+}) {
+  let current = structuredClone(deployedTemplate);
+  const initialStages = planDynamoGsiDeploymentStages(current, targetTemplate, {
+    maxIntermediateStages,
+  });
+  const completed = [];
+  while (completed.length < initialStages.length) {
+    const remaining = planDynamoGsiDeploymentStages(current, targetTemplate, {
+      maxIntermediateStages: initialStages.length - completed.length,
+    });
+    const stage = remaining[0];
+    if (!stage)
+      throw new Error("GSI staging stopped before the target was deployable");
+    await deployStage(stage);
+    await waitForStackStability();
+    await waitForIndexActive(stage);
+    const actual = await readDeployedTemplate();
+    assertDeployedTemplateMatches(stage.template, actual);
+    assertRetainedResourcesSafe(actual, targetTemplate);
+    analyzeDynamoGsiChanges(actual, targetTemplate);
+    await verifyDeployedDrift();
+    current = actual;
+    completed.push({
+      logicalId: stage.logicalId,
+      indexName: stage.indexName,
+    });
+  }
+  const finalStages = planDynamoGsiDeploymentStages(current, targetTemplate, {
+    maxIntermediateStages: 0,
+  });
+  if (finalStages.length !== 0)
+    throw new Error("GSI staging did not leave a safe final update");
+  return { deployedTemplate: current, completed };
+}
+
 async function acquireHostedUiToken(outputs, username, password) {
   const { chromium } = await import("@playwright/test");
   const browser = await chromium.launch({ headless: true });
@@ -502,6 +817,38 @@ function existingStack(environment) {
   return resolveExistingStackSummary(response.StackSummaries);
 }
 
+function deployedStackTemplate(stackId, environment) {
+  verifyIdentity(environment);
+  if (
+    !stackId?.startsWith(
+      `arn:aws:cloudformation:${LAUNCH_REGION}:${LAUNCH_ACCOUNT}:stack/${LAUNCH_STACK}/`,
+    )
+  )
+    throw new Error("Template read escaped the intended launch stack");
+  const body = JSON.parse(
+    run(
+      "aws",
+      [
+        "cloudformation",
+        "get-template",
+        "--stack-name",
+        stackId,
+        "--region",
+        LAUNCH_REGION,
+        "--template-stage",
+        "Original",
+        "--output",
+        "json",
+      ],
+      { capture: true, env: environment },
+    ),
+  ).TemplateBody;
+  const template = typeof body === "string" ? JSON.parse(body) : body;
+  if (!template || typeof template !== "object" || Array.isArray(template))
+    throw new Error("CloudFormation returned an ambiguous deployed template");
+  return template;
+}
+
 export async function waitForStackDriftResult(
   readStatus,
   {
@@ -520,6 +867,127 @@ export async function waitForStackDriftResult(
     await delay(2_000);
   }
   throw new Error("Intended stack drift detection did not complete in time");
+}
+
+export function resolveDynamoGsiBinding(
+  response,
+  { stackId, logicalId, indexName },
+) {
+  const detail = response?.StackResourceDetail;
+  const tableName = detail?.PhysicalResourceId;
+  if (
+    detail?.StackId !== stackId ||
+    detail?.LogicalResourceId !== logicalId ||
+    detail?.ResourceType !== "AWS::DynamoDB::Table" ||
+    !["CREATE_COMPLETE", "UPDATE_COMPLETE"].includes(detail?.ResourceStatus) ||
+    typeof tableName !== "string" ||
+    !/^[A-Za-z0-9_.-]{3,255}$/.test(tableName) ||
+    !validDynamoIndexName(indexName)
+  )
+    throw new Error(
+      "CloudFormation did not resolve the intended DynamoDB table",
+    );
+  return {
+    tableName,
+    tableArn: `arn:aws:dynamodb:${LAUNCH_REGION}:${LAUNCH_ACCOUNT}:table/${tableName}`,
+    indexName,
+  };
+}
+
+export async function waitForDynamoGsiActive(
+  readTable,
+  binding,
+  {
+    attempts = DYNAMO_GSI_ACTIVE_ATTEMPTS,
+    delay = (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  } = {},
+) {
+  if (!Number.isSafeInteger(attempts) || attempts < 1)
+    throw new Error("DynamoDB GSI readiness limit is invalid");
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let response;
+    try {
+      response = await readTable();
+    } catch {
+      throw new Error("DynamoDB GSI readiness could not be verified");
+    }
+    const table = response?.Table;
+    const indexes = table?.GlobalSecondaryIndexes;
+    if (
+      table?.TableName !== binding.tableName ||
+      table?.TableArn !== binding.tableArn ||
+      !Array.isArray(indexes)
+    )
+      throw new Error("DynamoDB GSI readiness escaped the intended table");
+    const named = uniqueNamedMap(indexes, "IndexName", validDynamoIndexName);
+    const index = named?.get(binding.indexName);
+    if (
+      !named ||
+      !index ||
+      index.IndexArn !== `${binding.tableArn}/index/${binding.indexName}`
+    )
+      throw new Error(
+        "DynamoDB GSI readiness did not resolve the intended index",
+      );
+    if (table.TableStatus === "ACTIVE" && index.IndexStatus === "ACTIVE")
+      return response;
+    if (
+      !["ACTIVE", "UPDATING"].includes(table.TableStatus) ||
+      !["ACTIVE", "CREATING", "UPDATING"].includes(index.IndexStatus)
+    )
+      throw new Error("DynamoDB GSI entered an unsafe readiness state");
+    if (attempt + 1 < attempts) await delay(10_000);
+  }
+  throw new Error("DynamoDB GSI did not become active in time");
+}
+
+async function waitForDeployedGsiActive(
+  environment,
+  stackId,
+  { logicalId, indexName },
+) {
+  verifyIdentity(environment);
+  const binding = resolveDynamoGsiBinding(
+    JSON.parse(
+      run(
+        "aws",
+        [
+          "cloudformation",
+          "describe-stack-resource",
+          "--stack-name",
+          stackId,
+          "--logical-resource-id",
+          logicalId,
+          "--region",
+          LAUNCH_REGION,
+          "--output",
+          "json",
+        ],
+        { capture: true, env: environment },
+      ),
+    ),
+    { stackId, logicalId, indexName },
+  );
+  await waitForDynamoGsiActive(() => {
+    verifyIdentity(environment);
+    return JSON.parse(
+      run(
+        "aws",
+        [
+          "dynamodb",
+          "describe-table",
+          "--table-name",
+          binding.tableName,
+          "--region",
+          LAUNCH_REGION,
+          "--output",
+          "json",
+        ],
+        { capture: true, env: environment },
+      ),
+    );
+  }, binding);
 }
 
 export function assertStackResourceDriftsSafe(drifts) {
@@ -991,33 +1459,141 @@ export async function phase1Launch(environment = process.env) {
       "utf8",
     ),
   );
+  const synthesizedAssembly = resolve("infra/cdk/cdk.out");
   const deployedStack = existingStack(deployEnvironment);
+  let finalGsiWaitTarget;
   if (deployedStack) {
-    const deployedTemplate = JSON.parse(
-      run(
-        "aws",
-        [
-          "cloudformation",
-          "get-template",
-          "--stack-name",
-          deployedStack.StackId,
-          "--region",
-          LAUNCH_REGION,
-          "--template-stage",
-          "Original",
-          "--output",
-          "json",
-        ],
-        { capture: true, env: deployEnvironment },
-      ),
-    ).TemplateBody;
-    assertRetainedResourcesSafe(
-      typeof deployedTemplate === "string"
-        ? JSON.parse(deployedTemplate)
-        : deployedTemplate,
+    const deployedTemplate = deployedStackTemplate(
+      deployedStack.StackId,
+      deployEnvironment,
+    );
+    let deployedForFinal = deployedTemplate;
+    assertRetainedResourcesSafe(deployedTemplate, proposedTemplate);
+    await verifyStackDrift(deployEnvironment);
+    const plannedStages = planDynamoGsiDeploymentStages(
+      deployedTemplate,
       proposedTemplate,
     );
-    await verifyStackDrift(deployEnvironment);
+    if (plannedStages.length > 0) {
+      const temporary = await mkdtemp(
+        resolve(tmpdir(), "fte-phase1-gsi-stages-"),
+      );
+      const stagedAssembly = resolve(temporary, "cdk.out");
+      try {
+        await cp(synthesizedAssembly, stagedAssembly, { recursive: true });
+        let stagedManifest = JSON.parse(
+          await readFile(resolve(stagedAssembly, "manifest.json"), "utf8"),
+        );
+        let stagedAssetManifest = JSON.parse(
+          await readFile(
+            resolve(stagedAssembly, `${LAUNCH_STACK}.assets.json`),
+            "utf8",
+          ),
+        );
+        const result = await deployStagedDynamoGsiUpdates({
+          deployedTemplate,
+          targetTemplate: proposedTemplate,
+          deployStage: async (stage) => {
+            const templateContents = JSON.stringify(stage.template);
+            const retargeted = retargetCloudAssemblyTemplateAsset(
+              stagedManifest,
+              stagedAssetManifest,
+              templateContents,
+            );
+            await writeFile(
+              resolve(stagedAssembly, retargeted.templateFile),
+              templateContents,
+              { mode: 0o600 },
+            );
+            await writeFile(
+              resolve(stagedAssembly, retargeted.assetManifestFile),
+              JSON.stringify(retargeted.assetManifest),
+              { mode: 0o600 },
+            );
+            await writeFile(
+              resolve(stagedAssembly, "manifest.json"),
+              JSON.stringify(retargeted.manifest),
+              { mode: 0o600 },
+            );
+            const verified = retargetCloudAssemblyTemplateAsset(
+              JSON.parse(
+                await readFile(
+                  resolve(stagedAssembly, "manifest.json"),
+                  "utf8",
+                ),
+              ),
+              JSON.parse(
+                await readFile(
+                  resolve(stagedAssembly, retargeted.assetManifestFile),
+                  "utf8",
+                ),
+              ),
+              await readFile(resolve(stagedAssembly, retargeted.templateFile)),
+            );
+            if (
+              verified.templateHash !== retargeted.templateHash ||
+              !same(verified.manifest, retargeted.manifest) ||
+              !same(verified.assetManifest, retargeted.assetManifest)
+            )
+              throw new Error("Staged CDK assembly verification failed");
+            stagedManifest = retargeted.manifest;
+            stagedAssetManifest = retargeted.assetManifest;
+            guardedRun(
+              "pnpm",
+              [
+                "--filter",
+                "@find-the-edge/infra-cdk",
+                "exec",
+                "cdk",
+                "deploy",
+                "--app",
+                stagedAssembly,
+                LAUNCH_STACK,
+                "--require-approval",
+                "never",
+              ],
+              deployEnvironment,
+              { timeout: 1_800_000 },
+            );
+          },
+          waitForStackStability: async () => {
+            guardedRun(
+              "aws",
+              [
+                "cloudformation",
+                "wait",
+                "stack-update-complete",
+                "--stack-name",
+                deployedStack.StackId,
+                "--region",
+                LAUNCH_REGION,
+              ],
+              deployEnvironment,
+              { capture: true, timeout: 1_800_000 },
+            );
+          },
+          waitForIndexActive: async (stage) =>
+            waitForDeployedGsiActive(
+              deployEnvironment,
+              deployedStack.StackId,
+              stage,
+            ),
+          readDeployedTemplate: async () =>
+            deployedStackTemplate(deployedStack.StackId, deployEnvironment),
+          verifyDeployedDrift: async () => verifyStackDrift(deployEnvironment),
+        });
+        deployedForFinal = result.deployedTemplate;
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
+    }
+    const finalAdditions = analyzeDynamoGsiChanges(
+      deployedForFinal,
+      proposedTemplate,
+    );
+    if (finalAdditions.length > 1)
+      throw new Error("GSI staging did not leave a safe final update");
+    finalGsiWaitTarget = finalAdditions[0];
   }
   guardedRun(
     "pnpm",
@@ -1028,7 +1604,7 @@ export async function phase1Launch(environment = process.env) {
       "cdk",
       "deploy",
       "--app",
-      "node dist/app.js",
+      synthesizedAssembly,
       LAUNCH_STACK,
       "--require-approval",
       "never",
@@ -1036,6 +1612,27 @@ export async function phase1Launch(environment = process.env) {
     deployEnvironment,
     { timeout: 1_800_000 },
   );
+  if (deployedStack && finalGsiWaitTarget) {
+    guardedRun(
+      "aws",
+      [
+        "cloudformation",
+        "wait",
+        "stack-update-complete",
+        "--stack-name",
+        deployedStack.StackId,
+        "--region",
+        LAUNCH_REGION,
+      ],
+      deployEnvironment,
+      { capture: true, timeout: 1_800_000 },
+    );
+    await waitForDeployedGsiActive(
+      deployEnvironment,
+      deployedStack.StackId,
+      finalGsiWaitTarget,
+    );
+  }
   const outputs = stackOutputs(deployEnvironment);
   const required = [
     "EventsApiEndpoint",
