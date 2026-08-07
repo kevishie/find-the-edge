@@ -4,7 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { mkdtemp } from "node:fs/promises";
-import { assertSafeBundleOutput } from "./build-phase1-web.mjs";
+import {
+  assertRuntimeScriptOrder,
+  assertSafeBundleOutput,
+} from "./build-phase1-web.mjs";
+
+test("requires config then lazy provider before the application module", () => {
+  assert.doesNotThrow(() =>
+    assertRuntimeScriptOrder(
+      '<script src="/runtime-config.js"></script><script src="/cognito-token-provider.js"></script><script type="module"></script>',
+    ),
+  );
+  for (const html of [
+    '<script src="/runtime-config.js"></script><script type="module"></script>',
+    '<script src="/cognito-token-provider.js"></script><script src="/runtime-config.js"></script><script type="module"></script>',
+    '<script src="/runtime-config.js"></script><script type="module"></script><script src="/cognito-token-provider.js"></script>',
+  ])
+    assert.throws(() => assertRuntimeScriptOrder(html), /lazy authentication/);
+});
 
 test("allows only the dedicated real generated bundle subtree", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "fte-bundle-root-"));

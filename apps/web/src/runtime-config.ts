@@ -1,5 +1,10 @@
 const CONFIG_GLOBAL = "__FTE_RUNTIME_CONFIG__";
 const PROVIDER_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+const COGNITO_SCOPES = Object.freeze([
+  "events/events:read",
+  "events/scouting:read",
+  "events/scouting:write",
+] as const);
 
 export interface RuntimeConfig {
   schemaVersion: 1;
@@ -8,7 +13,7 @@ export interface RuntimeConfig {
   cognitoIssuer?: string;
   cognitoClientId?: string;
   cognitoDomain?: string;
-  cognitoScope?: string;
+  cognitoScopes?: readonly string[];
   callbackUrl?: string;
   logoutUrl?: string;
 }
@@ -59,6 +64,26 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+function hasExactCognitoScopes(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const ownKeys = Reflect.ownKeys(descriptors);
+  if (
+    ownKeys.some((key) => typeof key !== "string") ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor)) ||
+    ownDataValue(value, "length").value !== COGNITO_SCOPES.length
+  )
+    return false;
+  const expectedKeys = ["0", "1", "2", "length"];
+  if (
+    Object.keys(descriptors).sort().join("|") !== expectedKeys.sort().join("|")
+  )
+    return false;
+  return COGNITO_SCOPES.every(
+    (scope, index) => descriptors[String(index)]?.value === scope,
+  );
+}
+
 function validateApiBase(
   value: unknown,
   mode: NonNullable<BootstrapOptions["mode"]>,
@@ -101,7 +126,7 @@ function parseConfig(
     "cognitoClientId",
     "cognitoDomain",
     "cognitoIssuer",
-    "cognitoScope",
+    "cognitoScopes",
     "logoutUrl",
     "schemaVersion",
     "tokenProviderKey",
@@ -135,16 +160,26 @@ function parseConfig(
       "invalid-provider-key",
       "The session provider is not configured.",
     );
-  const launchConfig =
+  const launchConfig: Record<string, unknown> | undefined =
     actual.length === launch.length
-      ? Object.fromEntries(
-          launch
-            .filter((key) => !legacy.includes(key))
-            .map((key) => [key, ownDataValue(value, key).value]),
-        )
-      : {};
+      ? {
+          callbackUrl: ownDataValue(value, "callbackUrl").value,
+          cognitoClientId: ownDataValue(value, "cognitoClientId").value,
+          cognitoDomain: ownDataValue(value, "cognitoDomain").value,
+          cognitoIssuer: ownDataValue(value, "cognitoIssuer").value,
+          cognitoScopes: ownDataValue(value, "cognitoScopes").value,
+          logoutUrl: ownDataValue(value, "logoutUrl").value,
+        }
+      : undefined;
   if (actual.length === launch.length) {
-    for (const [key, item] of Object.entries(launchConfig)) {
+    if (!launchConfig || !hasExactCognitoScopes(launchConfig.cognitoScopes))
+      return configError(
+        "invalid-config",
+        "Launch configuration scopes are invalid.",
+      );
+    for (const [key, item] of Object.entries(launchConfig).filter(
+      ([key]) => key !== "cognitoScopes",
+    )) {
       if (
         typeof item !== "string" ||
         item.length === 0 ||
@@ -173,7 +208,6 @@ function parseConfig(
       const callback = new URL(launchConfig["callbackUrl"] as string);
       const logout = new URL(launchConfig["logoutUrl"] as string);
       if (
-        launchConfig["cognitoScope"] !== "events/events:read" ||
         domain.origin !== launchConfig["cognitoDomain"] ||
         domain.pathname !== "/" ||
         domain.search ||
@@ -197,7 +231,16 @@ function parseConfig(
       schemaVersion: 1,
       apiBase,
       ...(typeof tokenProviderKey === "string" ? { tokenProviderKey } : {}),
-      ...launchConfig,
+      ...(launchConfig
+        ? {
+            callbackUrl: launchConfig["callbackUrl"] as string,
+            cognitoClientId: launchConfig["cognitoClientId"] as string,
+            cognitoDomain: launchConfig["cognitoDomain"] as string,
+            cognitoIssuer: launchConfig["cognitoIssuer"] as string,
+            cognitoScopes: COGNITO_SCOPES,
+            logoutUrl: launchConfig["logoutUrl"] as string,
+          }
+        : {}),
     },
   };
 }

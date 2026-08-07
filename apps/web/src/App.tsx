@@ -56,6 +56,7 @@ import {
 import { detailMatchesRoute } from "./route-state";
 import { Dashboard } from "./dashboard";
 import { DataSources } from "./provider-status";
+import { ScoutEventButton, ScoutingProgress } from "./scouting";
 
 const SPLITS_REFRESH_INTERVAL_MS = 30_000;
 const oddsCellTimestamp = (
@@ -365,6 +366,13 @@ interface UiGamesClient {
     body: Readonly<Record<string, unknown>>,
     signal: AbortSignal,
   ): Promise<unknown>;
+  createScoutingJob?: NonNullable<
+    import("./api").GamesClient["createScoutingJob"]
+  >;
+  getScoutingJob?: NonNullable<import("./api").GamesClient["getScoutingJob"]>;
+  retryScoutingJob?: NonNullable<
+    import("./api").GamesClient["retryScoutingJob"]
+  >;
 }
 interface StrategyExperimentDto {
   readonly experimentId: string;
@@ -1118,6 +1126,7 @@ function EventExplorerRow({
   readonly game: UiGamesPage["items"][number];
   readonly explorerSearch: ExplorerSearch;
 }) {
+  const client = useContext(GamesClientContext);
   const prices = game.odds.state === "available" ? game.odds.selections : [];
   const market = (key: string) =>
     prices.filter(({ marketKey }) => marketKey === key);
@@ -1177,14 +1186,12 @@ function EventExplorerRow({
         >
           View Details
         </Link>
-        <span className="disabled-action">
-          <button type="button" disabled aria-describedby={`scout-${game.id}`}>
-            Scout
-          </button>
-          <small id={`scout-${game.id}`}>
-            Unavailable: Scout API is not built yet.
-          </small>
-        </span>
+        <ScoutEventButton
+          eventId={game.id}
+          eligible={game.status === "scheduled"}
+          disabledReason={`Scouting is available only for scheduled events. This event is ${game.status}.`}
+          client={client}
+        />
         <span className="disabled-action">
           <button type="button" disabled aria-describedby={`watch-${game.id}`}>
             Watchlist
@@ -1205,6 +1212,7 @@ function EventExplorerCard({
   readonly game: UiGamesPage["items"][number];
   readonly explorerSearch: ExplorerSearch;
 }) {
+  const client = useContext(GamesClientContext);
   const prices = game.odds.state === "available" ? game.odds.selections : [];
   return (
     <article className="event-explorer-card" data-event-id={game.id}>
@@ -1239,14 +1247,12 @@ function EventExplorerCard({
         View Details
       </Link>
       <div className="disabled-actions">
-        <span className="disabled-action">
-          <button disabled aria-describedby={`card-scout-${game.id}`}>
-            Scout
-          </button>
-          <small id={`card-scout-${game.id}`}>
-            Unavailable: Scout API is not built yet.
-          </small>
-        </span>
+        <ScoutEventButton
+          eventId={game.id}
+          eligible={game.status === "scheduled"}
+          disabledReason={`Scouting is available only for scheduled events. This event is ${game.status}.`}
+          client={client}
+        />
         <span className="disabled-action">
           <button disabled aria-describedby={`card-watch-${game.id}`}>
             Watchlist
@@ -3057,9 +3063,17 @@ function GameDetail() {
           <p className="lede">{easternDisplay(game.startsAt)} Eastern</p>
           <EventMetadataBadges game={game} />
         </div>
-        <Link className="detail-link" to="/games" search={detailSearch}>
-          Back to games
-        </Link>
+        <div className="event-detail-actions">
+          <ScoutEventButton
+            eventId={game.id}
+            eligible={game.status === "scheduled"}
+            disabledReason={`Scouting is available only for scheduled events. This event is ${game.status}.`}
+            client={client}
+          />
+          <Link className="detail-link" to="/games" search={detailSearch}>
+            Back to games
+          </Link>
+        </div>
       </header>
       <section
         className="odds-comparison"
@@ -4275,10 +4289,26 @@ const gameDetailRoute = createRoute({
   }),
   component: GameDetail,
 });
+function ScoutingProgressRoute() {
+  const { jobId } = useParams({ from: "/scout-jobs/$jobId" });
+  return (
+    <ScoutingProgress
+      key={jobId}
+      jobId={jobId}
+      client={useContext(GamesClientContext)}
+    />
+  );
+}
+const scoutingProgressRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/scout-jobs/$jobId",
+  component: ScoutingProgressRoute,
+});
 const routeTree = rootRoute.addChildren([
   indexRoute,
   gamesRoute,
   gameDetailRoute,
+  scoutingProgressRoute,
   splitsRoute,
   performanceRoute,
   dataSourcesRoute,

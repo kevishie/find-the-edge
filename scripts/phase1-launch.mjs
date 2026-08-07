@@ -630,6 +630,8 @@ export function validateStackOutputs(outputs) {
     throw new Error("Cognito domain is outside the intended region");
   if (
     outputs.CognitoScope !== "events/events:read" ||
+    outputs.ScoutingReadScope !== "events/scouting:read" ||
+    outputs.ScoutingWriteScope !== "events/scouting:write" ||
     outputs.CognitoCallbackUrl !== `${outputs.WebOrigin}/auth/callback`
   )
     throw new Error(
@@ -949,6 +951,8 @@ export async function phase1Launch(environment = process.env) {
     "ReviewerCognitoClientId",
     "CognitoDomain",
     "CognitoScope",
+    "ScoutingReadScope",
+    "ScoutingWriteScope",
     "CognitoCallbackUrl",
     "LiveOddsIngestionFunctionName",
     "SharpApiSecretName",
@@ -966,7 +970,11 @@ export async function phase1Launch(environment = process.env) {
     FTE_JWT_ISSUER: outputs.CognitoIssuer,
     FTE_JWT_AUDIENCE: outputs.CognitoClientId,
     FTE_COGNITO_DOMAIN: outputs.CognitoDomain,
-    FTE_COGNITO_SCOPE: outputs.CognitoScope,
+    FTE_COGNITO_SCOPES: [
+      outputs.CognitoScope,
+      outputs.ScoutingReadScope,
+      outputs.ScoutingWriteScope,
+    ].join(" "),
     FTE_COGNITO_CALLBACK_URL: outputs.CognitoCallbackUrl,
     FTE_COGNITO_LOGOUT_URL: outputs.WebOrigin,
     FTE_WEB_ORIGIN: outputs.WebOrigin,

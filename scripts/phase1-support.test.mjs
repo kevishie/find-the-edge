@@ -16,6 +16,11 @@ test("safe defaults are credential-free dev placeholders", () => {
   validateSafeDevConfig(config);
   assert.equal(config.stage, "dev");
   assert.match(config.apiBase, /^https:/);
+  assert.deepEqual(config.cognitoScopes, [
+    "events/events:read",
+    "events/scouting:read",
+    "events/scouting:write",
+  ]);
 });
 
 test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs", () => {
@@ -43,11 +48,16 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
       apiBase: "http://api.example.com",
     }),
   );
+  for (const cognitoScopes of [
+    ["events/events:read"],
+    ["events/events:read", "events/scouting:write", "events/scouting:read"],
+  ])
+    assert.throws(() => validateSafeDevConfig({ ...base, cognitoScopes }));
 });
 
 function validTemplate() {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const webOrigin = {
     "Fn::Join": [
       "",
@@ -60,7 +70,9 @@ function validTemplate() {
       [
         "default-src 'self'; base-uri 'none'; connect-src 'self' ",
         { "Fn::GetAtt": ["Api", "ApiEndpoint"] },
-        "; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+        " https://",
+        { Ref: "Domain" },
+        ".auth.us-east-1.amazoncognito.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
       ],
     ],
   };
@@ -72,7 +84,7 @@ function validTemplate() {
         { Ref: "Api" },
         '","CorsConfiguration":{"AllowOrigins":["https://',
         { "Fn::GetAtt": ["Distribution", "DomainName"] },
-        '"],"AllowHeaders":["authorization","content-type"],"AllowMethods":["GET","POST","OPTIONS"]}},"physicalResourceId":{"id":"fixture-events-api-cors"}}',
+        '"],"AllowHeaders":["authorization","content-type","idempotency-key"],"AllowMethods":["GET","POST","OPTIONS"],"ExposeHeaders":["location"]}},"physicalResourceId":{"id":"fixture-events-api-cors"}}',
       ],
     ],
   };
@@ -96,6 +108,14 @@ function validTemplate() {
               ScopeName: "events:read",
             },
             {
+              ScopeDescription: "Read owned FIND THE EDGE scouting jobs",
+              ScopeName: "scouting:read",
+            },
+            {
+              ScopeDescription: "Create and retry FIND THE EDGE scouting jobs",
+              ScopeName: "scouting:write",
+            },
+            {
               ScopeDescription:
                 "Review non-executable retrospective candidates",
               ScopeName: "retrospectives:approve",
@@ -117,6 +137,17 @@ function validTemplate() {
         Properties: {
           GenerateSecret: false,
           AllowedOAuthFlows: ["code"],
+          AllowedOAuthScopes: [
+            {
+              "Fn::Join": ["", [{ Ref: "Server" }, "/events:read"]],
+            },
+            {
+              "Fn::Join": ["", [{ Ref: "Server" }, "/scouting:read"]],
+            },
+            {
+              "Fn::Join": ["", [{ Ref: "Server" }, "/scouting:write"]],
+            },
+          ],
           UserPoolId: { Ref: "Pool" },
           CallbackURLs: [
             {
@@ -139,6 +170,17 @@ function validTemplate() {
           GenerateSecret: false,
           AllowedOAuthFlows: ["code"],
           AllowedOAuthScopes: [
+            "openid",
+            "email",
+            {
+              "Fn::Join": ["", [{ Ref: "Server" }, "/events:read"]],
+            },
+            {
+              "Fn::Join": ["", [{ Ref: "Server" }, "/scouting:read"]],
+            },
+            {
+              "Fn::Join": ["", [{ Ref: "Server" }, "/scouting:write"]],
+            },
             {
               "Fn::Join": ["", [{ Ref: "Server" }, "/retrospectives:approve"]],
             },
@@ -331,6 +373,39 @@ function validTemplate() {
           },
         },
       },
+      ProviderStatusRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /providers/status",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      OpportunityListRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /sports/{sportKey}/opportunities",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      OpportunityDetailRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /sports/{sportKey}/opportunities/{opportunityId}",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
       PerformanceCohortsRoute: {
         Type: "AWS::ApiGatewayV2::Route",
         Properties: {
@@ -480,6 +555,45 @@ function validTemplate() {
           RouteKey: "GET /events/{eventId}",
           ApiId: { Ref: "Api" },
           AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      ScoutCreateRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "POST /events/{eventId}/scout",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "JWT",
+          AuthorizerId: { Ref: "Auth" },
+          AuthorizationScopes: ["events/scouting:write"],
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      ScoutStatusRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /scout-jobs/{jobId}",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "JWT",
+          AuthorizerId: { Ref: "Auth" },
+          AuthorizationScopes: ["events/scouting:read"],
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      ScoutRetryRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "POST /scout-jobs/{jobId}/retry",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "JWT",
+          AuthorizerId: { Ref: "Auth" },
+          AuthorizationScopes: ["events/scouting:write"],
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -645,6 +759,8 @@ function validTemplate() {
         },
       },
       CognitoScope: { Value: "events/events:read" },
+      ScoutingReadScope: { Value: "events/scouting:read" },
+      ScoutingWriteScope: { Value: "events/scouting:write" },
       CognitoCallbackUrl: {
         Value: {
           "Fn::Join": [
@@ -676,7 +792,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
   );
   for (const [uri, expected] of [
     ["/games", "/index.html"],
-    ["/auth/callback", "/auth/callback"],
+    ["/auth/callback", "/index.html"],
     ["/assets/missing.hash.js", "/assets/missing.hash.js"],
     ["/runtime-config.js", "/runtime-config.js"],
     ["/cognito-token-provider.js", "/cognito-token-provider.js"],
@@ -752,10 +868,33 @@ test("template validation structurally binds public reads, outputs, and scoped I
       "Fn::Join"
     ][1][1] = { "Fn::GetAtt": ["OtherApi", "ApiEndpoint"] };
     assert.throws(() => validateTemplate(wrongCsp, templateConfig), /CSP/);
+
+    const wrongCognitoHost = structuredClone(template);
+    wrongCognitoHost.Resources[
+      resourceId
+    ].Properties.ResponseHeadersPolicyConfig.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy[
+      "Fn::Join"
+    ][1][4] = ".auth.eu-west-1.amazoncognito.com; form-action 'none'";
+    assert.throws(
+      () => validateTemplate(wrongCognitoHost, templateConfig),
+      /CSP/,
+    );
+  }
+  for (const unwantedScope of ["openid", "email"]) {
+    const staleOrdinaryScopes = structuredClone(template);
+    staleOrdinaryScopes.Resources.Client.Properties.AllowedOAuthScopes.unshift(
+      unwantedScope,
+    );
+    assert.throws(
+      () => validateTemplate(staleOrdinaryScopes, templateConfig),
+      /Cognito web clients/,
+    );
   }
   for (const [property, value] of [
     ["AllowMethods", ["GET"]],
-    ["AllowHeaders", ["authorization", "content-type", "*"]],
+    ["AllowHeaders", ["authorization", "content-type", "idempotency-key", "*"]],
+    ["ExposeHeaders", []],
+    ["ExposeHeaders", ["location", "*"]],
   ]) {
     const wrongCors = structuredClone(template);
     const parts =
@@ -789,12 +928,33 @@ test("template validation structurally binds public reads, outputs, and scoped I
     () => validateTemplate(wrongApi, templateConfig),
     /public|scoped/i,
   );
-  for (const routeId of ["Route", "EventsRoute", "EventRoute"]) {
+  for (const routeId of [
+    "Route",
+    "EventsRoute",
+    "EventRoute",
+    "ScoutCreateRoute",
+    "ScoutStatusRoute",
+    "ScoutRetryRoute",
+  ]) {
     const missingRoute = structuredClone(template);
     delete missingRoute.Resources[routeId];
     assert.throws(
       () => validateTemplate(missingRoute, templateConfig),
       /public|scoped/,
+    );
+  }
+  for (const [routeId, wrongScope] of [
+    ["ScoutCreateRoute", "events/scouting:read"],
+    ["ScoutStatusRoute", "events/scouting:write"],
+    ["ScoutRetryRoute", "events/events:read"],
+  ]) {
+    const wrongScoutingScope = structuredClone(template);
+    wrongScoutingScope.Resources[routeId].Properties.AuthorizationScopes = [
+      wrongScope,
+    ];
+    assert.throws(
+      () => validateTemplate(wrongScoutingScope, templateConfig),
+      /scoped/,
     );
   }
   const extraRoute = structuredClone(template);
@@ -869,6 +1029,55 @@ test("template validation structurally binds public reads, outputs, and scoped I
       },
     ];
   assert.doesNotThrow(() => validateTemplate(exactIndexIam, templateConfig));
+  const exactIndexOnlyIam = structuredClone(template);
+  exactIndexOnlyIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement.push(
+    {
+      Effect: "Allow",
+      Action: "dynamodb:Query",
+      Resource: {
+        "Fn::Join": [
+          "",
+          [{ "Fn::GetAtt": ["Table", "Arn"] }, "/index/opportunity-rank-v1"],
+        ],
+      },
+    },
+  );
+  assert.doesNotThrow(() =>
+    validateTemplate(exactIndexOnlyIam, templateConfig),
+  );
+  const indexOnlyWriteIam = structuredClone(template);
+  indexOnlyWriteIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement.push(
+    {
+      Effect: "Allow",
+      Action: "dynamodb:PutItem",
+      Resource: {
+        "Fn::Join": [
+          "",
+          [{ "Fn::GetAtt": ["Table", "Arn"] }, "/index/opportunity-rank-v1"],
+        ],
+      },
+    },
+  );
+  assert.throws(
+    () => validateTemplate(indexOnlyWriteIam, templateConfig),
+    /index-only/,
+  );
+  const indexOnlySatisfiesTableIam = structuredClone(template);
+  const apiActions =
+    indexOnlySatisfiesTableIam.Resources.ApiPolicy.Properties.PolicyDocument
+      .Statement[0].Action;
+  apiActions.splice(apiActions.indexOf("dynamodb:Query"), 1);
+  indexOnlySatisfiesTableIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement.push(
+    structuredClone(
+      exactIndexOnlyIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement.at(
+        -1,
+      ),
+    ),
+  );
+  assert.throws(
+    () => validateTemplate(indexOnlySatisfiesTableIam, templateConfig),
+    /table-bound/,
+  );
   const unsafeIndexIam = structuredClone(exactIndexIam);
   unsafeIndexIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Resource[1][
     "Fn::Join"

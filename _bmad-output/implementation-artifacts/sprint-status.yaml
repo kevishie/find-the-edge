@@ -737,7 +737,7 @@ stories:
   - id: FTE-043
     title: Scouting Progress UI and Retry States
     epic: Manual scouting workflow
-    status: backlog
+    status: in-progress
     dependencies: [FTE-038]
     risk: Medium
     approvalRequiredBeforeMerge: false

@@ -664,6 +664,8 @@ const outputs = {
   ReviewerCognitoClientId: "reviewer_client_123",
   CognitoDomain: "https://fte.auth.us-east-1.amazoncognito.com",
   CognitoScope: "events/events:read",
+  ScoutingReadScope: "events/scouting:read",
+  ScoutingWriteScope: "events/scouting:write",
   CognitoCallbackUrl: "https://abc123.cloudfront.net/auth/callback",
   LiveOddsIngestionFunctionName: "fte-live-odds",
   SharpApiSecretName: "find-the-edge/dev/sharpapi",
@@ -677,6 +679,8 @@ test("launch binds every discovered output to intended targets", () => {
     },
     { CognitoCallbackUrl: "https://other.cloudfront.net/auth/callback" },
     { CognitoScope: "other" },
+    { ScoutingReadScope: "other" },
+    { ScoutingWriteScope: "other" },
   ])
     assert.throws(() => validateStackOutputs({ ...outputs, ...change }));
 });

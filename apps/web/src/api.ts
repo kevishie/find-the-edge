@@ -6,6 +6,7 @@ import type {
   EntityId,
   RankedOpportunityDto,
   ProviderStatusPageDto,
+  PublicScoutingJob,
 } from "@find-the-edge/domain";
 import {
   collapseNearDuplicateGames,
@@ -14,6 +15,11 @@ import {
   normalizeProviderStatusPageDto,
   validateEventMetadataAssessment,
   participantSelectionKey,
+  SCOUTING_FAILURE_CODES,
+  SCOUTING_JOB_STATUSES,
+  SCOUTING_MAX_ATTEMPTS,
+  SCOUTING_WORKFLOW_INTENT,
+  isRetryableScoutingFailure,
 } from "@find-the-edge/domain";
 import { impliedProbability } from "@find-the-edge/odds";
 
@@ -202,6 +208,21 @@ export interface GamesClient {
     },
     signal: AbortSignal,
   ): Promise<RetrospectiveDto>;
+  createScoutingJob?(
+    eventId: string,
+    idempotencyKey: string,
+    signal: AbortSignal,
+  ): Promise<PublicScoutingJob>;
+  getScoutingJob?(
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<PublicScoutingJob>;
+  retryScoutingJob?(
+    jobId: string,
+    expectedStateVersion: number,
+    idempotencyKey: string,
+    signal: AbortSignal,
+  ): Promise<PublicScoutingJob>;
 }
 export interface RetrospectiveDto {
   readonly retrospectiveId: string;
@@ -811,6 +832,8 @@ export type GamesClientErrorCode =
   | "request-failed"
   | "not-found"
   | "conflict"
+  | "not-eligible"
+  | "retry-limit"
   | "invalid-response";
 
 export class GamesClientError extends Error {
@@ -841,6 +864,114 @@ const iso = (value: unknown): value is string =>
   boundedString(value, 40) &&
   Number.isFinite(Date.parse(value)) &&
   new Date(value).toISOString() === value;
+
+const SCOUTING_JOB_ID = /^scout-job:[a-f0-9]{64}$/;
+const SCOUTING_IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
+
+export const isScoutingJobId = (value: string): boolean =>
+  SCOUTING_JOB_ID.test(value);
+
+const isCanonicalScoutingEventId = (value: unknown): value is string => {
+  if (typeof value !== "string" || value.length < 1 || value.length > 512)
+    return false;
+  return value.split(":").every((part) => {
+    if (!/^(?:[a-z0-9.!'()*_~-]|%[0-9A-F]{2})+$/.test(part)) return false;
+    try {
+      const decoded = decodeURIComponent(part);
+      return (
+        decoded.length > 0 &&
+        !["__proto__", "constructor", "prototype"].includes(decoded) &&
+        decoded ===
+          decoded.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ") &&
+        encodeURIComponent(decoded) === part
+      );
+    } catch {
+      return false;
+    }
+  });
+};
+
+export function parsePublicScoutingJob(value: unknown): PublicScoutingJob {
+  if (
+    !plain(value) ||
+    !exact(value, [
+      "schemaVersion",
+      "jobId",
+      "eventId",
+      "eventVersion",
+      "workflowIntent",
+      "status",
+      "stateVersion",
+      "attemptNumber",
+      "createdAt",
+      "updatedAt",
+      ...(Object.hasOwn(value, "failure") ? ["failure"] : []),
+    ]) ||
+    value["schemaVersion"] !== 1 ||
+    typeof value["jobId"] !== "string" ||
+    !isScoutingJobId(value["jobId"]) ||
+    !isCanonicalScoutingEventId(value["eventId"]) ||
+    !Number.isSafeInteger(value["eventVersion"]) ||
+    Number(value["eventVersion"]) < 1 ||
+    value["workflowIntent"] !== SCOUTING_WORKFLOW_INTENT ||
+    !SCOUTING_JOB_STATUSES.includes(
+      value["status"] as (typeof SCOUTING_JOB_STATUSES)[number],
+    ) ||
+    !Number.isSafeInteger(value["stateVersion"]) ||
+    !Number.isSafeInteger(value["attemptNumber"]) ||
+    Number(value["attemptNumber"]) < 1 ||
+    Number(value["attemptNumber"]) > SCOUTING_MAX_ATTEMPTS ||
+    !iso(value["createdAt"]) ||
+    !iso(value["updatedAt"]) ||
+    value["updatedAt"] < value["createdAt"]
+  )
+    throw new GamesClientError(
+      "invalid-response",
+      "The scouting response was invalid.",
+    );
+
+  const status = value["status"] as PublicScoutingJob["status"];
+  const attemptNumber = Number(value["attemptNumber"]);
+  const stateVersion = Number(value["stateVersion"]);
+  const minimumStateVersion =
+    status === "queued"
+      ? 2 * attemptNumber - 1
+      : status === "completed"
+        ? 2 * attemptNumber + 1
+        : 2 * attemptNumber;
+  const maximumStateVersion =
+    status === "queued"
+      ? 3 * attemptNumber - 2
+      : status === "in_progress"
+        ? 3 * attemptNumber - 1
+        : 3 * attemptNumber;
+  const failed = status === "failed_retryable" || status === "failed_terminal";
+  const failure = value["failure"];
+  if (
+    stateVersion < minimumStateVersion ||
+    stateVersion > maximumStateVersion ||
+    failed !== (failure !== undefined) ||
+    (failure !== undefined &&
+      (!plain(failure) ||
+        !exact(failure, ["code", "retryable"]) ||
+        !SCOUTING_FAILURE_CODES.includes(
+          failure["code"] as (typeof SCOUTING_FAILURE_CODES)[number],
+        ) ||
+        typeof failure["retryable"] !== "boolean" ||
+        (status === "failed_retryable") !==
+          isRetryableScoutingFailure(
+            failure["code"] as (typeof SCOUTING_FAILURE_CODES)[number],
+          ) ||
+        (failure["retryable"] !== true) !==
+          (status !== "failed_retryable" ||
+            attemptNumber >= SCOUTING_MAX_ATTEMPTS)))
+  )
+    throw new GamesClientError(
+      "invalid-response",
+      "The scouting response was invalid.",
+    );
+  return Object.freeze(value as unknown as PublicScoutingJob);
+}
 
 const validAmericanOdds = (value: unknown): value is number =>
   Number.isSafeInteger(value) &&
@@ -2160,15 +2291,357 @@ const promoterSession = async (
   }
 };
 
+const SCOUTING_SCOPES = [
+  "events/events:read",
+  "events/scouting:read",
+  "events/scouting:write",
+] as const;
+const SCOUTING_REQUEST_TIMEOUT_MS = 10_000;
+
+const awaitWithSignal = <T>(promise: Promise<T>, signal: AbortSignal) =>
+  new Promise<T>((resolve, reject) => {
+    const abortError = () =>
+      signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException("Aborted", "AbortError");
+    if (signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    const aborted = () => reject(abortError());
+    signal.addEventListener("abort", aborted, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", aborted);
+    });
+  });
+
+const invalidateScoutingSession = (providerKey: string | undefined): void => {
+  if (!providerKey) return;
+  const registry = (globalThis as Record<string, unknown>)[
+    "__FTE_TOKEN_INVALIDATORS__"
+  ];
+  const invalidate = plain(registry) ? registry[providerKey] : undefined;
+  if (typeof invalidate !== "function") return;
+  try {
+    (invalidate as () => void)();
+  } catch {
+    // A failed local cleanup must not hide the authoritative 401.
+  }
+};
+
+const scoutingSession = async (
+  providerKey: string | undefined,
+  expectedIssuer: string | undefined,
+  expectedClientId: string | undefined,
+): Promise<{ readonly token: string }> => {
+  if (!providerKey || !expectedIssuer || !expectedClientId)
+    throw new GamesClientError(
+      "authentication",
+      "Sign in is required to use scouting.",
+    );
+  const registry = (globalThis as Record<string, unknown>)[
+    "__FTE_TOKEN_PROVIDERS__"
+  ];
+  const provider = plain(registry) ? registry[providerKey] : undefined;
+  if (typeof provider !== "function")
+    throw new GamesClientError(
+      "authentication",
+      "Sign in is required to use scouting.",
+    );
+  let token: unknown;
+  try {
+    token = await (provider as () => Promise<unknown>)();
+  } catch {
+    throw new GamesClientError(
+      "authentication",
+      "Sign in could not be completed.",
+    );
+  }
+  if (typeof token !== "string" || token.length < 10 || token.length > 16_384)
+    throw new GamesClientError(
+      "authentication",
+      "Sign in could not be completed.",
+    );
+  try {
+    const tokenParts = token.split(".");
+    if (tokenParts.length !== 3) throw new Error();
+    const segment = tokenParts[1];
+    if (!segment || !/^[A-Za-z0-9_-]+$/.test(segment)) throw new Error();
+    const payload = JSON.parse(
+      atob(
+        segment
+          .replace(/-/g, "+")
+          .replace(/_/g, "/")
+          .padEnd(Math.ceil(segment.length / 4) * 4, "="),
+      ),
+    ) as unknown;
+    const scopes =
+      plain(payload) && typeof payload["scope"] === "string"
+        ? payload["scope"].split(" ")
+        : [];
+    if (
+      !plain(payload) ||
+      payload["iss"] !== expectedIssuer ||
+      payload["client_id"] !== expectedClientId ||
+      payload["token_use"] !== "access" ||
+      typeof payload["exp"] !== "number" ||
+      !Number.isFinite(payload["exp"]) ||
+      payload["exp"] <= Date.now() / 1000 + 30 ||
+      !SCOUTING_SCOPES.every((scope) => scopes.includes(scope))
+    )
+      throw new GamesClientError(
+        "forbidden",
+        "This session does not have scouting access.",
+      );
+  } catch (error) {
+    if (error instanceof GamesClientError) throw error;
+    throw new GamesClientError(
+      "authentication",
+      "Sign in could not be completed.",
+    );
+  }
+  return { token };
+};
+
+const scoutingHttpError = (
+  response: Response,
+  operation: "create" | "status" | "retry",
+): GamesClientError => {
+  if (response.status === 401)
+    return new GamesClientError(
+      "authentication",
+      "Sign in is required to use scouting.",
+    );
+  if (response.status === 403)
+    return new GamesClientError(
+      "forbidden",
+      "This session does not have scouting access.",
+    );
+  if (response.status === 404)
+    return new GamesClientError(
+      "not-found",
+      operation === "status"
+        ? "This scouting job is unavailable."
+        : "This event is unavailable.",
+    );
+  if (response.status === 409)
+    return new GamesClientError(
+      "conflict",
+      "Scouting changed while this request was being handled.",
+    );
+  if (response.status === 422)
+    return new GamesClientError(
+      operation === "retry" ? "retry-limit" : "not-eligible",
+      operation === "retry"
+        ? "This scouting job cannot be retried."
+        : "This event is not eligible for scouting.",
+    );
+  return new GamesClientError(
+    "request-failed",
+    operation === "status"
+      ? "Scouting progress is temporarily unavailable."
+      : "The scouting request could not be completed.",
+  );
+};
+
+const scoutingJobRequest = async ({
+  apiBase,
+  providerKey,
+  expectedIssuer,
+  expectedClientId,
+  fetcher,
+  operation,
+  path,
+  signal,
+  idempotencyKey,
+  body,
+  expectedJobId,
+  expectedEventId,
+}: {
+  readonly apiBase: string;
+  readonly providerKey: string | undefined;
+  readonly expectedIssuer: string | undefined;
+  readonly expectedClientId: string | undefined;
+  readonly fetcher: typeof fetch;
+  readonly operation: "create" | "status" | "retry";
+  readonly path: string;
+  readonly signal: AbortSignal;
+  readonly idempotencyKey?: string;
+  readonly body?: Readonly<Record<string, unknown>>;
+  readonly expectedJobId?: string;
+  readonly expectedEventId?: string;
+}): Promise<PublicScoutingJob> => {
+  const timeoutSignal = AbortSignal.timeout(SCOUTING_REQUEST_TIMEOUT_MS);
+  const requestSignal = AbortSignal.any([signal, timeoutSignal]);
+  let token: string;
+  try {
+    ({ token } = await awaitWithSignal(
+      scoutingSession(providerKey, expectedIssuer, expectedClientId),
+      requestSignal,
+    ));
+  } catch (error) {
+    if (signal.aborted) throw error;
+    if (timeoutSignal.aborted)
+      throw new GamesClientError(
+        "request-failed",
+        operation === "status"
+          ? "Scouting progress is temporarily unavailable."
+          : "The scouting request could not be completed.",
+      );
+    throw error;
+  }
+  let response: Response;
+  try {
+    response = await awaitWithSignal(
+      fetcher(`${apiBase}${path}`, {
+        method: operation === "status" ? "GET" : "POST",
+        credentials: "omit",
+        cache: "no-store",
+        signal: requestSignal,
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(operation === "status"
+            ? {}
+            : {
+                "content-type": "application/json",
+                "idempotency-key": idempotencyKey!,
+              }),
+        },
+        ...(operation === "status" ? {} : { body: JSON.stringify(body) }),
+      }),
+      requestSignal,
+    );
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new GamesClientError(
+      "request-failed",
+      operation === "status"
+        ? "Scouting progress is temporarily unavailable."
+        : "The scouting request could not be completed.",
+    );
+  }
+  const accepted =
+    operation === "status"
+      ? response.status === 200
+      : response.status === 200 || response.status === 202;
+  if (!accepted) {
+    if (response.status === 401) invalidateScoutingSession(providerKey);
+    throw scoutingHttpError(response, operation);
+  }
+  const job = parsePublicScoutingJob(await response.json().catch(() => null));
+  if (
+    (expectedJobId !== undefined && job.jobId !== expectedJobId) ||
+    (expectedEventId !== undefined && job.eventId !== expectedEventId)
+  )
+    throw new GamesClientError(
+      "invalid-response",
+      "The scouting response was invalid.",
+    );
+  if (operation !== "status") {
+    const expectedLocation = `/scout-jobs/${job.jobId}`;
+    if (response.headers.get("location") !== expectedLocation)
+      throw new GamesClientError(
+        "invalid-response",
+        "The scouting response was invalid.",
+      );
+  }
+  return job;
+};
+
 export function createGamesClient(
   bootstrap: Result<RuntimeBootstrap, RuntimeConfigError>,
   fetcher: typeof fetch = fetch,
 ): Result<GamesClient, GamesClientError> {
   if (!bootstrap.ok)
     return { ok: false, error: bootstrapFailure(bootstrap.error) };
+  const scoutingAuth =
+    bootstrap.value.config.tokenProviderKey &&
+    bootstrap.value.config.cognitoIssuer &&
+    bootstrap.value.config.cognitoClientId
+      ? {
+          providerKey: bootstrap.value.config.tokenProviderKey,
+          issuer: bootstrap.value.config.cognitoIssuer,
+          clientId: bootstrap.value.config.cognitoClientId,
+        }
+      : null;
   return {
     ok: true,
     value: {
+      ...(scoutingAuth
+        ? {
+            async createScoutingJob(eventId, idempotencyKey, signal) {
+              if (
+                !isCanonicalScoutingEventId(eventId) ||
+                !SCOUTING_IDEMPOTENCY_KEY.test(idempotencyKey)
+              )
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The scouting request was invalid.",
+                );
+              return scoutingJobRequest({
+                apiBase: bootstrap.value.config.apiBase,
+                providerKey: scoutingAuth.providerKey,
+                expectedIssuer: scoutingAuth.issuer,
+                expectedClientId: scoutingAuth.clientId,
+                fetcher,
+                operation: "create",
+                path: `/events/${encodeURIComponent(eventId)}/scout`,
+                signal,
+                idempotencyKey,
+                body: {},
+                expectedEventId: eventId,
+              });
+            },
+            async getScoutingJob(jobId, signal) {
+              if (!isScoutingJobId(jobId))
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The scouting job address was invalid.",
+                );
+              return scoutingJobRequest({
+                apiBase: bootstrap.value.config.apiBase,
+                providerKey: scoutingAuth.providerKey,
+                expectedIssuer: scoutingAuth.issuer,
+                expectedClientId: scoutingAuth.clientId,
+                fetcher,
+                operation: "status",
+                path: `/scout-jobs/${encodeURIComponent(jobId)}`,
+                signal,
+                expectedJobId: jobId,
+              });
+            },
+            async retryScoutingJob(
+              jobId,
+              expectedStateVersion,
+              idempotencyKey,
+              signal,
+            ) {
+              if (
+                !isScoutingJobId(jobId) ||
+                !Number.isSafeInteger(expectedStateVersion) ||
+                expectedStateVersion < 1 ||
+                !SCOUTING_IDEMPOTENCY_KEY.test(idempotencyKey)
+              )
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The scouting retry was invalid.",
+                );
+              return scoutingJobRequest({
+                apiBase: bootstrap.value.config.apiBase,
+                providerKey: scoutingAuth.providerKey,
+                expectedIssuer: scoutingAuth.issuer,
+                expectedClientId: scoutingAuth.clientId,
+                fetcher,
+                operation: "retry",
+                path: `/scout-jobs/${encodeURIComponent(jobId)}/retry`,
+                signal,
+                idempotencyKey,
+                body: { expectedStateVersion },
+                expectedJobId: jobId,
+              });
+            },
+          }
+        : {}),
       async providerStatus(signal) {
         const timeoutSignal = AbortSignal.timeout(8_000);
         const requestSignal = AbortSignal.any([signal, timeoutSignal]);

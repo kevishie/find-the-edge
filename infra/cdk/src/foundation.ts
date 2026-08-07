@@ -443,7 +443,7 @@ export class FoundationStack extends Stack {
     const webAssetOrigin = S3BucketOrigin.withOriginAccessControl(assets);
     const spaNavigation = new CloudFrontFunction(this, "WebSpaNavigation", {
       code: FunctionCode.fromInline(
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
       ),
     });
     const distribution = new Distribution(this, "WebDistribution", {
@@ -487,8 +487,6 @@ export class FoundationStack extends Stack {
           clientCredentials: false,
         },
         scopes: [
-          OAuthScope.OPENID,
-          OAuthScope.EMAIL,
           OAuthScope.resourceServer(resourceServer, readScope),
           OAuthScope.resourceServer(resourceServer, scoutingReadScope),
           OAuthScope.resourceServer(resourceServer, scoutingWriteScope),
@@ -1214,7 +1212,7 @@ export class FoundationStack extends Stack {
     const api = new HttpApi(this, "EventsHttpApi", {
       createDefaultStage: false,
     });
-    const exactCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${api.apiEndpoint}; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
+    const exactCsp = `default-src 'self'; base-uri 'none'; connect-src 'self' ${api.apiEndpoint} ${domain.baseUrl()}; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'`;
     for (const policy of [securityHeaders, immutableHeaders]) {
       const resource = policy.node.defaultChild as CfnResponseHeadersPolicy;
       resource.addPropertyOverride(
@@ -1338,6 +1336,7 @@ export class FoundationStack extends Stack {
           AllowOrigins: [webOrigin],
           AllowHeaders: ["authorization", "content-type", "idempotency-key"],
           AllowMethods: ["GET", "POST", "OPTIONS"],
+          ExposeHeaders: ["location"],
         },
       },
       physicalResourceId: PhysicalResourceId.of(

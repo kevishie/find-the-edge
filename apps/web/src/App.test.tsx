@@ -1495,6 +1495,116 @@ describe("Data Sources", () => {
 });
 
 describe("Games", () => {
+  it("starts one scheduled-event scouting action and opens its authoritative route", async () => {
+    const scoutingJob = {
+      schemaVersion: 1 as const,
+      jobId: `scout-job:${"a".repeat(64)}`,
+      eventId: game.id,
+      eventVersion: 1,
+      workflowIntent: "fixture-v1" as const,
+      status: "queued" as const,
+      stateVersion: 1,
+      attemptNumber: 1,
+      createdAt: "2026-08-07T13:00:00.000Z",
+      updatedAt: "2026-08-07T13:00:00.000Z",
+    };
+    const createScoutingJob = vi.fn(() => Promise.resolve(scoutingJob));
+    const getScoutingJob = vi.fn(() => Promise.resolve(scoutingJob));
+    render(
+      <App
+        initialPath="/games?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            createScoutingJob,
+            getScoutingJob,
+          },
+        }}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Scout" }));
+    expect(
+      await screen.findByRole("heading", { name: "Scouting is queued" }),
+    ).toBeVisible();
+    expect(createScoutingJob).toHaveBeenCalledWith(
+      game.id,
+      expect.stringMatching(/^[A-Za-z0-9._:-]+$/),
+      expect.any(AbortSignal),
+    );
+    expect(getScoutingJob).toHaveBeenCalledWith(
+      scoutingJob.jobId,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("resumes the initiating scouting action after the sign-in callback", async () => {
+    const scoutingJob = {
+      schemaVersion: 1 as const,
+      jobId: `scout-job:${"a".repeat(64)}`,
+      eventId: game.id,
+      eventVersion: 1,
+      workflowIntent: "fixture-v1" as const,
+      status: "queued" as const,
+      stateVersion: 1,
+      attemptNumber: 1,
+      createdAt: "2026-08-07T13:00:00.000Z",
+      updatedAt: "2026-08-07T13:00:00.000Z",
+    };
+    const createScoutingJob = vi.fn(() => Promise.resolve(scoutingJob));
+    sessionStorage.setItem(
+      `fte.scouting.resume.create.${encodeURIComponent(game.id)}`,
+      "1",
+    );
+    render(
+      <App
+        initialPath="/games?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            createScoutingJob,
+            getScoutingJob: vi.fn(() => Promise.resolve(scoutingJob)),
+          },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Scouting is queued" }),
+    ).toBeVisible();
+    expect(createScoutingJob).toHaveBeenCalledTimes(1);
+    expect(
+      sessionStorage.getItem(
+        `fte.scouting.resume.create.${encodeURIComponent(game.id)}`,
+      ),
+    ).toBeNull();
+  });
+
+  it("disables scouting with explicit lifecycle guidance for nonscheduled events", async () => {
+    const completed = { ...game, status: "completed" as const };
+    const createScoutingJob = vi.fn();
+    const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(game.id)}`;
+    sessionStorage.setItem(resumeKey, "1");
+    render(
+      <App
+        initialPath="/games?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page([completed]))),
+            createScoutingJob,
+          },
+        }}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: "Scout" })).toBeDisabled();
+    expect(
+      screen.getByText(/available only for scheduled events.*completed/i),
+    ).toBeVisible();
+    expect(sessionStorage.getItem(resumeKey)).toBeNull();
+    expect(createScoutingJob).not.toHaveBeenCalled();
+  });
+
   it("renders fixture odds and filters by sport and Eastern day", async () => {
     const list = vi
       .fn<GamesClient["list"]>()

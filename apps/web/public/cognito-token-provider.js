@@ -1,11 +1,26 @@
 (function installCognitoProvider() {
   "use strict";
   const config = window.__FTE_RUNTIME_CONFIG__;
-  if (!config || config.tokenProviderKey !== "cognitoSession") return;
+  const cognitoScopes = Object.freeze([
+    "events/events:read",
+    "events/scouting:read",
+    "events/scouting:write",
+  ]);
+  if (
+    !config ||
+    config.tokenProviderKey !== "cognitoSession" ||
+    !Array.isArray(config.cognitoScopes) ||
+    config.cognitoScopes.length !== cognitoScopes.length ||
+    !cognitoScopes.every(
+      (scope, index) => config.cognitoScopes[index] === scope,
+    )
+  )
+    return;
   const keys = Object.freeze({
     verifier: "fte.oauth.verifier",
     state: "fte.oauth.state",
     session: "fte.oauth.session",
+    returnTo: "fte.oauth.return-to",
   });
   const encoder = new TextEncoder();
   const base64url = (bytes) =>
@@ -53,16 +68,18 @@
       payload?.iss === config.cognitoIssuer &&
       payload?.token_use === "access" &&
       Number(payload?.exp) > Date.now() / 1000 + 30 &&
-      scopes.includes(config.cognitoScope)
+      cognitoScopes.every((scope) => scopes.includes(scope))
     );
   };
   const tokenEndpoint = `${config.cognitoDomain.replace(/\/$/, "")}/oauth2/token`;
   let sessionEpoch = 0;
   let logoutPending = false;
+  let callbackFailurePending = false;
   let refreshPromise;
   const activeExchanges = new Set();
   async function exchange(parameters) {
     const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
     activeExchanges.add(controller);
     try {
       const response = await fetch(tokenEndpoint, {
@@ -81,6 +98,7 @@
     } catch {
       throw new Error("Authentication failed.");
     } finally {
+      clearTimeout(timeout);
       activeExchanges.delete(controller);
     }
   }
@@ -135,7 +153,7 @@
       response_type: "code",
       client_id: config.cognitoClientId,
       redirect_uri: config.callbackUrl,
-      scope: `openid email ${config.cognitoScope}`,
+      scope: cognitoScopes.join(" "),
       state,
       code_challenge_method: "S256",
       code_challenge: challenge,
@@ -145,6 +163,14 @@
       sessionStorage.removeItem(keys.state);
       throw new Error("Authentication failed.");
     }
+    const returnTo = `${location.pathname}${typeof location.search === "string" ? location.search : ""}${typeof location.hash === "string" ? location.hash : ""}`;
+    if (
+      returnTo.startsWith("/") &&
+      !returnTo.startsWith("//") &&
+      !returnTo.startsWith("/auth/callback") &&
+      returnTo.length <= 2_048
+    )
+      sessionStorage.setItem(keys.returnTo, returnTo);
     location.assign(authorize.toString());
     return new Promise(() => {});
   }
@@ -167,9 +193,21 @@
     const state = query.get("state");
     const expectedState = sessionStorage.getItem(keys.state);
     const verifier = sessionStorage.getItem(keys.verifier);
+    const returnTo = sessionStorage.getItem(keys.returnTo);
     sessionStorage.removeItem(keys.state);
     sessionStorage.removeItem(keys.verifier);
-    history.replaceState(null, "", "/games");
+    sessionStorage.removeItem(keys.returnTo);
+    history.replaceState(
+      null,
+      "",
+      returnTo &&
+        returnTo.startsWith("/") &&
+        !returnTo.startsWith("//") &&
+        !returnTo.startsWith("/auth/callback") &&
+        returnTo.length <= 2_048
+        ? returnTo
+        : "/games",
+    );
     if (!code || !state || state !== expectedState || !verifier)
       throw new Error("Authentication failed.");
     const expectedEpoch = sessionEpoch;
@@ -202,6 +240,10 @@
   async function acquire() {
     await callbackPromise;
     if (logoutPending) throw new Error("Authentication failed.");
+    if (callbackFailurePending) {
+      callbackFailurePending = false;
+      throw new Error("Authentication failed.");
+    }
     const session = safeJson(sessionStorage.getItem(keys.session));
     if (validAccessToken(session?.accessToken)) return session.accessToken;
     if (
@@ -219,13 +261,16 @@
     }
     return beginLoginSingleFlight();
   }
-  function logout() {
-    logoutPending = true;
+  function invalidate() {
     sessionEpoch += 1;
     for (const controller of activeExchanges) controller.abort();
     refreshPromise = undefined;
     loginPromise = undefined;
     sessionStorage.removeItem(keys.session);
+  }
+  function logout() {
+    logoutPending = true;
+    invalidate();
     sessionStorage.removeItem(keys.state);
     sessionStorage.removeItem(keys.verifier);
     const target = new URL(`${config.cognitoDomain.replace(/\/$/, "")}/logout`);
@@ -235,9 +280,9 @@
     }).toString();
     location.assign(target.toString());
   }
-  let callbackPromise = handleCallback().catch(() => {
+  const callbackPromise = handleCallback().catch(() => {
     sessionStorage.removeItem(keys.session);
-    callbackPromise = Promise.resolve();
+    callbackFailurePending = true;
   });
   const registry = Object.freeze({
     ...(window.__FTE_TOKEN_PROVIDERS__ || {}),
@@ -245,6 +290,15 @@
   });
   Object.defineProperty(window, "__FTE_TOKEN_PROVIDERS__", {
     value: registry,
+    configurable: false,
+    writable: false,
+  });
+  const invalidators = Object.freeze({
+    ...(window.__FTE_TOKEN_INVALIDATORS__ || {}),
+    [config.tokenProviderKey]: invalidate,
+  });
+  Object.defineProperty(window, "__FTE_TOKEN_INVALIDATORS__", {
+    value: invalidators,
     configurable: false,
     writable: false,
   });

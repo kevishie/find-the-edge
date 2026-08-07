@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EntityId, GameOddsSelectionDto } from "@find-the-edge/domain";
 import {
   assessEventMetadata,
@@ -9,6 +9,7 @@ import {
   createGamesClient,
   GamesClientError,
   isCanonicalEventStatus,
+  parsePublicScoutingJob,
 } from "./api";
 import type { RuntimeBootstrap } from "./runtime-config";
 
@@ -121,7 +122,348 @@ const bootstrap = (): RuntimeBootstrap => ({
     schemaVersion: 1,
     apiBase: "https://api.example.test",
     tokenProviderKey: "session",
+    cognitoIssuer: "https://issuer.example.test",
+    cognitoClientId: "client-id",
   },
+});
+
+describe("scouting browser client", () => {
+  const job = {
+    schemaVersion: 1 as const,
+    jobId: `scout-job:${"a".repeat(64)}`,
+    eventId: "event:mlb:fixture-1",
+    eventVersion: 1,
+    workflowIntent: "fixture-v1" as const,
+    status: "queued" as const,
+    stateVersion: 1,
+    attemptNumber: 1,
+    createdAt: "2026-08-07T13:00:00.000Z",
+    updatedAt: "2026-08-07T13:00:00.000Z",
+  };
+  const token = (
+    scopes = [
+      "events/events:read",
+      "events/scouting:read",
+      "events/scouting:write",
+    ],
+    overrides: Readonly<Record<string, unknown>> = {},
+  ) =>
+    `x.${btoa(
+      JSON.stringify({
+        iss: "https://issuer.example.test",
+        client_id: "client-id",
+        token_use: "access",
+        exp: Math.floor(Date.now() / 1000) + 3_600,
+        scope: scopes.join(" "),
+        ...overrides,
+      }),
+    )
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replace(/=+$/, "")}.x`;
+
+  const installProvider = (value = token()) => {
+    Object.defineProperty(globalThis, "__FTE_TOKEN_PROVIDERS__", {
+      configurable: true,
+      value: { session: vi.fn(() => Promise.resolve(value)) },
+    });
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "__FTE_TOKEN_PROVIDERS__");
+    Reflect.deleteProperty(globalThis, "__FTE_TOKEN_INVALIDATORS__");
+    vi.useRealTimers();
+  });
+
+  it("strictly validates public job chronology and failure consistency", () => {
+    expect(parsePublicScoutingJob(job)).toEqual(job);
+    expect(() =>
+      parsePublicScoutingJob({ ...job, workflowIntent: "internal-v2" }),
+    ).toThrowError(GamesClientError);
+    expect(() =>
+      parsePublicScoutingJob({
+        ...job,
+        status: "failed_retryable",
+        stateVersion: 2,
+      }),
+    ).toThrowError(GamesClientError);
+    expect(() =>
+      parsePublicScoutingJob({ ...job, stateVersion: 4 }),
+    ).toThrowError(GamesClientError);
+    expect(() => parsePublicScoutingJob({ ...job, secret: true })).toThrowError(
+      GamesClientError,
+    );
+    for (const eventId of [
+      "event::fixture",
+      "event:UPPER:fixture",
+      "event:%2f:fixture",
+      "event:__proto__:fixture",
+      "event:%ZZ:fixture",
+    ])
+      expect(() => parsePublicScoutingJob({ ...job, eventId })).toThrowError(
+        GamesClientError,
+      );
+  });
+
+  it.each([200, 202])(
+    "creates from an authoritative %s convergence response with exact headers",
+    async (status) => {
+      installProvider();
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(job), {
+          status,
+          headers: { location: `/scout-jobs/${job.jobId}` },
+        }),
+      );
+      const result = createGamesClient(
+        { ok: true, value: bootstrap() },
+        fetcher,
+      );
+      if (!result.ok) throw result.error;
+      await expect(
+        result.value.createScoutingJob?.(
+          job.eventId,
+          "create-key-1",
+          new AbortController().signal,
+        ),
+      ).resolves.toEqual(job);
+      expect(fetcher.mock.calls[0]?.[0]).toBe(
+        `https://api.example.test/events/${encodeURIComponent(job.eventId)}/scout`,
+      );
+      const request = fetcher.mock.calls[0]?.[1];
+      expect(request).toMatchObject({
+        method: "POST",
+        credentials: "omit",
+        body: "{}",
+      });
+      const headers = new Headers(request?.headers);
+      expect(headers.get("authorization")).toBe(`Bearer ${token()}`);
+      expect(headers.get("content-type")).toBe("application/json");
+      expect(headers.get("idempotency-key")).toBe("create-key-1");
+    },
+  );
+
+  it("rejects a mismatched status location and never accepts missing scopes", async () => {
+    installProvider();
+    const mismatch = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(job), {
+          status: 202,
+          headers: { location: "/scout-jobs/other" },
+        }),
+      ),
+    );
+    if (!mismatch.ok) throw mismatch.error;
+    await expect(
+      mismatch.value.createScoutingJob?.(
+        job.eventId,
+        "create-key-1",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+
+    installProvider(token(["events/events:read"]));
+    const fetcher = vi.fn<typeof fetch>();
+    const forbidden = createGamesClient(
+      { ok: true, value: bootstrap() },
+      fetcher,
+    );
+    if (!forbidden.ok) throw forbidden.error;
+    await expect(
+      forbidden.value.getScoutingJob?.(job.jobId, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { iss: "https://foreign.example.test" },
+    { client_id: "other-client" },
+    { token_use: "id" },
+    { exp: 1 },
+  ])("rejects invalid access-token claims locally", async (overrides) => {
+    installProvider(token(undefined, overrides));
+    const fetcher = vi.fn<typeof fetch>();
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
+    ).rejects.toBeInstanceOf(GamesClientError);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("omits protected scouting methods without complete launch auth configuration", () => {
+    const result = createGamesClient({
+      ok: true,
+      value: {
+        config: {
+          schemaVersion: 1,
+          apiBase: "https://api.example.test",
+          tokenProviderKey: "session",
+        },
+      },
+    });
+    if (!result.ok) throw result.error;
+    expect("createScoutingJob" in result.value).toBe(false);
+    expect("getScoutingJob" in result.value).toBe(false);
+    expect("retryScoutingJob" in result.value).toBe(false);
+  });
+
+  it("reads owner status and sends a fenced retry", async () => {
+    installProvider();
+    const failed = {
+      ...job,
+      status: "failed_retryable" as const,
+      stateVersion: 2,
+      updatedAt: "2026-08-07T13:01:00.000Z",
+      failure: { code: "workflow-timeout" as const, retryable: true },
+    };
+    const retried = {
+      ...job,
+      status: "queued" as const,
+      stateVersion: 3,
+      attemptNumber: 2,
+      updatedAt: "2026-08-07T13:02:00.000Z",
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(failed)))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(retried), {
+          status: 202,
+          headers: { location: `/scout-jobs/${job.jobId}` },
+        }),
+      );
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
+    ).resolves.toEqual(failed);
+    await expect(
+      result.value.retryScoutingJob?.(
+        job.jobId,
+        failed.stateVersion,
+        "retry-key-1",
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual(retried);
+    const request = fetcher.mock.calls[1]?.[1];
+    expect(request).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ expectedStateVersion: 2 }),
+    });
+    expect(new Headers(request?.headers).get("idempotency-key")).toBe(
+      "retry-key-1",
+    );
+  });
+
+  it.each([
+    [401, "authentication"],
+    [403, "forbidden"],
+    [404, "not-found"],
+    [409, "conflict"],
+    [422, "retry-limit"],
+    [503, "request-failed"],
+  ] as const)("maps retry HTTP %s to safe %s failure", async (status, code) => {
+    installProvider();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response('{"secret":"hidden"}', { status })),
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.retryScoutingJob?.(
+        job.jobId,
+        2,
+        "retry-key",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code });
+  });
+
+  it("invalidates a cached provider session after an authoritative 401", async () => {
+    installProvider();
+    const invalidate = vi.fn();
+    Object.defineProperty(globalThis, "__FTE_TOKEN_INVALIDATORS__", {
+      configurable: true,
+      value: { session: invalidate },
+    });
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 401 })),
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "authentication" });
+    expect(invalidate).toHaveBeenCalledOnce();
+  });
+
+  it("aborts while token acquisition is still pending", async () => {
+    let providerCalled = false;
+    Object.defineProperty(globalThis, "__FTE_TOKEN_PROVIDERS__", {
+      configurable: true,
+      value: {
+        session: () => {
+          providerCalled = true;
+          return new Promise<string>(() => {});
+        },
+      },
+    });
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>(),
+    );
+    if (!result.ok) throw result.error;
+    const controller = new AbortController();
+    const request = result.value.getScoutingJob?.(job.jobId, controller.signal);
+    controller.abort();
+    expect(providerCalled).toBe(true);
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("times out a hung scouting fetch with a safe failure", async () => {
+    installProvider();
+    const timeout = new AbortController();
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(timeout.signal);
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>(() => new Promise<Response>(() => {})),
+    );
+    if (!result.ok) throw result.error;
+    const request = result.value.getScoutingJob?.(
+      job.jobId,
+      new AbortController().signal,
+    );
+    await Promise.resolve();
+    timeout.abort(new DOMException("Timed out", "TimeoutError"));
+    await expect(request).rejects.toMatchObject({ code: "request-failed" });
+    timeoutSpy.mockRestore();
+  });
+
+  it("rejects malformed job IDs before session acquisition", async () => {
+    installProvider();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>(),
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getScoutingJob?.("not-a-job", new AbortController().signal),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+    const registry = (
+      globalThis as unknown as {
+        __FTE_TOKEN_PROVIDERS__: { session: ReturnType<typeof vi.fn> };
+      }
+    ).__FTE_TOKEN_PROVIDERS__;
+    expect(registry.session).not.toHaveBeenCalled();
+  });
 });
 
 const rankedOpportunity = (

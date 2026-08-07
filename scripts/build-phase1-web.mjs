@@ -49,6 +49,22 @@ export async function assertSafeBundleOutput(root, output) {
   return expected;
 }
 
+export function assertRuntimeScriptOrder(html) {
+  const runtimeIndex = html.indexOf('src="/runtime-config.js"');
+  const providerIndex = html.indexOf('src="/cognito-token-provider.js"');
+  const moduleIndex = html.indexOf('type="module"');
+  if (
+    runtimeIndex < 0 ||
+    providerIndex < 0 ||
+    moduleIndex < 0 ||
+    runtimeIndex > providerIndex ||
+    providerIndex > moduleIndex
+  )
+    throw new Error(
+      "runtime config and lazy authentication provider must load before the application module",
+    );
+}
+
 export async function buildPhase1Web(environment = process.env) {
   const config = safeDevConfig(environment);
   validateSafeDevConfig(config);
@@ -63,19 +79,18 @@ export async function buildPhase1Web(environment = process.env) {
     resolve(output, "runtime-config.js"),
     createRuntimeConfigArtifact({
       apiBase: config.apiBase,
+      callbackUrl: config.callbackUrl,
+      cognitoClientId: config.audience,
+      cognitoDomain: config.cognitoDomain,
+      cognitoIssuer: config.issuer,
+      logoutUrl: config.logoutUrl,
+      tokenProviderKey: config.providerKey,
       localMode: config.localMode,
     }),
     { encoding: "utf8", mode: 0o644 },
   );
   const html = await readFile(resolve(output, "index.html"), "utf8");
-  if (
-    html.indexOf('src="/runtime-config.js"') < 0 ||
-    html.indexOf('src="/runtime-config.js"') > html.indexOf('type="module"') ||
-    html.includes('src="/cognito-token-provider.js"')
-  )
-    throw new Error(
-      "runtime config must load before the application module without an authentication provider",
-    );
+  assertRuntimeScriptOrder(html);
   const digestMap = await checksums(output, new Set(["phase1-manifest.json"]));
   const manifest = {
     schemaVersion: 1,

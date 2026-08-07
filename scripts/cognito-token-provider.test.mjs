@@ -4,6 +4,33 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
+const cognitoScopes = [
+  "events/events:read",
+  "events/scouting:read",
+  "events/scouting:write",
+];
+
+test("Cognito provider refuses a non-exact configured scope set", async () => {
+  const source = await readFile(
+    new URL("../apps/web/public/cognito-token-provider.js", import.meta.url),
+    "utf8",
+  );
+  for (const configuredScopes of [
+    ["events/events:read"],
+    ["events/events:read", "events/scouting:write", "events/scouting:read"],
+    [...cognitoScopes, "events/extra"],
+  ]) {
+    const window = {
+      __FTE_RUNTIME_CONFIG__: {
+        tokenProviderKey: "cognitoSession",
+        cognitoScopes: configuredScopes,
+      },
+    };
+    vm.runInContext(source, vm.createContext({ window }));
+    assert.equal(window.__FTE_TOKEN_PROVIDERS__, undefined);
+  }
+});
+
 test("Cognito provider installs PKCE authorization-code login without fallback", async () => {
   const values = new Map();
   const assignments = [];
@@ -15,7 +42,7 @@ test("Cognito provider installs PKCE authorization-code login without fallback",
       cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
       cognitoClientId: "client",
       cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
-      cognitoScope: "events/events:read",
+      cognitoScopes,
       callbackUrl: "https://app.example.com/auth/callback",
       logoutUrl: "https://app.example.com",
     },
@@ -24,6 +51,8 @@ test("Cognito provider installs PKCE authorization-code login without fallback",
     window,
     crypto: webcrypto,
     AbortController,
+    setTimeout,
+    clearTimeout,
     TextEncoder,
     URL,
     URLSearchParams,
@@ -59,7 +88,20 @@ test("Cognito provider installs PKCE authorization-code login without fallback",
     "function",
   );
   assert.equal(typeof window.__FTE_LOGOUT__, "function");
-  values.set("fte.oauth.session", JSON.stringify({ accessToken: "a.!!!!.b" }));
+  assert.equal(assignments.length, 0);
+  const incompletePayload = Buffer.from(
+    JSON.stringify({
+      client_id: "client",
+      iss: "https://cognito-idp.us-east-1.amazonaws.com/pool",
+      token_use: "access",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      scope: "events/events:read events/scouting:read",
+    }),
+  ).toString("base64url");
+  values.set(
+    "fte.oauth.session",
+    JSON.stringify({ accessToken: `a.${incompletePayload}.b` }),
+  );
   void window.__FTE_TOKEN_PROVIDERS__.cognitoSession();
   void window.__FTE_TOKEN_PROVIDERS__.cognitoSession();
   for (let index = 0; index < 10 && assignments.length === 0; index += 1)
@@ -74,6 +116,7 @@ test("Cognito provider installs PKCE authorization-code login without fallback",
     /^[A-Za-z0-9_-]{43}$/,
   );
   assert.equal(values.has("fte.oauth.verifier"), true);
+  assert.equal(values.get("fte.oauth.return-to"), "/games");
   assert.equal(
     authorize.searchParams.get("state"),
     values.get("fte.oauth.state"),
@@ -86,13 +129,17 @@ test("Cognito provider installs PKCE authorization-code login without fallback",
   const expectedChallenge = Buffer.from(digest).toString("base64url");
   assert.equal(authorize.searchParams.get("code_challenge"), expectedChallenge);
   assert.equal("localStorage" in context, false);
+  assert.equal(authorize.searchParams.get("scope"), cognitoScopes.join(" "));
   const source = await readFile(
     new URL("../apps/web/public/cognito-token-provider.js", import.meta.url),
     "utf8",
   );
   assert.match(source, /token_use === "access"/);
-  assert.match(source, /scopes\.includes\(config\.cognitoScope\)/);
+  assert.match(source, /const cognitoScopes = Object\.freeze/);
+  assert.match(source, /cognitoScopes\.every/);
   assert.match(source, /payload\?\.client_id === config\.cognitoClientId/);
+  assert.match(source, /setTimeout\(\(\) => controller\.abort\(\), 10_000\)/);
+  assert.match(source, /clearTimeout\(timeout\)/);
 });
 
 test("Cognito callback rejects malformed refresh tokens before storage", async () => {
@@ -104,6 +151,7 @@ test("Cognito callback rejects malformed refresh tokens before storage", async (
     const values = new Map([
       ["fte.oauth.state", "expected"],
       ["fte.oauth.verifier", "verifier"],
+      ["fte.oauth.return-to", "/games/fixture?tab=odds"],
     ]);
     const payload = Buffer.from(
       JSON.stringify({
@@ -111,7 +159,7 @@ test("Cognito callback rejects malformed refresh tokens before storage", async (
         iss: "https://cognito-idp.us-east-1.amazonaws.com/pool",
         token_use: "access",
         exp: Math.floor(Date.now() / 1000) + 300,
-        scope: "events/events:read",
+        scope: cognitoScopes.join(" "),
       }),
     ).toString("base64url");
     const window = {
@@ -120,7 +168,7 @@ test("Cognito callback rejects malformed refresh tokens before storage", async (
         cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
         cognitoClientId: "client",
         cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
-        cognitoScope: "events/events:read",
+        cognitoScopes,
         callbackUrl: "https://app.example.com/auth/callback",
         logoutUrl: "https://app.example.com",
       },
@@ -131,6 +179,8 @@ test("Cognito callback rejects malformed refresh tokens before storage", async (
         window,
         crypto: webcrypto,
         AbortController,
+        setTimeout,
+        clearTimeout,
         TextEncoder,
         URL,
         URLSearchParams,
@@ -154,19 +204,173 @@ test("Cognito callback rejects malformed refresh tokens before storage", async (
           search: "?code=code&state=expected",
           assign() {},
         },
+        history: {
+          replaceState(_state, _title, path) {
+            assert.equal(path, "/games/fixture?tab=odds");
+          },
+        },
+      }),
+    );
+    await assert.rejects(
+      window.__FTE_TOKEN_PROVIDERS__.cognitoSession(),
+      /Authentication failed/,
+    );
+    assert.equal(values.has("fte.oauth.session"), false);
+    assert.equal(values.has("fte.oauth.state"), false);
+  }
+});
+
+test("Cognito callback failure rejects once, then allows explicit login recovery", async () => {
+  const source = await readFile(
+    new URL("../apps/web/public/cognito-token-provider.js", import.meta.url),
+    "utf8",
+  );
+  for (const scenario of [
+    "provider-denied",
+    "state-mismatch",
+    "exchange-failure",
+  ]) {
+    const values = new Map([
+      ["fte.oauth.state", "expected"],
+      ["fte.oauth.verifier", "verifier"],
+    ]);
+    const assignments = [];
+    let fetches = 0;
+    const window = {
+      __FTE_RUNTIME_CONFIG__: {
+        tokenProviderKey: "cognitoSession",
+        cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
+        cognitoClientId: "client",
+        cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
+        cognitoScopes,
+        callbackUrl: "https://app.example.com/auth/callback",
+        logoutUrl: "https://app.example.com",
+      },
+    };
+    vm.runInContext(
+      source,
+      vm.createContext({
+        window,
+        crypto: webcrypto,
+        AbortController,
+        setTimeout,
+        clearTimeout,
+        TextEncoder,
+        URL,
+        URLSearchParams,
+        btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+        atob: (value) => Buffer.from(value, "base64").toString("binary"),
+        fetch: async () => {
+          fetches += 1;
+          return { ok: false, json: async () => ({}) };
+        },
+        sessionStorage: {
+          getItem: (key) => values.get(key) ?? null,
+          setItem: (key, value) => values.set(key, value),
+          removeItem: (key) => values.delete(key),
+        },
+        location: {
+          origin: "https://app.example.com",
+          pathname: "/auth/callback",
+          search:
+            scenario === "provider-denied"
+              ? "?error=access_denied&state=expected"
+              : scenario === "state-mismatch"
+                ? "?code=code&state=wrong"
+                : "?code=code&state=expected",
+          assign: (value) => assignments.push(value),
+        },
         history: { replaceState() {} },
       }),
     );
-    void window.__FTE_TOKEN_PROVIDERS__.cognitoSession();
-    for (
-      let index = 0;
-      index < 10 && !values.has("fte.oauth.state");
-      index += 1
-    )
-      await new Promise((resolve) => setImmediate(resolve));
+    await assert.rejects(
+      window.__FTE_TOKEN_PROVIDERS__.cognitoSession(),
+      /Authentication failed/,
+    );
+    assert.equal(fetches, scenario === "exchange-failure" ? 1 : 0);
+    assert.deepEqual(assignments, []);
     assert.equal(values.has("fte.oauth.session"), false);
-    assert.equal(values.has("fte.oauth.state"), true);
+    void window.__FTE_TOKEN_PROVIDERS__.cognitoSession();
+    for (let index = 0; index < 10 && assignments.length === 0; index += 1)
+      await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(assignments.length, 1);
+    assert.match(assignments[0], /\/oauth2\/authorize\?/);
   }
+});
+
+test("401 invalidation clears the cached session without redirecting", async () => {
+  const payload = Buffer.from(
+    JSON.stringify({
+      client_id: "client",
+      iss: "https://cognito-idp.us-east-1.amazonaws.com/pool",
+      token_use: "access",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      scope: cognitoScopes.join(" "),
+    }),
+  ).toString("base64url");
+  const token = `a.${payload}.b`;
+  const values = new Map([
+    ["fte.oauth.session", JSON.stringify({ accessToken: token })],
+  ]);
+  const assignments = [];
+  const window = {
+    __FTE_RUNTIME_CONFIG__: {
+      tokenProviderKey: "cognitoSession",
+      cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
+      cognitoClientId: "client",
+      cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
+      cognitoScopes,
+      callbackUrl: "https://app.example.com/auth/callback",
+      logoutUrl: "https://app.example.com",
+    },
+  };
+  vm.runInContext(
+    await readFile(
+      new URL("../apps/web/public/cognito-token-provider.js", import.meta.url),
+      "utf8",
+    ),
+    vm.createContext({
+      window,
+      crypto: webcrypto,
+      AbortController,
+      setTimeout,
+      clearTimeout,
+      TextEncoder,
+      URL,
+      URLSearchParams,
+      btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+      atob: (value) => Buffer.from(value, "base64").toString("binary"),
+      fetch: () => {
+        throw new Error("unexpected exchange");
+      },
+      sessionStorage: {
+        getItem: (key) => values.get(key) ?? null,
+        setItem: (key, value) => values.set(key, value),
+        removeItem: (key) => values.delete(key),
+      },
+      location: {
+        origin: "https://app.example.com",
+        pathname: "/games",
+        search: "",
+        assign: (value) => assignments.push(value),
+      },
+      history: { replaceState() {} },
+    }),
+  );
+  assert.equal(await window.__FTE_TOKEN_PROVIDERS__.cognitoSession(), token);
+  assert.equal(
+    typeof window.__FTE_TOKEN_INVALIDATORS__.cognitoSession,
+    "function",
+  );
+  assert.equal(Object.isFrozen(window.__FTE_TOKEN_INVALIDATORS__), true);
+  window.__FTE_TOKEN_INVALIDATORS__.cognitoSession();
+  assert.equal(values.has("fte.oauth.session"), false);
+  assert.deepEqual(assignments, []);
+  void window.__FTE_TOKEN_PROVIDERS__.cognitoSession();
+  for (let index = 0; index < 10 && assignments.length === 0; index += 1)
+    await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(assignments.length, 1);
+  assert.match(assignments[0], /\/oauth2\/authorize\?/);
 });
 
 test("refresh is single-flight and logout blocks late credential writes", async () => {
@@ -175,7 +379,7 @@ test("refresh is single-flight and logout blocks late credential writes", async 
     cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
     cognitoClientId: "client",
     cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
-    cognitoScope: "events/events:read",
+    cognitoScopes,
     callbackUrl: "https://app.example.com/auth/callback",
     logoutUrl: "https://app.example.com",
   };
@@ -186,7 +390,7 @@ test("refresh is single-flight and logout blocks late credential writes", async 
         iss: config.cognitoIssuer,
         token_use: "access",
         exp,
-        scope: config.cognitoScope,
+        scope: config.cognitoScopes.join(" "),
       }),
     ).toString("base64url");
     return `a.${payload}.b`;
@@ -213,6 +417,8 @@ test("refresh is single-flight and logout blocks late credential writes", async 
       window,
       crypto: webcrypto,
       AbortController,
+      setTimeout,
+      clearTimeout,
       TextEncoder,
       URL,
       URLSearchParams,
@@ -280,7 +486,7 @@ test("logout blocks a late authorization-code exchange from saving credentials",
     cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
     cognitoClientId: "client",
     cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
-    cognitoScope: "events/events:read",
+    cognitoScopes,
     callbackUrl: "https://app.example.com/auth/callback",
     logoutUrl: "https://app.example.com",
   };
@@ -290,7 +496,7 @@ test("logout blocks a late authorization-code exchange from saving credentials",
       iss: config.cognitoIssuer,
       token_use: "access",
       exp: Math.floor(Date.now() / 1000) + 300,
-      scope: config.cognitoScope,
+      scope: config.cognitoScopes.join(" "),
     }),
   ).toString("base64url");
   const window = { __FTE_RUNTIME_CONFIG__: config };
@@ -303,6 +509,8 @@ test("logout blocks a late authorization-code exchange from saving credentials",
       window,
       crypto: webcrypto,
       AbortController,
+      setTimeout,
+      clearTimeout,
       TextEncoder,
       URL,
       URLSearchParams,
@@ -359,7 +567,7 @@ test("logout during PKCE digest prevents state storage and authorization redirec
       cognitoIssuer: "https://cognito-idp.us-east-1.amazonaws.com/pool",
       cognitoClientId: "client",
       cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
-      cognitoScope: "events/events:read",
+      cognitoScopes,
       callbackUrl: "https://app.example.com/auth/callback",
       logoutUrl: "https://app.example.com",
     },
@@ -373,6 +581,8 @@ test("logout during PKCE digest prevents state storage and authorization redirec
       window,
       crypto,
       AbortController,
+      setTimeout,
+      clearTimeout,
       TextEncoder,
       URL,
       URLSearchParams,
@@ -416,7 +626,7 @@ test("failed login initiation clears single-flight state for a fresh retry", asy
       cognitoIssuer: "https://issuer.example.com",
       cognitoClientId: "client",
       cognitoDomain: "https://domain.auth.us-east-1.amazoncognito.com",
-      cognitoScope: "events/events:read",
+      cognitoScopes,
       callbackUrl: "https://app.example.com/auth/callback",
       logoutUrl: "https://app.example.com",
     },
@@ -439,6 +649,8 @@ test("failed login initiation clears single-flight state for a fresh retry", asy
         },
       },
       AbortController,
+      setTimeout,
+      clearTimeout,
       TextEncoder,
       URL,
       URLSearchParams,

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
+import { COGNITO_SCOPES } from "./generate-web-runtime-config.mjs";
 
 export const projectRoot = resolve(new URL("..", import.meta.url).pathname);
 
@@ -21,7 +22,9 @@ export function safeDevConfig(environment = process.env) {
     cognitoDomain:
       environment.FTE_COGNITO_DOMAIN ??
       "https://phase1.auth.us-east-1.amazoncognito.com",
-    cognitoScope: environment.FTE_COGNITO_SCOPE ?? "events/events:read",
+    cognitoScopes: (
+      environment.FTE_COGNITO_SCOPES ?? COGNITO_SCOPES.join(" ")
+    ).split(" "),
     callbackUrl:
       environment.FTE_COGNITO_CALLBACK_URL ??
       "https://app.phase1.invalid/auth/callback",
@@ -77,8 +80,8 @@ export function validateSafeDevConfig(config) {
       "API base must be HTTPS (or explicit local HTTP) without credentials, query, or fragment",
     );
   if (config.providerKey === "cognitoSession") {
-    if (config.cognitoScope !== "events/events:read")
-      throw new Error("Cognito scope must be events/events:read");
+    if (JSON.stringify(config.cognitoScopes) !== JSON.stringify(COGNITO_SCOPES))
+      throw new Error("Cognito scopes must be the exact scouting scope set");
     for (const [label, value] of [
       ["Cognito domain", config.cognitoDomain],
       ["Cognito callback", config.callbackUrl],
@@ -168,6 +171,7 @@ function isExactTableOrIndexArn(value, tableId) {
 
 function dynamoActionsForRole(template, roleId, tableId) {
   const actions = new Set();
+  const tableActions = new Set();
   for (const [, policy] of entriesOfType(template, "AWS::IAM::Policy")) {
     const roles = policy.Properties?.Roles ?? [];
     if (!roles.some((role) => isRef(role, roleId))) continue;
@@ -185,16 +189,28 @@ function dynamoActionsForRole(template, roleId, tableId) {
       if (
         resources.length < 1 ||
         resources.length > 2 ||
-        !resources.every((value) => isExactTableOrIndexArn(value, tableId)) ||
-        !resources.some((value) => isGetAtt(value, tableId, "Arn"))
+        !resources.every((value) => isExactTableOrIndexArn(value, tableId))
       )
         throw new Error(
           "DynamoDB IAM must reference only the exact event table and its indexes",
         );
-      for (const action of statementActions) actions.add(action);
+      const tableBound = resources.some((value) =>
+        isGetAtt(value, tableId, "Arn"),
+      );
+      if (
+        !tableBound &&
+        statementActions.some((action) => action !== "dynamodb:Query")
+      )
+        throw new Error(
+          "Only DynamoDB Query may use an index-only IAM resource",
+        );
+      for (const action of statementActions) {
+        actions.add(action);
+        if (tableBound) tableActions.add(action);
+      }
     }
   }
-  return actions;
+  return { actions, tableActions };
 }
 
 function requireActions(actual, expected, label) {
@@ -208,7 +224,7 @@ function requireActions(actual, expected, label) {
 
 export function validateTemplate(template, config) {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const tables = entriesOfType(template, "AWS::DynamoDB::Table");
   const apis = entriesOfType(template, "AWS::ApiGatewayV2::Api");
   if (tables.length !== 1 || apis.length !== 1)
@@ -294,7 +310,9 @@ export function validateTemplate(template, config) {
       [
         "default-src 'self'; base-uri 'none'; connect-src 'self' ",
         { "Fn::GetAtt": [apiId, "ApiEndpoint"] },
-        "; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+        " https://",
+        { Ref: domainId },
+        ".auth.us-east-1.amazoncognito.com; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
       ],
     ],
   };
@@ -333,6 +351,14 @@ export function validateTemplate(template, config) {
           ScopeName: "events:read",
         },
         {
+          ScopeDescription: "Read owned FIND THE EDGE scouting jobs",
+          ScopeName: "scouting:read",
+        },
+        {
+          ScopeDescription: "Create and retry FIND THE EDGE scouting jobs",
+          ScopeName: "scouting:write",
+        },
+        {
           ScopeDescription: "Review non-executable retrospective candidates",
           ScopeName: "retrospectives:approve",
         },
@@ -344,7 +370,7 @@ export function validateTemplate(template, config) {
       ])
   )
     throw new Error(
-      "Cognito must define only the read, retrospective approval, and strategy promotion scopes",
+      "Cognito must define only the read, scouting, retrospective approval, and strategy promotion scopes",
     );
   if (!isRef(cognitoDomain.Properties?.UserPoolId, poolId))
     throw new Error("Cognito domain must bind to the selected user pool");
@@ -366,12 +392,24 @@ export function validateTemplate(template, config) {
     isRef(oauth?.UserPoolId, poolId) &&
     JSON.stringify(oauth?.CallbackURLs) === JSON.stringify(exactCallbackUrls) &&
     JSON.stringify(oauth?.LogoutURLs) === JSON.stringify([webOrigin]);
+  const commonOAuthScopes = [
+    ...["events:read", "scouting:read", "scouting:write"].map((scope) => ({
+      "Fn::Join": ["", [{ Ref: serverId }, `/${scope}`]],
+    })),
+  ];
   if (
     !validWebClient(client.Properties) ||
-    !validWebClient(reviewerClient.Properties)
+    !validWebClient(reviewerClient.Properties) ||
+    JSON.stringify(client.Properties?.AllowedOAuthScopes) !==
+      JSON.stringify(commonOAuthScopes) ||
+    !commonOAuthScopes.every((scope) =>
+      (reviewerClient.Properties?.AllowedOAuthScopes ?? []).some(
+        (candidate) => JSON.stringify(candidate) === JSON.stringify(scope),
+      ),
+    )
   )
     throw new Error(
-      "Cognito web clients must be public authorization-code clients with exact hosted URLs",
+      "Cognito web clients must be public authorization-code clients with exact hosted URLs and scouting scopes",
     );
   if (
     !reviewerGroup ||
@@ -468,12 +506,13 @@ export function validateTemplate(template, config) {
       '\\"AllowMethods\\":[\\"GET\\",\\"POST\\",\\"OPTIONS\\"]',
     ) ||
     !createRendered.includes(
-      '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\"]',
+      '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\",\\"idempotency-key\\"]',
     ) ||
+    !createRendered.includes('\\"ExposeHeaders\\":[\\"location\\"]') ||
     createRendered.includes("*")
   )
     throw new Error(
-      "HTTP API CORS must contain only the exact origin, methods, and headers",
+      "HTTP API CORS must contain only the exact origin, methods, request headers, and exposed headers",
     );
   const corsPolicies = entriesOfType(template, "AWS::IAM::Policy").filter(
     ([, value]) =>
@@ -532,6 +571,9 @@ export function validateTemplate(template, config) {
     "GET /games",
     "GET /games/{eventId}/odds-history",
     "GET /splits",
+    "GET /providers/status",
+    "GET /sports/{sportKey}/opportunities",
+    "GET /sports/{sportKey}/opportunities/{opportunityId}",
     "GET /performance/cohorts",
     "GET /performance/cohorts/{eventId}",
     "GET /performance/reports",
@@ -545,6 +587,9 @@ export function validateTemplate(template, config) {
     "POST /strategy-experiments/{eventId}/approve",
     "POST /strategy-experiments/{eventId}/promote",
     "POST /strategy-experiments/{eventId}/rollback",
+    "POST /events/{eventId}/scout",
+    "GET /scout-jobs/{jobId}",
+    "POST /scout-jobs/{jobId}/retry",
   ];
   if (
     apiRoutes.length !== requiredRouteKeys.length ||
@@ -582,6 +627,22 @@ export function validateTemplate(template, config) {
           JSON.stringify(value.Properties?.AuthorizationScopes) !==
             JSON.stringify(["events/strategies:promote"])
         );
+      const scoutingScope =
+        value.Properties?.RouteKey === "GET /scout-jobs/{jobId}"
+          ? "events/scouting:read"
+          : [
+                "POST /events/{eventId}/scout",
+                "POST /scout-jobs/{jobId}/retry",
+              ].includes(value.Properties?.RouteKey)
+            ? "events/scouting:write"
+            : undefined;
+      if (scoutingScope)
+        return (
+          value.Properties?.AuthorizationType !== "JWT" ||
+          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
+          JSON.stringify(value.Properties?.AuthorizationScopes) !==
+            JSON.stringify([scoutingScope])
+        );
       return (
         value.Properties?.AuthorizationType !== "NONE" ||
         value.Properties?.AuthorizerId !== undefined ||
@@ -590,7 +651,7 @@ export function validateTemplate(template, config) {
     })
   )
     throw new Error(
-      "Games and event detail must be public while event listing remains scoped",
+      "Public reads must remain public while protected event, scouting, review, and promotion routes remain scoped exactly",
     );
   if (
     apiStages.length !== 1 ||
@@ -696,6 +757,8 @@ export function validateTemplate(template, config) {
     "CognitoClientId",
     "CognitoDomain",
     "CognitoScope",
+    "ScoutingReadScope",
+    "ScoutingWriteScope",
     "CognitoCallbackUrl",
     "LiveOddsIngestionFunctionName",
     "SharpApiSecretName",
@@ -728,7 +791,9 @@ export function validateTemplate(template, config) {
           ["https://", { Ref: domainId }, ".auth.us-east-1.amazoncognito.com"],
         ],
       }) ||
-    template.Outputs.CognitoScope.Value !== "events/events:read"
+    template.Outputs.CognitoScope.Value !== COGNITO_SCOPES[0] ||
+    template.Outputs.ScoutingReadScope.Value !== COGNITO_SCOPES[1] ||
+    template.Outputs.ScoutingWriteScope.Value !== COGNITO_SCOPES[2]
   )
     throw new Error(
       "Launch outputs must reference the exact created resources",
@@ -770,11 +835,19 @@ export function validateTemplate(template, config) {
         const exactTableAccess =
           resources.length >= 1 &&
           resources.length <= 2 &&
-          resources.every((value) => isExactTableOrIndexArn(value, tableId)) &&
-          resources.some((value) => isGetAtt(value, tableId, "Arn"));
+          resources.every((value) => isExactTableOrIndexArn(value, tableId));
+        const tableBound = resources.some((value) =>
+          isGetAtt(value, tableId, "Arn"),
+        );
+        const safeIndexOnly =
+          !tableBound && actions.every((action) => action === "dynamodb:Query");
         if (!streamDiscoveryOnly && !streamReadOnly && !exactTableAccess)
           throw new Error(
             "DynamoDB IAM must reference only the exact event table, its indexes, or its read-only stream",
+          );
+        if (exactTableAccess && !tableBound && !safeIndexOnly)
+          throw new Error(
+            "Only DynamoDB Query may use an index-only IAM resource",
           );
       }
     }
@@ -785,31 +858,41 @@ export function validateTemplate(template, config) {
     throw new Error(
       "API and live ingestion functions must reference IAM roles",
     );
+  const apiDynamo = dynamoActionsForRole(template, apiRoleId, tableId);
+  const apiDynamoActions = [
+    "dynamodb:BatchGetItem",
+    "dynamodb:GetItem",
+    "dynamodb:PutItem",
+    "dynamodb:Query",
+    "dynamodb:TransactGetItems",
+    "dynamodb:TransactWriteItems",
+  ];
+  requireActions(apiDynamo.actions, apiDynamoActions, "API DynamoDB IAM");
   requireActions(
-    dynamoActionsForRole(template, apiRoleId, tableId),
-    [
-      "dynamodb:BatchGetItem",
-      "dynamodb:GetItem",
-      "dynamodb:PutItem",
-      "dynamodb:Query",
-      "dynamodb:TransactGetItems",
-      "dynamodb:TransactWriteItems",
-    ],
-    "API DynamoDB IAM",
+    apiDynamo.tableActions,
+    apiDynamoActions,
+    "API table-bound DynamoDB IAM",
+  );
+  const liveDynamo = dynamoActionsForRole(template, liveRoleId, tableId);
+  const liveDynamoActions = [
+    "dynamodb:BatchGetItem",
+    "dynamodb:ConditionCheckItem",
+    "dynamodb:GetItem",
+    "dynamodb:Query",
+    "dynamodb:PutItem",
+    "dynamodb:UpdateItem",
+    "dynamodb:DeleteItem",
+    "dynamodb:TransactWriteItems",
+  ];
+  requireActions(
+    liveDynamo.actions,
+    liveDynamoActions,
+    "Live ingestion DynamoDB IAM",
   );
   requireActions(
-    dynamoActionsForRole(template, liveRoleId, tableId),
-    [
-      "dynamodb:BatchGetItem",
-      "dynamodb:ConditionCheckItem",
-      "dynamodb:GetItem",
-      "dynamodb:Query",
-      "dynamodb:PutItem",
-      "dynamodb:UpdateItem",
-      "dynamodb:DeleteItem",
-      "dynamodb:TransactWriteItems",
-    ],
-    "Live ingestion DynamoDB IAM",
+    liveDynamo.tableActions,
+    liveDynamoActions,
+    "Live ingestion table-bound DynamoDB IAM",
   );
   const liveDeleteStatements = entriesOfType(template, "AWS::IAM::Policy")
     .filter(([, policy]) =>

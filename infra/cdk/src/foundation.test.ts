@@ -383,7 +383,7 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::CloudFront::Function", {
       AutoPublish: true,
       FunctionCode:
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
     });
     expect(rendered).not.toContain("CustomErrorResponses");
     template.hasResourceProperties("Custom::AWS", {
@@ -393,6 +393,8 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("ApiGatewayV2");
     expect(rendered).toContain("updateApi");
     expect(rendered).toContain("AllowOrigins");
+    expect(rendered).toContain("ExposeHeaders");
+    expect(rendered).toContain("location");
     template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "GET /games",
@@ -465,6 +467,8 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("OpportunityStaleRead");
     expect(rendered).toContain("provider-status");
     expect(rendered).toContain("/data-sources");
+    expect(rendered).toContain("/scout-jobs/");
+    expect(rendered).toContain("/auth/callback");
     expect(rendered).toContain("RetrospectiveValidationFailures");
     expect(rendered).toContain("RetrospectiveReviewConflict");
     expect(rendered).toContain("RetrospectiveReviewForbidden");
@@ -572,6 +576,17 @@ describe("foundation CDK app", () => {
         }),
       },
     });
+    const responseHeaderPolicies = Object.values(resources).filter(
+      (resource) => resource.Type === "AWS::CloudFront::ResponseHeadersPolicy",
+    );
+    expect(responseHeaderPolicies).toHaveLength(2);
+    for (const policy of responseHeaderPolicies) {
+      const policyText = JSON.stringify(policy.Properties);
+      expect(policyText).toContain("ApiEndpoint");
+      expect(policyText).toContain(".auth.");
+      expect(policyText).toContain("AWS::Region");
+      expect(policyText).toContain(".amazoncognito.com");
+    }
     expect(rendered).not.toContain("https://*.");
     expect(rendered).toContain("ApiEndpoint");
     expect(rendered).toContain("; form-action 'none'; frame-ancestors 'none'");
@@ -751,11 +766,18 @@ describe("foundation CDK app", () => {
       (resource) => resource.Type === "AWS::Cognito::UserPoolClient",
     );
     expect(oauthClients).toHaveLength(2);
-    for (const client of oauthClients) {
-      const scopes = JSON.stringify(client.Properties?.["AllowedOAuthScopes"]);
-      expect(scopes).toContain("scouting:read");
-      expect(scopes).toContain("scouting:write");
-    }
+    const scoutingClient = oauthClients.find((client) =>
+      JSON.stringify(client.Properties?.["AllowedOAuthScopes"]).includes(
+        "scouting:write",
+      ),
+    );
+    const allowedScopes = scoutingClient?.Properties?.["AllowedOAuthScopes"];
+    const scopes = JSON.stringify(allowedScopes);
+    expect(allowedScopes).toHaveLength(3);
+    expect(scopes).not.toContain("openid");
+    expect(scopes).not.toContain("email");
+    expect(scopes).toContain("scouting:read");
+    expect(scopes).toContain("scouting:write");
     expect(rendered).toContain("states:StartExecution");
     expect(rendered).toContain("states:DescribeExecution");
     expect(rendered).toContain("sqs:SendMessage");
