@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-036
+nextReadyStory: FTE-037
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -688,7 +688,7 @@ stories:
   - id: FTE-036
     title: Dashboard Layout and +EV Opportunity Cards
     epic: +EV opportunity lifecycle and dashboard
-    status: review
+    status: done
     dependencies: [FTE-011, FTE-035]
     risk: Medium
     approvalRequiredBeforeMerge: false

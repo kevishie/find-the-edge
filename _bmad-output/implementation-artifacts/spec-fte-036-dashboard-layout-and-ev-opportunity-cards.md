@@ -2,8 +2,9 @@
 title: 'FTE-036: Dashboard Layout and +EV Opportunity Cards'
 type: 'feature'
 created: '2026-08-07'
-status: 'in-review'
+status: 'done'
 baseline_revision: '4f522c875892766eb3deec5012ab2303f81ac7ab'
+final_revision: '7c7f3fdc276c2fc8ab1bb2b27d638694d9d23255'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
