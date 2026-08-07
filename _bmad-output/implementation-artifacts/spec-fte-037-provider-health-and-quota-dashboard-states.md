@@ -2,8 +2,9 @@
 title: 'FTE-037: Provider Health and Quota Dashboard States'
 type: 'feature'
 created: '2026-08-07'
-status: 'in-review'
+status: 'done'
 baseline_revision: '94de6f5822afd7dd1f3ae423d45e2c259c2dece1'
+final_revision: '14279239f70ab25c5d43725c30ad33ddbfd2b9d5'
 review_loop_iteration: 0
 followup_review_recommended: true
 context:
@@ -157,6 +158,7 @@ Extend the existing provider control plane with durable last-success and partial
 
 - 2026-08-07: Completed FTE-037 implementation and local verification; advanced the story to in-review and sprint status to review.
 - 2026-08-07: Addressed all 16 deduplicated code-review findings with focused regressions and repeated local verification.
+- 2026-08-07: Closed FTE-037 at implementation revision `14279239f70ab25c5d43725c30ad33ddbfd2b9d5` and advanced the sprint queue to FTE-038.
 
 ## Auto Run Result
 

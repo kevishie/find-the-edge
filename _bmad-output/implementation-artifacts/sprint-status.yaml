@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-037
+nextReadyStory: FTE-038
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -695,7 +695,7 @@ stories:
   - id: FTE-037
     title: Provider Health and Quota Dashboard States
     epic: +EV opportunity lifecycle and dashboard
-    status: review
+    status: done
     dependencies: [FTE-024, FTE-036]
     risk: Medium
     approvalRequiredBeforeMerge: false
