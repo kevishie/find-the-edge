@@ -19,6 +19,7 @@ import {
   useParams,
   useSearch,
 } from "@tanstack/react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import {
   evaluateEdge,
@@ -53,6 +54,7 @@ import {
   type RetrospectiveDto,
 } from "./api";
 import { detailMatchesRoute } from "./route-state";
+import { Dashboard } from "./dashboard";
 
 const SPLITS_REFRESH_INTERVAL_MS = 30_000;
 const oddsCellTimestamp = (
@@ -231,6 +233,9 @@ interface UiGamesPage {
   }[];
 }
 interface UiGamesClient {
+  listOpportunities?: NonNullable<
+    import("./api").GamesClient["listOpportunities"]
+  >;
   list(
     filter: {
       readonly sport: GamesSport;
@@ -407,8 +412,12 @@ function AppShell() {
           </div>
         </div>
         <nav aria-label="Primary navigation">
-          <Link to="/" activeProps={{ className: "active" }}>
-            Edge Lab
+          <Link
+            to="/"
+            activeOptions={{ exact: true }}
+            activeProps={{ className: "active" }}
+          >
+            Dashboard
           </Link>
           <Link
             to="/games"
@@ -451,9 +460,52 @@ function AppShell() {
           Informational decision support only. No bet placement, guarantees, or
           hidden model arithmetic.
         </footer>
+        <nav
+          className="mobile-product-nav"
+          aria-label="Compact product navigation"
+        >
+          <Link
+            to="/"
+            activeOptions={{ exact: true }}
+            activeProps={{ className: "active" }}
+          >
+            Dashboard
+          </Link>
+          <Link
+            to="/games"
+            search={{
+              sport: "mlb",
+              day: currentEasternDay(),
+              status: "all",
+              competition: "",
+              query: "",
+              sort: "kickoff",
+              direction: "asc",
+            }}
+            activeProps={{ className: "active" }}
+          >
+            Games
+          </Link>
+          <Link to="/splits" activeProps={{ className: "active" }}>
+            Splits
+          </Link>
+          <Link to="/performance" activeProps={{ className: "active" }}>
+            Performance
+          </Link>
+          <Link to="/retrospectives" activeProps={{ className: "active" }}>
+            Reviews
+          </Link>
+          <Link to="/experiments" activeProps={{ className: "active" }}>
+            Experiments
+          </Link>
+        </nav>
       </main>
     </div>
   );
+}
+
+function DashboardRoute() {
+  return <Dashboard client={useContext(GamesClientContext)} />;
 }
 
 function AppError({ error }: { error: Error }) {
@@ -466,7 +518,7 @@ function AppError({ error }: { error: Error }) {
   );
 }
 
-function EdgeLab() {
+export function EdgeLab() {
   const [form, setForm] = useState(initialForm);
   const result = useMemo(() => {
     try {
@@ -3364,7 +3416,7 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: EdgeLab,
+  component: DashboardRoute,
 });
 const gamesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -4245,9 +4297,17 @@ export function App({
         : {}),
     }),
   );
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      }),
+  );
   return (
-    <GamesClientContext.Provider value={gamesClient ?? defaultGamesClient}>
-      <RouterProvider router={router} />
-    </GamesClientContext.Provider>
+    <QueryClientProvider client={queryClient}>
+      <GamesClientContext.Provider value={gamesClient ?? defaultGamesClient}>
+        <RouterProvider router={router} />
+      </GamesClientContext.Provider>
+    </QueryClientProvider>
   );
 }

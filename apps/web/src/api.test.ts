@@ -124,6 +124,266 @@ const bootstrap = (): RuntimeBootstrap => ({
   },
 });
 
+const rankedOpportunity = (
+  suffix: string,
+  expectedValue: number,
+  sportKey: "mlb" | "soccer" = "mlb",
+): import("@find-the-edge/domain").RankedOpportunityDto => ({
+  schemaVersion: "ranked-opportunity-dto-v1",
+  opportunityId: `opportunity:${suffix.repeat(64)}`,
+  sportKey,
+  event: {
+    id: `event-${suffix}`,
+    version: 1,
+    competitionKey: sportKey === "mlb" ? "mlb" : "mls",
+    participants: [
+      { id: `team-${suffix}-a`, label: `Team ${suffix.toUpperCase()} A` },
+      { id: `team-${suffix}-b`, label: `Team ${suffix.toUpperCase()} B` },
+    ],
+    startsAt: "2026-08-06T20:00:00.000Z",
+    eastern: {
+      timeZone: "America/New_York",
+      calendarDay: "2026-08-06",
+      display: "Aug 6, 2026, 4:00 PM",
+    },
+    status: "scheduled",
+  },
+  market: { key: "moneyline", selectionKey: "away", point: null },
+  target: {
+    sportsbookId: "hardrock",
+    americanOdds: 120,
+    impliedProbability: 100 / 220,
+    observedAt: "2026-08-06T12:00:00.000Z",
+    retrievedAt: "2026-08-06T12:00:01.000Z",
+  },
+  bestComparison: {
+    sportsbookId: "draftkings",
+    americanOdds: 115,
+    observedAt: "2026-08-06T12:00:00.000Z",
+    retrievedAt: "2026-08-06T12:00:01.000Z",
+  },
+  consensus: { probability: 0.5, fairAmericanOdds: 100 },
+  expectedValue,
+  confidence: {
+    score: 80,
+    bucket: "high",
+    weakestComponent: "coverage",
+    components: { freshness: 100, coverage: 80, agreement: 90 },
+  },
+  dataQuality: { score: 80, bucket: "high", weakestComponent: "coverage" },
+  contributingBooks: ["draftkings", "fanduel", "betmgm"],
+  warningCodes: ["market-disagreement-warning"],
+  liveFreshness: {
+    scoredAt: "2026-08-06T12:05:00.000Z",
+    oldestRequiredEvidenceAt: "2026-08-06T12:00:00.000Z",
+    ageMinutes: 5,
+    maximumAgeMinutes: 15,
+    expiresAt: "2026-08-06T12:15:00.001Z",
+  },
+  versions: {
+    ranking: { id: "find-the-edge-opportunity-ranking", version: "1.0.0" },
+    evaluationPolicy: { id: "evaluation", version: "1.0.0" },
+    strategy: { id: "strategy", version: "1.0.0" },
+    sportModule: { id: sportKey, version: "1.0.0" },
+    calculation: { id: "opportunity-qualification", version: "1.0.0" },
+  },
+});
+
+const rankedPage = (items = [rankedOpportunity("a", 0.12)]) => ({
+  schemaVersion: "ranked-opportunity-page-v1",
+  rankingPolicy: {
+    id: "find-the-edge-opportunity-ranking",
+    version: "1.0.0",
+  },
+  items,
+  nextCursor: null,
+  snapshotAt: "2026-08-06T12:05:00.000Z",
+  evaluationState: "complete",
+  hasMoreUnknown: false,
+  evaluatedCount: items.length,
+  filteredCount: 0,
+  staleCount: 0,
+  joinFailureCount: 0,
+});
+
+describe("ranked opportunity client", () => {
+  it("keeps the public server order and sends no credentials", async () => {
+    const body = rankedPage([
+      rankedOpportunity("a", 0.12),
+      rankedOpportunity("b", 0.08),
+    ]);
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify(body)));
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.listOpportunities!("mlb", new AbortController().signal),
+    ).resolves.toMatchObject({
+      items: [
+        { opportunityId: `opportunity:${"a".repeat(64)}` },
+        { opportunityId: `opportunity:${"b".repeat(64)}` },
+      ],
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/sports/mlb/opportunities?limit=20",
+    );
+    expect(fetcher.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toBeUndefined();
+    expect(fetcher.mock.calls[0]?.[1]?.credentials).toBeUndefined();
+  });
+
+  it.each([
+    ["extra page field", { ...rankedPage(), leaked: "pk" }],
+    ["wrong sport", rankedPage([rankedOpportunity("a", 0.12, "soccer")])],
+    [
+      "reordered rank",
+      rankedPage([rankedOpportunity("a", 0.08), rankedOpportunity("b", 0.12)]),
+    ],
+    [
+      "nonfinite evidence",
+      rankedPage([
+        {
+          ...rankedOpportunity("a", 0.12),
+          expectedValue: Number.POSITIVE_INFINITY,
+        },
+      ]),
+    ],
+    [
+      "invalid American odds",
+      rankedPage([
+        {
+          ...rankedOpportunity("a", 0.12),
+          target: { ...rankedOpportunity("a", 0.12).target, americanOdds: 99 },
+        },
+      ]),
+    ],
+    [
+      "extended active window",
+      rankedPage([
+        {
+          ...rankedOpportunity("a", 0.12),
+          liveFreshness: {
+            ...rankedOpportunity("a", 0.12).liveFreshness,
+            expiresAt: "2026-08-06T12:30:00.000Z",
+          },
+        },
+      ]),
+    ],
+    [
+      "contradictory comparison coverage",
+      rankedPage([
+        {
+          ...rankedOpportunity("a", 0.12),
+          contributingBooks: ["fanduel", "betmgm"],
+        },
+      ]),
+    ],
+    [
+      "future-dated price evidence",
+      rankedPage([
+        {
+          ...rankedOpportunity("a", 0.12),
+          target: {
+            ...rankedOpportunity("a", 0.12).target,
+            observedAt: "2026-08-06T12:04:00.000Z",
+            retrievedAt: "2026-08-06T12:06:00.000Z",
+          },
+        },
+      ]),
+    ],
+    [
+      "wrong Eastern calendar day",
+      rankedPage([
+        {
+          ...rankedOpportunity("a", 0.12),
+          event: {
+            ...rankedOpportunity("a", 0.12).event,
+            eastern: {
+              ...rankedOpportunity("a", 0.12).event.eastern,
+              calendarDay: "2026-08-07",
+            },
+          },
+        },
+      ]),
+    ],
+  ])("rejects %s", async (_name, body) => {
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(body))),
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.listOpportunities!("mlb", new AbortController().signal),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it("keeps partial metadata and maps temporary unavailability safely", async () => {
+    const partial = {
+      ...rankedPage(),
+      nextCursor: "opaque-cursor",
+      evaluationState: "partial",
+      hasMoreUnknown: true,
+      evaluatedCount: 4,
+      filteredCount: 1,
+      staleCount: 1,
+      joinFailureCount: 1,
+    } as const;
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(partial)))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "temporarily-unavailable" }), {
+          status: 503,
+        }),
+      );
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.listOpportunities!("mlb", new AbortController().signal),
+    ).resolves.toMatchObject({
+      evaluationState: "partial",
+      hasMoreUnknown: true,
+      nextCursor: "opaque-cursor",
+      filteredCount: 1,
+      staleCount: 1,
+      joinFailureCount: 1,
+    });
+    await expect(
+      result.value.listOpportunities!("mlb", new AbortController().signal),
+    ).rejects.toMatchObject({
+      code: "request-failed",
+      message: "Opportunity evidence is temporarily unavailable.",
+    });
+  });
+
+  it("bounds an opportunity request that never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const result = createGamesClient(
+        { ok: true, value: bootstrap() },
+        vi.fn<typeof fetch>(() => new Promise<Response>(() => undefined)),
+      );
+      if (!result.ok) throw result.error;
+      const pending = result.value.listOpportunities!(
+        "mlb",
+        new AbortController().signal,
+      );
+      const assertion = expect(pending).rejects.toMatchObject({
+        code: "request-failed",
+        message: "Opportunities are temporarily unavailable.",
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 const requestHref = (input: RequestInfo | URL) =>
   typeof input === "string"
     ? input

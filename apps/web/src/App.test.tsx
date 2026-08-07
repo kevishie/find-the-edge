@@ -1,6 +1,9 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { assessEventMetadata } from "@find-the-edge/domain";
+import {
+  assessEventMetadata,
+  type RankedOpportunityDto,
+} from "@find-the-edge/domain";
 
 import { App } from "./App";
 import { detailMatchesRoute } from "./route-state";
@@ -8,6 +11,7 @@ import {
   GamesClientError,
   type GamesClient,
   type GamesPageDto,
+  type RankedOpportunityPageDto,
   type SplitsPageDto,
   type RetrospectiveDto,
 } from "./api";
@@ -1005,25 +1009,362 @@ const splitsPage = (
   items,
 });
 
-describe("Edge Lab", () => {
-  it("shows a qualified value decision for the default fixture", async () => {
-    render(<App initialPath="/" />);
-    expect(await screen.findByText("QUALIFIED PLAY")).toBeInTheDocument();
-    expect(screen.getByText("Qualified positive EV")).toBeInTheDocument();
-    expect(screen.getByText("41.7%")).toBeInTheDocument();
-    expect(screen.getByText("edge-calculation-v1")).toBeInTheDocument();
+const dashboardOpportunity = (
+  suffix: string,
+  expectedValue: number,
+  overrides: Partial<RankedOpportunityDto> = {},
+): RankedOpportunityDto => ({
+  schemaVersion: "ranked-opportunity-dto-v1",
+  opportunityId: `opportunity:${suffix.repeat(64)}`,
+  sportKey: "mlb",
+  event: {
+    id: `event-${suffix}`,
+    version: 1,
+    competitionKey: "mlb",
+    participants: [
+      { id: `team-${suffix}-away`, label: `Away ${suffix.toUpperCase()}` },
+      { id: `team-${suffix}-home`, label: `Home ${suffix.toUpperCase()}` },
+    ],
+    startsAt: "2099-08-08T00:00:00.000Z",
+    eastern: {
+      timeZone: "America/New_York",
+      calendarDay: "2099-08-07",
+      display: "Aug 7, 2099, 8:00 PM",
+    },
+    status: "scheduled",
+  },
+  market: {
+    key: "moneyline",
+    selectionKey: `team-${suffix}-away`,
+    point: null,
+  },
+  target: {
+    sportsbookId: "hardrock",
+    americanOdds: 130,
+    impliedProbability: 1 / 2.3,
+    observedAt: "2099-08-07T11:55:00.000Z",
+    retrievedAt: "2099-08-07T11:56:00.000Z",
+  },
+  bestComparison: {
+    sportsbookId: "draftkings",
+    americanOdds: 110,
+    observedAt: "2099-08-07T11:55:00.000Z",
+    retrievedAt: "2099-08-07T11:56:00.000Z",
+  },
+  consensus: { probability: 0.48, fairAmericanOdds: 108 },
+  expectedValue,
+  confidence: {
+    score: 82,
+    bucket: "high",
+    weakestComponent: "coverage",
+    components: { freshness: 95, coverage: 82, agreement: 88 },
+  },
+  dataQuality: { score: 82, bucket: "high", weakestComponent: "coverage" },
+  contributingBooks: ["draftkings", "fanduel", "betmgm"],
+  warningCodes: [],
+  liveFreshness: {
+    scoredAt: "2099-08-07T12:00:00.000Z",
+    oldestRequiredEvidenceAt: "2099-08-07T11:55:00.000Z",
+    ageMinutes: 5,
+    maximumAgeMinutes: 15,
+    expiresAt: "2099-08-07T12:10:00.001Z",
+  },
+  versions: {
+    ranking: { id: "find-the-edge-opportunity-ranking", version: "1.0.0" },
+    evaluationPolicy: { id: "evaluation", version: "1.0.0" },
+    strategy: { id: "strategy", version: "1.0.0" },
+    sportModule: { id: "mlb", version: "1.0.0" },
+    calculation: { id: "opportunity-qualification", version: "1.0.0" },
+  },
+  ...overrides,
+});
+
+const dashboardPage = (
+  items: RankedOpportunityDto[],
+  overrides: Partial<RankedOpportunityPageDto> = {},
+): RankedOpportunityPageDto => ({
+  schemaVersion: "ranked-opportunity-page-v1",
+  rankingPolicy: {
+    id: "find-the-edge-opportunity-ranking",
+    version: "1.0.0",
+  },
+  items,
+  nextCursor: null,
+  snapshotAt: "2099-08-07T12:00:00.000Z",
+  evaluationState: "complete",
+  hasMoreUnknown: false,
+  evaluatedCount: items.length,
+  filteredCount: 0,
+  staleCount: 0,
+  joinFailureCount: 0,
+  ...overrides,
+});
+
+describe("Dashboard", () => {
+  it("keeps a stable loading state while ranked evidence is pending", async () => {
+    const listOpportunities = vi.fn(
+      () => new Promise<RankedOpportunityPageDto>(() => undefined),
+    );
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), listOpportunities },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByRole("status", {
+        name: "Loading ranked opportunities",
+      }),
+    ).toBeVisible();
   });
 
-  it("turns public concentration into an auditable no-bet", async () => {
-    render(<App initialPath="/" />);
-    await screen.findByText("QUALIFIED PLAY");
-    fireEvent.change(screen.getByLabelText("Public ticket %"), {
-      target: { value: "84" },
-    });
-    expect(screen.getByText("NO BET")).toBeInTheDocument();
+  it("preserves server order and renders evidence with honest actions", async () => {
+    const items = [
+      dashboardOpportunity("a", 0.14),
+      dashboardOpportunity("b", 0.08),
+    ];
+    const listOpportunities = vi.fn(() =>
+      Promise.resolve(dashboardPage(items)),
+    );
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), listOpportunities },
+        }}
+      />,
+    );
+
     expect(
-      screen.getByText("80%+ public tickets without overwhelming edge"),
-    ).toBeInTheDocument();
+      await screen.findByRole("heading", { name: "Away A vs Home A" }),
+    ).toBeVisible();
+    const cards = document.querySelectorAll("[data-opportunity-id]");
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toHaveAttribute(
+      "data-opportunity-id",
+      items[0]!.opportunityId,
+    );
+    expect(cards[1]).toHaveAttribute(
+      "data-opportunity-id",
+      items[1]!.opportunityId,
+    );
+    expect(screen.getAllByText("14.00%")[0]).toBeVisible();
+    expect(
+      screen.getAllByText("Model estimate, not a guarantee")[0],
+    ).toBeVisible();
+    expect(screen.getAllByText(/Model and data confidence/)[0]).toBeVisible();
+    expect(
+      screen.getAllByRole("button", { name: "Add Bet" })[0],
+    ).toBeDisabled();
+    expect(
+      screen.getAllByRole("link", { name: /Open event/ })[0],
+    ).toHaveAttribute("href", expect.stringContaining("/games/event-a"));
+  });
+
+  it("shows empty and explicit incomplete lower-bound states", async () => {
+    const listOpportunities = vi
+      .fn()
+      .mockResolvedValueOnce(dashboardPage([]))
+      .mockResolvedValueOnce(
+        dashboardPage([dashboardOpportunity("s", 0.04)], {
+          evaluationState: "partial",
+          hasMoreUnknown: true,
+          filteredCount: 2,
+        }),
+      );
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), listOpportunities },
+        }}
+      />,
+    );
+    expect(await screen.findByText("No qualified edge")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "MLS" }));
+    expect(
+      await screen.findByText(
+        "Verified opportunities from incomplete evaluation",
+      ),
+    ).toBeVisible();
+    expect(screen.getByText("1+")).toBeVisible();
+    expect(screen.getByText(/verified lower bound/i)).toBeVisible();
+  });
+
+  it("does not turn an empty partial evaluation into a no-edge claim", async () => {
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            listOpportunities: vi.fn(() =>
+              Promise.resolve(
+                dashboardPage([], {
+                  evaluationState: "partial",
+                  hasMoreUnknown: true,
+                  filteredCount: 3,
+                }),
+              ),
+            ),
+          },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "Verified opportunities from incomplete evaluation",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText("No verified opportunity in this partial result"),
+    ).toBeVisible();
+    expect(screen.queryByText("No qualified edge")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes known exclusions from known continuation", async () => {
+    const listOpportunities = vi
+      .fn()
+      .mockResolvedValueOnce(
+        dashboardPage([dashboardOpportunity("k", 0.06)], {
+          evaluatedCount: 3,
+          filteredCount: 1,
+          staleCount: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        dashboardPage([dashboardOpportunity("m", 0.05)], {
+          nextCursor: "known-more",
+        }),
+      );
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), listOpportunities },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByText("Evaluation exclusions applied"),
+    ).toBeVisible();
+    expect(screen.getByText("Exact current page")).toBeVisible();
+    expect(
+      within(
+        screen.getByText("Active +EV shown").closest("article")!,
+      ).getByText("1"),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "MLS" }));
+    expect(
+      await screen.findByText("More ranked opportunities are available"),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("Verified opportunities from incomplete evaluation"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("1+")).toBeVisible();
+  });
+
+  it("renders a safe failure and retries on request", async () => {
+    const listOpportunities = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("provider secret"))
+      .mockResolvedValueOnce(dashboardPage([]));
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), listOpportunities },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByText("Opportunities are temporarily unavailable."),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("No qualified edge")).toBeVisible();
+    expect(listOpportunities).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps sparse evidence explicit and removes expired cards", async () => {
+    const sparse = dashboardOpportunity("x", 0.05, {
+      bestComparison: null,
+      warningCodes: [
+        "comparison-outlier-excluded",
+        "market-disagreement-warning",
+      ],
+    });
+    const expired = dashboardOpportunity("z", 0.04, {
+      liveFreshness: {
+        scoredAt: "2000-01-01T00:05:00.000Z",
+        oldestRequiredEvidenceAt: "2000-01-01T00:00:00.000Z",
+        ageMinutes: 5,
+        maximumAgeMinutes: 15,
+        expiresAt: "2000-01-01T00:15:00.001Z",
+      },
+    });
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            listOpportunities: vi.fn(() =>
+              Promise.resolve(dashboardPage([sparse, expired])),
+            ),
+          },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByText("No included comparison price"),
+    ).toBeVisible();
+    expect(screen.getByText("Comparison outlier excluded")).toBeVisible();
+    expect(screen.getByText("Market disagreement warning")).toBeVisible();
+    expect(
+      document.querySelector(
+        `[data-opportunity-id="${expired.opportunityId}"]`,
+      ),
+    ).toBeNull();
+  });
+
+  it("does not claim no edge when every loaded opportunity has expired", async () => {
+    const expired = dashboardOpportunity("q", 0.04, {
+      liveFreshness: {
+        scoredAt: "2000-01-01T00:05:00.000Z",
+        oldestRequiredEvidenceAt: "2000-01-01T00:00:00.000Z",
+        ageMinutes: 5,
+        maximumAgeMinutes: 15,
+        expiresAt: "2000-01-01T00:15:00.001Z",
+      },
+    });
+    render(
+      <App
+        initialPath="/"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            listOpportunities: vi.fn(() =>
+              Promise.resolve(dashboardPage([expired])),
+            ),
+          },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByText("Previously loaded evidence has expired"),
+    ).toBeVisible();
+    expect(screen.getByText(/this is not a no-edge claim/i)).toBeVisible();
+    expect(screen.queryByText("No qualified edge")).not.toBeInTheDocument();
   });
 });
 

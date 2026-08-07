@@ -4,10 +4,12 @@ import type {
   GameOddsComparisonDto,
   GameOddsSelectionDto,
   EntityId,
+  RankedOpportunityDto,
 } from "@find-the-edge/domain";
 import {
   collapseNearDuplicateGames,
   EVENT_LIFECYCLE_STATES,
+  normalizeRankedOpportunityDto,
   validateEventMetadataAssessment,
   participantSelectionKey,
 } from "@find-the-edge/domain";
@@ -20,6 +22,20 @@ import type {
 } from "./runtime-config";
 
 export type GamesSport = "mlb" | "soccer";
+
+export interface RankedOpportunityPageDto {
+  readonly schemaVersion: "ranked-opportunity-page-v1";
+  readonly rankingPolicy: { readonly id: string; readonly version: string };
+  readonly items: readonly RankedOpportunityDto[];
+  readonly nextCursor: string | null;
+  readonly snapshotAt: string;
+  readonly evaluationState: "complete" | "partial";
+  readonly hasMoreUnknown: boolean;
+  readonly evaluatedCount: number;
+  readonly filteredCount: number;
+  readonly staleCount: number;
+  readonly joinFailureCount: number;
+}
 
 export interface GamesFilter {
   readonly sport: GamesSport;
@@ -120,6 +136,10 @@ export interface OddsHistoryDto {
 }
 
 export interface GamesClient {
+  listOpportunities?(
+    sportKey: GamesSport,
+    signal: AbortSignal,
+  ): Promise<RankedOpportunityPageDto>;
   listExperiments?(signal: AbortSignal): Promise<
     readonly {
       readonly experimentId: string;
@@ -818,10 +838,175 @@ const iso = (value: unknown): value is string =>
   boundedString(value, 40) &&
   Number.isFinite(Date.parse(value)) &&
   new Date(value).toISOString() === value;
+
 const validAmericanOdds = (value: unknown): value is number =>
   Number.isSafeInteger(value) &&
   Math.abs(Number(value)) >= 100 &&
   Math.abs(Number(value)) <= 100_000;
+
+const opportunityEasternDay = (value: string): string => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((candidate) => candidate.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+};
+
+const parseRankedOpportunityPage = (
+  value: unknown,
+  sportKey: GamesSport,
+): RankedOpportunityPageDto => {
+  if (
+    !plain(value) ||
+    !exact(value, [
+      "schemaVersion",
+      "rankingPolicy",
+      "items",
+      "nextCursor",
+      "snapshotAt",
+      "evaluationState",
+      "hasMoreUnknown",
+      "evaluatedCount",
+      "filteredCount",
+      "staleCount",
+      "joinFailureCount",
+    ]) ||
+    value["schemaVersion"] !== "ranked-opportunity-page-v1" ||
+    !plain(value["rankingPolicy"]) ||
+    !exact(value["rankingPolicy"], ["id", "version"]) ||
+    !boundedString(value["rankingPolicy"]["id"], 64) ||
+    !/^\d+\.\d+\.\d+$/.test(String(value["rankingPolicy"]["version"])) ||
+    !Array.isArray(value["items"]) ||
+    value["items"].length > 20 ||
+    (value["nextCursor"] !== null &&
+      !boundedString(value["nextCursor"], 4096)) ||
+    !iso(value["snapshotAt"]) ||
+    !["complete", "partial"].includes(String(value["evaluationState"])) ||
+    typeof value["hasMoreUnknown"] !== "boolean" ||
+    (value["evaluationState"] === "partial") !== value["hasMoreUnknown"]
+  )
+    throw new GamesClientError(
+      "invalid-response",
+      "The opportunity response was invalid.",
+    );
+  const counts = [
+    value["evaluatedCount"],
+    value["filteredCount"],
+    value["staleCount"],
+    value["joinFailureCount"],
+  ];
+  if (
+    counts.some((count) => !Number.isSafeInteger(count) || Number(count) < 0) ||
+    Number(value["evaluatedCount"]) > 200 ||
+    Number(value["filteredCount"]) +
+      Number(value["staleCount"]) +
+      Number(value["joinFailureCount"]) +
+      value["items"].length >
+      Number(value["evaluatedCount"])
+  )
+    throw new GamesClientError(
+      "invalid-response",
+      "The opportunity response was invalid.",
+    );
+  let items: RankedOpportunityDto[];
+  try {
+    items = value["items"].map((item) =>
+      normalizeRankedOpportunityDto(item as RankedOpportunityDto),
+    );
+  } catch {
+    throw new GamesClientError(
+      "invalid-response",
+      "The opportunity response was invalid.",
+    );
+  }
+  const snapshotAt = String(value["snapshotAt"]);
+  const policy = value["rankingPolicy"];
+  const order = (left: RankedOpportunityDto, right: RankedOpportunityDto) =>
+    right.expectedValue - left.expectedValue ||
+    right.confidence.score - left.confidence.score ||
+    right.confidence.components.freshness -
+      left.confidence.components.freshness ||
+    right.confidence.components.coverage -
+      left.confidence.components.coverage ||
+    left.opportunityId.localeCompare(right.opportunityId);
+  if (
+    new Set(items.map(({ opportunityId }) => opportunityId)).size !==
+      items.length ||
+    items.some(
+      (item) =>
+        item.sportKey !== sportKey ||
+        item.versions.ranking.id !== policy["id"] ||
+        item.versions.ranking.version !== policy["version"] ||
+        !validAmericanOdds(item.target.americanOdds) ||
+        !validAmericanOdds(item.consensus.fairAmericanOdds) ||
+        (item.bestComparison !== null &&
+          !validAmericanOdds(item.bestComparison.americanOdds)) ||
+        item.event.eastern.calendarDay !==
+          opportunityEasternDay(item.event.startsAt) ||
+        item.event.eastern.display.length < 1 ||
+        item.event.eastern.display.length > 160 ||
+        Date.parse(item.liveFreshness.scoredAt) > Date.parse(snapshotAt) ||
+        Date.parse(item.liveFreshness.expiresAt) <= Date.parse(snapshotAt) ||
+        Date.parse(item.liveFreshness.expiresAt) >
+          Math.min(
+            Date.parse(item.event.startsAt),
+            Math.floor(
+              Date.parse(item.liveFreshness.oldestRequiredEvidenceAt) +
+                item.liveFreshness.maximumAgeMinutes * 60_000,
+            ) + 1,
+          ) ||
+        item.contributingBooks.includes(item.target.sportsbookId) ||
+        (item.bestComparison !== null &&
+          (item.bestComparison.sportsbookId === item.target.sportsbookId ||
+            !item.contributingBooks.includes(
+              item.bestComparison.sportsbookId,
+            ))) ||
+        [
+          item.target,
+          ...(item.bestComparison ? [item.bestComparison] : []),
+        ].some(
+          (evidence) =>
+            Date.parse(evidence.observedAt) >
+              Date.parse(evidence.retrievedAt) ||
+            Date.parse(evidence.retrievedAt) >
+              Date.parse(item.liveFreshness.scoredAt) ||
+            Date.parse(evidence.retrievedAt) > Date.parse(snapshotAt),
+        ) ||
+        Math.abs(
+          item.liveFreshness.ageMinutes -
+            (Date.parse(snapshotAt) -
+              Date.parse(item.liveFreshness.oldestRequiredEvidenceAt)) /
+              60_000,
+        ) > 1e-9,
+    ) ||
+    items.some((item, index) => index > 0 && order(items[index - 1]!, item) > 0)
+  )
+    throw new GamesClientError(
+      "invalid-response",
+      "The opportunity response was invalid.",
+    );
+  return Object.freeze({
+    schemaVersion: "ranked-opportunity-page-v1" as const,
+    rankingPolicy: Object.freeze({
+      id: String(policy["id"]),
+      version: String(policy["version"]),
+    }),
+    items: Object.freeze(items),
+    nextCursor:
+      value["nextCursor"] === null ? null : String(value["nextCursor"]),
+    snapshotAt,
+    evaluationState: value["evaluationState"] as "complete" | "partial",
+    hasMoreUnknown: value["hasMoreUnknown"],
+    evaluatedCount: Number(value["evaluatedCount"]),
+    filteredCount: Number(value["filteredCount"]),
+    staleCount: Number(value["staleCount"]),
+    joinFailureCount: Number(value["joinFailureCount"]),
+  });
+};
 const validOddsPoint = (value: unknown): value is number =>
   typeof value === "number" &&
   Number.isFinite(value) &&
@@ -1704,6 +1889,42 @@ function parseSplitsPage(
 const MAX_PAGES = 100;
 const ODDS_HISTORY_MAX_PAGES = 512;
 const LIFECYCLE_REQUEST_TIMEOUT_MS = 10_000;
+const OPPORTUNITY_REQUEST_TIMEOUT_MS = 10_000;
+
+async function boundedOpportunityRequest<T>(
+  signal: AbortSignal,
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(signal.reason);
+  signal.addEventListener("abort", abortFromParent, { once: true });
+  let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+  const timeoutFailure = new Promise<never>((_resolve, reject) => {
+    timeout = globalThis.setTimeout(() => {
+      controller.abort(new DOMException("Timed out", "TimeoutError"));
+      reject(
+        new GamesClientError(
+          "request-failed",
+          "Opportunities are temporarily unavailable.",
+        ),
+      );
+    }, OPPORTUNITY_REQUEST_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([request(controller.signal), timeoutFailure]);
+  } catch (error) {
+    if (signal.aborted) throw error;
+    if (controller.signal.aborted)
+      throw new GamesClientError(
+        "request-failed",
+        "Opportunities are temporarily unavailable.",
+      );
+    throw error;
+  } finally {
+    if (timeout !== undefined) globalThis.clearTimeout(timeout);
+    signal.removeEventListener("abort", abortFromParent);
+  }
+}
 
 async function boundedLifecycleRequest<T>(
   signal: AbortSignal,
@@ -1945,6 +2166,37 @@ export function createGamesClient(
   return {
     ok: true,
     value: {
+      async listOpportunities(sportKey, signal) {
+        if (sportKey !== "mlb" && sportKey !== "soccer")
+          throw new GamesClientError(
+            "invalid-response",
+            "The opportunity sport was invalid.",
+          );
+        return boundedOpportunityRequest(signal, async (boundedSignal) => {
+          let response: Response;
+          try {
+            response = await fetcher(
+              `${bootstrap.value.config.apiBase}/sports/${encodeURIComponent(sportKey)}/opportunities?limit=20`,
+              { signal: boundedSignal },
+            );
+          } catch (error) {
+            if (boundedSignal.aborted) throw error;
+            throw new GamesClientError(
+              "request-failed",
+              "Opportunities are temporarily unavailable.",
+            );
+          }
+          if (!response.ok)
+            throw new GamesClientError(
+              "request-failed",
+              response.status === 503
+                ? "Opportunity evidence is temporarily unavailable."
+                : "Opportunities are temporarily unavailable.",
+            );
+          const body: unknown = await response.json().catch(() => null);
+          return parseRankedOpportunityPage(body, sportKey);
+        });
+      },
       async listExperiments(signal: AbortSignal) {
         const response = await fetcher(
           `${bootstrap.value.config.apiBase}/strategy-experiments?limit=50`,

@@ -1,6 +1,6 @@
 project: FIND THE EDGE
 created: "2026-07-15"
-updated: "2026-08-06"
+updated: "2026-08-07"
 source: "_bmad-output/planning-artifacts/epics-and-stories.md"
 statusValues:
   - backlog
@@ -688,7 +688,7 @@ stories:
   - id: FTE-036
     title: Dashboard Layout and +EV Opportunity Cards
     epic: +EV opportunity lifecycle and dashboard
-    status: backlog
+    status: review
     dependencies: [FTE-011, FTE-035]
     risk: Medium
     approvalRequiredBeforeMerge: false
