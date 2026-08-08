@@ -29,6 +29,7 @@ import {
 // not inherit a board warmed by an earlier case.
 beforeEach(() => {
   clearSplitsCache();
+  window.localStorage.removeItem("fte.splitsView");
   window.localStorage.removeItem("fte.splits.viz");
 });
 
@@ -1940,10 +1941,11 @@ describe("Betting splits", () => {
       screen.getByText(/combines its public-betting data into one consensus/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("note", { name: "How to read the splits board" }),
-    ).toHaveTextContent(
-      "Fill is handle (money). The white notch is bets (tickets).",
-    );
+      screen.getByText(
+        "Handle as fill, bets as notch — divergence is the tinted gap between them. Fastest to scan.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("preference saved locally")).toBeInTheDocument();
     expect(screen.queryByText("Game details →")).not.toBeInTheDocument();
   });
 
@@ -2511,7 +2513,7 @@ describe("Betting splits", () => {
       document.querySelectorAll(".split-bar-visual").length,
     ).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Heat cells" }));
+    fireEvent.click(screen.getByRole("button", { name: "Heat Cells" }));
     expect(document.querySelectorAll(".split-bar-visual")).toHaveLength(0);
     expect(document.querySelectorAll(".split-heat").length).toBeGreaterThan(0);
     // Both percentages stay visible as numbers.
@@ -2524,7 +2526,23 @@ describe("Betting splits", () => {
     expect(divergence.length).toBeGreaterThan(0);
     // handle 64 − bets 38 = +26 points on the away spread.
     expect(screen.getAllByText("+26").length).toBeGreaterThan(0);
-    expect(window.localStorage.getItem("fte.splits.viz")).toBe("divergence");
+    expect(window.localStorage.getItem("fte.splitsView")).toBe("divergence");
+
+    fireEvent.click(screen.getByRole("button", { name: "Compare All" }));
+    // All three encodings render against the same rows.
+    expect(document.querySelectorAll(".split-board")).toHaveLength(3);
+    expect(
+      document.querySelectorAll(".split-bar-visual").length,
+    ).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".split-heat").length).toBeGreaterThan(0);
+    expect(
+      document.querySelectorAll(".split-divergence-value").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Split Bars|Heat Cells|Divergence/).length,
+    ).toBeGreaterThanOrEqual(6);
+
+    fireEvent.click(screen.getByRole("button", { name: "Divergence" }));
     unmount();
 
     // A fresh mount keeps the stored choice as its default.

@@ -1341,20 +1341,51 @@ const splitTintFg = (divergence: number) => {
   return `rgb(${mix[0]},${mix[1]},${mix[2]})`;
 };
 
-type SplitsVizMode = "bars" | "heat" | "divergence";
-const SPLITS_VIZ_STORAGE_KEY = "fte.splits.viz";
+type SplitsVizMode = "bars" | "heat" | "divergence" | "all";
+const SPLITS_VIZ_STORAGE_KEY = "fte.splitsView";
+const LEGACY_SPLITS_VIZ_STORAGE_KEY = "fte.splits.viz";
 const splitsVizModes: readonly {
   readonly id: SplitsVizMode;
   readonly label: string;
+  readonly mark: string;
+  readonly hint: string;
 }[] = [
-  { id: "bars", label: "Split bars" },
-  { id: "heat", label: "Heat cells" },
-  { id: "divergence", label: "Divergence" },
+  {
+    id: "bars",
+    label: "Split Bars",
+    mark: "▮",
+    hint: "Handle as fill, bets as notch — divergence is the tinted gap between them. Fastest to scan.",
+  },
+  {
+    id: "heat",
+    label: "Heat Cells",
+    mark: "▦",
+    hint: "Raw handle and bets kept side by side; the handle cell is tinted by direction and magnitude.",
+  },
+  {
+    id: "divergence",
+    label: "Divergence",
+    mark: "±",
+    hint: "Signed gap promoted to the primary number. Most compact, and the honest basis for sorting.",
+  },
+  {
+    id: "all",
+    label: "Compare All",
+    mark: "◫",
+    hint: "All three encodings side by side against the same rows.",
+  },
 ];
+const isSplitsVizMode = (value: unknown): value is SplitsVizMode =>
+  value === "bars" ||
+  value === "heat" ||
+  value === "divergence" ||
+  value === "all";
 const readStoredVizMode = (): SplitsVizMode => {
   try {
-    const stored = window.localStorage.getItem(SPLITS_VIZ_STORAGE_KEY);
-    return stored === "heat" || stored === "divergence" ? stored : "bars";
+    const stored =
+      window.localStorage.getItem(SPLITS_VIZ_STORAGE_KEY) ??
+      window.localStorage.getItem(LEGACY_SPLITS_VIZ_STORAGE_KEY);
+    return isSplitsVizMode(stored) ? stored : "bars";
   } catch {
     return "bars";
   }
@@ -1656,6 +1687,187 @@ type UiSplitsPage = Awaited<
   ReturnType<NonNullable<UiGamesClient["listSplits"]>>
 >;
 
+type SplitsBoardEntry = {
+  readonly game: UiSplitsPage["items"][number];
+  readonly splits: readonly UiSplitsPage["items"][number]["splits"][number][];
+  readonly emptyLabel: string;
+};
+
+const selectSplit = (
+  splits: SplitsBoardEntry["splits"],
+  market: "spread" | "total" | "moneyline",
+  selectionKey: "away" | "home" | "over" | "under" | "draw",
+) => {
+  return [...splits]
+    .filter(
+      (split) =>
+        split.marketKey === market && split.selectionKey === selectionKey,
+    )
+    .sort(
+      (left, right) =>
+        Date.parse(right.providerTimestamp) -
+          Date.parse(left.providerTimestamp) || left.id.localeCompare(right.id),
+    )[0];
+};
+
+function SplitsBoardTable({
+  boards,
+  mode,
+  bookLabel,
+}: {
+  readonly boards: readonly SplitsBoardEntry[];
+  readonly mode: Exclude<SplitsVizMode, "all">;
+  readonly bookLabel: string;
+}) {
+  return (
+    <div
+      className="market-scroll splits-scroll"
+      tabIndex={0}
+      role="region"
+      aria-label="Betting splits comparison table; scroll horizontally for all markets"
+    >
+      <table className="split-board">
+        <caption className="sr-only">
+          Betting splits by game and team. Handle means money percentage; bets
+          means ticket percentage. Each market shows its line and a split bar
+          comparing handle with bets.
+        </caption>
+        <colgroup>
+          <col className="split-team-col" />
+          {(["spread", "total", "moneyline"] as const).flatMap((market) => [
+            <col key={`${market}-line`} className="split-line-col" />,
+            <col key={`${market}-bar`} className="split-bar-col" />,
+          ])}
+        </colgroup>
+        <thead>
+          <tr>
+            <th className="split-team-heading" rowSpan={2} scope="col">
+              Game / team
+            </th>
+            {(["Spread", "Total", "Moneyline"] as const).map((market) => (
+              <th key={market} colSpan={2} scope="colgroup">
+                {market}
+              </th>
+            ))}
+          </tr>
+          <tr>
+            {(["Spread", "Total", "Moneyline"] as const).flatMap((market) =>
+              (["Line", "Handle vs bets"] as const).map((metric) => (
+                <th key={`${market}-${metric}`} scope="col">
+                  {metric}
+                </th>
+              )),
+            )}
+          </tr>
+        </thead>
+        {boards.map(({ game, splits, emptyLabel }) => {
+          const hasDraw = game.sportKey === "soccer";
+          const rows = [
+            {
+              key: "away" as const,
+              label: game.participants[0]?.label ?? "Unknown team",
+            },
+            {
+              key: "home" as const,
+              label: game.participants[1]?.label ?? "Unknown team",
+            },
+            ...(hasDraw ? [{ key: "draw" as const, label: "Draw" }] : []),
+          ];
+          return (
+            <tbody key={game.id} className="split-game-group">
+              {rows.map((row, rowIndex) => {
+                const spread =
+                  row.key === "draw"
+                    ? undefined
+                    : selectSplit(splits, "spread", row.key);
+                const totalKey =
+                  row.key === "away"
+                    ? "over"
+                    : row.key === "home"
+                      ? "under"
+                      : undefined;
+                const total = totalKey
+                  ? selectSplit(splits, "total", totalKey)
+                  : undefined;
+                const moneyline = selectSplit(splits, "moneyline", row.key);
+                const cells = [spread, total, moneyline];
+                return (
+                  <tr key={row.key}>
+                    <th className="split-team" scope="row">
+                      {rowIndex === 0 && (
+                        <span className="split-start">
+                          {easternDisplay(game.startsAt)} Eastern
+                        </span>
+                      )}
+                      <span className="split-team-name">{row.label}</span>
+                      {rowIndex === 0 && splits.length === 0 && (
+                        <span className="split-scope split-no-data">
+                          {emptyLabel}
+                        </span>
+                      )}
+                      {rowIndex === 0 && splits.length > 0 && (
+                        <span className="split-scope">{bookLabel}</span>
+                      )}
+                    </th>
+                    {cells.flatMap((split, marketIndex) => {
+                      const market = ["Spread", "Total", "Moneyline"][
+                        marketIndex
+                      ]!;
+                      const americanOdds = splitAmericanOdds(split);
+                      return [
+                        <td key={`${marketIndex}-line`} className="split-line">
+                          {!split
+                            ? "—"
+                            : marketIndex === 2
+                              ? americanOdds === undefined
+                                ? "No line"
+                                : oddsPrice(americanOdds)
+                              : split.point === undefined
+                                ? "—"
+                                : marketIndex === 1
+                                  ? `${row.key === "away" ? "O" : "U"} ${String(split.point)}`
+                                  : linePoint(split.point)}
+                        </td>,
+                        <td
+                          key={`${marketIndex}-split`}
+                          className="split-bar-cell"
+                        >
+                          {mode === "heat" ? (
+                            <HeatSplitCell
+                              moneyPercent={split?.moneyPercent}
+                              betPercent={split?.betPercent}
+                              market={market}
+                              selection={row.label}
+                            />
+                          ) : mode === "divergence" ? (
+                            <DivergenceSplitCell
+                              moneyPercent={split?.moneyPercent}
+                              betPercent={split?.betPercent}
+                              market={market}
+                              selection={row.label}
+                            />
+                          ) : (
+                            <SplitBar
+                              moneyPercent={split?.moneyPercent}
+                              betPercent={split?.betPercent}
+                              market={market}
+                              selection={row.label}
+                            />
+                          )}
+                        </td>,
+                      ];
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          );
+        })}
+      </table>
+    </div>
+  );
+}
+
 function SplitsExplorer() {
   const client = useContext(GamesClientContext);
   const [sport, setSport] = useState<GamesSport>("mlb");
@@ -1893,24 +2105,6 @@ function SplitsExplorer() {
           ? { label: "Aging", className: "freshness-aging" }
           : { label: "Stale", className: "freshness-stale" };
 
-  const selectSplit = (
-    splits: (typeof boards)[number]["splits"],
-    market: "spread" | "total" | "moneyline",
-    selectionKey: "away" | "home" | "over" | "under" | "draw",
-  ) => {
-    return [...splits]
-      .filter(
-        (split) =>
-          split.marketKey === market && split.selectionKey === selectionKey,
-      )
-      .sort(
-        (left, right) =>
-          Date.parse(right.providerTimestamp) -
-            Date.parse(left.providerTimestamp) ||
-          left.id.localeCompare(right.id),
-      )[0];
-  };
-
   return (
     <>
       <header className="explorer-header">
@@ -2039,226 +2233,68 @@ function SplitsExplorer() {
         </div>
         {state.kind === "ready" && games.length > 0 && (
           <>
-            <div
-              className="split-reading-guide"
-              role="note"
-              aria-label="How to read the splits board"
-            >
-              <div>
-                <strong>How to read this</strong>
-                <span>
-                  {vizMode === "bars"
-                    ? "Fill is handle (money). The white notch is bets (tickets). The gap shows which one is leading."
-                    : vizMode === "heat"
-                      ? `Handle-cell tint is handle − bets, saturating at ±${String(SPLIT_DIVERGENCE_CAP)} points. Purple means money-heavy, amber means ticket-heavy.`
-                      : "The large value is handle − bets in points; the small pair beneath is handle / bets."}
-                </span>
+            <div className="split-view-row" role="note">
+              <span className="split-view-label">VIEW</span>
+              <div
+                className="split-view-pills"
+                role="group"
+                aria-label="Splits view"
+              >
+                {splitsVizModes.map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    className={vizMode === mode.id ? "selected" : ""}
+                    aria-pressed={vizMode === mode.id}
+                    onClick={() => chooseVizMode(mode.id)}
+                  >
+                    <span className="split-view-mark" aria-hidden="true">
+                      {mode.mark}
+                    </span>
+                    <span>{mode.label}</span>
+                  </button>
+                ))}
               </div>
-              <div className="split-guide-controls">
-                <div
-                  className="split-viz-toggle"
-                  role="group"
-                  aria-label="Visualization"
-                >
-                  {splitsVizModes.map((mode) => (
-                    <button
-                      key={mode.id}
-                      type="button"
-                      className={vizMode === mode.id ? "selected" : ""}
-                      aria-pressed={vizMode === mode.id}
-                      onClick={() => chooseVizMode(mode.id)}
-                    >
-                      {mode.label}
-                    </button>
-                  ))}
-                </div>
-                {vizMode === "bars" && (
-                  <div className="split-bar-legend">
-                    <span>
-                      <i className="split-legend-handle" aria-hidden="true" />
-                      Handle % fill
-                    </span>
-                    <span>
-                      <i className="split-legend-bets" aria-hidden="true" />
-                      Bets % notch
-                    </span>
-                    <span>
-                      <i className="split-legend-money" aria-hidden="true" />+
-                      Money-heavy
-                    </span>
-                    <span>
-                      <i className="split-legend-ticket" aria-hidden="true" />−
-                      Ticket-heavy
-                    </span>
+              <span className="split-view-hint">
+                {
+                  (
+                    splitsVizModes.find(({ id }) => id === vizMode) ??
+                    splitsVizModes[0]!
+                  ).hint
+                }
+              </span>
+              <span className="split-view-saved">preference saved locally</span>
+            </div>
+            {vizMode === "all" ? (
+              splitsVizModes
+                .filter(
+                  (
+                    mode,
+                  ): mode is (typeof splitsVizModes)[number] & {
+                    readonly id: Exclude<SplitsVizMode, "all">;
+                  } => mode.id !== "all",
+                )
+                .map((mode) => (
+                  <div key={mode.id} className="split-compare-section">
+                    <h3 className="split-compare-caption">{mode.label}</h3>
+                    <SplitsBoardTable
+                      boards={boards}
+                      mode={mode.id}
+                      bookLabel={
+                        selectedBook ? selectedBook.label : "SharpAPI consensus"
+                      }
+                    />
                   </div>
-                )}
-              </div>
-            </div>
-            <div
-              className="market-scroll splits-scroll"
-              tabIndex={0}
-              role="region"
-              aria-label="Betting splits comparison table; scroll horizontally for all markets"
-            >
-              <table className="split-board">
-                <caption className="sr-only">
-                  Betting splits by game and team. Handle means money
-                  percentage; bets means ticket percentage. Each market shows
-                  its line and a split bar comparing handle with bets.
-                </caption>
-                <colgroup>
-                  <col className="split-team-col" />
-                  {(["spread", "total", "moneyline"] as const).flatMap(
-                    (market) => [
-                      <col key={`${market}-line`} className="split-line-col" />,
-                      <col key={`${market}-bar`} className="split-bar-col" />,
-                    ],
-                  )}
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th className="split-team-heading" rowSpan={2} scope="col">
-                      Game / team
-                    </th>
-                    {(["Spread", "Total", "Moneyline"] as const).map(
-                      (market) => (
-                        <th key={market} colSpan={2} scope="colgroup">
-                          {market}
-                        </th>
-                      ),
-                    )}
-                  </tr>
-                  <tr>
-                    {(["Spread", "Total", "Moneyline"] as const).flatMap(
-                      (market) =>
-                        (["Line", "Handle vs bets"] as const).map((metric) => (
-                          <th key={`${market}-${metric}`} scope="col">
-                            {metric}
-                          </th>
-                        )),
-                    )}
-                  </tr>
-                </thead>
-                {boards.map(({ game, splits, emptyLabel }) => {
-                  const hasDraw = game.sportKey === "soccer";
-                  const rows = [
-                    {
-                      key: "away" as const,
-                      label: game.participants[0]?.label ?? "Unknown team",
-                    },
-                    {
-                      key: "home" as const,
-                      label: game.participants[1]?.label ?? "Unknown team",
-                    },
-                    ...(hasDraw
-                      ? [{ key: "draw" as const, label: "Draw" }]
-                      : []),
-                  ];
-                  return (
-                    <tbody key={game.id} className="split-game-group">
-                      {rows.map((row, rowIndex) => {
-                        const spread =
-                          row.key === "draw"
-                            ? undefined
-                            : selectSplit(splits, "spread", row.key);
-                        const totalKey =
-                          row.key === "away"
-                            ? "over"
-                            : row.key === "home"
-                              ? "under"
-                              : undefined;
-                        const total = totalKey
-                          ? selectSplit(splits, "total", totalKey)
-                          : undefined;
-                        const moneyline = selectSplit(
-                          splits,
-                          "moneyline",
-                          row.key,
-                        );
-                        const cells = [spread, total, moneyline];
-                        return (
-                          <tr key={row.key}>
-                            <th className="split-team" scope="row">
-                              {rowIndex === 0 && (
-                                <span className="split-start">
-                                  {easternDisplay(game.startsAt)} Eastern
-                                </span>
-                              )}
-                              <span className="split-team-name">
-                                {row.label}
-                              </span>
-                              {rowIndex === 0 && splits.length === 0 && (
-                                <span className="split-scope split-no-data">
-                                  {emptyLabel}
-                                </span>
-                              )}
-                              {rowIndex === 0 && splits.length > 0 && (
-                                <span className="split-scope">
-                                  {selectedBook
-                                    ? selectedBook.label
-                                    : "SharpAPI consensus"}
-                                </span>
-                              )}
-                            </th>
-                            {cells.flatMap((split, marketIndex) => {
-                              const market = ["Spread", "Total", "Moneyline"][
-                                marketIndex
-                              ]!;
-                              const americanOdds = splitAmericanOdds(split);
-                              return [
-                                <td
-                                  key={`${marketIndex}-line`}
-                                  className="split-line"
-                                >
-                                  {!split
-                                    ? "—"
-                                    : marketIndex === 2
-                                      ? americanOdds === undefined
-                                        ? "No line"
-                                        : oddsPrice(americanOdds)
-                                      : split.point === undefined
-                                        ? "—"
-                                        : marketIndex === 1
-                                          ? `${row.key === "away" ? "O" : "U"} ${String(split.point)}`
-                                          : linePoint(split.point)}
-                                </td>,
-                                <td
-                                  key={`${marketIndex}-split`}
-                                  className="split-bar-cell"
-                                >
-                                  {vizMode === "heat" ? (
-                                    <HeatSplitCell
-                                      moneyPercent={split?.moneyPercent}
-                                      betPercent={split?.betPercent}
-                                      market={market}
-                                      selection={row.label}
-                                    />
-                                  ) : vizMode === "divergence" ? (
-                                    <DivergenceSplitCell
-                                      moneyPercent={split?.moneyPercent}
-                                      betPercent={split?.betPercent}
-                                      market={market}
-                                      selection={row.label}
-                                    />
-                                  ) : (
-                                    <SplitBar
-                                      moneyPercent={split?.moneyPercent}
-                                      betPercent={split?.betPercent}
-                                      market={market}
-                                      selection={row.label}
-                                    />
-                                  )}
-                                </td>,
-                              ];
-                            })}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  );
-                })}
-              </table>
-            </div>
+                ))
+            ) : (
+              <SplitsBoardTable
+                boards={boards}
+                mode={vizMode}
+                bookLabel={
+                  selectedBook ? selectedBook.label : "SharpAPI consensus"
+                }
+              />
+            )}
           </>
         )}
       </section>
