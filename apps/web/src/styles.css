@@ -3634,6 +3634,21 @@ footer {
   border-top: 1px solid #24222e;
 }
 
+/* Wide enough for the full 936px grid: the board no longer scrolls
+   horizontally, which lets the column headers stick to the page scroll
+   just below the measured card header. */
+@media (min-width: 1300px) {
+  .csx-board {
+    overflow-x: visible;
+  }
+
+  .csx-head {
+    position: sticky;
+    top: var(--csx-header-height, 0px);
+    z-index: 3;
+  }
+}
+
 .csx-corner {
   padding: 12px 14px;
   font:

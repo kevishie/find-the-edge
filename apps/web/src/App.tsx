@@ -1977,10 +1977,25 @@ function SplitsExplorer() {
   const sourceLabel = selectedBook ? selectedBook.label : "Circa/DK";
   const activeMode = splitsVizModes.find(({ id }) => id === vizMode)!;
 
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const card = cardRef.current;
+    const header = headerRef.current;
+    if (!card || !header) return;
+    const sync = () =>
+      card.style.setProperty("--csx-header-height", `${header.offsetHeight}px`);
+    sync();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(sync);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <div className="csx-card">
+    <div className="csx-card" ref={cardRef}>
       <span className="csx-accent" aria-hidden="true" style={{ height: 96 }} />
-      <div className="csx-header">
+      <div className="csx-header" ref={headerRef}>
         <div className="csx-header-row">
           <h1 className="csx-title">Betting splits</h1>
           <span className="csx-badge">CONSENSUS</span>

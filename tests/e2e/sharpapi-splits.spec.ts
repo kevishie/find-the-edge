@@ -89,3 +89,25 @@ test("projects one SharpAPI consensus board across every scheduled MLB game", as
     uncoveredRow.getByRole("img", { name: /split data unavailable/ }),
   ).toHaveCount(3);
 });
+
+test("pins the column headers below the card header while scrolling", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 540 });
+  await page.goto("/splits");
+  await page.getByLabel("Eastern calendar day").fill(api.day);
+  await expect(page.locator(".csx-row")).toHaveCount(api.expectedGameCount * 2);
+
+  await page.evaluate(() => window.scrollBy(0, 1000));
+  await page.waitForFunction(() => window.scrollY >= 500);
+
+  const header = await page.locator(".csx-header").boundingBox();
+  const head = await page.locator(".csx-head").boundingBox();
+  expect(header).not.toBeNull();
+  expect(head).not.toBeNull();
+  // The column headers rest directly beneath the sticky card header.
+  expect(Math.abs(head!.y - (header!.y + header!.height))).toBeLessThanOrEqual(
+    2,
+  );
+  expect(header!.y).toBeLessThanOrEqual(1);
+});
