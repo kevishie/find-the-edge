@@ -96,6 +96,20 @@ const easternDay = (instant: IsoTimestamp) =>
     day: "2-digit",
   }).format(new Date(instant));
 
+const utcDay = (instant: IsoTimestamp) =>
+  new Date(instant).toISOString().slice(0, 10);
+
+// The provider dates a split event ID by its UTC day but dates the same game's
+// schedule event ID by its Eastern day, so every game starting after 8pm
+// Eastern disagrees across the two feeds. Accept either day and let the
+// unique-candidate requirement reject a genuinely ambiguous matchup.
+const splitDayMatchesCanonical = (
+  canonical: CanonicalEvent,
+  splitDay: string,
+) =>
+  easternDay(canonical.startsAt) === splitDay ||
+  utcDay(canonical.startsAt) === splitDay;
+
 const normalizedParticipant = (value: string) =>
   value
     .normalize("NFKC")
@@ -103,16 +117,34 @@ const normalizedParticipant = (value: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
+// The split feed can abbreviate a club the schedule feed spells out, for
+// example "Athletics" against "Oakland Athletics". Accept a label whose words
+// are all present in the canonical label and whose nickname — the final word,
+// which is what distinguishes clubs sharing a city — is identical. Both
+// participants must match, and an ambiguous matchup still fails closed on the
+// unique-candidate requirement.
+const participantLabelMatches = (
+  canonicalLabel: string,
+  providedLabel: string,
+) => {
+  const canonicalWords = normalizedParticipant(canonicalLabel).split(" ");
+  const providedWords = normalizedParticipant(providedLabel).split(" ");
+  if (providedWords.length === 0 || providedWords[0] === "") return false;
+  if (canonicalWords.join(" ") === providedWords.join(" ")) return true;
+  return (
+    canonicalWords.at(-1) === providedWords.at(-1) &&
+    providedWords.every((word) => canonicalWords.includes(word))
+  );
+};
+
 const splitParticipantsMatchCanonical = (
   canonical: CanonicalEvent,
   awayTeam: string,
   homeTeam: string,
 ) =>
   canonical.participantLabels?.length === 2 &&
-  normalizedParticipant(canonical.participantLabels[0]!) ===
-    normalizedParticipant(awayTeam) &&
-  normalizedParticipant(canonical.participantLabels[1]!) ===
-    normalizedParticipant(homeTeam);
+  participantLabelMatches(canonical.participantLabels[0]!, awayTeam) &&
+  participantLabelMatches(canonical.participantLabels[1]!, homeTeam);
 
 const splitIdentityMatchesCanonical = (
   canonical: CanonicalEvent,
@@ -125,7 +157,9 @@ const splitIdentityMatchesCanonical = (
     return false;
   if (leagueKey !== "mlb") return true;
   const splitDay = providerEventDay(providerEventId);
-  return splitDay !== undefined && easternDay(canonical.startsAt) === splitDay;
+  return (
+    splitDay !== undefined && splitDayMatchesCanonical(canonical, splitDay)
+  );
 };
 
 const uniqueCanonicalSplitCandidate = (

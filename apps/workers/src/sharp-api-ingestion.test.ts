@@ -1186,6 +1186,164 @@ describe("SharpAPI primary ingestion", () => {
     );
   });
 
+  it("attaches a split whose provider id uses the UTC day of a late Eastern game", async () => {
+    // Real provider behaviour: /events dates this 8:15pm Eastern game
+    // 2026-08-07 while /splits dates the same game 2026-08-08.
+    const canonical = {
+      id: "event:mlb:orioles-rangers",
+      version: 2,
+      sportKey: "mlb",
+      startsAt: "2026-08-08T00:15:00.000Z",
+      participantLabels: ["Baltimore Orioles", "Texas Rangers"],
+    } as unknown as CanonicalEvent;
+    const resolveExactCanonicalBinding = vi.fn(
+      ({ providerEventId }: { readonly providerEventId: string }) =>
+        Promise.resolve(
+          providerEventId === "mlb_orioles_rangers_2026-08-08_b3"
+            ? canonical
+            : null,
+        ),
+    );
+    const persist = vi.fn(() =>
+      Promise.resolve({ history: "inserted", current: "advanced" }),
+    );
+    const persistGap = vi.fn();
+
+    const persisted = await persistSharpApiSplitPage(
+      { resolveExactCanonicalBinding } as unknown as EventIngestionStore,
+      { persist, persistGap } as unknown as BettingSplitRepository,
+      { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-08T01:00:01.000Z" as IsoTimestamp,
+        items: [
+          {
+            providerEventId: "mlb_orioles_rangers_2026-08-08",
+            sport: "baseball",
+            league: "mlb",
+            sportsbookId: "consensus",
+            awayTeam: "Baltimore Orioles",
+            homeTeam: "Texas Rangers",
+            providerTimestamp: "2026-08-08T01:00:00.000Z" as IsoTimestamp,
+            markets: [
+              {
+                marketKey: "moneyline",
+                selections: [
+                  { selectionKey: "away", betPercent: 40 },
+                  { selectionKey: "home", betPercent: 60 },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(persisted).toBe(2);
+    expect(persistGap).not.toHaveBeenCalled();
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({ canonicalEventId: canonical.id }),
+    );
+  });
+
+  it("attaches a split that abbreviates a club the schedule feed spells out", async () => {
+    // Real provider behaviour: /splits says "Athletics", /events says
+    // "Oakland Athletics".
+    const canonical = {
+      id: "event:mlb:athletics-redsox",
+      version: 1,
+      sportKey: "mlb",
+      startsAt: "2026-08-07T23:10:00.000Z",
+      participantLabels: ["Oakland Athletics", "Boston Red Sox"],
+    } as unknown as CanonicalEvent;
+    const persist = vi.fn(() =>
+      Promise.resolve({ history: "inserted", current: "advanced" }),
+    );
+    const persistGap = vi.fn();
+
+    const persisted = await persistSharpApiSplitPage(
+      {
+        resolveExactCanonicalBinding: vi.fn(
+          ({ providerEventId }: { readonly providerEventId: string }) =>
+            Promise.resolve(
+              providerEventId === "mlb_athletics_redsox_2026-08-07_b1"
+                ? canonical
+                : null,
+            ),
+        ),
+      } as unknown as EventIngestionStore,
+      { persist, persistGap } as unknown as BettingSplitRepository,
+      { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-07T23:30:01.000Z" as IsoTimestamp,
+        items: [
+          {
+            providerEventId: "mlb_athletics_redsox_2026-08-07",
+            sport: "baseball",
+            league: "mlb",
+            sportsbookId: "consensus",
+            awayTeam: "Athletics",
+            homeTeam: "Boston Red Sox",
+            providerTimestamp: "2026-08-07T23:30:00.000Z" as IsoTimestamp,
+            markets: [
+              {
+                marketKey: "moneyline",
+                selections: [
+                  { selectionKey: "away", betPercent: 45 },
+                  { selectionKey: "home", betPercent: 55 },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(persisted).toBe(2);
+    expect(persistGap).not.toHaveBeenCalled();
+  });
+
+  it("never attaches a split across clubs that merely share a city", async () => {
+    const persist = vi.fn();
+    const persistGap = vi.fn();
+    const persisted = await persistSharpApiSplitPage(
+      {
+        resolveExactCanonicalBinding: vi.fn(() =>
+          Promise.resolve({
+            id: "event:mlb:cubs-whitesox",
+            version: 1,
+            sportKey: "mlb",
+            startsAt: "2026-08-07T23:10:00.000Z",
+            participantLabels: ["Chicago Cubs", "Chicago White Sox"],
+          } as unknown as CanonicalEvent),
+        ),
+      } as unknown as EventIngestionStore,
+      { persist, persistGap } as unknown as BettingSplitRepository,
+      { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-07T23:30:01.000Z" as IsoTimestamp,
+        items: [
+          {
+            providerEventId: "mlb_cubs_redsox_2026-08-07",
+            sport: "baseball",
+            league: "mlb",
+            sportsbookId: "consensus",
+            awayTeam: "Chicago Cubs",
+            homeTeam: "Boston Red Sox",
+            providerTimestamp: "2026-08-07T23:30:00.000Z" as IsoTimestamp,
+            markets: [
+              {
+                marketKey: "moneyline",
+                selections: [{ selectionKey: "away", betPercent: 45 }],
+              },
+            ],
+          },
+        ],
+      },
+    );
+    expect(persisted).toBe(0);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
   it("does not attach a suffixless split when exact aliases identify different games", async () => {
     const canonical = (id: string) =>
       ({
