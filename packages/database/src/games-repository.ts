@@ -267,6 +267,10 @@ const isQuarantinableCurrentOddsError = (error: unknown) =>
   error instanceof EventStorageError &&
   quarantinableCurrentOddsErrors.has(error.message);
 
+/** How long past its claimed start an evidence-free scheduled listing keeps
+ * the benefit of the doubt before the board treats it as withdrawn. */
+const WITHDRAWN_EVENT_GRACE_MS = 2 * 60 * 60 * 1000;
+
 const collapseEventRows = (events: EventPage["items"]) =>
   collapseNearDuplicateGames(
     events.map((event) => ({
@@ -753,9 +757,22 @@ export class JoinedGamesRepository implements GamesRepository {
           : { state: "unavailable" as const },
       };
     });
+    // The provider occasionally publishes a spurious listing and withdraws it
+    // before any book quotes it. Nothing retires the stored event, so it
+    // would sit on the schedule forever as an evidence-free "scheduled" game
+    // whose start never arrives. A real game always retains its last odds
+    // rows after first pitch, so a long-started scheduled game with no odds
+    // evidence at all is a withdrawn phantom, not a game.
+    const phantomCutoff = this.now().getTime() - WITHDRAWN_EVENT_GRACE_MS;
+    const surviving = joined.filter(
+      (game) =>
+        game.status !== "scheduled" ||
+        game.odds.state !== "unavailable" ||
+        Date.parse(game.startsAt) > phantomCutoff,
+    );
     return {
       ...page,
-      items: collapseNearDuplicateGames(joined),
+      items: collapseNearDuplicateGames(surviving),
     };
   }
 }

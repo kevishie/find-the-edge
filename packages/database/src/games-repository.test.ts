@@ -1,4 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+// Every fixture in this file lives on 2026-08-01. The repository treats a
+// long-started scheduled game without odds evidence as a withdrawn listing,
+// so the clock must sit inside the fixtures' day.
+beforeAll(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date("2026-08-01T12:31:00.000Z"));
+});
+afterAll(() => {
+  vi.useRealTimers();
+});
 import {
   normalizeFixtureOddsObservation,
   assessEventMetadata,
@@ -1348,5 +1359,36 @@ describe("joined games repository", () => {
     expect(
       page.items.filter(({ id }) => id === "event-1" || id === "alias"),
     ).toHaveLength(1);
+  });
+});
+
+describe("withdrawn phantom listings", () => {
+  const at = (startsAt: string, id: string): EventDisplayDto => ({
+    ...event,
+    id,
+    startsAt,
+  });
+
+  it("hides a long-started scheduled game with no odds evidence", async () => {
+    // 02:50 ET start probed at 12:31Z (08:31 ET): far past the grace window.
+    const phantom = at("2026-08-01T06:50:00.000Z", "event-phantom");
+    const fresh = at("2026-08-01T20:10:00.000Z", "event-real-upcoming");
+    const page = await new JoinedGamesRepository(
+      events([phantom, fresh], { cursor: undefined }, null),
+      { batchGet: () => Promise.resolve([]) },
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 10);
+
+    expect(page.items.map(({ id }) => id)).toEqual(["event-real-upcoming"]);
+  });
+
+  it("keeps an upcoming game while its evidence has not arrived yet", async () => {
+    const soon = at("2026-08-01T13:00:00.000Z", "event-soon");
+    const page = await new JoinedGamesRepository(
+      events([soon], { cursor: undefined }, null),
+      { batchGet: () => Promise.resolve([]) },
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 10);
+
+    expect(page.items.map(({ id }) => id)).toEqual(["event-soon"]);
+    expect(page.items[0]?.odds).toEqual({ state: "unavailable" });
   });
 });
