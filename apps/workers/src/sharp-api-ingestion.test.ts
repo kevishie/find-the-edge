@@ -1186,35 +1186,30 @@ describe("SharpAPI primary ingestion", () => {
     );
   });
 
-  it("attaches a split whose provider id uses the UTC day of a late Eastern game", async () => {
-    // Real provider behaviour: /events dates this 8:15pm Eastern game
-    // 2026-08-07 while /splits dates the same game 2026-08-08.
-    const canonical = {
-      id: "event:mlb:orioles-rangers",
-      version: 2,
+  it("does not attach a series split to the previous day's late game", async () => {
+    // Both provider feeds date an id by its Eastern day. A split dated
+    // 2026-08-08 belongs to that day's game, never to the 8:15pm Eastern game
+    // on 2026-08-07 that happens to start at 00:15Z on 2026-08-08.
+    const previousNight = {
+      id: "event:mlb:orioles-rangers-aug7",
+      version: 1,
       sportKey: "mlb",
       startsAt: "2026-08-08T00:15:00.000Z",
       participantLabels: ["Baltimore Orioles", "Texas Rangers"],
     } as unknown as CanonicalEvent;
-    const resolveExactCanonicalBinding = vi.fn(
-      ({ providerEventId }: { readonly providerEventId: string }) =>
-        Promise.resolve(
-          providerEventId === "mlb_orioles_rangers_2026-08-08_b3"
-            ? canonical
-            : null,
-        ),
-    );
-    const persist = vi.fn(() =>
-      Promise.resolve({ history: "inserted", current: "advanced" }),
-    );
+    const persist = vi.fn();
     const persistGap = vi.fn();
 
     const persisted = await persistSharpApiSplitPage(
-      { resolveExactCanonicalBinding } as unknown as EventIngestionStore,
+      {
+        resolveExactCanonicalBinding: vi.fn(() =>
+          Promise.resolve(previousNight),
+        ),
+      } as unknown as EventIngestionStore,
       { persist, persistGap } as unknown as BettingSplitRepository,
       { sportKey: "mlb", leagueKey: "mlb" } as SharpApiLeague,
       {
-        retrievedAt: "2026-08-08T01:00:01.000Z" as IsoTimestamp,
+        retrievedAt: "2026-08-08T02:00:01.000Z" as IsoTimestamp,
         items: [
           {
             providerEventId: "mlb_orioles_rangers_2026-08-08",
@@ -1223,14 +1218,11 @@ describe("SharpAPI primary ingestion", () => {
             sportsbookId: "consensus",
             awayTeam: "Baltimore Orioles",
             homeTeam: "Texas Rangers",
-            providerTimestamp: "2026-08-08T01:00:00.000Z" as IsoTimestamp,
+            providerTimestamp: "2026-08-08T02:00:00.000Z" as IsoTimestamp,
             markets: [
               {
                 marketKey: "moneyline",
-                selections: [
-                  { selectionKey: "away", betPercent: 40 },
-                  { selectionKey: "home", betPercent: 60 },
-                ],
+                selections: [{ selectionKey: "away", betPercent: 40 }],
               },
             ],
           },
@@ -1238,11 +1230,8 @@ describe("SharpAPI primary ingestion", () => {
       },
     );
 
-    expect(persisted).toBe(2);
-    expect(persistGap).not.toHaveBeenCalled();
-    expect(persist).toHaveBeenCalledWith(
-      expect.objectContaining({ canonicalEventId: canonical.id }),
-    );
+    expect(persisted).toBe(0);
+    expect(persist).not.toHaveBeenCalled();
   });
 
   it("attaches a split that abbreviates a club the schedule feed spells out", async () => {

@@ -96,20 +96,6 @@ const easternDay = (instant: IsoTimestamp) =>
     day: "2-digit",
   }).format(new Date(instant));
 
-const utcDay = (instant: IsoTimestamp) =>
-  new Date(instant).toISOString().slice(0, 10);
-
-// The provider dates a split event ID by its UTC day but dates the same game's
-// schedule event ID by its Eastern day, so every game starting after 8pm
-// Eastern disagrees across the two feeds. Accept either day and let the
-// unique-candidate requirement reject a genuinely ambiguous matchup.
-const splitDayMatchesCanonical = (
-  canonical: CanonicalEvent,
-  splitDay: string,
-) =>
-  easternDay(canonical.startsAt) === splitDay ||
-  utcDay(canonical.startsAt) === splitDay;
-
 const normalizedParticipant = (value: string) =>
   value
     .normalize("NFKC")
@@ -157,9 +143,11 @@ const splitIdentityMatchesCanonical = (
     return false;
   if (leagueKey !== "mlb") return true;
   const splitDay = providerEventDay(providerEventId);
-  return (
-    splitDay !== undefined && splitDayMatchesCanonical(canonical, splitDay)
-  );
+  // Both provider feeds date an event id by its Eastern day, so this stays an
+  // exact comparison. Accepting the UTC day as well would make a split in a
+  // multi-game series match both that day's game and the previous day's late
+  // game, and the ambiguity would drop evidence that resolves correctly today.
+  return splitDay !== undefined && easternDay(canonical.startsAt) === splitDay;
 };
 
 const uniqueCanonicalSplitCandidate = (
