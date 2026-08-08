@@ -30,13 +30,14 @@ import {
   sportsbookRegistry,
   productionProviderStatusCatalog,
 } from "@find-the-edge/config";
-import { createEventHandler } from "./handler";
+import { createEventHandler, eventIdCandidates } from "./handler";
 import { buildProviderStatusPage } from "./provider-status";
 import { createScoutingHttpHandler } from "./scouting-handler";
 import { loadSecretRing } from "./secrets";
 import { encodeApiResponse } from "./http-compression";
 interface LambdaEvent {
   readonly routeKey?: string;
+  readonly rawPath?: string;
   readonly pathParameters?: {
     readonly eventId?: string;
     readonly sportKey?: string;
@@ -180,6 +181,11 @@ export const handler = async (event: LambdaEvent) => {
                                                   ? "detail"
                                                   : "list";
   const eventId = event.pathParameters?.eventId;
+  const eventIdAlternatives = eventIdCandidates(
+    event.rawPath,
+    event.routeKey,
+    eventId,
+  );
   const sportKey = event.pathParameters?.sportKey;
   const opportunityId = event.pathParameters?.opportunityId;
   const jobId = event.pathParameters?.jobId;
@@ -259,6 +265,7 @@ export const handler = async (event: LambdaEvent) => {
     reviewerAuthorized,
     strategyPromoterAuthorized,
     ...(eventId ? { eventId } : {}),
+    ...(eventIdAlternatives.length > 0 ? { eventIdAlternatives } : {}),
     ...(sportKey ? { sportKey } : {}),
     ...(opportunityId ? { opportunityId } : {}),
     ...(jobId ? { jobId } : {}),

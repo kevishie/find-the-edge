@@ -17,6 +17,8 @@ export interface ScoutingHttpRequest {
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
+  /** Decode-depth variants of the event-id segment; see EventApiRequest. */
+  readonly eventIdAlternatives?: readonly string[];
   readonly jobId?: string;
   readonly idempotencyKey?: string;
   readonly query?: Readonly<Record<string, string | undefined>>;
@@ -157,17 +159,40 @@ export const createScoutingHttpHandler =
       if (!exactEmptyBody(request))
         return response(400, { error: "invalid-request" });
 
+      // The gateway over-decodes path parameters, so the true event id is
+      // whichever decode variant the store recognizes. Resolution runs
+      // before the replay lookup so replays key on the same canonical id.
+      const fallbackEventId = request.eventId ?? "";
+      const candidates =
+        request.eventIdAlternatives && request.eventIdAlternatives.length > 0
+          ? request.eventIdAlternatives
+          : [fallbackEventId];
+      let detail: Awaited<ReturnType<(typeof events)["detail"]>> | undefined;
+      for (const candidate of candidates) {
+        try {
+          const result = await events.detail(candidate);
+          if (result.projectionState !== "ready" || result.item) {
+            detail = result;
+            break;
+          }
+          if (candidate === fallbackEventId) detail ??= result;
+        } catch {
+          // A decode variant the grammar rejects is simply not the id.
+        }
+      }
+      detail ??= await events.detail(fallbackEventId);
+      const canonicalEventId = detail.item?.id ?? fallbackEventId;
+
       const replay = await jobs.getCreateReplay({
         requesterId: request.subject,
         idempotencyKey,
-        eventId: request.eventId ?? "",
+        eventId: canonicalEventId,
       });
       if (replay)
         return response(200, toPublicScoutingJob(replay), {
           location: `/scout-jobs/${replay.jobId}`,
         });
 
-      const detail = await events.detail(request.eventId ?? "");
       if (detail.projectionState !== "ready")
         return response(503, { error: "temporarily-unavailable" });
       if (!detail.item) return response(404, { error: "not-found" });

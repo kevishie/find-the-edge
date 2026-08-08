@@ -122,6 +122,25 @@ test("real hosted bundle loads provider MLB and MLS games by day", async ({
   }
 });
 
+test("hosted event drill-in resolves a provider game through the gateway", async ({
+  page,
+  request,
+}) => {
+  const mlb = await findProviderGame(request, "mlb", true);
+  test.skip(mlb === null, "no provider-backed MLB evidence is ingested yet");
+  // The gateway's path-parameter decoding has corrupted percent-embedded
+  // event ids before; this drill-in guards the whole hosted chain.
+  await page.goto(
+    `/events/${encodeURIComponent(mlb!.game.id)}?sport=mlb&day=${mlb!.day}`,
+  );
+  await expect(page.getByText("This game was not found.")).toHaveCount(0, {
+    timeout: 20_000,
+  });
+  await expect(
+    page.getByRole("heading", { name: "Sportsbook comparison" }),
+  ).toBeVisible({ timeout: 20_000 });
+});
+
 test("anonymous session survives reload without Cognito state or redirects", async ({
   page,
   request,

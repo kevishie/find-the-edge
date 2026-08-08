@@ -67,6 +67,13 @@ export interface ApiRequest {
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
+  /**
+   * Decode-depth variants of the event-id path segment, most-likely-true
+   * first. API Gateway over-decodes path parameters, which corrupts
+   * canonical ids that embed percent sequences; the handler resolves the
+   * variants against the store instead of trusting one decode depth.
+   */
+  readonly eventIdAlternatives?: readonly string[];
   readonly sportKey?: string;
   readonly opportunityId?: string;
   readonly jobId?: string;
@@ -79,6 +86,46 @@ export interface ApiRequest {
   readonly reviewerAuthorized?: boolean;
   readonly strategyPromoterAuthorized?: boolean;
 }
+
+const safeDecode = (value: string): string | null => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+};
+/**
+ * Canonical event ids embed percent sequences ("event:mlb%3Amlb:…"), and API
+ * Gateway HTTP APIs decode the path once for routing and once more when
+ * extracting path parameters — an over-decode that destroys those ids
+ * irreversibly. The raw path still holds the segment at a lower decode
+ * depth. Because the gateway's exact rawPath encoding differs between
+ * environments, every plausible decode depth is offered as a candidate and
+ * the handler resolves them against the store, most-likely-true first.
+ */
+export const eventIdCandidates = (
+  rawPath: string | undefined,
+  routeKey: string | undefined,
+  reported: string | undefined,
+): readonly string[] => {
+  const candidates: string[] = [];
+  const push = (value: string | null | undefined) => {
+    if (typeof value === "string" && value.length > 0)
+      if (!candidates.includes(value)) candidates.push(value);
+  };
+  if (rawPath && routeKey) {
+    const template = routeKey.split(" ")[1]?.split("/") ?? [];
+    const actual = rawPath.split("/");
+    const slot = template.indexOf("{eventId}");
+    if (slot !== -1 && template.length === actual.length) {
+      const segment = actual[slot];
+      push(segment);
+      if (segment) push(safeDecode(segment));
+    }
+  }
+  push(reported);
+  return candidates;
+};
 
 // Module scope on purpose: the handler is rebuilt per invocation, so a cache
 // owned by it would never survive to serve a second request.
@@ -591,6 +638,33 @@ export const createEventHandler =
         !request.scopes?.includes("events/events:read")
       )
         return response((status = 403), { error: "forbidden" });
+      // Resolves the event-id decode variants against the store: the first
+      // candidate the lookup recognizes wins. When none resolve, the
+      // reported id's outcome (including its validation errors) stands.
+      const resolveEventDetail = async <T extends { readonly item: unknown }>(
+        lookup: (id: string) => Promise<T>,
+      ): Promise<{ readonly eventId: string; readonly result: T }> => {
+        const fallback = request.eventId ?? "";
+        const candidates =
+          request.eventIdAlternatives && request.eventIdAlternatives.length > 0
+            ? request.eventIdAlternatives
+            : [fallback];
+        let fallbackResult: { readonly result: T } | undefined;
+        for (const candidate of candidates) {
+          try {
+            const result = await lookup(candidate);
+            if (result.item) return { eventId: candidate, result };
+            if (candidate === fallback) fallbackResult = { result };
+          } catch (error) {
+            // A decode variant the grammar rejects is simply not the id.
+            if (candidate === fallback) throw error;
+          }
+        }
+        return {
+          eventId: fallback,
+          result: fallbackResult?.result ?? (await lookup(fallback)),
+        };
+      };
       if (request.route === "odds-history") {
         if (!oddsHistoryRepository)
           throw new Error("odds-history-repository-not-configured");
@@ -645,8 +719,9 @@ export const createEventHandler =
         )
           throw new EventInputError("invalid-odds-history-query");
         oddsHistoryRepository.validateSportsbookIds(sportsbookIds);
-        const eventId = request.eventId ?? "";
-        const event = await repository.detail(eventId);
+        const { eventId, result: event } = await resolveEventDetail((id) =>
+          repository.detail(id),
+        );
         if (!event.item)
           return response((status = 404), { error: "not-found" });
         if (selectionKey) {
@@ -695,7 +770,9 @@ export const createEventHandler =
       if (request.route === "detail") {
         if (!gamesRepository?.detail)
           throw new Error("games-detail-repository-not-configured");
-        const result = await gamesRepository.detail(request.eventId ?? "");
+        const { result } = await resolveEventDetail((id) =>
+          gamesRepository.detail!(id),
+        );
         if (result.projectionState === "uninitialized") {
           metadataCounts = { stale: 0, partial: 0, unavailable: 1 };
           return response(200, result);

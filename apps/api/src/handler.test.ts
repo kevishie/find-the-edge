@@ -19,6 +19,7 @@ import {
 import {
   clearHandlerCaches,
   createEventHandler,
+  eventIdCandidates,
   publishedSplitScopes,
 } from "./handler";
 
@@ -1531,5 +1532,156 @@ describe("event API", () => {
         })
       ).statusCode,
     ).toBe(503);
+  });
+});
+
+describe("event id decode-variant resolution", () => {
+  const rawId = "event:mlb%3Amlb:mlb_angels_marlins_2026-08-08_b2";
+  const overDecoded = "event:mlb:mlb:mlb_angels_marlins_2026-08-08_b2";
+  const wireSegment = encodeURIComponent(rawId);
+
+  it("derives candidates for both possible rawPath decode depths", () => {
+    // rawPath handed over still encoded.
+    expect(
+      eventIdCandidates(
+        `/events/${wireSegment}`,
+        "GET /events/{eventId}",
+        overDecoded,
+      ),
+    ).toEqual([wireSegment, rawId, overDecoded]);
+    // rawPath handed over once-decoded.
+    expect(
+      eventIdCandidates(
+        `/events/${rawId}`,
+        "GET /events/{eventId}",
+        overDecoded,
+      ),
+    ).toEqual([rawId, overDecoded]);
+    // Odds-history route template also carries the id.
+    expect(
+      eventIdCandidates(
+        `/games/${rawId}/odds-history`,
+        "GET /games/{eventId}/odds-history",
+        overDecoded,
+      ),
+    ).toEqual([rawId, overDecoded]);
+    // Misaligned paths fall back to the reported parameter alone.
+    expect(
+      eventIdCandidates("/events", "GET /events/{eventId}", overDecoded),
+    ).toEqual([overDecoded]);
+    expect(eventIdCandidates(undefined, undefined, overDecoded)).toEqual([
+      overDecoded,
+    ]);
+  });
+
+  it("serves the detail whose decode variant the store recognizes", async () => {
+    const known = new Set([rawId]);
+    const detailFor = (id: string) =>
+      Promise.resolve(
+        known.has(id)
+          ? {
+              projectionState: "ready" as const,
+              item: withOddsComparison({
+                id,
+                version: 1,
+                sportKey: "mlb",
+                leagueKey: "mlb",
+                status: "scheduled",
+                startsAt: "2026-08-08T20:10:00.000Z",
+                eastern: {
+                  timeZone: "America/New_York",
+                  calendarDay: "2026-08-08",
+                  display: "Aug 8, 2026, 4:10 PM",
+                },
+                participants: [
+                  { id: "away", label: "Away" },
+                  { id: "home", label: "Home" },
+                ],
+                competition: { key: "mlb" },
+                metadata: {
+                  availability: "complete",
+                  lifecycle: { state: "scheduled" },
+                  freshness: { state: "current" },
+                },
+                odds: { state: "unavailable" },
+              } as never),
+              unavailableReason: null,
+            }
+          : {
+              projectionState: "ready" as const,
+              item: null,
+              unavailableReason: null,
+            },
+      );
+    const handler = createEventHandler(
+      repository,
+      gamesWithDetail(detailFor),
+      () => undefined,
+    );
+    // The over-decoded id alone stays a 404.
+    const miss = await handler({ route: "detail", eventId: overDecoded });
+    expect(miss.statusCode).toBe(404);
+    // With decode variants present, the true id resolves.
+    const hit = await handler({
+      route: "detail",
+      eventId: overDecoded,
+      eventIdAlternatives: [wireSegment, rawId, overDecoded],
+    });
+    expect(hit.statusCode).toBe(200);
+    expect(JSON.parse(hit.body)).toMatchObject({ item: { id: rawId } });
+  });
+
+  it("resolves odds-history through the same decode variants", async () => {
+    const events: EventRepository = {
+      ...repository,
+      detail: (eventId) =>
+        Promise.resolve({
+          projectionState: "ready",
+          item:
+            eventId === rawId
+              ? ({
+                  id: eventId,
+                  version: 3,
+                  sportKey: "mlb",
+                  participants: [
+                    { id: "away", label: "Away" },
+                    { id: "home", label: "Home" },
+                  ],
+                } as never)
+              : null,
+          unavailableReason: null,
+        }),
+    };
+    const history = new MemoryOddsHistoryRepository(
+      [],
+      new EventCursorCodec({
+        current: { id: "test", secret: new Uint8Array(32).fill(3) },
+      }),
+      { draftkings: "DraftKings" },
+      impliedProbability,
+    );
+    const list = vi.spyOn(history, "list");
+    const result = await createEventHandler(
+      events,
+      () => undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      history,
+    )({
+      route: "odds-history",
+      eventId: overDecoded,
+      eventIdAlternatives: [wireSegment, rawId, overDecoded],
+      query: {
+        from: "2026-08-08T00:00:00.000Z",
+        to: "2026-08-09T00:00:00.000Z",
+      },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ eventId: rawId, canonicalEventVersion: 3 }),
+    );
   });
 });
