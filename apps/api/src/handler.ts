@@ -15,6 +15,11 @@ import {
   OddsHistoryInputError,
   RankedOpportunityUnavailableError,
   type RankedOpportunityRepository,
+  attachSplits,
+  boardCounts,
+  type BoardKey,
+  type GamesPage,
+  type StoredBoard,
 } from "@find-the-edge/database";
 import {
   approvedSportsbookCollection,
@@ -75,11 +80,6 @@ export interface ApiRequest {
   readonly strategyPromoterAuthorized?: boolean;
 }
 
-// SharpAPI's consensus scope already aggregates DraftKings and Circa, so
-// publishing those two beside it repeats every game once per member book.
-// Books the consensus does not cover stand alone and stay published.
-const consensusMemberScopes = new Set(["draftkings", "circa"]);
-
 // Module scope on purpose: the handler is rebuilt per invocation, so a cache
 // owned by it would never survive to serve a second request.
 const splitLookupCache = createSplitLookupCache<
@@ -100,16 +100,9 @@ export const clearHandlerCaches = () => {
   boardResponseCache.clear();
 };
 
-export const publishedSplitScopes = <T extends { readonly scope?: string }>(
-  splits: readonly T[],
-) => {
-  const scopes = new Set(splits.map(({ scope }) => scope?.toLowerCase()));
-  return scopes.has("consensus")
-    ? splits.filter(
-        ({ scope }) => !consensusMemberScopes.has(scope?.toLowerCase() ?? ""),
-      )
-    : splits;
-};
+// Board assembly is shared with the materializing worker so both produce
+// byte-identical responses.
+export { publishedSplitScopes } from "@find-the-edge/database";
 export interface ApiResponse {
   readonly statusCode: number;
   readonly headers: Readonly<Record<string, string>>;
@@ -136,6 +129,7 @@ export const createEventHandler =
     scoutingHandler?: (
       request: ScoutingHttpRequest,
     ) => Promise<ScoutingHttpResponse>,
+    loadStoredBoard?: (key: BoardKey) => Promise<StoredBoard | null>,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -774,6 +768,37 @@ export const createEventHandler =
         query["cursor"] ?? "",
       ].join("|");
       const board = await boardResponseCache(boardKey, async () => {
+        // The ingest worker materializes the default boards right after each
+        // run, so the common request is one stored read rather than the live
+        // projection. Anything the store cannot answer — other days, other
+        // limits, cursors, stale or missing boards — falls through.
+        if (
+          loadStoredBoard &&
+          (request.route === "games" || request.route === "splits") &&
+          query["cursor"] === undefined &&
+          (query["sport"] === "mlb" || query["sport"] === "soccer")
+        ) {
+          const stored = await loadStoredBoard({
+            route: request.route,
+            sportKey: query["sport"],
+            leagueKey: query["league"] ?? "",
+            status: query["status"] ?? "",
+            day: query["day"] ?? "",
+            limit: Number(rawLimit),
+          });
+          if (stored)
+            return {
+              body: {
+                statusCode: 200,
+                headers: {
+                  "content-type": "application/json",
+                  "cache-control": "no-store",
+                },
+                body: stored.body,
+              },
+              counts: stored.counts,
+            };
+        }
         const page = await target.list(
           {
             sportKey: query["sport"] ?? "",
@@ -786,39 +811,17 @@ export const createEventHandler =
           Number(rawLimit),
           query["cursor"],
         );
-        const counts = page.items.reduce(
-          (accumulated, item) => ({
-            stale:
-              accumulated.stale +
-              (item.metadata.freshness.state === "stale" ? 1 : 0),
-            partial:
-              accumulated.partial +
-              (item.metadata.availability === "partial" ? 1 : 0),
-            unavailable:
-              accumulated.unavailable +
-              (item.metadata.availability === "unavailable" ? 1 : 0),
-          }),
-          { stale: 0, partial: 0, unavailable: 0 },
-        );
-        if (page.projectionState === "uninitialized") counts.unavailable = 1;
+        const counts = boardCounts(page);
         if (request.route !== "splits")
           return { body: response(200, page), counts };
         if (!splitsRepository)
           throw new Error("splits-repository-not-configured");
-        const items = await Promise.all(
-          page.items.map(async (game) => ({
-            ...game,
-            // Schedule refreshes may advance the canonical event version even
-            // when the event identity and split evidence are unchanged. Return
-            // the freshest logical split per market/selection across versions.
-            splits: publishedSplitScopes(
-              await splitLookupCache(game.id, () =>
-                splitsRepository.listCurrent(game.id),
-              ),
-            ),
-          })),
+        const withSplits = await attachSplits(
+          page as GamesPage,
+          splitsRepository,
+          (id) => splitLookupCache(id, () => splitsRepository.listCurrent(id)),
         );
-        return { body: response(200, { ...page, items }), counts };
+        return { body: response(200, withSplits), counts };
       });
       metadataCounts = board.counts;
       return board.body;

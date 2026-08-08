@@ -227,3 +227,17 @@ export const approvedSportsbookCollection = Object.freeze({
   stake: "collected",
   thescorebet: "collected",
 } as const);
+
+/**
+ * The approved books as detail columns, in registry order. The API and the
+ * board-materializing worker must construct their games repositories from the
+ * same list or the stored board would differ from the live one.
+ */
+export const approvedDetailSportsbooks: readonly {
+  readonly id: string;
+  readonly label: string;
+}[] = Object.freeze(
+  sportsbookRegistry
+    .filter(({ id }) => id in approvedSportsbookCollection)
+    .map(({ id, name }) => Object.freeze({ id, label: name })),
+);

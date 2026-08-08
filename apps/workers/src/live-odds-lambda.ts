@@ -5,14 +5,20 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { ChangeMessageVisibilityCommand, SQSClient } from "@aws-sdk/client-sqs";
+import { randomBytes } from "node:crypto";
+import { approvedDetailSportsbooks } from "@find-the-edge/config";
 import {
   AwsDynamoGateway,
   AwsFixtureOddsGateway,
   DynamoBettingSplitRepository,
   DynamoEventIngestionStore,
+  DynamoEventRepository,
   DynamoFixtureOddsAdapter,
   DynamoExactOddsSnapshotRepository,
+  DynamoGamesRepository,
   DynamoOddsControlPlaneStore,
+  EventCursorCodec,
+  materializeBoards,
 } from "@find-the-edge/database";
 import {
   runFocusedSharpOddsIngestion,
@@ -462,6 +468,52 @@ const runLiveOddsHandler = async (event?: unknown) => {
   process.stdout.write(
     `${JSON.stringify({ event: "live-odds-ingestion-complete", provider, summary })}\n`,
   );
+  // Materialize the default boards so the API serves a stored body instead of
+  // re-running the projection per request. Never allowed to fail ingestion.
+  if (!invocation.focused) {
+    try {
+      const boardGateway = new AwsDynamoGateway(client, tableName);
+      const boardEvents = new DynamoEventRepository(
+        boardGateway,
+        // The worker never returns a cursor from a fifty-game page; a page
+        // that would need one is skipped, so this codec never signs anything
+        // a client will see.
+        new EventCursorCodec({
+          current: { id: "board-materializer", secret: randomBytes(32) },
+        }),
+        async () => {
+          const item = await boardGateway.get("EVENT_PROJECTIONS", "READINESS");
+          return (
+            !!item &&
+            JSON.stringify(item.value) ===
+              JSON.stringify({ schemaVersion: 1, state: "initialized" })
+          );
+        },
+      );
+      const boards = await materializeBoards({
+        games: new DynamoGamesRepository(
+          boardEvents,
+          boardGateway,
+          approvedDetailSportsbooks,
+        ),
+        splits: new DynamoBettingSplitRepository(client, tableName),
+        put: (item) => boardGateway.put(item),
+        now: new Date(),
+      });
+      process.stdout.write(
+        `${JSON.stringify({ event: "board-materialization", ...boards })}\n`,
+      );
+    } catch (error) {
+      process.stdout.write(
+        `${JSON.stringify({
+          event: "board-materialization-failed",
+          errorName: error instanceof Error ? error.name : "unknown",
+          errorMessage:
+            error instanceof Error ? error.message.slice(0, 200) : "unknown",
+        })}\n`,
+      );
+    }
+  }
   if (invocation.sqs) {
     const retryDecision = liveOddsSummaryRetryDecision(summary);
     if (retryDecision) {

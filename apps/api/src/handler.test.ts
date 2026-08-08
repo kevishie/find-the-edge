@@ -1016,6 +1016,92 @@ describe("event API", () => {
     }
     expect(reads).toBe(0);
   });
+  it("serves a materialized board without running the projection", async () => {
+    const games = {
+      list: vi.fn(() => Promise.reject(new Error("unexpected-live-build"))),
+    };
+    const storedBody = JSON.stringify({ items: [], stored: true });
+    const loadStoredBoard = vi.fn(() =>
+      Promise.resolve({
+        schemaVersion: 1 as const,
+        generatedAt: new Date().toISOString(),
+        body: storedBody,
+        counts: { stale: 0, partial: 0, unavailable: 0 },
+      }),
+    );
+    const handler = createEventHandler(
+      repository,
+      games,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      loadStoredBoard,
+    );
+    const result = await handler({
+      route: "splits",
+      query: {
+        sport: "mlb",
+        status: "scheduled",
+        day: "2026-08-08",
+        limit: "50",
+      },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(result.body).toBe(storedBody);
+    expect(games.list).not.toHaveBeenCalled();
+    expect(loadStoredBoard).toHaveBeenCalledWith({
+      route: "splits",
+      sportKey: "mlb",
+      leagueKey: "",
+      status: "scheduled",
+      day: "2026-08-08",
+      limit: 50,
+    });
+  });
+
+  it("falls back to the live projection when no stored board is fresh", async () => {
+    const games = {
+      list: vi.fn(() =>
+        Promise.resolve({
+          items: [],
+          nextCursor: null,
+          projectionState: "ready" as const,
+          evaluationState: "complete" as const,
+          hasMoreUnknown: false,
+          snapshotAt: null,
+          freshness: null,
+          unavailableReason: null,
+        }),
+      ),
+    };
+    const handler = createEventHandler(
+      repository,
+      games,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => Promise.resolve(null),
+    );
+    const result = await handler({
+      route: "games",
+      query: { sport: "mlb", status: "scheduled", day: "2026-08-08" },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(games.list).toHaveBeenCalledTimes(1);
+  });
+
   it("serves repeated board requests from the response cache", async () => {
     let reads = 0;
     const games = {
