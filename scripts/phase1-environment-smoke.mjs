@@ -568,9 +568,15 @@ export function assertLiveGame(game, sport) {
     moneyline.some(
       (selection, index) =>
         selection.selectionKey !== expected[index] ||
-        !["draftkings", "fanduel", "betmgm", "williamhill_us"].includes(
-          selection.sportsbookId,
-        ) ||
+        // hardrock is the configured target sportsbook, so a board carrying it
+        // is the expected shape rather than an unexpected one.
+        ![
+          "hardrock",
+          "draftkings",
+          "fanduel",
+          "betmgm",
+          "williamhill_us",
+        ].includes(selection.sportsbookId) ||
         !Number.isInteger(selection.americanOdds) ||
         selection.americanOdds === 0 ||
         !Number.isFinite(Date.parse(selection.observedAt)) ||

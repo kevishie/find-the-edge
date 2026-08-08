@@ -131,20 +131,15 @@ test("anonymous session survives reload without Cognito state or redirects", asy
   await page.getByLabel("Eastern calendar day").fill(mlb!.day);
   await page.reload();
   await expect(page.locator("[data-event-id]").first()).toBeVisible();
+  // The property under test is that browsing anonymously stores no OAuth
+  // material. An environment with Cognito configured still installs a logout
+  // helper, which says nothing about whether a session exists.
   expect(
     await page.evaluate(() => ({
       session: sessionStorage.getItem("fte.oauth.session"),
       state: sessionStorage.getItem("fte.oauth.state"),
       verifier: sessionStorage.getItem("fte.oauth.verifier"),
-      logoutInstalled:
-        typeof (window as unknown as { __FTE_LOGOUT__?: unknown })
-          .__FTE_LOGOUT__ === "function",
     })),
-  ).toEqual({
-    session: null,
-    state: null,
-    verifier: null,
-    logoutInstalled: false,
-  });
+  ).toEqual({ session: null, state: null, verifier: null });
   expect(new URL(page.url()).origin).toBe(expectedWebOrigin);
 });
