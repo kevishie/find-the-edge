@@ -690,7 +690,7 @@ export function ScoutingProgress({
         )}
         <a
           className="detail-link"
-          href={`/games/${encodeURIComponent(view.job.eventId)}`}
+          href={`/events/${encodeURIComponent(view.job.eventId)}`}
         >
           View game
         </a>

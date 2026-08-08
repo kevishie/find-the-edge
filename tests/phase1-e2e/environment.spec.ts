@@ -71,9 +71,9 @@ test.beforeEach(async ({ page }) => {
     sessionStorage.removeItem("fte.oauth.state");
     sessionStorage.removeItem("fte.oauth.verifier");
   });
-  await page.goto("/games");
+  await page.goto("/events");
   // The explorer fills its default search parameters, so the path is a prefix.
-  await page.waitForURL(/\/games(\?|$)/);
+  await page.waitForURL(/\/events(\?|$)/);
 });
 
 test("real hosted bundle loads provider MLB and MLS games by day", async ({

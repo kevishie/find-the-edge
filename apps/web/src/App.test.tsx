@@ -370,7 +370,9 @@ it("renders independent accessible lifecycle and freshness badges on games and d
     ok: true as const,
     value: { list: vi.fn(() => Promise.resolve(page())) },
   };
-  const { unmount } = render(<App initialPath="/games" gamesClient={client} />);
+  const { unmount } = render(
+    <App initialPath="/events" gamesClient={client} />,
+  );
   expect(
     await screen.findByLabelText("Lifecycle: scheduled"),
   ).toHaveTextContent("Scheduled");
@@ -453,7 +455,7 @@ it("renders independent accessible lifecycle and freshness badges on games and d
   );
   render(
     <App
-      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: true,
         value: { list: vi.fn(), detail, oddsHistory },
@@ -547,7 +549,7 @@ it("renders exact opening/current markers for isolated sportsbook points", async
   );
   render(
     <App
-      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: true,
         value: {
@@ -665,7 +667,7 @@ it("provides a selectable step-line history view with exact details and table pa
   };
   render(
     <App
-      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: true,
         value: {
@@ -742,7 +744,7 @@ it("provides a selectable step-line history view with exact details and table pa
 it("keeps not-found detail distinct from retryable outages", async () => {
   render(
     <App
-      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: true,
         value: {
@@ -765,7 +767,7 @@ it("keeps not-found detail distinct from retryable outages", async () => {
 it("settles on a detail configuration error instead of reverting to loading", async () => {
   render(
     <App
-      initialPath={`/games/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
+      initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: false,
         error: new GamesClientError(
@@ -843,7 +845,7 @@ it.each([
     };
     const { unmount } = render(
       <App
-        initialPath="/games"
+        initialPath="/events"
         gamesClient={{
           ok: true,
           value: { list: vi.fn(() => Promise.resolve(page([item]))) },
@@ -875,7 +877,7 @@ it("explains an uninitialized game projection instead of claiming an empty sched
   };
   render(
     <App
-      initialPath="/games"
+      initialPath="/events"
       gamesClient={{
         ok: true,
         value: { list: vi.fn(() => Promise.resolve(unavailable)) },
@@ -899,7 +901,7 @@ it("does not claim an empty schedule when the scheduled lifecycle failed", async
   } as const;
   render(
     <App
-      initialPath="/games?status=all"
+      initialPath="/events?status=all"
       gamesClient={{
         ok: true,
         value: { list: vi.fn(() => Promise.resolve(partial)) },
@@ -1182,11 +1184,12 @@ describe("Shell navigation", () => {
 
     expect(await screen.findByText("Betting splits")).toBeInTheDocument();
     const nav = screen.getByRole("navigation", { name: "Primary navigation" });
+    // Each item renders a decorative glyph plus its accessible label.
     expect(
       within(nav)
         .getAllByRole("link")
-        .map((link) => link.textContent),
-    ).toEqual(["Betting Splits", "Games"]);
+        .map((link) => link.textContent?.replace(/^[^A-Za-z]+/, "")),
+    ).toEqual(["Events", "Splits"]);
     for (const removed of [
       "Dashboard",
       "Scout Reports",
@@ -1288,7 +1291,7 @@ describe("Dashboard", () => {
     ).toBeDisabled();
     expect(
       screen.getAllByRole("link", { name: /Open event/ })[0],
-    ).toHaveAttribute("href", expect.stringContaining("/games/event-a"));
+    ).toHaveAttribute("href", expect.stringContaining("/events/event-a"));
   });
 
   it("shows empty and explicit incomplete lower-bound states", async () => {
@@ -1562,7 +1565,7 @@ describe("Games", () => {
     const getScoutingJob = vi.fn(() => Promise.resolve(scoutingJob));
     render(
       <App
-        initialPath="/games?day=2026-08-01"
+        initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
           value: {
@@ -1608,7 +1611,7 @@ describe("Games", () => {
     );
     render(
       <App
-        initialPath="/games?day=2026-08-01"
+        initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
           value: {
@@ -1637,7 +1640,7 @@ describe("Games", () => {
     sessionStorage.setItem(resumeKey, "1");
     render(
       <App
-        initialPath="/games?day=2026-08-01"
+        initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
           value: {
@@ -1662,7 +1665,7 @@ describe("Games", () => {
         Promise.resolve(sport === "mlb" ? page() : page([])),
       );
     render(
-      <App initialPath="/games" gamesClient={{ ok: true, value: { list } }} />,
+      <App initialPath="/events" gamesClient={{ ok: true, value: { list } }} />,
     );
 
     expect(
@@ -1722,7 +1725,7 @@ describe("Games", () => {
       ]),
     );
     render(
-      <App initialPath="/games" gamesClient={{ ok: true, value: { list } }} />,
+      <App initialPath="/events" gamesClient={{ ok: true, value: { list } }} />,
     );
     expect(
       await screen.findByText("Aug 1, 2026, 7:05 PM Eastern"),
@@ -1736,7 +1739,7 @@ describe("Games", () => {
       .mockResolvedValue(page([soccerGame]));
     render(
       <App
-        initialPath="/games?sport=soccer"
+        initialPath="/events?sport=soccer"
         gamesClient={{ ok: true, value: { list } }}
       />,
     );
@@ -1752,7 +1755,7 @@ describe("Games", () => {
   it("shows configuration failure without making a request", async () => {
     render(
       <App
-        initialPath="/games"
+        initialPath="/events"
         gamesClient={{
           ok: false,
           error: new GamesClientError(
@@ -1777,7 +1780,7 @@ describe("Games", () => {
       .mockImplementationOnce(() => old)
       .mockResolvedValueOnce(page([]));
     render(
-      <App initialPath="/games" gamesClient={{ ok: true, value: { list } }} />,
+      <App initialPath="/events" gamesClient={{ ok: true, value: { list } }} />,
     );
     fireEvent.click(await screen.findByRole("button", { name: "MLS" }));
     expect(

@@ -1088,8 +1088,8 @@ function DecisionWorkbench({
 
 export default function GameDetail() {
   const client = useContext(GamesClientContext);
-  const { gameId } = useParams({ from: "/games/$gameId" });
-  const detailSearch = useSearch({ from: "/games/$gameId" });
+  const { gameId } = useParams({ from: "/events/$gameId" });
+  const detailSearch = useSearch({ from: "/events/$gameId" });
   const [state, setState] = useState<
     | { readonly kind: "loading" }
     | {
@@ -1186,8 +1186,8 @@ export default function GameDetail() {
             disabledReason={`Scouting is available only for scheduled events. This event is ${game.status}.`}
             client={client}
           />
-          <Link className="detail-link" to="/games" search={detailSearch}>
-            Back to games
+          <Link className="detail-link" to="/events" search={detailSearch}>
+            Back to events
           </Link>
         </div>
       </header>

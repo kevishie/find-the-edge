@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="./support.js"></script>
+<template id="__bundler_thumbnail" data-bg-color="#08080b">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="800" fill="#08080b"/>
+    <rect x="300" y="212" width="600" height="46" rx="8" fill="#16151d"/>
+    <rect x="300" y="212" width="6" height="46" fill="#34d399"/>
+    <rect x="330" y="228" width="150" height="14" rx="7" fill="#a855f7"/>
+    <rect x="700" y="228" width="80" height="14" rx="7" fill="#4c4459"/>
+    <rect x="800" y="228" width="70" height="14" rx="7" fill="#4c4459"/>
+    <g fill="#1c1b24">
+      <rect x="300" y="286" width="600" height="52" rx="6"/>
+      <rect x="300" y="350" width="600" height="52" rx="6"/>
+      <rect x="300" y="414" width="600" height="52" rx="6"/>
+      <rect x="300" y="478" width="600" height="52" rx="6"/>
+      <rect x="300" y="542" width="600" height="52" rx="6"/>
+    </g>
+    <g>
+      <rect x="620" y="300" width="90" height="24" rx="4" fill="#a855f7" opacity="0.7"/>
+      <rect x="620" y="364" width="60" height="24" rx="4" fill="#fbbf24" opacity="0.6"/>
+      <rect x="620" y="428" width="110" height="24" rx="4" fill="#a855f7" opacity="0.5"/>
+      <rect x="620" y="492" width="45" height="24" rx="4" fill="#fbbf24" opacity="0.7"/>
+      <rect x="620" y="556" width="80" height="24" rx="4" fill="#a855f7" opacity="0.6"/>
+    </g>
+  </svg>
+</template>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #08080b; color: #f3f1f8; font-family: 'Space Grotesk', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: #a855f7; text-decoration: none; }
+  a:hover { color: #c084fc; }
+</style>
+</helmet>
+
+<section style="padding: 32px 36px 70px;">
+
+  <div style="max-width: 880px; margin-bottom: 22px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #6b6678; margin-bottom: 10px;">TURN 2 · SPLITS HEADER — DENSITY</div>
+    <h1 style="font-family: 'Anton', sans-serif; font-size: 30px; margin: 0 0 12px; letter-spacing: 0.5px;">One toolbar instead of four stacked cards</h1>
+    <p style="font-size: 14px; line-height: 1.7; color: #cfcada; margin: 0 0 10px;">Your header stacks five blocks before the first data row — an oversized title, a paragraph of standing explainer, a date card, a board-meta card, and a view row carrying its own description plus a "preference saved locally" note. Every one of those is <em>read once</em>, then never again; the data underneath is read constantly. <span style="color: #6b6678;">The heights below are measured live off the mock, not asserted — toggle both modes to populate them.</span></p>
+    <p style="font-size: 14px; line-height: 1.7; color: #cfcada; margin: 0;">Nothing is removed below. The explainer moves behind an <span style="font-family: 'IBM Plex Mono', monospace; color: #c084fc;">ⓘ</span>, the view description and save-note become tooltips, board meta collapses into one mono line, and the whole thing becomes a sticky toolbar so filters stay reachable as you scroll instead of being parked at the top.</p>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #6b6678;">COMPARE</span>
+    <div style="display: flex; background: #0d0c12; border: 1px solid #24222e; border-radius: 10px; padding: 4px; gap: 3px;">
+      <a href="#" onClick="{{ showCurrent }}" style="{{ curStyle }}">Current</a>
+      <a href="#" onClick="{{ showCompact }}" style="{{ cmpStyle }}">Compact</a>
+    </div>
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: {{ savedColor }};">{{ savedLabel }}</span>
+  </div>
+
+  <div ref="{{ cardRef }}" style="border: 1px solid #24222e; border-radius: 14px; background: #0b0a0f; max-width: 1180px; position: relative;">
+
+    <div style="{{ headerBarStyle }}"></div>
+
+    <sc-if value="{{ isCurrent }}" hint-placeholder-val="">
+      <div style="padding: 28px 34px 0; zoom: 0.75;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 2.5px; color: #a855f7; margin-bottom: 14px;">PUBLIC BETTING · SHARPAPI CONSENSUS</div>
+        <div style="display: flex; align-items: flex-start; gap: 20px;">
+          <h2 style="font-family: 'Anton', sans-serif; font-size: 62px; line-height: 0.95; margin: 0; letter-spacing: 0.5px;">Betting splits</h2>
+          <span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 1.5px; color: #34d399; border: 1px solid rgba(52,211,153,0.5); border-radius: 24px; padding: 9px 18px; white-space: nowrap;">SHARPAPI CONSENSUS</span>
+        </div>
+        <p style="font-size: 19px; color: #a29daf; margin: 18px 0 26px;">See how betting tickets and money are distributed across each market.</p>
+        <div style="background: linear-gradient(135deg, rgba(139,92,246,0.1), rgba(139,92,246,0.02)); border: 1px solid rgba(139,92,246,0.28); border-radius: 12px; padding: 20px 24px; margin-bottom: 22px;">
+          <span style="font-weight: 700; color: #c084fc; font-size: 14.5px;">Consensus is context—not a pick.</span>
+          <span style="font-size: 14.5px; color: #cfcada; line-height: 1.65;"> SharpAPI combines its public-betting data into one consensus view. Compare bet percentage with handle percentage to spot imbalances, then confirm the signal with line movement and price value.</span>
+        </div>
+        <div style="border: 1px solid #24222e; border-radius: 12px; padding: 18px 20px; margin-bottom: 22px;">
+          <div style="display: inline-flex; align-items: center; gap: 10px; background: #100f16; border: 1px solid #2a2833; border-radius: 8px; padding: 12px 16px; font-family: 'IBM Plex Mono', monospace; font-size: 15px;">08/08/2026 <span style="color: #6b6678;">▤</span></div>
+        </div>
+        <div style="border: 1px solid #24222e; border-top-left-radius: 12px; border-top-right-radius: 12px; border-bottom: none; padding: 18px 22px; display: flex; align-items: flex-start; gap: 20px;">
+          <div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #a29daf;">Current splits board</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; margin-top: 6px;">15 games · 15 with data · 90 observations</div>
+          </div>
+          <div style="margin-left: auto; display: flex; gap: 34px; text-align: left;">
+            <div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1.5px; color: #6b6678;">SOURCE</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; margin-top: 5px;">Circa/DK</div></div>
+            <div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1.5px; color: #6b6678;">FRESHEST EVIDENCE</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; margin-top: 5px;">Aug 8, 2026, 2:03 PM Eastern</div></div>
+          </div>
+        </div>
+        <div style="border: 1px solid #24222e; border-top: none; padding: 20px 22px 26px; display: flex; align-items: flex-start; gap: 22px; flex-wrap: wrap;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 2px; color: #6b6678; padding-top: 12px;">VIEW</span>
+          <div style="display: flex; background: #0d0c12; border: 1px solid #24222e; border-radius: 10px; padding: 5px; gap: 4px;">
+            <span style="padding: 11px 18px; border-radius: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #8b8494;">▮ Split Bars</span>
+            <span style="padding: 11px 18px; border-radius: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 14px; background: rgba(168,85,247,0.25); border: 1px solid #a855f7; color: #f3f1f8;">▦ Heat Cells</span>
+            <span style="padding: 11px 18px; border-radius: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #8b8494;">± Divergence</span>
+          </div>
+          <span style="font-size: 14px; color: #a29daf; max-width: 420px; line-height: 1.55; padding-top: 10px;">Raw handle and bets kept side by side; the handle cell is tinted by direction and magnitude.</span>
+          <span style="width: 100%; text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #56515f;">preference saved locally</span>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isCompact }}" hint-placeholder-val="{{ true }}">
+      <div style="position: sticky; top: 0; z-index: 4; background: #0b0a0f; border-bottom: 1px solid #24222e;">
+        <div style="display: flex; align-items: center; gap: 14px; padding: 14px 20px 12px; flex-wrap: wrap;">
+          <h2 style="font-family: 'Anton', sans-serif; font-size: 25px; margin: 0; letter-spacing: 0.4px; white-space: nowrap;">Betting splits</h2>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1.5px; color: #a855f7; border: 1px solid rgba(168,85,247,0.4); border-radius: 5px; padding: 4px 9px; white-space: nowrap;">SHARPAPI CONSENSUS</span>
+          <a href="#" onClick="{{ toggleInfo }}" title="What consensus means" style="{{ infoBtnStyle }}">ⓘ</a>
+
+          <div style="margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <div title="Slate date" style="display: inline-flex; align-items: center; gap: 8px; background: #100f16; border: 1px solid #2a2833; border-radius: 8px; padding: 7px 11px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; cursor: pointer;">
+              <span style="color: #6b6678;">▤</span> Aug 8
+            </div>
+            <div style="display: flex; background: #0d0c12; border: 1px solid #24222e; border-radius: 9px; padding: 3px; gap: 2px;">
+              <sc-for list="{{ viewOptions }}" as="v" hint-placeholder-count="3">
+                <a href="#" onClick="{{ v.go }}" title="{{ v.hint }}" style="{{ v.style }}">{{ v.mark }}<span style="{{ v.labelStyle }}">{{ v.label }}</span></a>
+              </sc-for>
+            </div>
+            <div title="Consensus source: Circa/DK · freshest evidence Aug 8, 2026, 2:03 PM Eastern" style="display: inline-flex; align-items: center; gap: 7px; background: #100f16; border: 1px solid #2a2833; border-radius: 8px; padding: 7px 11px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #a29daf; cursor: default;">
+              <span style="width: 6px; height: 6px; border-radius: 50%; background: #34d399; box-shadow: 0 0 6px #34d399;"></span>Circa/DK · 2:03 PM
+            </div>
+          </div>
+        </div>
+
+        <div style="padding: 0 20px 11px; display: flex; align-items: center; gap: 16px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6678; flex-wrap: wrap;">
+          <span><span style="color: #cfcada;">15</span> games</span>
+          <span style="color: #2f2c3a;">·</span>
+          <span><span style="color: #cfcada;">15</span> with data</span>
+          <span style="color: #2f2c3a;">·</span>
+          <span><span style="color: #cfcada;">90</span> observations</span>
+          <span style="color: #2f2c3a;">·</span>
+          <span>tickets vs money across each market</span>
+        </div>
+
+        <sc-if value="{{ infoOpen }}" hint-placeholder-val="">
+          <div style="margin: 0 20px 14px; background: linear-gradient(135deg, rgba(139,92,246,0.1), rgba(139,92,246,0.02)); border: 1px solid rgba(139,92,246,0.28); border-radius: 10px; padding: 14px 16px; position: relative;">
+            <div style="font-weight: 700; color: #c084fc; font-size: 13px; margin-bottom: 5px;">Consensus is context—not a pick.</div>
+            <div style="font-size: 13px; color: #cfcada; line-height: 1.6; max-width: 720px;">SharpAPI combines its public-betting data into one consensus view. Compare bet percentage with handle percentage to spot imbalances, then confirm the signal with line movement and price value.</div>
+            <a href="#" onClick="{{ toggleInfo }}" style="position: absolute; top: 11px; right: 13px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #6b6678;">✕</a>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+
+    <div style="background: #0d0c12; overflow-x: auto; border-bottom-left-radius: 13px; border-bottom-right-radius: 13px;">
+      <div ref="{{ gridRef }}" style="{{ headGridStyle }}">
+        <div style="padding: 12px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1.5px; color: #6b6678; grid-row: span 2; display: flex; align-items: flex-end;">GAME / TEAM</div>
+        <div style="grid-column: span {{ groupSpan }}; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">SPREAD</div>
+        <div style="grid-column: span {{ groupSpan }}; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">TOTAL</div>
+        <div style="grid-column: span {{ groupSpan }}; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">MONEYLINE</div>
+        <sc-for list="{{ subHead }}" as="h" hint-placeholder-count="9">
+          <div style="{{ h.style }}">{{ h.txt }}</div>
+        </sc-for>
+      </div>
+      <sc-for list="{{ rows }}" as="r" hint-placeholder-count="8">
+        <div style="{{ r.rowStyle }}">
+          <div style="padding: 11px 14px; border-right: 1px solid #24222e;">
+            <sc-if value="{{ r.time }}" hint-placeholder-val="x">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f; margin-bottom: 3px;">{{ r.time }}</div>
+            </sc-if>
+            <div style="font-size: 14px; font-weight: 600;">{{ r.team }}</div>
+            <sc-if value="{{ r.book }}" hint-placeholder-val="x">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f; margin-top: 2px;">{{ r.book }}</div>
+            </sc-if>
+          </div>
+          <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="9">
+            <sc-if value="{{ c.bar }}" hint-placeholder-val="">
+              <div style="{{ c.cellStyle }}">
+                <div style="{{ c.trackStyle }}">
+                  <div style="{{ c.fillStyle }}"></div>
+                  <div style="{{ c.spanStyle }}"></div>
+                  <div style="{{ c.notchStyle }}"></div>
+                </div>
+                <span style="{{ c.deltaStyle }}">{{ c.deltaTxt }}</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ c.stack }}" hint-placeholder-val="">
+              <div style="{{ c.cellStyle }}">
+                <div style="{{ c.bigStyle }}">{{ c.deltaTxt }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; margin-top: 1px;">{{ c.pairTxt }}</div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ c.plain }}" hint-placeholder-val="{{ true }}">
+              <div style="{{ c.style }}">{{ c.txt }}</div>
+            </sc-if>
+          </sc-for>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 14px; margin-top: 16px; flex-wrap: wrap; max-width: 1180px;">
+    <div style="flex: 1 1 200px; background: #0d0c12; border: 1px solid #24222e; border-radius: 10px; padding: 14px 16px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1.5px; color: #6b6678;">HEADER HEIGHT</div>
+      <div style="font-family: 'Anton', sans-serif; font-size: 26px; margin-top: 5px; color: {{ headerBarColor }};">{{ headerPx }}</div>
+      <div style="font-size: 11px; color: #56515f; margin-top: 3px;">{{ baselineNote }}</div>
+    </div>
+    <div style="flex: 1 1 200px; background: #0d0c12; border: 1px solid #24222e; border-radius: 10px; padding: 14px 16px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1.5px; color: #6b6678;">ROWS ABOVE THE FOLD</div>
+      <div style="font-family: 'Anton', sans-serif; font-size: 26px; margin-top: 5px;">{{ rowsVisible }}</div>
+      <div style="font-size: 11px; color: #56515f; margin-top: 3px;">on a 900px viewport</div>
+    </div>
+    <div style="flex: 2 1 380px; background: #0d0c12; border: 1px solid #24222e; border-radius: 10px; padding: 14px 16px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1.5px; color: #6b6678; margin-bottom: 7px;">NOTHING LOST — WHERE IT WENT</div>
+      <div style="font-size: 12.5px; color: #a29daf; line-height: 1.7;">Explainer → <span style="color: #c084fc;">ⓘ</span> toggle · view description → tooltip on each option · source &amp; freshness → one hoverable chip · board counts → single mono line · "saved locally" → dropped, it's a system detail</div>
+    </div>
+  </div>
+
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1260,&quot;height&quot;:980}}">
+class Component extends DCLogic {
+  state = { mode: 'compact', view: 'heat', infoOpen: false, measured: {} };
+
+  cardRef = React.createRef();
+  gridRef = React.createRef();
+
+  measure() {
+    const card = this.cardRef.current, grid = this.gridRef.current;
+    if (!card || !grid) return;
+    const h = Math.round(grid.getBoundingClientRect().top - card.getBoundingClientRect().top);
+    if (h > 0 && this.state.measured[this.state.mode] !== h) {
+      this.setState({ measured: Object.assign({}, this.state.measured, { [this.state.mode]: h }) });
+    }
+  }
+
+  componentDidMount() { this.measure(); }
+  componentDidUpdate() { this.measure(); }
+
+  games() {
+    return [
+      { time: 'Aug 8, 2026, 3:05 PM Eastern', book: 'Circa/DK', teams: [
+        { team: 'Atlanta Braves',  s: ['-1.5', 20, 48], t: ['O 7.5', 51, 42], m: ['-141', 83, 73] },
+        { team: 'New York Yankees', s: ['+1.5', 80, 52], t: ['U 7.5', 49, 58], m: ['+131', 17, 27] },
+      ]},
+      { time: 'Aug 8, 2026, 4:10 PM Eastern', book: 'Circa/DK', teams: [
+        { team: 'Los Angeles Angels', s: ['+1.5', 23, 50], t: ['O 7.5', 8, 47], m: ['+147', 19, 15] },
+        { team: 'Seattle Mariners',   s: ['-1.5', 77, 50], t: ['U 7.5', 92, 53], m: ['-167', 81, 85] },
+      ]},
+      { time: 'Aug 8, 2026, 7:05 PM Eastern', book: 'Circa/DK', teams: [
+        { team: 'Boston Red Sox',  s: ['-1.5', 61, 44], t: ['O 9', 74, 55], m: ['-118', 66, 58] },
+        { team: 'Tampa Bay Rays',  s: ['+1.5', 39, 56], t: ['U 9', 26, 45], m: ['-102', 34, 42] },
+      ]},
+      { time: 'Aug 8, 2026, 8:40 PM Eastern', book: 'Circa/DK', teams: [
+        { team: 'Chicago Cubs',        s: ['+1.5', 12, 37], t: ['O 10', 2, 64], m: ['+178', 19, 37] },
+        { team: 'Los Angeles Dodgers', s: ['-1.5', 88, 63], t: ['U 10', 98, 36], m: ['-205', 81, 63] },
+      ]},
+    ];
+  }
+
+  cap() { return 62; }
+  strength(d) { return Math.pow(Math.min(Math.abs(d) / this.cap(), 1), 0.75); }
+  rgbFor(d) { return d >= 0 ? '168,85,247' : '251,191,36'; }
+  tintBg(d, a) {
+    const v = this.strength(d) * (a || 0.42);
+    return v < 0.012 ? 'transparent' : 'rgba(' + this.rgbFor(d) + ',' + v.toFixed(3) + ')';
+  }
+  tintFg(d) {
+    const s = this.strength(d);
+    const base = [243, 241, 248];
+    const acc = d >= 0 ? [201, 164, 251] : [251, 208, 118];
+    const m = base.map((c, i) => Math.round(c + (acc[i] - c) * s));
+    return 'rgb(' + m[0] + ',' + m[1] + ',' + m[2] + ')';
+  }
+
+  viewMeta() {
+    return [
+      { id: 'bars', label: 'Split Bars', mark: '▮', hint: 'Handle as fill, bets as notch — divergence is the tinted gap between them.' },
+      { id: 'heat', label: 'Heat Cells', mark: '▦', hint: 'Raw handle and bets side by side; the handle cell is tinted by direction and magnitude.' },
+      { id: 'divergence', label: 'Divergence', mark: '±', hint: 'Signed gap promoted to the primary number. Most compact, best for sorting.' },
+    ];
+  }
+
+  renderVals() {
+    const compact = this.state.mode === 'compact';
+    const view = this.state.view;
+    // all columns fixed + min-width on every grid, so a narrow viewport scrolls
+    // the board instead of collapsing the trailing column to nothing
+    const heat = view === 'heat';
+    const cols = heat
+      ? '246px 62px 84px 84px 62px 84px 84px 62px 84px 84px'
+      : '246px 62px 168px 62px 168px 62px 168px';
+    const minW = 936;
+
+    const rows = [];
+    this.games().forEach((g, gi) => {
+      g.teams.forEach((t, ti) => {
+        const cells = [];
+        [t.s, t.t, t.m].forEach((mk) => {
+          const [line, h, b] = mk;
+          const d = h - b;
+          const base = 'display:flex; align-items:center; justify-content:center; font-family:\'IBM Plex Mono\',monospace;';
+          cells.push({ plain: true, txt: line, style: base + ' font-size:13px; color:#a29daf; border-left:1px solid #24222e;' });
+
+          if (view === 'bars') {
+            const W = 116;
+            const lo = Math.min(h, b), hi = Math.max(h, b);
+            cells.push({
+              bar: true,
+              cellStyle: 'display:flex; align-items:center; gap:9px; padding:11px 14px 11px 10px;',
+              trackStyle: 'position:relative; width:' + W + 'px; height:14px; background:#16151d; border-radius:3px; overflow:hidden; flex-shrink:0;',
+              fillStyle: 'position:absolute; left:0; top:0; height:100%; width:' + (h / 100 * W).toFixed(1) + 'px; background:#4c4459; border-radius:3px 0 0 3px;',
+              spanStyle: 'position:absolute; top:0; height:100%; left:' + (lo / 100 * W).toFixed(1) + 'px; width:' + ((hi - lo) / 100 * W).toFixed(1) + 'px; background:rgba(' + this.rgbFor(d) + ',' + (0.25 + this.strength(d) * 0.5).toFixed(2) + ');',
+              notchStyle: 'position:absolute; top:-1px; height:16px; width:2px; left:' + (b / 100 * W).toFixed(1) + 'px; background:#f3f1f8; box-shadow:0 0 4px rgba(0,0,0,0.8);',
+              deltaTxt: d > 0 ? '+' + d : '' + d,
+              deltaStyle: 'font-family:\'IBM Plex Mono\',monospace; font-size:11px; font-weight:600; width:26px; text-align:right; color:' + this.tintFg(d) + ';',
+            });
+          } else if (view === 'divergence') {
+            cells.push({
+              stack: true,
+              cellStyle: 'display:flex; flex-direction:column; align-items:center; justify-content:center; padding:9px 0; background:' + this.tintBg(d, 0.16) + ';',
+              bigStyle: 'font-family:\'IBM Plex Mono\',monospace; font-size:17px; font-weight:600; line-height:1; color:' + this.tintFg(d) + ';',
+              deltaTxt: d > 0 ? '+' + d : '' + d,
+              pairTxt: h + ' / ' + b,
+            });
+          } else {
+            cells.push({ plain: true, txt: h + '%', style: base + ' font-size:15px; font-weight:600; color:' + this.tintFg(d) + '; background:' + this.tintBg(d) + ';' });
+            cells.push({ plain: true, txt: b + '%', style: base + ' font-size:15px; font-weight:600; color:#8b8494;' });
+          }
+        });
+        const first = ti === 0;
+        rows.push({
+          time: first ? g.time : '',
+          book: first ? g.book : '',
+          team: t.team,
+          cells,
+          rowStyle: 'display:grid; grid-template-columns:' + cols + '; min-width:' + minW + 'px; align-items:stretch; border-top:' +
+            (first && gi > 0 ? '1px solid #2c2937' : (first ? 'none' : '1px solid #1a1922')) + ';' +
+            (first ? '' : ' background:rgba(255,255,255,0.012);'),
+        });
+      });
+    });
+
+    const subLabels = heat ? ['LINE', 'HANDLE', 'BETS'] : ['LINE', view === 'bars' ? 'HANDLE vs BETS' : 'DIVERGENCE'];
+    const subHead = [];
+    [0, 1, 2].forEach(() => {
+      subLabels.forEach((txt, i) => {
+        subHead.push({ txt, style: 'text-align:center; padding:4px 0 9px; font-family:\'IBM Plex Mono\',monospace; font-size:9px; letter-spacing:1px; color:#56515f;' + (i === 0 ? ' border-left:1px solid #24222e;' : '') });
+      });
+    });
+
+    const m = this.state.measured;
+    const hNow = m[this.state.mode];
+    const bothKnown = m.compact != null && m.current != null;
+    const delta = bothKnown ? m.current - m.compact : null;
+    // 900px viewport − measured header − 52px column header block, at 70px per row
+    const fits = hNow == null ? null : Math.max(0, Math.floor((900 - hNow - 52) / 70));
+
+    return {
+      cardRef: this.cardRef,
+      gridRef: this.gridRef,
+      isCurrent: !compact,
+      isCompact: compact,
+      showCurrent: (e) => { if (e) e.preventDefault(); this.setState({ mode: 'current' }); },
+      showCompact: (e) => { if (e) e.preventDefault(); this.setState({ mode: 'compact' }); },
+      curStyle: 'padding:8px 16px; border-radius:7px; font-size:12.5px; font-weight:600; cursor:pointer; ' + (!compact ? 'background:#a855f7; color:#0a0a0d;' : 'color:#8b8494;'),
+      cmpStyle: 'padding:8px 16px; border-radius:7px; font-size:12.5px; font-weight:600; cursor:pointer; ' + (compact ? 'background:#a855f7; color:#0a0a0d;' : 'color:#8b8494;'),
+      savedLabel: bothKnown
+        ? delta + 'px of vertical space recovered · measured live'
+        : 'toggle both modes to measure the difference',
+      savedColor: bothKnown ? '#34d399' : '#56515f',
+      headerPx: hNow == null ? '—' : hNow + 'px',
+      baselineNote: compact ? 'measured off this mock' : 'recreation at true CSS scale',
+      headerBarStyle: 'position:absolute; left:0; top:0; width:4px; height:' + (hNow || 0) + 'px; background:' + (compact ? '#34d399' : '#f87171') + '; z-index:5;',
+      headerBarColor: compact ? '#34d399' : '#f87171',
+      rowsVisible: fits == null ? '—' : fits,
+
+      infoOpen: this.state.infoOpen,
+      toggleInfo: (e) => { if (e) e.preventDefault(); this.setState({ infoOpen: !this.state.infoOpen }); },
+      infoBtnStyle: 'display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:6px; font-size:14px; cursor:pointer; ' +
+        (this.state.infoOpen ? 'background:rgba(168,85,247,0.2); border:1px solid #a855f7; color:#c084fc;' : 'border:1px solid #2a2833; color:#6b6678;'),
+
+      viewOptions: this.viewMeta().map((m) => {
+        const on = m.id === this.state.view;
+        return {
+          label: m.label, mark: m.mark, hint: m.hint,
+          go: (e) => { if (e) e.preventDefault(); this.setState({ view: m.id }); },
+          style: 'display:flex; align-items:center; gap:6px; padding:7px 11px; border-radius:7px; font-family:\'IBM Plex Mono\',monospace; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; ' +
+            (on ? 'background:#a855f7; color:#0a0a0d;' : 'color:#8b8494;'),
+          labelStyle: on ? '' : 'display:none;',
+        };
+      }),
+
+      subHead, rows,
+      headGridStyle: 'display:grid; grid-template-columns:' + cols + '; min-width:' + minW + 'px; background:#100f16; border-bottom:1px solid #24222e; border-top:1px solid #24222e;',
+      groupSpan: heat ? 3 : 2,
+    };
+  }
+}
+</script>
+</body>
+</html>

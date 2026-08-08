@@ -454,38 +454,113 @@ export const GamesClientContext =
   createContext<GamesClientResult>(defaultGamesClient);
 
 function AppShell() {
+  const [navCollapsed, setNavCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem("fte.navCollapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleNav = () =>
+    setNavCollapsed((collapsed) => {
+      const next = !collapsed;
+      try {
+        window.localStorage.setItem("fte.navCollapsed", next ? "1" : "0");
+      } catch {
+        // Preference persistence is best-effort.
+      }
+      return next;
+    });
+  const eventsSearch = {
+    sport: "mlb" as const,
+    day: currentEasternDay(),
+    status: "all" as const,
+    competition: "",
+    query: "",
+    sort: "kickoff" as const,
+    direction: "asc" as const,
+  };
   return (
-    <div className="shell">
+    <div className={`shell${navCollapsed ? " nav-collapsed" : ""}`}>
       <aside>
         <div className="brand">
-          <span className="brand-mark">FTE</span>
-          <div>
-            <strong>FIND THE EDGE</strong>
-            <small>BY @KEVISHIE</small>
-          </div>
+          <svg
+            className="brand-logo"
+            width="30"
+            height="24"
+            viewBox="0 0 30 24"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M2 20 L5 7 L11 14 L15 4 L19 14 L25 7 L28 20 Z"
+              fill="#8b5cf6"
+              stroke="#c084fc"
+              strokeWidth="1"
+              strokeLinejoin="round"
+            />
+            <rect x="3" y="20" width="24" height="3" rx="1" fill="#c084fc" />
+          </svg>
+          {!navCollapsed && (
+            <div className="brand-word">
+              <strong>
+                FIND THE <span className="brand-edge">EDGE</span>
+              </strong>
+              <small>BY @KEVISHIE</small>
+            </div>
+          )}
         </div>
         {/* Only screens that are built out are advertised. The remaining
             routes still resolve for anyone holding a direct link. */}
         <nav aria-label="Primary navigation">
-          <Link to="/splits" activeProps={{ className: "active" }}>
-            Betting Splits
+          {navCollapsed ? (
+            <div className="nav-divider" aria-hidden="true" />
+          ) : (
+            <div className="nav-section">TERMINAL</div>
+          )}
+          <Link
+            to="/events"
+            search={eventsSearch}
+            activeProps={{ className: "active" }}
+            title="Events"
+          >
+            <span className="nav-icon" aria-hidden="true">
+              ⊙
+            </span>
+            <span className={navCollapsed ? "sr-only" : "nav-label"}>
+              Events
+            </span>
           </Link>
           <Link
-            to="/games"
-            search={{
-              sport: "mlb",
-              day: currentEasternDay(),
-              status: "all",
-              competition: "",
-              query: "",
-              sort: "kickoff",
-              direction: "asc",
-            }}
+            to="/splits"
             activeProps={{ className: "active" }}
+            title="Splits"
           >
-            Games
+            <span className="nav-icon" aria-hidden="true">
+              ▦
+            </span>
+            <span className={navCollapsed ? "sr-only" : "nav-label"}>
+              Splits
+            </span>
           </Link>
         </nav>
+        <div className="nav-footer">
+          <button
+            type="button"
+            className="nav-toggle"
+            onClick={toggleNav}
+            aria-pressed={navCollapsed}
+            title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+            aria-label={
+              navCollapsed ? "Expand navigation" : "Collapse navigation"
+            }
+          >
+            <span className="nav-toggle-glyph" aria-hidden="true">
+              {navCollapsed ? "»" : "«"}
+            </span>
+            {!navCollapsed && <span>Collapse</span>}
+          </button>
+        </div>
       </aside>
       <main>
         <Outlet />
@@ -501,7 +576,7 @@ function AppShell() {
             Splits
           </Link>
           <Link
-            to="/games"
+            to="/events"
             search={{
               sport: "mlb",
               day: currentEasternDay(),
@@ -513,7 +588,7 @@ function AppShell() {
             }}
             activeProps={{ className: "active" }}
           >
-            Games
+            Events
           </Link>
         </nav>
       </main>
@@ -782,15 +857,33 @@ interface ExplorerSearch {
 
 function GamesExplorer() {
   const client = useContext(GamesClientContext);
-  const search = useSearch({ from: "/games" });
-  const navigate = useNavigate({ from: "/games" });
+  const search = useSearch({ from: "/events" });
+  const navigate = useNavigate({ from: "/events" });
   const { sport, day, status, competition, query, sort, direction } = search;
   const [retry, setRetry] = useState(0);
-  const [compact, setCompact] = useState(() =>
+  const [mediaCompact, setMediaCompact] = useState(() =>
     typeof window !== "undefined" && typeof window.matchMedia === "function"
       ? window.matchMedia("(max-width: 760px)").matches
       : false,
   );
+  const [viewPref, setViewPref] = useState<"table" | "cards" | null>(() => {
+    try {
+      const stored = window.localStorage.getItem("fte.eventView");
+      return stored === "table" || stored === "cards" ? stored : null;
+    } catch {
+      return null;
+    }
+  });
+  // An explicit Table/Cards choice wins; otherwise the viewport decides.
+  const compact = viewPref ? viewPref === "cards" : mediaCompact;
+  const chooseView = (view: "table" | "cards") => {
+    setViewPref(view);
+    try {
+      window.localStorage.setItem("fte.eventView", view);
+    } catch {
+      // Preference persistence is best-effort.
+    }
+  };
   const [state, setState] = useState<
     | { readonly kind: "loading" }
     | { readonly kind: "ready"; readonly page: UiGamesPage }
@@ -801,7 +894,7 @@ function GamesExplorer() {
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const media = window.matchMedia("(max-width: 760px)");
-    const update = () => setCompact(media.matches);
+    const update = () => setMediaCompact(media.matches);
     update();
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
@@ -884,7 +977,7 @@ function GamesExplorer() {
       <header className="explorer-header">
         <div>
           <p className="eyebrow">EVENT CATALOG · EASTERN TIME</p>
-          <h1>Events Explorer</h1>
+          <h1>Event Explorer</h1>
           <p className="lede">
             Browse the complete MLB and MLS event catalog by lifecycle,
             competition, participant, and kickoff.
@@ -893,7 +986,7 @@ function GamesExplorer() {
         <span className="maturity beta">live odds</span>
       </header>
 
-      <section className="game-filters" aria-label="Game filters">
+      <section className="game-filters" aria-label="Event filters">
         <fieldset>
           <legend>Sport</legend>
           {(Object.keys(sportLabels) as GamesSport[]).map((key) => (
@@ -1009,6 +1102,28 @@ function GamesExplorer() {
             <option value="desc">Descending</option>
           </select>
         </label>
+        <div
+          className="event-view-toggle"
+          role="group"
+          aria-label="Results layout"
+        >
+          <button
+            type="button"
+            className={compact ? "" : "selected"}
+            aria-pressed={!compact}
+            onClick={() => chooseView("table")}
+          >
+            Table
+          </button>
+          <button
+            type="button"
+            className={compact ? "selected" : ""}
+            aria-pressed={compact}
+            onClick={() => chooseView("cards")}
+          >
+            Cards
+          </button>
+        </div>
       </section>
 
       <div className="games-status" aria-live="polite" aria-atomic="true">
@@ -1111,10 +1226,6 @@ function GamesExplorer() {
                     <th scope="col">Spread</th>
                     <th scope="col">Total</th>
                     <th scope="col">ML</th>
-                    <th scope="col">Hard Rock</th>
-                    <th scope="col">Comparison</th>
-                    <th scope="col">Report</th>
-                    <th scope="col">Lineup</th>
                     <th scope="col">Actions</th>
                   </tr>
                 </thead>
@@ -1196,22 +1307,10 @@ function EventExplorerRow({
       <td>{marketValues("spread")}</td>
       <td>{marketValues("total")}</td>
       <td>{marketValues("moneyline")}</td>
-      {[
-        "Hard Rock not connected yet",
-        "Comparison coverage unavailable",
-        "Report unavailable",
-        "Lineup unavailable",
-      ].map((label) => (
-        <td key={label}>
-          <span className="readiness-unavailable">
-            Unavailable<span className="sr-only">: {label}</span>
-          </span>
-        </td>
-      ))}
       <td className="event-actions">
         <Link
           className="detail-link"
-          to="/games/$gameId"
+          to="/events/$gameId"
           params={{ gameId: game.id }}
           search={explorerSearch}
         >
@@ -1266,12 +1365,9 @@ function EventExplorerCard({
           ))}
         </ul>
       )}
-      <p>
-        Hard Rock, comparison, report, and lineup: <strong>Unavailable</strong>
-      </p>
       <Link
         className="detail-link"
-        to="/games/$gameId"
+        to="/events/$gameId"
         params={{ gameId: game.id }}
         search={explorerSearch}
       >
@@ -2179,7 +2275,7 @@ const dashboardRoute = createRoute({
 });
 const gamesRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/games",
+  path: "/events",
   validateSearch: (search: Record<string, unknown>) => ({
     sport:
       search["sport"] === "soccer" ? ("soccer" as const) : ("mlb" as const),
@@ -2258,7 +2354,7 @@ const retrospectiveDetailRoute = createRoute({
 });
 const gameDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/games/$gameId",
+  path: "/events/$gameId",
   validateSearch: (search: Record<string, unknown>) => ({
     sport:
       search["sport"] === "soccer" ? ("soccer" as const) : ("mlb" as const),
@@ -2319,11 +2415,37 @@ const scoutingProgressRoute = createRoute({
   path: "/scout-jobs/$jobId",
   component: ScoutingProgressRoute,
 });
+// The catalog moved from /games to /events; old links keep resolving.
+const legacyGamesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/games",
+  validateSearch: (search: Record<string, unknown>) => search,
+  beforeLoad: ({ search }) => {
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw redirect({ to: "/events", search: search as never, replace: true });
+  },
+});
+const legacyGameDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/games/$gameId",
+  validateSearch: (search: Record<string, unknown>) => search,
+  beforeLoad: ({ params, search }) => {
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw redirect({
+      to: "/events/$gameId",
+      params: { gameId: params.gameId },
+      search: search as never,
+      replace: true,
+    });
+  },
+});
 const routeTree = rootRoute.addChildren([
   indexRoute,
   dashboardRoute,
   gamesRoute,
   gameDetailRoute,
+  legacyGamesRoute,
+  legacyGameDetailRoute,
   scoutingProgressRoute,
   splitsRoute,
   performanceRoute,

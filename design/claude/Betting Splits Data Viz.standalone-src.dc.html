@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="./support.js"></script>
+<template id="__bundler_thumbnail" data-bg-color="#08080b">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="800" fill="#08080b"/>
+    <g transform="translate(360, 250)">
+      <rect x="0" y="0" width="480" height="44" rx="6" fill="#16151d"/>
+      <rect x="0" y="0" width="130" height="44" rx="6" fill="#4c4459"/>
+      <rect x="130" y="0" width="120" height="44" fill="#a855f7" opacity="0.75"/>
+      <rect x="246" y="-5" width="9" height="54" fill="#f3f1f8"/>
+
+      <rect x="0" y="78" width="480" height="44" rx="6" fill="#16151d"/>
+      <rect x="0" y="78" width="330" height="44" rx="6" fill="#4c4459"/>
+      <rect x="330" y="78" width="72" height="44" fill="#a855f7" opacity="0.55"/>
+      <rect x="398" y="73" width="9" height="54" fill="#f3f1f8"/>
+
+      <rect x="0" y="156" width="480" height="44" rx="6" fill="#16151d"/>
+      <rect x="0" y="156" width="96" height="44" rx="6" fill="#4c4459"/>
+      <rect x="96" y="156" width="186" height="44" fill="#fbbf24" opacity="0.7"/>
+      <rect x="278" y="151" width="9" height="54" fill="#f3f1f8"/>
+
+      <rect x="0" y="234" width="480" height="44" rx="6" fill="#16151d"/>
+      <rect x="0" y="234" width="410" height="44" rx="6" fill="#4c4459"/>
+      <rect x="410" y="234" width="46" height="44" fill="#a855f7" opacity="0.45"/>
+      <rect x="452" y="229" width="9" height="54" fill="#f3f1f8"/>
+    </g>
+  </svg>
+</template>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #08080b; color: #f3f1f8; font-family: 'Space Grotesk', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: #a855f7; text-decoration: none; }
+  a:hover { color: #c084fc; }
+</style>
+</helmet>
+
+<section style="padding: 40px 44px 80px; display: flex; flex-direction: column; gap: 14px;">
+
+  <div style="max-width: 900px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #6b6678; margin-bottom: 10px;">TURN 1 · BETTING SPLITS — DENSITY STUDY</div>
+    <h1 style="font-family: 'Anton', sans-serif; font-size: 32px; margin: 0 0 14px; letter-spacing: 0.5px;">Encode the divergence, don't narrate it</h1>
+    <p style="font-size: 14px; line-height: 1.7; color: #cfcada; margin: 0 0 10px;">Today each cell carries three things — handle %, bets %, and a sentence. The sentence is redundant: <span style="font-family: 'IBM Plex Mono', monospace; color: #f3f1f8;">+25 pts more money</span> is just handle − bets, spelled out. It's also the widest element in the row, so it wins the eye while saying the least.</p>
+    <p style="font-size: 14px; line-height: 1.7; color: #cfcada; margin: 0 0 10px;">The signal you're scanning for is <strong style="color: #f3f1f8;">one number per market: signed divergence.</strong> Big positive means money is heavier than tickets (sharp-side lean). Big negative means tickets outrun money (public-side lean). Everything below encodes that as position or color so a row reads in one pass.</p>
+    <p style="font-size: 13px; line-height: 1.7; color: #a29daf; margin: 0; padding: 12px 14px; background: rgba(168,85,247,0.06); border: 1px solid rgba(168,85,247,0.25); border-radius: 8px;"><strong style="color: #c084fc;">Palette note:</strong> I deliberately did not use green here. Green stays reserved for verified +EV. Splits divergence is directional, not good/bad — so it runs <span style="color: #a855f7;">purple (money-heavy)</span> against <span style="color: #fbbf24;">amber (ticket-heavy)</span>, with neutral cells staying dark.</p>
+  </div>
+
+  <div style="position: sticky; top: 0; z-index: 20; margin: 18px 0 4px; padding: 14px 0 16px; background: linear-gradient(180deg, #08080b 72%, rgba(8,8,11,0)); display: flex; flex-wrap: wrap; align-items: center; gap: 14px;">
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #6b6678;">VIEW</span>
+    <div style="display: flex; background: #0d0c12; border: 1px solid #24222e; border-radius: 10px; padding: 4px; gap: 3px;">
+      <sc-for list="{{ viewOptions }}" as="v" hint-placeholder-count="4">
+        <a href="#" onClick="{{ v.go }}" style="{{ v.style }}">
+          <span style="{{ v.markStyle }}">{{ v.mark }}</span>
+          <span>{{ v.label }}</span>
+        </a>
+      </sc-for>
+    </div>
+    <span style="font-size: 12px; color: #6b6678; line-height: 1.5; max-width: 420px;">{{ viewHint }}</span>
+    <span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f;">preference saved locally</span>
+  </div>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 40px; align-items: flex-start; margin-top: 10px;">
+
+    <sc-if value="{{ showA }}" hint-placeholder-val="x">
+    <div id="1a" style="scroll-margin-top: 24px;">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 6px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #0a0a0d; background: #a855f7; border-radius: 5px; padding: 3px 9px;">1a</span>
+        <h2 style="font-family: 'Anton', sans-serif; font-size: 21px; margin: 0;">HEAT CELLS</h2>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6678;">the literal answer to your question</span>
+      </div>
+      <p style="font-size: 13px; color: #a29daf; margin: 0 0 16px; max-width: 780px; line-height: 1.6;">Labels deleted. Handle and bets keep their own cells, but only the <strong style="color:#f3f1f8;">handle cell</strong> is tinted — divergence belongs to the pair, so colouring both would put two directions in one row and make the legend unreadable. Purple when money leads, amber when tickets lead, intensity ramping continuously with magnitude. Bets stays neutral as the reference value.</p>
+
+      <div style="background: #0d0c12; border: 1px solid #24222e; border-radius: 12px; overflow: hidden; width: 882px;">
+        <div style="display: grid; grid-template-columns: 244px 60px 76px 76px 60px 76px 76px 60px 76px 1fr; background: #100f16; border-bottom: 1px solid #24222e;">
+          <div style="padding: 12px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1.5px; color: #6b6678; grid-row: span 2; display: flex; align-items: flex-end;">GAME / TEAM</div>
+          <div style="grid-column: span 3; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">SPREAD</div>
+          <div style="grid-column: span 3; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">TOTAL</div>
+          <div style="grid-column: span 3; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">MONEYLINE</div>
+          <sc-for list="{{ subHeadA }}" as="h" hint-placeholder-count="9">
+            <div style="{{ h.style }}">{{ h.txt }}</div>
+          </sc-for>
+        </div>
+        <sc-for list="{{ rowsA }}" as="r" hint-placeholder-count="8">
+          <div style="{{ r.rowStyle }}">
+            <div style="padding: 11px 14px; border-right: 1px solid #24222e;">
+              <sc-if value="{{ r.time }}" hint-placeholder-val="x">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f; margin-bottom: 3px;">{{ r.time }}</div>
+              </sc-if>
+              <div style="font-size: 14px; font-weight: 600; letter-spacing: -0.1px;">{{ r.team }}</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f; margin-top: 2px;">{{ r.book }}</div>
+            </div>
+            <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="9">
+              <div style="{{ c.style }}">{{ c.txt }}</div>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; align-items: center; gap: 14px; margin-top: 12px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">
+        <span>TICKET-HEAVY</span>
+        <sc-for list="{{ legendSwatches }}" as="s" hint-placeholder-count="9">
+          <span style="{{ s }}"></span>
+        </sc-for>
+        <span>MONEY-HEAVY</span>
+        <span style="margin-left: 10px; color: #56515f;">handle-cell tint = handle − bets, saturating at ±{{ capLabel }}</span>
+      </div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ showB }}" hint-placeholder-val="x">
+    <div id="1b" style="scroll-margin-top: 24px;">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 6px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #0a0a0d; background: #a855f7; border-radius: 5px; padding: 3px 9px;">1b</span>
+        <h2 style="font-family: 'Anton', sans-serif; font-size: 21px; margin: 0;">SPLIT BARS</h2>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6678;">my recommendation</span>
+      </div>
+      <p style="font-size: 13px; color: #a29daf; margin: 0 0 16px; max-width: 780px; line-height: 1.6;">Three columns collapse into one. The filled bar is <strong style="color:#f3f1f8;">handle</strong>; the vertical notch is <strong style="color:#f3f1f8;">bets</strong>. Divergence becomes literal physical distance between fill edge and notch — and the shaded span between them is tinted by direction. You read magnitude, direction, and both raw values without a single sentence.</p>
+
+      <div style="background: #0d0c12; border: 1px solid #24222e; border-radius: 12px; overflow: hidden; width: 888px;">
+        <div style="display: grid; grid-template-columns: 244px 60px 154px 60px 154px 60px 1fr; background: #100f16; border-bottom: 1px solid #24222e;">
+          <div style="padding: 12px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1.5px; color: #6b6678; grid-row: span 2; display: flex; align-items: flex-end;">GAME / TEAM</div>
+          <div style="grid-column: span 2; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">SPREAD</div>
+          <div style="grid-column: span 2; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">TOTAL</div>
+          <div style="grid-column: span 2; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">MONEYLINE</div>
+          <sc-for list="{{ subHeadB }}" as="h" hint-placeholder-count="6">
+            <div style="{{ h.style }}">{{ h.txt }}</div>
+          </sc-for>
+        </div>
+        <sc-for list="{{ rowsB }}" as="r" hint-placeholder-count="8">
+          <div style="{{ r.rowStyle }}">
+            <div style="padding: 11px 14px; border-right: 1px solid #24222e;">
+              <sc-if value="{{ r.time }}" hint-placeholder-val="x">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f; margin-bottom: 3px;">{{ r.time }}</div>
+              </sc-if>
+              <div style="font-size: 14px; font-weight: 600; letter-spacing: -0.1px;">{{ r.team }}</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f; margin-top: 2px;">{{ r.book }}</div>
+            </div>
+            <sc-for list="{{ r.mkts }}" as="m" hint-placeholder-count="3">
+              <div style="{{ m.lineStyle }}">{{ m.line }}</div>
+              <div style="padding: 11px 14px 11px 10px; display: flex; align-items: center; gap: 9px;">
+                <div style="{{ m.trackStyle }}">
+                  <div style="{{ m.fillStyle }}"></div>
+                  <div style="{{ m.spanStyle }}"></div>
+                  <div style="{{ m.notchStyle }}"></div>
+                </div>
+                <span style="{{ m.deltaStyle }}">{{ m.deltaTxt }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; align-items: center; gap: 18px; margin-top: 12px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678;">
+        <span style="display: flex; align-items: center; gap: 7px;"><span style="width: 26px; height: 8px; background: #4c4459; border-radius: 2px; display: inline-block;"></span>HANDLE %</span>
+        <span style="display: flex; align-items: center; gap: 7px;"><span style="width: 2px; height: 13px; background: #f3f1f8; display: inline-block;"></span>BETS %</span>
+        <span style="display: flex; align-items: center; gap: 7px;"><span style="width: 26px; height: 8px; background: rgba(168,85,247,0.4); border-radius: 2px; display: inline-block;"></span>DIVERGENCE SPAN</span>
+      </div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ showC }}" hint-placeholder-val="">
+    <div id="1c" style="scroll-margin-top: 24px;">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 6px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #0a0a0d; background: #a855f7; border-radius: 5px; padding: 3px 9px;">1c</span>
+        <h2 style="font-family: 'Anton', sans-serif; font-size: 21px; margin: 0;">DIVERGENCE FIRST</h2>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6b6678;">most compact · best for sorting</span>
+      </div>
+      <p style="font-size: 13px; color: #a29daf; margin: 0 0 16px; max-width: 780px; line-height: 1.6;">Invert the hierarchy: the signed divergence becomes the large primary number and handle/bets drop to a small mono pair underneath. Tightest of the three, and it makes the table honestly sortable — "show me the biggest money/ticket splits today" becomes a column sort instead of reading sentences.</p>
+
+      <div style="background: #0d0c12; border: 1px solid #24222e; border-radius: 12px; overflow: hidden; width: 840px;">
+        <div style="display: grid; grid-template-columns: 244px 60px 138px 60px 138px 60px 1fr; background: #100f16; border-bottom: 1px solid #24222e;">
+          <div style="padding: 12px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 1.5px; color: #6b6678; grid-row: span 2; display: flex; align-items: flex-end;">GAME / TEAM</div>
+          <div style="grid-column: span 2; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">SPREAD</div>
+          <div style="grid-column: span 2; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">TOTAL</div>
+          <div style="grid-column: span 2; text-align: center; padding: 9px 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; color: #a29daf; border-left: 1px solid #24222e;">MONEYLINE</div>
+          <sc-for list="{{ subHeadC }}" as="h" hint-placeholder-count="6">
+            <div style="{{ h.style }}">{{ h.txt }}</div>
+          </sc-for>
+        </div>
+        <sc-for list="{{ rowsC }}" as="r" hint-placeholder-count="8">
+          <div style="{{ r.rowStyle }}">
+            <div style="padding: 11px 14px; border-right: 1px solid #24222e;">
+              <sc-if value="{{ r.time }}" hint-placeholder-val="x">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f; margin-bottom: 3px;">{{ r.time }}</div>
+              </sc-if>
+              <div style="font-size: 14px; font-weight: 600; letter-spacing: -0.1px;">{{ r.team }}</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f; margin-top: 2px;">{{ r.book }}</div>
+            </div>
+            <sc-for list="{{ r.mkts }}" as="m" hint-placeholder-count="3">
+              <div style="{{ m.lineStyle }}">{{ m.line }}</div>
+              <div style="{{ m.cellStyle }}">
+                <div style="{{ m.bigStyle }}">{{ m.deltaTxt }}</div>
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #6b6678; margin-top: 1px;">{{ m.pairTxt }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+      <div style="margin-top: 12px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #56515f;">large value = handle − bets (pts) · small pair = handle / bets</div>
+    </div>
+    </sc-if>
+
+  </div>
+
+  <div style="max-width: 900px; margin-top: 22px; padding: 20px 22px; background: #0d0c12; border: 1px solid #24222e; border-radius: 12px;">
+    <h3 style="font-family: 'Anton', sans-serif; font-size: 17px; margin: 0 0 12px;">WHAT I'D SHIP</h3>
+    <p style="font-size: 13.5px; line-height: 1.75; color: #cfcada; margin: 0 0 10px;"><a href="#1b">1b</a> as the default board. It's the only one of the three where you never do arithmetic — the gap between the bar edge and the notch <em>is</em> the divergence, so outliers like Dodgers spread and total pop out from across the room while a 4-pt Blue Jays gap stays quiet. It also fits three markets in the same width you currently use for one and a half.</p>
+    <p style="font-size: 13.5px; line-height: 1.75; color: #cfcada; margin: 0 0 10px;">Borrow two things from the others: <a href="#1a">1a</a>'s tint on the row's <em>strongest</em> market only (so one cell per row carries color, not nine), and <a href="#1c">1c</a>'s signed number as the sort key behind a "max divergence" column.</p>
+    <p style="font-size: 13.5px; line-height: 1.75; color: #a29daf; margin: 0;">Three smaller fixes visible in your screenshot regardless of direction: the <span style="font-family: 'IBM Plex Mono', monospace;">–</span> em-dash for missing moneyline reads as data rather than absence — use a muted <span style="font-family: 'IBM Plex Mono', monospace; color: #56515f;">no line</span>; the two teams in a game need a shared left rule so pairs group visually; and "DK + Circa Consensus" repeating on every row is chrome — it belongs once on the game, not per team.</p>
+  </div>
+
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1000,&quot;height&quot;:900},&quot;defaultView&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;bars&quot;,&quot;heat&quot;,&quot;divergence&quot;,&quot;all&quot;],&quot;default&quot;:&quot;bars&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;View&quot;},&quot;divergenceCap&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:62,&quot;min&quot;:20,&quot;max&quot;:100,&quot;step&quot;:2,&quot;unit&quot;:&quot; pts&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Encoding&quot;},&quot;showDeltaNumbers&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Encoding&quot;}}">
+class Component extends DCLogic {
+  games() {
+    return [
+      { time: 'Aug 5, 2026, 2:10 PM Eastern', book: 'DK + Circa Consensus', teams: [
+        { team: 'Toronto Blue Jays', s: [ '+1.5', 26, 22 ], t: [ 'O 8', 56, 64 ], m: [ '—', 17, 15 ] },
+        { team: 'Houston Astros',    s: [ '-1.5', 74, 78 ], t: [ 'U 8', 44, 36 ], m: [ '—', 83, 85 ] },
+      ]},
+      { time: 'Aug 5, 2026, 2:20 PM Eastern', book: 'DK + Circa Consensus', teams: [
+        { team: 'Los Angeles Dodgers', s: [ '-1.5', 88, 63 ], t: [ 'O 10', 98, 36 ], m: [ '—', 81, 63 ] },
+        { team: 'Chicago Cubs',        s: [ '+1.5', 12, 37 ], t: [ 'U 10', 2, 64 ], m: [ '—', 19, 37 ] },
+      ]},
+      { time: 'Aug 5, 2026, 2:35 PM Eastern', book: 'DK + Circa Consensus', teams: [
+        { team: 'San Francisco Giants', s: [ '+1.5', 10, 40 ], t: [ 'O 8.5', 85, 59 ], m: [ '—', 17, 21 ] },
+        { team: 'Texas Rangers',        s: [ '-1.5', 90, 60 ], t: [ 'U 8.5', 15, 41 ], m: [ '—', 83, 79 ] },
+      ]},
+      { time: 'Aug 5, 2026, 3:10 PM Eastern', book: 'DK + Circa Consensus', teams: [
+        { team: 'Tampa Bay Rays',   s: [ '-1.5', 54, 66 ], t: [ 'O 11', 63, 51 ], m: [ '—', 91, 85 ] },
+        { team: 'Colorado Rockies', s: [ '+1.5', 46, 34 ], t: [ 'U 11', 37, 49 ], m: [ '—', 9, 15 ] },
+      ]},
+    ];
+  }
+
+  state = { view: null };
+
+  componentDidMount() {
+    let saved = null;
+    try { saved = window.localStorage.getItem('fte.splitsView'); } catch (e) {}
+    const valid = ['heat', 'bars', 'divergence', 'all'];
+    this.setState({ view: valid.includes(saved) ? saved : (this.props.defaultView ?? 'bars') });
+  }
+
+  activeView() { return this.state.view || this.props.defaultView || 'bars'; }
+
+  setView(v) {
+    return (e) => {
+      if (e) e.preventDefault();
+      this.setState({ view: v });
+      try { window.localStorage.setItem('fte.splitsView', v); } catch (err) {}
+    };
+  }
+
+  viewMeta() {
+    return [
+      { id: 'bars', label: 'Split Bars', mark: '▮', hint: 'Handle as fill, bets as notch — divergence is the tinted gap between them. Fastest to scan.' },
+      { id: 'heat', label: 'Heat Cells', mark: '▦', hint: 'Raw handle and bets kept side by side; the handle cell is tinted by direction and magnitude.' },
+      { id: 'divergence', label: 'Divergence', mark: '±', hint: 'Signed gap promoted to the primary number. Most compact, and the honest basis for sorting.' },
+      { id: 'all', label: 'Compare All', mark: '◫', hint: 'All three encodings side by side against the same rows.' },
+    ];
+  }
+
+  cap() { return this.props.divergenceCap ?? 62; }
+  moneyRGB() { return '168,85,247'; }
+  ticketRGB() { return '251,191,36'; }
+
+  // continuous 0..1, gentle power ramp so mid-range stays separable and
+  // the extremes (±62 in this dataset) don't clip against each other
+  strength(d) { return Math.pow(Math.min(Math.abs(d) / this.cap(), 1), 0.75); }
+  rgbFor(d) { return d >= 0 ? this.moneyRGB() : this.ticketRGB(); }
+
+  tintBg(d, maxAlpha) {
+    const a = this.strength(d) * (maxAlpha || 0.3);
+    if (a < 0.012) return 'transparent';
+    return 'rgba(' + this.rgbFor(d) + ',' + a.toFixed(3) + ')';
+  }
+
+  // interpolate neutral text toward the accent by strength — no binary cliff
+  tintFg(d) {
+    const s = this.strength(d);
+    const base = [243, 241, 248];
+    const accent = d >= 0 ? [201, 164, 251] : [251, 208, 118];
+    const mix = base.map((c, i) => Math.round(c + (accent[i] - c) * s));
+    return 'rgb(' + mix[0] + ',' + mix[1] + ',' + mix[2] + ')';
+  }
+
+  flatRows() {
+    const out = [];
+    this.games().forEach((g, gi) => {
+      g.teams.forEach((t, ti) => {
+        out.push({
+          gi, ti, first: ti === 0,
+          time: ti === 0 ? g.time : '',
+          book: ti === 0 ? g.book : 'Game details \u2192',
+          team: t.team,
+          mkts: [ t.s, t.t, t.m ],
+        });
+      });
+    });
+    return out;
+  }
+
+  rowStyle(cols, r) {
+    const top = r.first && r.gi > 0 ? '1px solid #2c2937' : (r.first ? 'none' : '1px solid #1a1922');
+    return 'display: grid; grid-template-columns: ' + cols + '; align-items: stretch; border-top: ' + top + ';' +
+      (r.first ? '' : ' background: rgba(255,255,255,0.012);');
+  }
+
+  subHead(labels, widths) {
+    const out = [];
+    labels.forEach((group) => {
+      group.forEach((txt, i) => {
+        out.push({ txt, style: 'text-align: center; padding: 4px 0 9px; font-family: \'IBM Plex Mono\', monospace; font-size: 9px; letter-spacing: 1px; color: #56515f;' + (i === 0 ? ' border-left: 1px solid #24222e;' : '') });
+      });
+    });
+    return out;
+  }
+
+  renderVals() {
+    const showNums = this.props.showDeltaNumbers ?? true;
+    const rows = this.flatRows();
+    // last column is 1fr so it absorbs any slack instead of leaving a dead strip;
+    // wrapper widths below are sized so 1fr resolves to the same width as its peers
+    const colsA = '244px 60px 76px 76px 60px 76px 76px 60px 76px 1fr';
+    const colsB = '244px 60px 154px 60px 154px 60px 1fr';
+    const colsC = '244px 60px 138px 60px 138px 60px 1fr';
+
+    // ---------- 1a heat cells ----------
+    const rowsA = rows.map((r) => {
+      const cells = [];
+      r.mkts.forEach((mk, mi) => {
+        const [line, h, b] = mk;
+        const d = h - b;
+        const base = 'display: flex; align-items: center; justify-content: center; font-family: \'IBM Plex Mono\', monospace;';
+        cells.push({ txt: line, style: base + ' font-size: 13px; color: #a29daf; border-left: 1px solid #24222e;' });
+        // divergence is a property of the PAIR — carry it on the handle cell only,
+        // so one direction colour per market and the legend stays recoverable
+        cells.push({ txt: h + '%', style: base + ' font-size: 15px; font-weight: 600; color: ' + this.tintFg(d) + '; background: ' + this.tintBg(d, 0.42) + ';' });
+        cells.push({ txt: b + '%', style: base + ' font-size: 15px; font-weight: 600; color: #8b8494;' });
+      });
+      return { ...r, cells, rowStyle: this.rowStyle(colsA, r) };
+    });
+
+    // ---------- 1b split bars ----------
+    const W = 96;
+    const rowsB = rows.map((r) => {
+      const mkts = r.mkts.map((mk) => {
+        const [line, h, b] = mk;
+        const d = h - b;
+        const lo = Math.min(h, b), hi = Math.max(h, b);
+        const rgb = this.rgbFor(d);
+        return {
+          line,
+          lineStyle: 'display: flex; align-items: center; justify-content: center; font-family: \'IBM Plex Mono\', monospace; font-size: 13px; color: #a29daf; border-left: 1px solid #24222e;',
+          trackStyle: 'position: relative; width: ' + W + 'px; height: 14px; background: #16151d; border-radius: 3px; overflow: hidden; flex-shrink: 0;',
+          fillStyle: 'position: absolute; left: 0; top: 0; height: 100%; width: ' + (h / 100 * W).toFixed(1) + 'px; background: #4c4459; border-radius: 3px 0 0 3px;',
+          spanStyle: 'position: absolute; top: 0; height: 100%; left: ' + (lo / 100 * W).toFixed(1) + 'px; width: ' + ((hi - lo) / 100 * W).toFixed(1) + 'px; background: rgba(' + rgb + ',' + (0.25 + this.strength(d) * 0.5).toFixed(2) + ');',
+          notchStyle: 'position: absolute; top: -1px; height: 16px; width: 2px; left: ' + (b / 100 * W).toFixed(1) + 'px; background: #f3f1f8; box-shadow: 0 0 4px rgba(0,0,0,0.8);',
+          deltaTxt: showNums ? (d > 0 ? '+' + d : '' + d) : '',
+          deltaStyle: 'font-family: \'IBM Plex Mono\', monospace; font-size: 11px; font-weight: 600; width: 26px; text-align: right; color: ' + this.tintFg(d) + ';',
+        };
+      });
+      return { ...r, mkts, rowStyle: this.rowStyle(colsB, r) };
+    });
+
+    // ---------- 1c divergence first ----------
+    const rowsC = rows.map((r) => {
+      const mkts = r.mkts.map((mk) => {
+        const [line, h, b] = mk;
+        const d = h - b;
+        return {
+          line,
+          lineStyle: 'display: flex; align-items: center; justify-content: center; font-family: \'IBM Plex Mono\', monospace; font-size: 13px; color: #a29daf; border-left: 1px solid #24222e;',
+          cellStyle: 'display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 9px 0; background: ' + this.tintBg(d, 0.16) + ';',
+          bigStyle: 'font-family: \'IBM Plex Mono\', monospace; font-size: 17px; font-weight: 600; line-height: 1; color: ' + this.tintFg(d) + ';',
+          deltaTxt: d > 0 ? '+' + d : '' + d,
+          pairTxt: h + ' / ' + b,
+        };
+      });
+      return { ...r, mkts, rowStyle: this.rowStyle(colsC, r) };
+    });
+
+    const trio = [['LINE', 'HANDLE', 'BETS'], ['LINE', 'HANDLE', 'BETS'], ['LINE', 'HANDLE', 'BETS']];
+    const duo = [['LINE', 'HANDLE vs BETS'], ['LINE', 'HANDLE vs BETS'], ['LINE', 'HANDLE vs BETS']];
+    const duoC = [['LINE', 'DIVERGENCE'], ['LINE', 'DIVERGENCE'], ['LINE', 'DIVERGENCE']];
+
+    const swatches = [-62, -40, -25, -12, 0, 12, 25, 40, 62].map((d) =>
+      'width: 22px; height: 11px; border-radius: 2px; display: inline-block; background: ' + (Math.abs(d) < 1 ? '#16151d' : 'rgba(' + this.rgbFor(d) + ',' + (this.strength(d) * 0.8).toFixed(2) + ')') + ';'
+    );
+
+    const view = this.activeView();
+    const meta = this.viewMeta();
+
+    return {
+      showA: view === 'heat' || view === 'all',
+      showB: view === 'bars' || view === 'all',
+      showC: view === 'divergence' || view === 'all',
+      viewHint: (meta.find((m) => m.id === view) || meta[0]).hint,
+      viewOptions: meta.map((m) => {
+        const on = m.id === view;
+        return {
+          label: m.label, mark: m.mark, go: this.setView(m.id),
+          style: 'display: flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; ' +
+            (on ? 'background: #a855f7; color: #0a0a0d;' : 'color: #8b8494; background: transparent;'),
+          markStyle: 'font-family: \'IBM Plex Mono\', monospace; font-size: 11px; ' + (on ? 'color: #0a0a0d; opacity: 0.7;' : 'color: #56515f;'),
+        };
+      }),
+      rowsA, rowsB, rowsC,
+      subHeadA: this.subHead(trio),
+      subHeadB: this.subHead(duo),
+      subHeadC: this.subHead(duoC),
+      legendSwatches: swatches,
+      capLabel: this.cap() + ' pts',
+    };
+  }
+}
+</script>
+</body>
+</html>

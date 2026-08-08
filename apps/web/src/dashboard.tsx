@@ -223,7 +223,7 @@ function OpportunityCard({ item }: { readonly item: RankedOpportunityDto }) {
           <div className="opportunity-actions">
             <Link
               className="detail-link"
-              to="/games/$gameId"
+              to="/events/$gameId"
               params={{ gameId: item.event.id }}
               search={{
                 sport: item.sportKey === "soccer" ? "soccer" : "mlb",

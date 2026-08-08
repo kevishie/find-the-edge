@@ -109,7 +109,7 @@ test("starts scouting and follows authoritative progress without fabricated phas
     },
   );
 
-  await page.goto("/games?day=2026-08-01&sport=mlb&status=scheduled");
+  await page.goto("/events?day=2026-08-01&sport=mlb&status=scheduled");
   await expect(
     page.getByRole("heading", { name: "Boston Red Sox vs New York Yankees" }),
   ).toBeVisible();

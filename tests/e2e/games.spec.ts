@@ -73,6 +73,8 @@ test("combines lifecycle and participant filters and opens canonical detail", as
   page,
 }) => {
   await page.goto("/games?day=2026-08-01&sport=mlb&status=all");
+  // Legacy /games links redirect to the renamed /events route.
+  await expect(page).toHaveURL(/\/events\?/);
   await page.getByLabel("Sort events").selectOption("matchup");
   await expect
     .poll(async () =>
@@ -118,7 +120,7 @@ test("combines lifecycle and participant filters and opens canonical detail", as
     }),
   ).toBeVisible();
   await expect(page.getByLabel("Lifecycle: postponed")).toBeVisible();
-  await page.getByRole("link", { name: "Back to games" }).click();
+  await page.getByRole("link", { name: "Back to events" }).click();
   await expect(page.getByLabel("Participant search")).toHaveValue("Toronto");
   await expect(page.getByLabel("Sort events")).toHaveValue("matchup");
   await expect(
@@ -314,7 +316,9 @@ test("shows target-missing and suspended evidence without treating it as active"
               observedAt: "2026-08-01T12:00:00.000Z",
               retrievedAt: "2026-08-01T12:00:00.000Z",
             };
-    await page.route("**/events/**", (route) =>
+    // Scope to the API origin: the app's own document URL now also lives
+    // under /events, and a bare glob would swallow page reloads.
+    await page.route(`${api.apiBase}/events/**`, (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -323,12 +327,12 @@ test("shows target-missing and suspended evidence without treating it as active"
     );
   };
   await serveState("unavailable");
-  await page.goto(`/games/${encodeURIComponent(id)}?sport=mlb&day=2026-08-01`);
+  await page.goto(`/events/${encodeURIComponent(id)}?sport=mlb&day=2026-08-01`);
   await expect(page.getByText("Target unavailable")).toBeVisible();
   await expect(
     page.locator(".target-book.state-unavailable").first(),
   ).toContainText("Unavailable");
-  await page.unroute("**/events/**");
+  await page.unroute(`${api.apiBase}/events/**`);
   await serveState("suspended");
   await page.reload();
   await expect(
