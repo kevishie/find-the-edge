@@ -668,7 +668,7 @@ function validTemplate() {
       LiveRule: {
         Type: "AWS::Events::Rule",
         Properties: {
-          ScheduleExpression: "rate(5 minutes)",
+          ScheduleExpression: "rate(1 minute)",
           State: "ENABLED",
           Targets: [
             { Arn: { "Fn::GetAtt": ["LiveQueue", "Arn"] }, Id: "Target0" },
