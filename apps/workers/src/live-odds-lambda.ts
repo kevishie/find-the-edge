@@ -8,6 +8,10 @@ import { ChangeMessageVisibilityCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { randomBytes } from "node:crypto";
 import { approvedDetailSportsbooks } from "@find-the-edge/config";
 import {
+  fetchSharpApiSchedulePage,
+  sharpApiLeagueByKey,
+} from "@find-the-edge/providers";
+import {
   AwsDynamoGateway,
   AwsFixtureOddsGateway,
   DynamoBettingSplitRepository,
@@ -499,6 +503,33 @@ const runLiveOddsHandler = async (event?: unknown) => {
         splits: new DynamoBettingSplitRepository(client, tableName),
         put: (item) => boardGateway.put(item),
         now: new Date(),
+        // The provider's live schedule is the authority on which scheduled
+        // listings still exist; a fetch failure disables the filter for this
+        // run rather than hiding anything.
+        scheduledProviderEventIds: async (sportKey) => {
+          const league = sharpApiLeagueByKey(
+            sportKey === "mlb" ? "mlb" : "mls",
+          );
+          const ids = new Set<string>();
+          let offset: number | undefined = 0;
+          for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+            const schedulePage = await fetchSharpApiSchedulePage(
+              league,
+              sharpApiKey,
+              offset,
+            );
+            for (const event of schedulePage.events)
+              ids.add(event.providerEventId);
+            if (!schedulePage.hasMore) return ids;
+            if (
+              schedulePage.nextOffset === undefined ||
+              schedulePage.nextOffset <= (offset ?? 0)
+            )
+              return null;
+            offset = schedulePage.nextOffset;
+          }
+          return null;
+        },
       });
       process.stdout.write(
         `${JSON.stringify({ event: "board-materialization", ...boards })}\n`,

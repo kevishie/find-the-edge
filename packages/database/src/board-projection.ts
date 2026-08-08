@@ -187,6 +187,56 @@ export interface BoardMaterializationResult {
   readonly skipped: number;
 }
 
+// The canonical event id embeds the provider's event id as its final segment.
+const embeddedProviderEventId = (canonicalEventId: string) => {
+  const segment = canonicalEventId.split(":").at(-1) ?? "";
+  return segment.length > 0 && segment.length <= 256 ? segment : null;
+};
+
+/**
+ * A provider occasionally publishes a listing, lets a book quote it, and then
+ * withdraws it — so odds evidence alone cannot prove a scheduled game is
+ * real. The provider's current schedule can: a scheduled game whose listing
+ * is absent from it is withdrawn. The filter fails open (a null set filters
+ * nothing) and self-heals: a listing missing from one run's schedule returns
+ * with the next materialization.
+ */
+export const withoutWithdrawnListings = <
+  T extends {
+    readonly id: string;
+    readonly status: string;
+    readonly freshness: string | null;
+  },
+>(
+  page: { readonly items: readonly T[]; readonly freshness: string | null },
+  scheduledProviderEventIds: ReadonlySet<string> | null,
+) => {
+  if (!scheduledProviderEventIds) return page;
+  const items = page.items.filter((game) => {
+    if (game.status !== "scheduled") return true;
+    const providerEventId = embeddedProviderEventId(game.id);
+    return providerEventId === null
+      ? true
+      : scheduledProviderEventIds.has(providerEventId);
+  });
+  if (items.length === page.items.length) return page;
+  return {
+    ...page,
+    items,
+    // Page freshness is defined as the oldest item freshness, so dropping an
+    // item must recompute it or the response would fail its own contract.
+    freshness: items.reduce<string | null>(
+      (oldest, game) =>
+        game.freshness === null
+          ? oldest
+          : oldest === null || game.freshness < oldest
+            ? game.freshness
+            : oldest,
+      null,
+    ),
+  };
+};
+
 /**
  * Builds and stores every default board. A board whose page overflows into a
  * cursor is skipped: its cursor could not be resumed outside the API, and no
@@ -201,11 +251,25 @@ export const materializeBoards = async (input: {
     readonly value: StoredBoard;
   }) => Promise<void>;
   readonly now: Date;
+  /** Current provider schedule per sport; null disables the withdrawn filter. */
+  readonly scheduledProviderEventIds?: (
+    sportKey: "mlb" | "soccer",
+  ) => Promise<ReadonlySet<string> | null>;
 }): Promise<BoardMaterializationResult> => {
   let stored = 0;
   let skipped = 0;
+  const scheduleCache = new Map<string, ReadonlySet<string> | null>();
+  const scheduleFor = async (sportKey: "mlb" | "soccer") => {
+    if (!input.scheduledProviderEventIds) return null;
+    if (!scheduleCache.has(sportKey))
+      scheduleCache.set(
+        sportKey,
+        await input.scheduledProviderEventIds(sportKey).catch(() => null),
+      );
+    return scheduleCache.get(sportKey) ?? null;
+  };
   for (const key of materializationTargets(input.now)) {
-    const page = await input.games.list(
+    const rawPage = await input.games.list(
       {
         sportKey: key.sportKey,
         leagueKey: key.leagueKey,
@@ -214,6 +278,10 @@ export const materializeBoards = async (input: {
       },
       key.limit,
     );
+    const page = withoutWithdrawnListings(
+      rawPage,
+      await scheduleFor(key.sportKey),
+    ) as typeof rawPage;
     if (page.nextCursor !== null || page.projectionState !== "ready") {
       skipped += 1;
       continue;

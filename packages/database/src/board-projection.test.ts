@@ -5,6 +5,7 @@ import {
   materializationTargets,
   materializeBoards,
   validateStoredBoard,
+  withoutWithdrawnListings,
 } from "./board-projection";
 import type { BettingSplitRepository } from "./index";
 
@@ -136,5 +137,55 @@ describe("materialization", () => {
     });
     expect(result).toEqual({ stored: 0, skipped: 12 });
     expect(puts).toHaveLength(0);
+  });
+});
+
+describe("withdrawn listings", () => {
+  const game = (
+    id: string,
+    status = "scheduled",
+    freshness: string | null = "2026-08-08T12:00:00.000Z",
+  ) => ({
+    id,
+    status,
+    freshness,
+  });
+
+  it("drops a scheduled game whose listing left the provider schedule", () => {
+    const page = {
+      items: [
+        game(
+          "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b0",
+          "scheduled",
+          "2026-08-08T06:00:00.000Z",
+        ),
+        game("event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b2"),
+        game(
+          "event:mlb%3Amlb:mlb_started_game_b1",
+          "started",
+          "2026-08-08T05:00:00.000Z",
+        ),
+      ],
+      freshness: "2026-08-08T05:00:00.000Z",
+    };
+    const filtered = withoutWithdrawnListings(
+      page,
+      new Set(["mlb_athletics_redsox_2026-08-08_b2"]),
+    );
+    expect(filtered.items.map(({ id }) => id)).toEqual([
+      "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b2",
+      // Non-scheduled lifecycles are never withdrawn by schedule absence.
+      "event:mlb%3Amlb:mlb_started_game_b1",
+    ]);
+    // The oldest remaining freshness becomes the page freshness again.
+    expect(filtered.freshness).toBe("2026-08-08T05:00:00.000Z");
+  });
+
+  it("fails open without a schedule and keeps every game", () => {
+    const page = {
+      items: [game("event:mlb%3Amlb:mlb_phantom_b0")],
+      freshness: null,
+    };
+    expect(withoutWithdrawnListings(page, null)).toBe(page);
   });
 });
