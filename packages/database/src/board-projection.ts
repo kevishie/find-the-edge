@@ -1,26 +1,77 @@
 import type { GamesPage, GamesRepository } from "./games-repository";
 import type { BettingSplitRepository } from "./betting-split-repository";
 
-// The canonical event id embeds the provider's event id as its final segment.
-const embeddedProviderEventId = (canonicalEventId: string) => {
-  const segment = canonicalEventId.split(":").at(-1) ?? "";
-  return segment.length > 0 && segment.length <= 256 ? segment : null;
+// Provider event ids churn between schedule runs — both the listing suffix
+// and the base wording — so ids cannot identify a game across feeds. The
+// stable identity is the participant pair plus the start instant. Labels vary
+// in form ("Athletics" against "Oakland Athletics"), so matching is anchored
+// on the club nickname, mirroring split attribution.
+const normalizedParticipant = (value: string) =>
+  value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const participantLabelMatches = (left: string, right: string) => {
+  const a = normalizedParticipant(left).split(" ");
+  const b = normalizedParticipant(right).split(" ");
+  if (a[0] === "" || b[0] === "") return false;
+  if (a.join(" ") === b.join(" ")) return true;
+  if (a.at(-1) !== b.at(-1)) return false;
+  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+  return shorter.every((word) => longer.includes(word));
 };
 
-// The provider churns the listing suffix between runs, so identity across
-// feeds is the suffixless base plus the start instant. The suffix alone is
-// unstable; the base alone collides with the withdrawn duplicate.
-const listingKey = (providerEventId: string, startsAt: string) =>
-  `${providerEventId.replace(/_b\d+$/, "")}#${String(Date.parse(startsAt))}`;
+export interface ScheduleListing {
+  readonly awayTeam: string;
+  readonly homeTeam: string;
+  readonly startsAt: string;
+}
 
-export const scheduleListingKeys = (
+/** Start instants may shift by seconds between feeds; hours never do. */
+const START_TOLERANCE_MS = 15 * 60_000;
+
+const listingMatchesGame = (
+  listing: ScheduleListing,
+  game: {
+    readonly startsAt: string;
+    readonly participants: readonly { readonly label: string }[];
+  },
+) => {
+  if (
+    Math.abs(Date.parse(listing.startsAt) - Date.parse(game.startsAt)) >
+    START_TOLERANCE_MS
+  )
+    return false;
+  const away = game.participants[0]?.label ?? "";
+  const home = game.participants[1]?.label ?? "";
+  if (!away || !home) return false;
+  return (
+    (participantLabelMatches(listing.awayTeam, away) &&
+      participantLabelMatches(listing.homeTeam, home)) ||
+    (participantLabelMatches(listing.awayTeam, home) &&
+      participantLabelMatches(listing.homeTeam, away))
+  );
+};
+
+export const usableScheduleListings = (
   events: readonly {
-    readonly providerEventId: string;
+    readonly awayTeam?: string;
+    readonly homeTeam?: string;
     readonly startsAt: string;
   }[],
-): ReadonlySet<string> =>
-  new Set(
-    events.map((event) => listingKey(event.providerEventId, event.startsAt)),
+): readonly ScheduleListing[] =>
+  events.flatMap((event) =>
+    event.awayTeam && event.homeTeam
+      ? [
+          {
+            awayTeam: event.awayTeam,
+            homeTeam: event.homeTeam,
+            startsAt: event.startsAt,
+          },
+        ]
+      : [],
   );
 
 /**
@@ -29,8 +80,8 @@ export const scheduleListingKeys = (
  * real. The provider's current schedule can, but it excludes games already in
  * play, so a past-start absentee needs a second witness: in a league whose
  * games always carry betting splits, a real game has them and a withdrawn
- * listing does not. The filter fails open (a null set filters nothing) and
- * self-heals on the next run.
+ * listing does not. The filter fails open (a null schedule filters nothing)
+ * and self-heals on the next run.
  */
 export const withoutWithdrawnListings = async <
   T extends {
@@ -38,29 +89,26 @@ export const withoutWithdrawnListings = async <
     readonly status: string;
     readonly startsAt: string;
     readonly freshness: string | null;
+    readonly participants: readonly { readonly label: string }[];
   },
 >(
   page: { readonly items: readonly T[]; readonly freshness: string | null },
   options: {
-    readonly scheduleKeys: ReadonlySet<string> | null;
+    readonly schedule: readonly ScheduleListing[] | null;
     readonly now: Date;
     /** Whether every real game in this league carries split observations. */
     readonly splitsExpected: boolean;
     readonly hasSplitEvidence: (canonicalEventId: string) => Promise<boolean>;
   },
 ) => {
-  if (!options.scheduleKeys) return page;
+  if (!options.schedule) return page;
   const items: T[] = [];
   for (const game of page.items) {
     if (game.status !== "scheduled") {
       items.push(game);
       continue;
     }
-    const providerEventId = embeddedProviderEventId(game.id);
-    if (
-      providerEventId === null ||
-      options.scheduleKeys.has(listingKey(providerEventId, game.startsAt))
-    ) {
+    if (options.schedule.some((listing) => listingMatchesGame(listing, game))) {
       items.push(game);
       continue;
     }
@@ -287,20 +335,20 @@ export const materializeBoards = async (input: {
     readonly value: StoredBoard;
   }) => Promise<void>;
   readonly now: Date;
-  /** Current schedule listing keys per sport; null disables the filter. */
-  readonly scheduleListingKeys?: (
+  /** Current schedule listings per sport; null disables the filter. */
+  readonly scheduleListings?: (
     sportKey: "mlb" | "soccer",
-  ) => Promise<ReadonlySet<string> | null>;
+  ) => Promise<readonly ScheduleListing[] | null>;
 }): Promise<BoardMaterializationResult> => {
   let stored = 0;
   let skipped = 0;
-  const scheduleCache = new Map<string, ReadonlySet<string> | null>();
+  const scheduleCache = new Map<string, readonly ScheduleListing[] | null>();
   const scheduleFor = async (sportKey: "mlb" | "soccer") => {
-    if (!input.scheduleListingKeys) return null;
+    if (!input.scheduleListings) return null;
     if (!scheduleCache.has(sportKey))
       scheduleCache.set(
         sportKey,
-        await input.scheduleListingKeys(sportKey).catch(() => null),
+        await input.scheduleListings(sportKey).catch(() => null),
       );
     return scheduleCache.get(sportKey) ?? null;
   };
@@ -327,7 +375,7 @@ export const materializeBoards = async (input: {
       key.limit,
     );
     const page = (await withoutWithdrawnListings(rawPage, {
-      scheduleKeys: await scheduleFor(key.sportKey),
+      schedule: await scheduleFor(key.sportKey),
       now: input.now,
       // Verified against the live feed: the provider publishes splits for
       // every real MLB game and for no soccer game.

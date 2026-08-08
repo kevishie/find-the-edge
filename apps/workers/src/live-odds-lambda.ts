@@ -11,7 +11,7 @@ import {
   fetchSharpApiSchedulePage,
   sharpApiLeagueByKey,
 } from "@find-the-edge/providers";
-import { scheduleListingKeys } from "@find-the-edge/database";
+import { usableScheduleListings } from "@find-the-edge/database";
 import {
   AwsDynamoGateway,
   AwsFixtureOddsGateway,
@@ -507,11 +507,15 @@ const runLiveOddsHandler = async (event?: unknown) => {
         // The provider's live schedule is the authority on which scheduled
         // listings still exist; a fetch failure disables the filter for this
         // run rather than hiding anything.
-        scheduleListingKeys: async (sportKey) => {
+        scheduleListings: async (sportKey) => {
           const league = sharpApiLeagueByKey(
             sportKey === "mlb" ? "mlb" : "mls",
           );
-          const events: { providerEventId: string; startsAt: string }[] = [];
+          const events: {
+            awayTeam?: string;
+            homeTeam?: string;
+            startsAt: string;
+          }[] = [];
           let offset: number | undefined = 0;
           for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
             const schedulePage = await fetchSharpApiSchedulePage(
@@ -519,12 +523,8 @@ const runLiveOddsHandler = async (event?: unknown) => {
               sharpApiKey,
               offset,
             );
-            for (const event of schedulePage.events)
-              events.push({
-                providerEventId: event.providerEventId,
-                startsAt: event.startsAt,
-              });
-            if (!schedulePage.hasMore) return scheduleListingKeys(events);
+            events.push(...schedulePage.events);
+            if (!schedulePage.hasMore) return usableScheduleListings(events);
             if (
               schedulePage.nextOffset === undefined ||
               schedulePage.nextOffset <= (offset ?? 0)
