@@ -2,7 +2,7 @@
 title: 'Fix splits club-label drift'
 type: 'bugfix'
 created: '2026-08-08'
-status: 'in-review'
+status: 'done'
 baseline_commit: 'b01ef12'
 review_loop_iteration: 1
 context:
@@ -77,6 +77,13 @@ Splits are pre-game evidence. The provider stops publishing them once a game
 starts and rolls the feed to the next slate, so a board legitimately freezes at
 its final pre-game values rather than continuing to move. That is expected and is
 not an ingestion fault.
+
+## Verification Result
+
+Verified on `staging.kevishie.com` after release `28cdb8c`: the root redirects to
+`/splits`, the board renders fifteen game groups with no per-book duplication, the
+sportsbook filter offers exactly `Circa/DK` and `BetMGM` with no all-books chip,
+and the sport and calendar-day labels are screen-reader only.
 
 ## Verification
 
