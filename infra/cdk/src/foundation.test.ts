@@ -106,6 +106,17 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.resourceCountIs("AWS::Lambda::Function", 15);
+    // The request-path API is CPU-bound, and Lambda scales CPU with memory.
+    // Starving it shows up directly as page load time.
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      MemorySize: Match.exact(1024),
+      Environment: {
+        Variables: Match.objectLike({
+          FTE_EVENT_TABLE_NAME: Match.anyValue(),
+          FTE_EVENT_CURSOR_SECRET_ARN: Match.anyValue(),
+        }),
+      },
+    });
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {

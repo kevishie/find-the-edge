@@ -1204,7 +1204,12 @@ export class FoundationStack extends Stack {
       handler: "handler",
       runtime: Runtime.NODEJS_24_X,
       timeout: Duration.seconds(10),
-      memorySize: 256,
+      // Lambda scales CPU with memory, and this handler is CPU-bound: it
+      // validates every current-odds row and serialises a six-figure payload.
+      // At 256 MB it held roughly a seventh of a vCPU and took about four
+      // seconds warm. The larger size is close to cost-neutral in GB-seconds
+      // because the duration falls by about as much as the size rises.
+      memorySize: 1024,
       environment: {
         FTE_EVENT_TABLE_NAME: table.tableName,
         FTE_EVENT_CURSOR_SECRET_ARN: props.cursorSecretArn,
