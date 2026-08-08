@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   assertHostedIndexHeaders,
@@ -1015,4 +1016,23 @@ test("wrong-origin and hosting header proofs reject every weakening", () => {
     weakened.set("content-security-policy", csp);
     assert.throws(() => assertHostedIndexHeaders(weakened, validEnvironment));
   }
+});
+
+test("the release path never invokes ingestion or requires provider evidence", async () => {
+  const source = await readFile(
+    new URL("./phase1-environment-smoke.mjs", import.meta.url),
+    "utf8",
+  );
+  const releasePath = source.slice(
+    source.indexOf("export async function phase1EnvironmentSmoke"),
+  );
+  for (const forbidden of [
+    "liveOddsInvocationArguments",
+    "liveIngestionRecoveryAction",
+    "no provider-backed games were visible",
+  ])
+    assert.ok(
+      !releasePath.includes(forbidden),
+      `release path must not depend on ingestion: ${forbidden}`,
+    );
 });
