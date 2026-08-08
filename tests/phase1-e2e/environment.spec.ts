@@ -72,7 +72,8 @@ test.beforeEach(async ({ page }) => {
     sessionStorage.removeItem("fte.oauth.verifier");
   });
   await page.goto("/games");
-  await page.waitForURL(/\/games$/);
+  // The explorer fills its default search parameters, so the path is a prefix.
+  await page.waitForURL(/\/games(\?|$)/);
 });
 
 test("real hosted bundle loads provider MLB and MLS games by day", async ({
@@ -92,10 +93,13 @@ test("real hosted bundle loads provider MLB and MLS games by day", async ({
   const mlb = await findProviderGame(request, "mlb", true);
   test.skip(mlb === null, "no provider-backed MLB evidence is ingested yet");
   await page.getByLabel("Eastern calendar day").fill(mlb!.day);
-  await expect(page.locator("[data-event-id]").first()).toBeVisible();
-  await expect(
-    page.getByText(mlb!.game.odds.selections![0]!.sportsbookLabel).first(),
-  ).toBeVisible();
+  // The explorer lists the target book in a fixed column and renders prices in
+  // the row; it does not repeat the provider's full sportsbook label, so assert
+  // the evidence the hosted bundle actually paints.
+  const row = page.locator(`[data-event-id="${mlb!.game.id}"]`);
+  await expect(row).toBeVisible();
+  await expect(row).toContainText(mlb!.game.participants[0]!.label);
+  await expect(row).toContainText(/[+-]\d{2,4}/);
 
   const mls = await findProviderGame(request, "soccer", false);
   if (mls) {
@@ -108,8 +112,12 @@ test("real hosted bundle loads provider MLB and MLS games by day", async ({
   if (emptyDay) {
     await page.getByRole("button", { name: "MLB" }).click();
     await page.getByLabel("Eastern calendar day").fill(emptyDay);
+    // The explorer defaults to every lifecycle, so its empty state names the
+    // lifecycle selection rather than the scheduled status.
     await expect(
-      page.getByText("No MLB games are scheduled for this day."),
+      page.getByText(
+        /No MLB (games are scheduled for this day|events exist for this day and lifecycle selection)\./,
+      ),
     ).toBeVisible();
   }
 });
