@@ -1,4 +1,8 @@
-import { EventInputError, EventStorageError } from "./event-errors";
+import {
+  EventCursorError,
+  EventInputError,
+  EventStorageError,
+} from "./event-errors";
 import type { DynamoGateway, DynamoItem } from "./dynamodb-event-ingestion";
 import {
   filterPartition,
@@ -8,6 +12,7 @@ import {
   type EventRepository,
 } from "./event-repository";
 import {
+  EVENT_STATUSES,
   isCanonicalEntityId,
   toEventDisplayDto,
   validateProjection,
@@ -80,6 +85,8 @@ export class DynamoEventRepository implements EventRepository {
   ): Promise<EventPage> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50)
       throw new EventInputError("invalid-event-limit");
+    if (filter.status === "all")
+      return this.listAllStatuses(filter, limit, token);
     const pk = filterPartition(filter),
       decoded =
         token !== undefined
@@ -178,6 +185,197 @@ export class DynamoEventRepository implements EventRepository {
           )
         : null,
       unavailableReason: null,
+    };
+  }
+  /**
+   * One request for every lifecycle. Each status partition is collected under
+   * a single asOf, merged chronologically, and paginated with a composite
+   * cursor that records the furthest consumed sort key per status.
+   */
+  private async listAllStatuses(
+    filter: EventListFilter,
+    limit: number,
+    token?: string,
+  ): Promise<EventPage> {
+    const family = filter.leagueKey ? ("league" as const) : ("sport" as const);
+    const partitions = EVENT_STATUSES.map((status) => ({
+      status,
+      pk: filterPartition({ ...filter, status }),
+    }));
+    // The synthetic partition exists only inside cursor signatures, so a
+    // token minted for one status can never resume the merged view.
+    const pkAll = `ALL#${partitions[0]!.pk}`;
+    const decoded =
+      token !== undefined
+        ? this.cursor.decode(token, pkAll, this.now())
+        : undefined;
+    if (!(await this.ready()))
+      return {
+        items: [],
+        nextCursor: null,
+        projectionState: "uninitialized",
+        evaluationState: "complete",
+        hasMoreUnknown: false,
+        snapshotAt: null,
+        freshness: null,
+        unavailableReason: "projection-uninitialized",
+      };
+    const asOf = decoded?.asOf ?? this.now().toISOString();
+    const startSks: Partial<Record<string, string>> = {};
+    if (decoded) {
+      try {
+        const parsed: unknown = JSON.parse(decoded.lastSk);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+          throw new Error("shape");
+        for (const [status, sk] of Object.entries(parsed)) {
+          if (
+            !EVENT_STATUSES.includes(
+              status as (typeof EVENT_STATUSES)[number],
+            ) ||
+            typeof sk !== "string" ||
+            !sk
+          )
+            throw new Error("shape");
+          startSks[status] = sk;
+        }
+      } catch {
+        throw new EventCursorError("invalid-cursor");
+      }
+    }
+    const collected = await Promise.all(
+      partitions.map(async ({ status, pk }) => ({
+        status,
+        ...(await this.collectVisible(
+          pk,
+          startSks[status],
+          asOf,
+          limit,
+          family,
+        )),
+      })),
+    );
+    const entries = collected.flatMap(({ status, accepted }) =>
+      accepted.map((entry) => ({ status, sk: entry.sk, row: entry.row })),
+    );
+    entries.sort((left, right) =>
+      left.row.startsAt < right.row.startsAt
+        ? -1
+        : left.row.startsAt > right.row.startsAt
+          ? 1
+          : left.row.eventId < right.row.eventId
+            ? -1
+            : left.row.eventId > right.row.eventId
+              ? 1
+              : 0,
+    );
+    const taken = entries.slice(0, limit);
+    const seen = new Set<string>();
+    for (const { row } of taken) {
+      if (seen.has(row.eventId))
+        throw new EventStorageError("overlapping-event-page");
+      seen.add(row.eventId);
+    }
+    // Sort keys within a status rise with start time, so the last consumed
+    // entry per status in merge order is that status's resume point. A status
+    // fully drained of visible rows resumes past its evaluated tail instead,
+    // so invisible rows cannot pin the cursor in place.
+    const consumed: Record<string, string> = { ...startSks } as Record<
+      string,
+      string
+    >;
+    for (const entry of taken) consumed[entry.status] = entry.sk;
+    const leftoverStatuses = new Set(
+      entries.slice(limit).map(({ status }) => status),
+    );
+    for (const partition of collected) {
+      if (
+        !leftoverStatuses.has(partition.status) &&
+        partition.lastPhysicalSk !== undefined
+      )
+        consumed[partition.status] = partition.lastPhysicalSk;
+    }
+    const hasMore =
+      entries.length > taken.length ||
+      collected.some(({ hasPhysicalMore }) => hasPhysicalMore);
+    const capped = collected.some((partition) => partition.capped);
+    return {
+      items: taken.map(({ row }) => toEventDisplayDto(row, asOf)),
+      nextCursor:
+        hasMore || capped
+          ? this.cursor.encode(
+              pkAll,
+              JSON.stringify(consumed),
+              asOf,
+              this.now(),
+            )
+          : null,
+      projectionState: "ready",
+      evaluationState: capped ? "partial" : "complete",
+      hasMoreUnknown: capped,
+      snapshotAt: asOf,
+      freshness: taken.length
+        ? taken.reduce(
+            (oldest, { row }) =>
+              row.canonicalFreshness < oldest ? row.canonicalFreshness : oldest,
+            taken[0]!.row.canonicalFreshness,
+          )
+        : null,
+      unavailableReason: null,
+    };
+  }
+  /** The single-partition visibility walk, returning rows with their keys. */
+  private async collectVisible(
+    pk: string,
+    initialSk: string | undefined,
+    asOf: string,
+    limit: number,
+    family: "sport" | "league",
+  ) {
+    const accepted: {
+      readonly sk: string;
+      readonly row: ReturnType<typeof validateProjection>;
+    }[] = [];
+    let startSk = initialSk,
+      lastPhysicalSk: string | undefined,
+      hasPhysicalMore = false,
+      evaluated = 0;
+    while (accepted.length < limit && evaluated < 200) {
+      const result = await this.gateway.queryPage(
+        pk,
+        startSk,
+        Math.min(50, 200 - evaluated),
+        { consistentRead: false },
+      );
+      if (!result.items.length) {
+        hasPhysicalMore = false;
+        break;
+      }
+      for (const item of result.items) {
+        evaluated++;
+        lastPhysicalSk = item.sk;
+        const row = validateProjection(item, family, asOf);
+        if (
+          row.visibleFrom <= asOf &&
+          (row.visibleUntil === null || asOf < row.visibleUntil)
+        )
+          accepted.push({ sk: item.sk, row });
+        if (accepted.length === limit) break;
+      }
+      if (accepted.length === limit) {
+        hasPhysicalMore =
+          result.lastEvaluatedSk !== undefined ||
+          result.items[result.items.length - 1]!.sk !== lastPhysicalSk;
+        break;
+      }
+      hasPhysicalMore = result.lastEvaluatedSk !== undefined;
+      if (!result.lastEvaluatedSk) break;
+      startSk = result.lastEvaluatedSk;
+    }
+    return {
+      accepted,
+      lastPhysicalSk,
+      hasPhysicalMore,
+      capped: evaluated >= 200 && hasPhysicalMore,
     };
   }
   async detail(

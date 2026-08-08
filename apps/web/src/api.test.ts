@@ -829,15 +829,10 @@ const requestHref = (input: RequestInfo | URL) =>
       : input.url;
 
 describe("games client", () => {
-  it("fails closed when one lifecycle returns an invalid response", async () => {
-    const fetcher = vi.fn<typeof fetch>((input) => {
-      const status = new URL(requestHref(input)).searchParams.get("status");
-      return Promise.resolve(
-        status === "cancelled"
-          ? new Response(JSON.stringify({ unexpected: true }))
-          : new Response(JSON.stringify(payload)),
-      );
-    });
+  it("fails closed when the merged lifecycle response is invalid", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ unexpected: true })));
     const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
     if (!client.ok) throw client.error;
     await expect(
@@ -848,33 +843,12 @@ describe("games client", () => {
     ).rejects.toMatchObject({ code: "invalid-response" });
   });
 
-  it("bounds a never-settling lifecycle and reports retryable partial coverage", async () => {
+  it("bounds a never-settling games request as retryable", async () => {
     vi.useFakeTimers();
     try {
-      const fetcher = vi.fn<typeof fetch>((input) => {
-        const status = new URL(requestHref(input)).searchParams.get("status");
-        return status === "cancelled"
-          ? new Promise<Response>(() => undefined)
-          : Promise.resolve(
-              new Response(
-                JSON.stringify({
-                  ...payload,
-                  items: [
-                    {
-                      ...payload.items[0]!,
-                      id: `${payload.items[0]!.id}-${status}`,
-                      status,
-                      metadata: assessEventMetadata(
-                        status as Parameters<typeof assessEventMetadata>[0],
-                        payload.freshness,
-                        payload.snapshotAt,
-                      ),
-                    },
-                  ],
-                }),
-              ),
-            );
-      });
+      const fetcher = vi.fn<typeof fetch>(
+        () => new Promise<Response>(() => undefined),
+      );
       const client = createGamesClient(
         { ok: true, value: bootstrap() },
         fetcher,
@@ -885,9 +859,7 @@ describe("games client", () => {
           { sport: "mlb", day: "2026-08-01", status: "all" },
           new AbortController().signal,
         ),
-      ).resolves.toMatchObject({
-        lifecycleCoverage: { unavailable: ["cancelled"] },
-      });
+      ).rejects.toMatchObject({ code: "request-failed" });
       await vi.advanceTimersByTimeAsync(10_000);
       await expectation;
     } finally {
@@ -1557,45 +1529,32 @@ describe("games client", () => {
     ).rejects.toMatchObject({ code: "invalid-response" });
   });
 
-  it("aggregates every lifecycle deterministically and reports partial coverage", async () => {
+  it("requests every lifecycle in one server-merged call", async () => {
+    const statuses = [
+      "scheduled",
+      "postponed",
+      "started",
+      "completed",
+      "unknown",
+    ] as const;
     const fetcher = vi.fn<typeof fetch>(async (input) => {
       await Promise.resolve();
-      const href =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.href
-            : input.url;
-      const status = new URL(href).searchParams.get("status")!;
-      if (status === "cancelled")
-        return new Response("unavailable", { status: 503 });
-      const lifecycleIndex = [
-        "scheduled",
-        "postponed",
-        "started",
-        "completed",
-        "unknown",
-      ].indexOf(status);
-      const item = {
+      const url = new URL(requestHref(input));
+      expect(url.searchParams.get("status")).toBe("all");
+      const items = statuses.map((status, index) => ({
         ...payload.items[0]!,
         id: `${payload.items[0]!.id}-${status}`,
         startsAt: new Date(
-          Date.parse(payload.items[0]!.startsAt) + lifecycleIndex * 5 * 60_000,
+          Date.parse(payload.items[0]!.startsAt) + index * 5 * 60_000,
         ).toISOString(),
         status,
         metadata: assessEventMetadata(
-          status as Parameters<typeof assessEventMetadata>[0],
+          status,
           payload.freshness,
           payload.snapshotAt,
         ),
-      };
-      return new Response(
-        JSON.stringify({
-          ...payload,
-          items: [item],
-          freshness: payload.freshness,
-        }),
-      );
+      }));
+      return new Response(JSON.stringify({ ...payload, items }));
     });
     const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
     if (!client.ok) throw client.error;
@@ -1603,7 +1562,7 @@ describe("games client", () => {
       { sport: "mlb", day: "2026-08-01", status: "all" },
       new AbortController().signal,
     );
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher).toHaveBeenCalledTimes(1);
     expect(result.items).toHaveLength(5);
     expect(result.lifecycleCoverage).toEqual({
       requested: [
@@ -1614,31 +1573,27 @@ describe("games client", () => {
         "completed",
         "unknown",
       ],
-      loaded: ["scheduled", "postponed", "started", "completed", "unknown"],
-      unavailable: ["cancelled"],
+      loaded: [
+        "scheduled",
+        "postponed",
+        "cancelled",
+        "started",
+        "completed",
+        "unknown",
+      ],
+      unavailable: [],
     });
   });
 
-  it("rejects contradictory canonical duplicates across lifecycle partitions", async () => {
-    const fetcher = vi.fn<typeof fetch>(async (input) => {
+  it("rejects duplicate events inside the merged lifecycle page", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => {
       await Promise.resolve();
-      const href =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.href
-            : input.url;
-      const status = new URL(href).searchParams.get("status")!;
-      const item = {
-        ...payload.items[0]!,
-        status,
-        metadata: assessEventMetadata(
-          status as Parameters<typeof assessEventMetadata>[0],
-          payload.freshness,
-          payload.snapshotAt,
-        ),
-      };
-      return new Response(JSON.stringify({ ...payload, items: [item] }));
+      return new Response(
+        JSON.stringify({
+          ...payload,
+          items: [payload.items[0]!, payload.items[0]!],
+        }),
+      );
     });
     const client = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
     if (!client.ok) throw client.error;
@@ -1647,7 +1602,7 @@ describe("games client", () => {
         { sport: "mlb", day: "2026-08-01", status: "all" },
         new AbortController().signal,
       ),
-    ).rejects.toThrow("contradictory duplicate");
+    ).rejects.toMatchObject({ code: "invalid-response" });
   });
 
   it.each([

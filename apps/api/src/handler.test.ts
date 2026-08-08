@@ -1170,9 +1170,23 @@ describe("event API", () => {
       expect(result.statusCode).toBe(200);
     }
     expect(reads).toBe(6);
+    // The merged all view is a games-only contract.
+    expect(
+      (
+        await createEventHandler(
+          repository,
+          games,
+        )({
+          route: "games",
+          query: { sport: "mlb", status: "all", day: "2026-08-01" },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(reads).toBe(7);
     for (const [route, sport, status] of [
       ["games", "nfl", "completed"],
       ["games", "mlb", "invalid"],
+      ["splits", "mlb", "all"],
       ["splits", "mlb", "completed"],
     ] as const) {
       const result = await createEventHandler(
@@ -1184,7 +1198,7 @@ describe("event API", () => {
       });
       expect(result.statusCode).toBe(400);
     }
-    expect(reads).toBe(6);
+    expect(reads).toBe(7);
     const unknown = await createEventHandler(
       repository,
       games,
@@ -1200,7 +1214,7 @@ describe("event API", () => {
       },
     });
     expect(unknown.statusCode).toBe(400);
-    expect(reads).toBe(6);
+    expect(reads).toBe(7);
   });
   it("keeps internal listing scoped and fails closed without joined detail", async () => {
     expect(

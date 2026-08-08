@@ -2124,8 +2124,14 @@ async function exhaustPages<T extends GameDisplayDto>(options: {
   const baseQuery = {
     sport: filter.sport,
     league: filter.sport === "mlb" ? "mlb" : "mls",
+    // The games endpoint merges every lifecycle server-side; splits is
+    // scheduled-only by contract.
     status:
-      filter.status && filter.status !== "all" ? filter.status : "scheduled",
+      endpoint === "games"
+        ? (filter.status ?? "scheduled")
+        : filter.status && filter.status !== "all"
+          ? filter.status
+          : "scheduled",
     day: filter.day,
     limit: "50",
   };
@@ -2803,98 +2809,41 @@ export function createGamesClient(
         return response.json() as Promise<unknown>;
       },
       async list(filter, signal) {
+        // Every lifecycle arrives in one server-merged request; the previous
+        // client-side fan-out issued six.
         const requested =
           filter.status === "all"
             ? [...EVENT_LIFECYCLE_STATES]
             : [filter.status ?? "scheduled"];
-        const results = await Promise.allSettled(
-          requested.map((status) =>
-            boundedLifecycleRequest(signal, (boundedSignal) =>
-              exhaustPages({
-                endpoint: "games",
-                filter: { ...filter, status },
-                signal: boundedSignal,
-                apiBase: bootstrap.value.config.apiBase,
-                fetcher,
-                parse: parsePage,
-              }),
-            ),
-          ),
+        const page = await boundedLifecycleRequest(signal, (boundedSignal) =>
+          exhaustPages({
+            endpoint: "games",
+            filter,
+            signal: boundedSignal,
+            apiBase: bootstrap.value.config.apiBase,
+            fetcher,
+            parse: parsePage,
+          }),
         );
-        if (signal.aborted) {
-          const aborted = results.find(
-            (result): result is PromiseRejectedResult =>
-              result.status === "rejected",
-          );
-          throw aborted?.reason ?? new DOMException("Aborted", "AbortError");
-        }
-        const loaded: EventStatus[] = [];
-        const unavailable: EventStatus[] = [];
-        const items = new Map<string, GameDisplayDto>();
-        let freshness: string | null = null;
-        let anyReady = false;
-        for (const [index, result] of results.entries()) {
-          const status = requested[index]!;
-          if (result.status === "rejected") {
-            const failure: unknown = result.reason;
-            if (
-              !(failure instanceof GamesClientError) ||
-              failure.code !== "request-failed"
-            )
-              throw failure;
-            unavailable.push(status);
-            continue;
-          }
-          if (result.value.projectionState === "uninitialized") {
-            unavailable.push(status);
-            continue;
-          }
-          loaded.push(status);
-          anyReady = true;
-          if (
-            result.value.freshness !== null &&
-            (freshness === null || result.value.freshness < freshness)
-          )
-            freshness = result.value.freshness;
-          for (const item of result.value.items) {
-            const prior = items.get(item.id);
-            if (prior && JSON.stringify(prior) !== JSON.stringify(item))
-              throw new GamesClientError(
-                "invalid-response",
-                "The games response contained contradictory duplicate events.",
-              );
-            items.set(item.id, item);
-          }
-        }
-        if (
-          !anyReady &&
-          results.every((result) => result.status === "rejected")
-        ) {
-          const failure = results.find(
-            (result) => result.status === "rejected",
-          );
-          throw (failure as PromiseRejectedResult).reason;
-        }
-        const ordered = [
-          ...collapseNearDuplicateGames([...items.values()]),
-        ].sort(
+        const ready = page.projectionState === "ready";
+        const ordered = [...collapseNearDuplicateGames([...page.items])].sort(
           (a, b) =>
             a.startsAt.localeCompare(b.startsAt) || a.id.localeCompare(b.id),
         );
-        const single =
-          results.length === 1 && results[0]?.status === "fulfilled"
-            ? results[0].value
-            : undefined;
         return {
           items: ordered,
           nextCursor: null,
-          projectionState: anyReady ? "ready" : "uninitialized",
-          evaluationState: "complete",
-          hasMoreUnknown: false,
-          snapshotAt: single?.snapshotAt ?? null,
-          freshness,
-          unavailableReason: anyReady ? null : "projection-uninitialized",
-          lifecycleCoverage: { requested, loaded, unavailable },
+          projectionState: page.projectionState,
+          evaluationState: page.evaluationState,
+          hasMoreUnknown: page.hasMoreUnknown,
+          snapshotAt: page.snapshotAt,
+          freshness: page.freshness,
+          unavailableReason: page.unavailableReason,
+          lifecycleCoverage: {
+            requested,
+            loaded: ready ? requested : [],
+            unavailable: ready ? [] : requested,
+          },
         };
       },
       async detail(eventId, signal) {

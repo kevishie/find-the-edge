@@ -15,7 +15,8 @@ import {
 export interface EventListFilter {
   readonly sportKey: string;
   readonly leagueKey?: string;
-  readonly status: EventStatus;
+  /** "all" merges every lifecycle server-side; it has no physical partition. */
+  readonly status: EventStatus | "all";
   readonly day: string;
 }
 export interface EventPage {
@@ -68,7 +69,7 @@ export const filterPartition = (filter: EventListFilter): string => {
     throw new EventInputError("invalid-event-filter");
   }
   if (
-    !EVENT_STATUSES.includes(filter.status) ||
+    !EVENT_STATUSES.includes(filter.status as EventStatus) ||
     !/^\d{4}-\d{2}-\d{2}$/.test(filter.day)
   )
     throw new EventInputError("invalid-event-filter");
@@ -84,14 +85,11 @@ export const filterPartition = (filter: EventListFilter): string => {
     calendar.getUTCDate() !== day
   )
     throw new EventInputError("invalid-event-filter");
+  // "all" is rejected above: the includes() check only passes real statuses.
+  const status = filter.status as EventStatus;
   return filter.leagueKey
-    ? leaguePartition(
-        filter.sportKey,
-        filter.leagueKey,
-        filter.status,
-        filter.day,
-      )
-    : sportPartition(filter.sportKey, filter.status, filter.day);
+    ? leaguePartition(filter.sportKey, filter.leagueKey, status, filter.day)
+    : sportPartition(filter.sportKey, status, filter.day);
 };
 const canonicalB64 = (value: string): Buffer => {
   if (!/^[A-Za-z0-9_-]+$/.test(value))

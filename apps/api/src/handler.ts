@@ -737,6 +737,7 @@ export const createEventHandler =
         ) ||
           (request.route === "splits" && query["status"] !== "scheduled") ||
           (request.route === "games" &&
+            query["status"] !== "all" &&
             !EVENT_LIFECYCLE_STATES.includes(
               query["status"] as (typeof EVENT_LIFECYCLE_STATES)[number],
             )) ||

@@ -380,18 +380,24 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
             route: requestUrl.pathname === "/splits" ? "splits" : "games",
             query: Object.fromEntries(requestUrl.searchParams),
           });
+    // The harness gives postponed games a distinct competition so the
+    // explorer's competition filter has something to select. Keyed by item
+    // status, not query status: the merged all view carries every lifecycle
+    // in one response.
     const body =
-      requestUrl.pathname === "/games" &&
-      requestUrl.searchParams.get("status") === "postponed" &&
-      result.statusCode === 200
+      requestUrl.pathname === "/games" && result.statusCode === 200
         ? JSON.stringify({
             ...(JSON.parse(result.body) as Record<string, unknown>),
             items: (
               JSON.parse(result.body) as { items: Record<string, unknown>[] }
-            ).items.map((item) => ({
-              ...item,
-              competition: { key: "mlb-cup", state: "provisional" },
-            })),
+            ).items.map((item) =>
+              item["status"] === "postponed"
+                ? {
+                    ...item,
+                    competition: { key: "mlb-cup", state: "provisional" },
+                  }
+                : item,
+            ),
           })
         : result.body;
     response.writeHead(result.statusCode, { ...headers, ...result.headers });

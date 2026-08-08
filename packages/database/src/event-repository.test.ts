@@ -254,3 +254,130 @@ describe("event repository", () => {
     });
   });
 });
+
+describe("merged all-status list", () => {
+  const NOW = new Date("2026-08-01T20:00:00.000Z");
+  const merged = (
+    id: string,
+    status: CanonicalEvent["status"],
+    startsAt: string,
+  ) =>
+    projectionItems({
+      ...event(id),
+      status,
+      startsAt: instant(startsAt),
+    }).sport;
+
+  const gatewayFor = (items: readonly DynamoItem[]) => {
+    const byPk = new Map<string, DynamoItem[]>();
+    for (const item of items) {
+      const list = byPk.get(String(item.pk)) ?? [];
+      list.push(item);
+      byPk.set(String(item.pk), list);
+    }
+    for (const list of byPk.values())
+      list.sort((a, b) => String(a.sk).localeCompare(String(b.sk)));
+    const queryPage = vi.fn(
+      (pk: string, startSk: string | undefined, limit: number) =>
+        Promise.resolve({
+          items: (byPk.get(pk) ?? [])
+            .filter((item) => !startSk || String(item.sk) > startSk)
+            .slice(0, limit),
+        }),
+    );
+    return { queryPage, transactGet: unusedGet };
+  };
+
+  it("merges every lifecycle chronologically under one snapshot", async () => {
+    const gateway = gatewayFor([
+      merged("event:late", "scheduled", "2026-08-01T23:00:00.000Z"),
+      merged("event:early", "completed", "2026-08-01T18:00:00.000Z"),
+    ]);
+    const repository = new DynamoEventRepository(
+      gateway,
+      new EventCursorCodec({ current }),
+      () => Promise.resolve(true),
+      () => NOW,
+    );
+    const page = await repository.list(
+      { sportKey: "mlb", status: "all", day: "2026-08-01" },
+      50,
+    );
+    expect(page.items.map(({ id, status }) => [id, status])).toEqual([
+      ["event:early", "completed"],
+      ["event:late", "scheduled"],
+    ]);
+    expect(page.nextCursor).toBeNull();
+    expect(page.evaluationState).toBe("complete");
+    expect(page.snapshotAt).toBe(NOW.toISOString());
+    for (const item of page.items)
+      expect(item.metadata.evaluatedAt).toBe(page.snapshotAt);
+    // One query per lifecycle partition, all under the same request.
+    expect(gateway.queryPage).toHaveBeenCalledTimes(6);
+  });
+
+  it("paginates across lifecycles with a composite cursor", async () => {
+    const gateway = gatewayFor([
+      merged("event:late", "scheduled", "2026-08-01T23:00:00.000Z"),
+      merged("event:early", "completed", "2026-08-01T18:00:00.000Z"),
+    ]);
+    const repository = new DynamoEventRepository(
+      gateway,
+      new EventCursorCodec({ current }),
+      () => Promise.resolve(true),
+      () => NOW,
+    );
+    const first = await repository.list(
+      { sportKey: "mlb", status: "all", day: "2026-08-01" },
+      1,
+    );
+    expect(first.items.map(({ id }) => id)).toEqual(["event:early"]);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await repository.list(
+      { sportKey: "mlb", status: "all", day: "2026-08-01" },
+      1,
+      first.nextCursor!,
+    );
+    expect(second.items.map(({ id }) => id)).toEqual(["event:late"]);
+    // The follow-up page reuses the first page's snapshot.
+    expect(second.snapshotAt).toBe(first.snapshotAt);
+    const third = await repository.list(
+      { sportKey: "mlb", status: "all", day: "2026-08-01" },
+      1,
+      second.nextCursor ?? undefined,
+    );
+    expect(second.nextCursor === null || third.items.length === 0).toBe(true);
+  });
+
+  it("rejects a single-status cursor on the merged view", async () => {
+    const gateway = gatewayFor([
+      merged("event:early", "scheduled", "2026-08-01T18:00:00.000Z"),
+    ]);
+    const repository = new DynamoEventRepository(
+      gateway,
+      new EventCursorCodec({ current }),
+      () => Promise.resolve(true),
+      () => NOW,
+    );
+    const scheduledOnly = await repository.list(
+      { sportKey: "mlb", status: "scheduled", day: "2026-08-01" },
+      1,
+    );
+    // Force a cursor by giving the scheduled partition a successor.
+    void scheduledOnly;
+    const codec = new EventCursorCodec({ current });
+    const foreign = codec.encode(
+      "SPORT#mlb#scheduled#2026-08-01",
+      "sk",
+      NOW.toISOString(),
+      NOW,
+    );
+    await expect(
+      repository.list(
+        { sportKey: "mlb", status: "all", day: "2026-08-01" },
+        1,
+        foreign,
+      ),
+    ).rejects.toThrow("invalid-cursor");
+  });
+});
