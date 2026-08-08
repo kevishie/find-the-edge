@@ -33,6 +33,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The quality gate ends in the browser suite, so this job needs a browser
+      # for the same reason the dedicated smoke job does.
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Run repository quality gate
         run: pnpm check
 
