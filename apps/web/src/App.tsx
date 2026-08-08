@@ -1355,7 +1355,7 @@ const splitTintFg = (divergence: number) => {
   return `rgb(${mix[0]},${mix[1]},${mix[2]})`;
 };
 
-type SplitsVizMode = "bars" | "heat" | "divergence" | "all";
+type SplitsVizMode = "bars" | "heat" | "divergence";
 const SPLITS_VIZ_STORAGE_KEY = "fte.splitsView";
 const LEGACY_SPLITS_VIZ_STORAGE_KEY = "fte.splits.viz";
 const splitsVizModes: readonly {
@@ -1382,18 +1382,9 @@ const splitsVizModes: readonly {
     mark: "±",
     hint: "Signed gap promoted to the primary number. Most compact, and the honest basis for sorting.",
   },
-  {
-    id: "all",
-    label: "Compare All",
-    mark: "◫",
-    hint: "All three encodings side by side against the same rows.",
-  },
 ];
 const isSplitsVizMode = (value: unknown): value is SplitsVizMode =>
-  value === "bars" ||
-  value === "heat" ||
-  value === "divergence" ||
-  value === "all";
+  value === "bars" || value === "heat" || value === "divergence";
 const readStoredVizMode = (): SplitsVizMode => {
   try {
     const stored =
@@ -1730,7 +1721,7 @@ function SplitsBoardTable({
   bookLabel,
 }: {
   readonly boards: readonly SplitsBoardEntry[];
-  readonly mode: Exclude<SplitsVizMode, "all">;
+  readonly mode: SplitsVizMode;
   readonly bookLabel: string;
 }) {
   return (
@@ -2207,9 +2198,9 @@ function SplitsExplorer() {
       )}
       {state.kind === "ready" && games.length > 0 && coveredGames === 0 && (
         <p className="splits-no-data-notice" role="status">
-          No split percentages are available from{" "}
-          {selectedBook ? selectedBook.label : "SharpAPI consensus"}. The
-          complete schedule remains below.
+          {sport === "soccer"
+            ? "SharpAPI does not publish betting splits for MLS. The complete schedule remains below."
+            : `No split percentages are available from ${selectedBook ? selectedBook.label : "SharpAPI consensus"} yet. The complete schedule remains below.`}
         </p>
       )}
       <section className="splits-terminal" aria-label="Betting splits">
@@ -2254,36 +2245,13 @@ function SplitsExplorer() {
               </span>
               <span className="split-view-saved">preference saved locally</span>
             </div>
-            {vizMode === "all" ? (
-              splitsVizModes
-                .filter(
-                  (
-                    mode,
-                  ): mode is (typeof splitsVizModes)[number] & {
-                    readonly id: Exclude<SplitsVizMode, "all">;
-                  } => mode.id !== "all",
-                )
-                .map((mode) => (
-                  <div key={mode.id} className="split-compare-section">
-                    <h3 className="split-compare-caption">{mode.label}</h3>
-                    <SplitsBoardTable
-                      boards={boards}
-                      mode={mode.id}
-                      bookLabel={
-                        selectedBook ? selectedBook.label : "SharpAPI consensus"
-                      }
-                    />
-                  </div>
-                ))
-            ) : (
-              <SplitsBoardTable
-                boards={boards}
-                mode={vizMode}
-                bookLabel={
-                  selectedBook ? selectedBook.label : "SharpAPI consensus"
-                }
-              />
-            )}
+            <SplitsBoardTable
+              boards={boards}
+              mode={vizMode}
+              bookLabel={
+                selectedBook ? selectedBook.label : "SharpAPI consensus"
+              }
+            />
           </>
         )}
       </section>

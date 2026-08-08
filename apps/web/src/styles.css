@@ -3318,20 +3318,6 @@ footer {
   color: #56515f;
 }
 
-.split-compare-section + .split-compare-section {
-  margin-top: 18px;
-}
-
-.split-compare-caption {
-  margin: 0;
-  padding: 10px 14px 8px;
-  font-family: "Anton", sans-serif;
-  font-size: 14px;
-  letter-spacing: 0.8px;
-  color: #a29daf;
-  text-transform: uppercase;
-}
-
 .split-heat {
   display: inline-flex;
   width: 100%;

@@ -2519,22 +2519,9 @@ describe("Betting splits", () => {
     // handle 64 − bets 38 = +26 points on the away spread.
     expect(screen.getAllByText("+26").length).toBeGreaterThan(0);
     expect(window.localStorage.getItem("fte.splitsView")).toBe("divergence");
-
-    fireEvent.click(screen.getByRole("button", { name: "Compare All" }));
-    // All three encodings render against the same rows.
-    expect(document.querySelectorAll(".split-board")).toHaveLength(3);
     expect(
-      document.querySelectorAll(".split-bar-visual").length,
-    ).toBeGreaterThan(0);
-    expect(document.querySelectorAll(".split-heat").length).toBeGreaterThan(0);
-    expect(
-      document.querySelectorAll(".split-divergence-value").length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.getAllByText(/Split Bars|Heat Cells|Divergence/).length,
-    ).toBeGreaterThanOrEqual(6);
-
-    fireEvent.click(screen.getByRole("button", { name: "Divergence" }));
+      screen.queryByRole("button", { name: "Compare All" }),
+    ).not.toBeInTheDocument();
     unmount();
 
     // A fresh mount keeps the stored choice as its default.
