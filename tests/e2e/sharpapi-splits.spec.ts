@@ -54,15 +54,14 @@ test("projects one SharpAPI consensus board across every scheduled MLB game", as
     new Set(["draftkings", "circa"]),
   );
 
-  await expect(
-    page.getByText(
-      `${api.expectedGameCount} games · 1 with data · 2 observations`,
-    ),
-  ).toBeVisible();
+  await expect(page.locator(".csx-stats")).toContainText(
+    `${api.expectedGameCount} games`,
+  );
+  await expect(page.locator(".csx-stats")).toContainText("1 with data");
+  await expect(page.locator(".csx-stats")).toContainText("2 observations");
   await expect(page.getByText("No split data")).toHaveCount(
     api.expectedGameCount - 1,
   );
-  await expect(page.getByText("Current splits board")).toBeVisible();
 
   await expect(page.getByText("All books")).toHaveCount(0);
   await expect(
@@ -73,23 +72,20 @@ test("projects one SharpAPI consensus board across every scheduled MLB game", as
       name: /Moneyline for Chicago White Sox: 65% handle, 55% bets, 10 percentage points money-heavy/,
     }),
   ).toBeVisible();
-  await expect(page.locator(".split-game-group")).toHaveCount(
-    api.expectedGameCount,
-  );
+  // Two grid rows per game in the compact board.
+  await expect(page.locator(".csx-row")).toHaveCount(api.expectedGameCount * 2);
   await expect(
-    page.getByLabel("Splits summary").getByText("Circa/DK", { exact: true }),
-  ).toBeVisible();
-  await expect(page.locator(".split-scope:not(.split-no-data)")).toHaveText(
-    "Circa/DK",
-  );
+    page.locator(".csx-book").filter({ hasText: "Circa/DK" }),
+  ).toHaveCount(1);
   await expect(page.getByText("Game details →")).toHaveCount(0);
 
-  const uncoveredGame = page
-    .locator(".split-game-group")
+  const uncoveredRow = page
+    .locator(".csx-row")
     .filter({ hasText: "No split data" })
     .first();
-  await expect(uncoveredGame.getByText("—")).toHaveCount(6);
+  // Uncovered games render dash lines and unavailable split cells.
+  await expect(uncoveredRow.getByText("—", { exact: true })).toHaveCount(3);
   await expect(
-    uncoveredGame.getByRole("img", { name: /split data unavailable/ }),
-  ).toHaveCount(6);
+    uncoveredRow.getByRole("img", { name: /split data unavailable/ }),
+  ).toHaveCount(3);
 });

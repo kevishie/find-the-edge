@@ -45,7 +45,7 @@ import type {
   EventExplorerSortField,
   EventExplorerStatus,
 } from "@find-the-edge/ui";
-import { SportsbookLogo, sportsbookScopeKey } from "./sportsbooks";
+import { sportsbookScopeKey } from "./sportsbooks";
 import { type OddsHistoryDto, type RetrospectiveDto } from "./api";
 // Off-nav screens load on demand so the landing path never parses them.
 const Dashboard = lazy(() =>
@@ -1415,242 +1415,6 @@ const splitCellNumbers = (
   return { handle, bets, divergence };
 };
 
-const splitUnavailable = (market: string, selection: string) => (
-  <span
-    className="split-bar-unavailable"
-    role="img"
-    aria-label={`${market} for ${selection}: split data unavailable`}
-  >
-    Unavailable
-  </span>
-);
-
-function HeatSplitCell({
-  moneyPercent,
-  betPercent,
-  market,
-  selection,
-}: {
-  readonly moneyPercent: number | undefined;
-  readonly betPercent: number | undefined;
-  readonly market: string;
-  readonly selection: string;
-}) {
-  const { handle, bets, divergence } = splitCellNumbers(
-    moneyPercent,
-    betPercent,
-  );
-  if (handle === null && bets === null)
-    return splitUnavailable(market, selection);
-  const label = `${market} for ${selection}: ${
-    handle === null
-      ? "handle unavailable"
-      : `${splitAccessibleNumber(handle)}% handle`
-  }, ${bets === null ? "bets unavailable" : `${splitAccessibleNumber(bets)}% bets`}`;
-  return (
-    <span className="split-heat" role="img" aria-label={label}>
-      <span
-        className="split-heat-handle"
-        style={
-          divergence === null
-            ? undefined
-            : {
-                background: splitTintBg(divergence, 0.42),
-                color: splitTintFg(divergence),
-              }
-        }
-      >
-        {handle === null ? "—" : splitPercent(handle)}
-      </span>
-      <span className="split-heat-bets">
-        {bets === null ? "—" : splitPercent(bets)}
-      </span>
-    </span>
-  );
-}
-
-function DivergenceSplitCell({
-  moneyPercent,
-  betPercent,
-  market,
-  selection,
-}: {
-  readonly moneyPercent: number | undefined;
-  readonly betPercent: number | undefined;
-  readonly market: string;
-  readonly selection: string;
-}) {
-  const { handle, bets, divergence } = splitCellNumbers(
-    moneyPercent,
-    betPercent,
-  );
-  if (handle === null && bets === null)
-    return splitUnavailable(market, selection);
-  const magnitude = divergence === null ? null : Math.abs(divergence);
-  const direction =
-    divergence === null
-      ? null
-      : divergence >= 0
-        ? "money-heavy"
-        : "ticket-heavy";
-  const label = `${market} for ${selection}: ${
-    divergence === null
-      ? "divergence unavailable"
-      : `${splitAccessibleNumber(magnitude!)} percentage points ${direction}`
-  }; handle ${handle === null ? "unavailable" : splitPercent(handle)}, bets ${
-    bets === null ? "unavailable" : splitPercent(bets)
-  }`;
-  return (
-    <span
-      className="split-divergence-cell"
-      role="img"
-      aria-label={label}
-      style={
-        divergence === null
-          ? undefined
-          : { background: splitTintBg(divergence, 0.16) }
-      }
-    >
-      <span
-        className="split-divergence-value"
-        style={
-          divergence === null ? undefined : { color: splitTintFg(divergence) }
-        }
-      >
-        {divergence === null ? "—" : splitPointGap(divergence)}
-      </span>
-      <span className="split-divergence-pair">
-        {handle === null ? "—" : splitNumber(handle)} /{" "}
-        {bets === null ? "—" : splitNumber(bets)}
-      </span>
-    </span>
-  );
-}
-
-function SplitBar({
-  moneyPercent,
-  betPercent,
-  market,
-  selection,
-}: {
-  readonly moneyPercent: number | undefined;
-  readonly betPercent: number | undefined;
-  readonly market: string;
-  readonly selection: string;
-}) {
-  const hasMoney = moneyPercent !== undefined && Number.isFinite(moneyPercent);
-  const hasBets = betPercent !== undefined && Number.isFinite(betPercent);
-  const handle = hasMoney ? Math.max(0, Math.min(100, moneyPercent)) : null;
-  const bets = hasBets ? Math.max(0, Math.min(100, betPercent)) : null;
-
-  if (handle === null && bets === null)
-    return (
-      <span
-        className="split-bar-unavailable"
-        role="img"
-        aria-label={`${market} for ${selection}: split data unavailable`}
-      >
-        Unavailable
-      </span>
-    );
-
-  const gap =
-    handle !== null && bets !== null
-      ? Number((handle - bets).toPrecision(12))
-      : null;
-  const direction =
-    gap === null
-      ? null
-      : gap > 0
-        ? "money-heavy"
-        : gap < 0
-          ? "ticket-heavy"
-          : "even";
-  const magnitude = gap === null ? 0 : Math.abs(gap);
-  const strength = Math.pow(Math.min(magnitude / 62, 1), 0.75);
-  const accent = direction === "ticket-heavy" ? "251, 191, 36" : "168, 85, 247";
-  const low =
-    handle !== null && bets !== null ? Math.min(handle, bets) : undefined;
-  const notchLeft =
-    bets === null
-      ? undefined
-      : bets <= 0
-        ? "0"
-        : bets >= 100
-          ? "calc(100% - 2px)"
-          : `calc(${bets}% - 1px)`;
-  const handleLabel =
-    handle === null
-      ? "handle unavailable"
-      : `${splitAccessibleNumber(handle)}% handle`;
-  const betsLabel =
-    bets === null ? "bets unavailable" : `${splitAccessibleNumber(bets)}% bets`;
-  const gapLabel =
-    gap === null || direction === null
-      ? ""
-      : `, ${splitAccessibleNumber(magnitude)} percentage points ${direction}`;
-
-  return (
-    <span
-      className="split-bar-visual"
-      role="img"
-      aria-label={`${market} for ${selection}: ${handleLabel}, ${betsLabel}${gapLabel}`}
-      data-direction={direction ?? "partial"}
-    >
-      <span className="split-bar-reading">
-        <span className="split-bar-track" aria-hidden="true">
-          {handle !== null && (
-            <span
-              className="split-bar-handle"
-              style={{ width: `${handle}%` }}
-            />
-          )}
-          {gap !== null && gap !== 0 && low !== undefined && (
-            <span
-              className={`split-bar-divergence split-bar-divergence-${direction}`}
-              style={{
-                left: `${low}%`,
-                width: `${magnitude}%`,
-                backgroundColor: `rgba(${accent}, ${(0.25 + strength * 0.5).toFixed(3)})`,
-              }}
-            />
-          )}
-          {bets !== null && (
-            <span className="split-bar-bets" style={{ left: notchLeft }} />
-          )}
-        </span>
-        <span className="split-bar-values" aria-hidden="true">
-          <span>
-            H{" "}
-            {handle === null ? (
-              "unavailable"
-            ) : (
-              <strong>{splitPercent(handle)}</strong>
-            )}
-          </span>
-          <span>
-            B{" "}
-            {bets === null ? (
-              "unavailable"
-            ) : (
-              <strong>{splitPercent(bets)}</strong>
-            )}
-          </span>
-        </span>
-      </span>
-      {gap !== null && direction && (
-        <span
-          className={`split-bar-delta split-bar-delta-${direction}`}
-          aria-hidden="true"
-          title={`${splitNumber(magnitude)} percentage points ${direction}`}
-        >
-          {splitPointGap(gap)}
-        </span>
-      )}
-    </span>
-  );
-}
-
 // SharpAPI reports DraftKings and Circa only as one combined consensus scope,
 // so they share a single chip. Books it does not aggregate filter on their own.
 const splitBookGroups = [
@@ -1717,151 +1481,263 @@ function SplitsBoardTable({
   readonly mode: SplitsVizMode;
   readonly bookLabel: string;
 }) {
+  const heat = mode === "heat";
+  const grid = heat ? "csx-grid heat" : "csx-grid wide";
+  const subLabels = heat
+    ? (["LINE", "HANDLE", "BETS"] as const)
+    : (["LINE", mode === "bars" ? "HANDLE vs BETS" : "DIVERGENCE"] as const);
+  const markets = ["Spread", "Total", "Moneyline"] as const;
   return (
     <div
-      className="market-scroll splits-scroll"
+      className="csx-board"
       tabIndex={0}
       role="region"
       aria-label="Betting splits comparison table; scroll horizontally for all markets"
     >
-      <table className="split-board">
-        <caption className="sr-only">
-          Betting splits by game and team. Handle means money percentage; bets
-          means ticket percentage. Each market shows its line and a split bar
-          comparing handle with bets.
-        </caption>
-        <colgroup>
-          <col className="split-team-col" />
-          {(["spread", "total", "moneyline"] as const).flatMap((market) => [
-            <col key={`${market}-line`} className="split-line-col" />,
-            <col key={`${market}-bar`} className="split-bar-col" />,
-          ])}
-        </colgroup>
-        <thead>
-          <tr>
-            <th className="split-team-heading" rowSpan={2} scope="col">
-              Game / team
-            </th>
-            {(["Spread", "Total", "Moneyline"] as const).map((market) => (
-              <th key={market} colSpan={2} scope="colgroup">
-                {market}
-              </th>
-            ))}
-          </tr>
-          <tr>
-            {(["Spread", "Total", "Moneyline"] as const).flatMap((market) =>
-              (["Line", "Handle vs bets"] as const).map((metric) => (
-                <th key={`${market}-${metric}`} scope="col">
-                  {metric}
-                </th>
-              )),
-            )}
-          </tr>
-        </thead>
-        {boards.map(({ game, splits, emptyLabel }) => {
-          const hasDraw = game.sportKey === "soccer";
-          const rows = [
-            {
-              key: "away" as const,
-              label: game.participants[0]?.label ?? "Unknown team",
-            },
-            {
-              key: "home" as const,
-              label: game.participants[1]?.label ?? "Unknown team",
-            },
-            ...(hasDraw ? [{ key: "draw" as const, label: "Draw" }] : []),
-          ];
-          return (
-            <tbody key={game.id} className="split-game-group">
-              {rows.map((row, rowIndex) => {
-                const spread =
-                  row.key === "draw"
-                    ? undefined
-                    : selectSplit(splits, "spread", row.key);
-                const totalKey =
-                  row.key === "away"
-                    ? "over"
-                    : row.key === "home"
-                      ? "under"
-                      : undefined;
-                const total = totalKey
-                  ? selectSplit(splits, "total", totalKey)
-                  : undefined;
-                const moneyline = selectSplit(splits, "moneyline", row.key);
-                const cells = [spread, total, moneyline];
-                return (
-                  <tr key={row.key}>
-                    <th className="split-team" scope="row">
-                      {rowIndex === 0 && (
-                        <span className="split-start">
-                          {easternDisplay(game.startsAt)} Eastern
-                        </span>
-                      )}
-                      <span className="split-team-name">{row.label}</span>
-                      {rowIndex === 0 && splits.length === 0 && (
-                        <span className="split-scope split-no-data">
-                          {emptyLabel}
-                        </span>
-                      )}
-                      {rowIndex === 0 && splits.length > 0 && (
-                        <span className="split-scope">{bookLabel}</span>
-                      )}
-                    </th>
-                    {cells.flatMap((split, marketIndex) => {
-                      const market = ["Spread", "Total", "Moneyline"][
-                        marketIndex
-                      ]!;
-                      const americanOdds = splitAmericanOdds(split);
-                      return [
-                        <td key={`${marketIndex}-line`} className="split-line">
-                          {!split
-                            ? "—"
-                            : marketIndex === 2
-                              ? americanOdds === undefined
-                                ? "No line"
-                                : oddsPrice(americanOdds)
-                              : split.point === undefined
-                                ? "—"
-                                : marketIndex === 1
-                                  ? `${row.key === "away" ? "O" : "U"} ${String(split.point)}`
-                                  : linePoint(split.point)}
-                        </td>,
-                        <td
-                          key={`${marketIndex}-split`}
-                          className="split-bar-cell"
-                        >
-                          {mode === "heat" ? (
-                            <HeatSplitCell
-                              moneyPercent={split?.moneyPercent}
-                              betPercent={split?.betPercent}
-                              market={market}
-                              selection={row.label}
-                            />
-                          ) : mode === "divergence" ? (
-                            <DivergenceSplitCell
-                              moneyPercent={split?.moneyPercent}
-                              betPercent={split?.betPercent}
-                              market={market}
-                              selection={row.label}
-                            />
-                          ) : (
-                            <SplitBar
-                              moneyPercent={split?.moneyPercent}
-                              betPercent={split?.betPercent}
-                              market={market}
-                              selection={row.label}
-                            />
-                          )}
-                        </td>,
-                      ];
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
+      <div className={`${grid} csx-head`}>
+        <div className="csx-corner">GAME / TEAM</div>
+        {markets.map((market) => (
+          <div
+            key={market}
+            className="csx-market"
+            style={{ gridColumn: `span ${heat ? 3 : 2}` }}
+          >
+            {market.toUpperCase()}
+          </div>
+        ))}
+        {markets.flatMap((market) =>
+          subLabels.map((label, index) => (
+            <div
+              key={`${market}-${label}`}
+              className={`csx-subhead${index === 0 ? " first" : ""}`}
+            >
+              {label}
+            </div>
+          )),
+        )}
+      </div>
+      {boards.map(({ game, splits, emptyLabel }, gameIndex) => {
+        const rows = [
+          {
+            key: "away" as const,
+            label: game.participants[0]?.label ?? "Unknown team",
+          },
+          {
+            key: "home" as const,
+            label: game.participants[1]?.label ?? "Unknown team",
+          },
+        ];
+        return rows.map((row, rowIndex) => {
+          const spread = selectSplit(splits, "spread", row.key);
+          const total = selectSplit(
+            splits,
+            "total",
+            row.key === "away" ? "over" : "under",
           );
-        })}
-      </table>
+          const moneyline = selectSplit(splits, "moneyline", row.key);
+          const cells = [spread, total, moneyline];
+          const rowClass =
+            rowIndex === 0
+              ? gameIndex === 0
+                ? "csx-row game-first"
+                : "csx-row game-start"
+              : "csx-row game-second";
+          return (
+            <div
+              key={`${game.id}-${row.key}`}
+              className={`${grid} ${rowClass}`}
+            >
+              <div className="csx-row-team">
+                {rowIndex === 0 && (
+                  <div className="csx-time">
+                    {easternDisplay(game.startsAt)} Eastern
+                  </div>
+                )}
+                <div className="csx-team">{row.label}</div>
+                {rowIndex === 0 && (
+                  <div className="csx-book">
+                    {splits.length > 0 ? bookLabel : emptyLabel}
+                  </div>
+                )}
+              </div>
+              {cells.flatMap((split, marketIndex) => {
+                const market = markets[marketIndex]!;
+                const americanOdds = splitAmericanOdds(split);
+                const line = !split
+                  ? "—"
+                  : marketIndex === 2
+                    ? americanOdds === undefined
+                      ? "—"
+                      : oddsPrice(americanOdds)
+                    : split.point === undefined
+                      ? "—"
+                      : marketIndex === 1
+                        ? `${row.key === "away" ? "O" : "U"} ${String(split.point)}`
+                        : linePoint(split.point);
+                const rendered = [
+                  <div key={`${marketIndex}-line`} className="csx-line">
+                    {line}
+                  </div>,
+                ];
+                const { handle, bets, divergence } = splitCellNumbers(
+                  split?.moneyPercent,
+                  split?.betPercent,
+                );
+                const label = `${market} for ${row.label}: ${
+                  handle === null
+                    ? "handle unavailable"
+                    : `${splitAccessibleNumber(handle)}% handle`
+                }, ${
+                  bets === null
+                    ? "bets unavailable"
+                    : `${splitAccessibleNumber(bets)}% bets`
+                }${
+                  divergence === null
+                    ? ""
+                    : `, ${splitAccessibleNumber(Math.abs(divergence))} percentage points ${
+                        divergence === 0
+                          ? "even"
+                          : divergence > 0
+                            ? "money-heavy"
+                            : "ticket-heavy"
+                      }`
+                }`;
+                if (handle === null && bets === null) {
+                  rendered.push(
+                    <div
+                      key={`${marketIndex}-unavailable`}
+                      className="csx-unavailable"
+                      role="img"
+                      aria-label={`${market} for ${row.label}: split data unavailable`}
+                      style={heat ? { gridColumn: "span 2" } : undefined}
+                    >
+                      Unavailable
+                    </div>,
+                  );
+                } else if (heat) {
+                  rendered.push(
+                    <div
+                      key={`${marketIndex}-handle`}
+                      className="csx-heat-cell"
+                      role="img"
+                      aria-label={label}
+                      style={
+                        divergence === null
+                          ? undefined
+                          : {
+                              color: splitTintFg(divergence),
+                              background: splitTintBg(divergence, 0.3),
+                            }
+                      }
+                    >
+                      {handle === null ? "—" : splitPercent(handle)}
+                    </div>,
+                    <div
+                      key={`${marketIndex}-bets`}
+                      className="csx-heat-cell bets"
+                      aria-hidden="true"
+                    >
+                      {bets === null ? "—" : splitPercent(bets)}
+                    </div>,
+                  );
+                } else if (mode === "divergence") {
+                  rendered.push(
+                    <div
+                      key={`${marketIndex}-divergence`}
+                      className="csx-divergence-cell"
+                      role="img"
+                      aria-label={label}
+                      style={
+                        divergence === null
+                          ? undefined
+                          : { background: splitTintBg(divergence, 0.16) }
+                      }
+                    >
+                      <span
+                        className="csx-divergence-big"
+                        style={
+                          divergence === null
+                            ? undefined
+                            : { color: splitTintFg(divergence) }
+                        }
+                      >
+                        {divergence === null ? "—" : splitPointGap(divergence)}
+                      </span>
+                      <span className="csx-divergence-pair">
+                        {handle === null ? "—" : splitNumber(handle)} /{" "}
+                        {bets === null ? "—" : splitNumber(bets)}
+                      </span>
+                    </div>,
+                  );
+                } else {
+                  const width = 116;
+                  const lo =
+                    handle !== null && bets !== null
+                      ? Math.min(handle, bets)
+                      : null;
+                  const hi =
+                    handle !== null && bets !== null
+                      ? Math.max(handle, bets)
+                      : null;
+                  rendered.push(
+                    <div
+                      key={`${marketIndex}-bar`}
+                      className="csx-bar-cell"
+                      role="img"
+                      aria-label={label}
+                    >
+                      <span className="csx-bar-track" aria-hidden="true">
+                        {handle !== null && (
+                          <span
+                            className="csx-bar-fill"
+                            style={{ width: (handle / 100) * width }}
+                          />
+                        )}
+                        {divergence !== null && lo !== null && hi !== null && (
+                          <span
+                            className="csx-bar-span"
+                            style={{
+                              left: (lo / 100) * width,
+                              width: ((hi - lo) / 100) * width,
+                              background: `rgba(${
+                                divergence >= 0 ? "168,85,247" : "251,191,36"
+                              },${(0.25 + splitStrength(divergence) * 0.5).toFixed(2)})`,
+                            }}
+                          />
+                        )}
+                        {bets !== null && (
+                          <span
+                            className="csx-bar-notch"
+                            style={{
+                              left: Math.min((bets / 100) * width, width - 2),
+                            }}
+                          />
+                        )}
+                      </span>
+                      <span
+                        className="csx-bar-delta"
+                        aria-hidden="true"
+                        style={
+                          divergence === null
+                            ? undefined
+                            : { color: splitTintFg(divergence) }
+                        }
+                      >
+                        {divergence === null
+                          ? "—"
+                          : divergence !== 0 && Math.abs(divergence) < 0.01
+                            ? `${divergence > 0 ? "+" : "−"}<0.01`
+                            : splitPointGap(divergence)}
+                      </span>
+                    </div>,
+                  );
+                }
+                return rendered;
+              })}
+            </div>
+          );
+        });
+      })}
     </div>
   );
 }
@@ -1875,6 +1751,7 @@ function SplitsExplorer() {
   const [book, setBook] = useState<SplitBookGroup["id"]>("consensus");
   // The chosen visualization persists as the default until changed again.
   const [vizMode, setVizMode] = useState<SplitsVizMode>(readStoredVizMode);
+  const [infoOpen, setInfoOpen] = useState(false);
   const chooseVizMode = (mode: SplitsVizMode) => {
     storeVizMode(mode);
     setVizMode(mode);
@@ -2076,168 +1953,177 @@ function SplitsExplorer() {
           60_000,
       )
     : undefined;
-  const freshnessState =
+
+  const freshDotClass =
     ageMinutes === undefined
-      ? { label: "Freshness unknown", className: "freshness-unknown" }
+      ? "stale"
       : ageMinutes <= 15
-        ? { label: "Current", className: "freshness-current" }
+        ? ""
         : ageMinutes <= 60
-          ? { label: "Aging", className: "freshness-aging" }
-          : { label: "Stale", className: "freshness-stale" };
+          ? "aging"
+          : "stale";
+  const shortTime = newestObservation
+    ? new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date(newestObservation))
+    : null;
+  const shortDay = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(`${day}T12:00:00-05:00`));
+  const sourceLabel = selectedBook ? selectedBook.label : "Circa/DK";
+  const activeMode = splitsVizModes.find(({ id }) => id === vizMode)!;
 
   return (
-    <>
-      <header className="explorer-header">
-        <div>
-          <p className="eyebrow">PUBLIC BETTING · SHARPAPI CONSENSUS</p>
-          <h1>Betting splits</h1>
-          <p className="lede">
-            See how betting tickets and money are distributed across each
-            market.
-          </p>
-        </div>
-        <span className="maturity beta">SharpAPI Consensus</span>
-      </header>
-      <aside className="split-signal-context" aria-label="How to use splits">
-        <strong>Consensus is context—not a pick.</strong>
-        <span>
-          SharpAPI combines its public-betting data into one consensus view.
-          Compare bet percentage with handle percentage to spot imbalances, then
-          confirm the signal with line movement and price value.
-        </span>
-      </aside>
-      <section
-        className="game-filters splits-primary-filters"
-        aria-label="Split filters"
-      >
-        <label>
-          <span className="sr-only">Eastern calendar day</span>
-          <input
-            type="date"
-            value={day}
-            onChange={(event) => {
-              setState({ kind: "loading" });
-              setDay(event.currentTarget.value);
-            }}
-          />
-        </label>
-      </section>
-      {availableBooks.length > 1 && (
-        <section
-          className="sportsbook-filters splits-scope-filters"
-          aria-label="Sportsbook"
-        >
-          {availableBooks.map((group) => (
-            <button
-              key={group.id}
-              type="button"
-              className={selectedBook === group ? "selected" : ""}
-              // The logo art names the provider's book, not this group, so the
-              // group label is the authoritative accessible name.
-              aria-label={group.label}
-              aria-pressed={selectedBook === group}
-              onClick={() => setBook(group.id)}
+    <div className="csx-card">
+      <span className="csx-accent" aria-hidden="true" style={{ height: 96 }} />
+      <div className="csx-header">
+        <div className="csx-header-row">
+          <h1 className="csx-title">Betting splits</h1>
+          <span className="csx-badge">SHARPAPI CONSENSUS</span>
+          <button
+            type="button"
+            className={`csx-info-button${infoOpen ? " open" : ""}`}
+            title="What consensus means"
+            aria-label="What consensus means"
+            aria-expanded={infoOpen}
+            onClick={() => setInfoOpen((open) => !open)}
+          >
+            ⓘ
+          </button>
+          <div className="csx-controls">
+            <label className="csx-chip csx-date-chip" title="Slate date">
+              <span className="csx-chip-glyph" aria-hidden="true">
+                ▤
+              </span>
+              {shortDay}
+              <input
+                type="date"
+                aria-label="Eastern calendar day"
+                value={day}
+                onChange={(event) => {
+                  setState({ kind: "loading" });
+                  setDay(event.currentTarget.value);
+                }}
+              />
+            </label>
+            {availableBooks.length > 1 && (
+              <div className="csx-views" role="group" aria-label="Sportsbook">
+                {availableBooks.map((group) => (
+                  <button
+                    key={group.id}
+                    type="button"
+                    className={selectedBook === group ? "selected" : ""}
+                    aria-pressed={selectedBook === group}
+                    onClick={() => setBook(group.id)}
+                  >
+                    <span>{group.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="csx-views" role="group" aria-label="Splits view">
+              {splitsVizModes.map((mode) => (
+                <button
+                  key={mode.id}
+                  type="button"
+                  className={vizMode === mode.id ? "selected" : ""}
+                  aria-pressed={vizMode === mode.id}
+                  title={mode.hint}
+                  onClick={() => chooseVizMode(mode.id)}
+                >
+                  <span aria-hidden="true">{mode.mark}</span>
+                  <span className="csx-view-label">{mode.label}</span>
+                </button>
+              ))}
+            </div>
+            <div
+              className="csx-chip csx-status-chip"
+              title={`Consensus source: ${sourceLabel}${
+                newestObservation
+                  ? ` · freshest evidence ${easternDisplay(newestObservation)} Eastern`
+                  : ""
+              }`}
             >
-              <SportsbookLogo scope={group.logoScope} />
-            </button>
-          ))}
-        </section>
-      )}
-      {state.kind === "ready" && games.length > 0 && (
-        <section className="splits-toolbar" aria-label="Splits summary">
-          <div>
-            <span className={`terminal-kicker ${freshnessState.className}`}>
-              {freshnessState.label} splits board
-            </span>
-            <strong>
-              {games.length} games · {coveredGames} with data ·{" "}
-              {observationCount} observations
-            </strong>
+              <span className={`csx-dot ${freshDotClass}`} aria-hidden="true" />
+              {sourceLabel}
+              {shortTime ? ` · ${shortTime}` : ""}
+            </div>
           </div>
-          <dl>
-            <div>
-              <dt>Source</dt>
-              <dd>
-                {selectedBook ? selectedBook.label : "SharpAPI consensus"}
-              </dd>
-            </div>
-            <div>
-              <dt>Freshest evidence</dt>
-              <dd>
-                {newestObservation
-                  ? `${easternDisplay(newestObservation)} Eastern`
-                  : "Timestamp unavailable"}
-              </dd>
-            </div>
-          </dl>
-        </section>
-      )}
+        </div>
+        <div className="csx-stats" aria-label="Splits summary">
+          <span>
+            <strong>{games.length}</strong> games
+          </span>
+          <span className="csx-sep">·</span>
+          <span>
+            <strong>{coveredGames}</strong> with data
+          </span>
+          <span className="csx-sep">·</span>
+          <span>
+            <strong>{observationCount}</strong> observations
+          </span>
+          <span className="csx-sep">·</span>
+          <span>tickets vs money across each market</span>
+        </div>
+        {infoOpen && (
+          <div className="csx-info-banner" role="note">
+            <h3>Consensus is context—not a pick.</h3>
+            <p>
+              SharpAPI combines its public-betting data into one consensus view.
+              Compare bet percentage with handle percentage to spot imbalances,
+              then confirm the signal with line movement and price value.
+            </p>
+            <button
+              type="button"
+              className="csx-info-close"
+              aria-label="Dismiss"
+              onClick={() => setInfoOpen(false)}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </div>
       {state.kind === "ready" && state.refreshFailed && (
-        <p className="splits-refresh-warning" role="status">
+        <p className="csx-state" role="status">
           <strong>Refresh delayed.</strong> Showing the last valid board while
           we retry.
         </p>
       )}
       {state.kind === "ready" && games.length > 0 && coveredGames === 0 && (
-        <p className="splits-no-data-notice" role="status">
-          No split percentages are available from{" "}
-          {selectedBook ? selectedBook.label : "SharpAPI consensus"} yet. The
+        <p className="csx-state" role="status">
+          No split percentages are available from {sourceLabel} yet. The
           complete schedule remains below.
         </p>
       )}
-      <section className="splits-terminal" aria-label="Betting splits">
-        <div className="terminal-state" aria-live="polite">
-          {state.kind === "loading" && <p>Loading current split evidence…</p>}
-          {state.kind === "error" && <p role="alert">{state.message}</p>}
-          {state.kind === "ready" && games.length === 0 && (
-            <p>No scheduled games are available for this day.</p>
-          )}
-        </div>
-        {state.kind === "ready" && games.length > 0 && (
-          <>
-            <div className="split-view-row" role="note">
-              <span className="split-view-label">VIEW</span>
-              <div
-                className="split-view-pills"
-                role="group"
-                aria-label="Splits view"
-              >
-                {splitsVizModes.map((mode) => (
-                  <button
-                    key={mode.id}
-                    type="button"
-                    className={vizMode === mode.id ? "selected" : ""}
-                    aria-pressed={vizMode === mode.id}
-                    onClick={() => chooseVizMode(mode.id)}
-                  >
-                    <span className="split-view-mark" aria-hidden="true">
-                      {mode.mark}
-                    </span>
-                    <span>{mode.label}</span>
-                  </button>
-                ))}
-              </div>
-              <span className="split-view-hint">
-                {
-                  (
-                    splitsVizModes.find(({ id }) => id === vizMode) ??
-                    splitsVizModes[0]!
-                  ).hint
-                }
-              </span>
-              <span className="split-view-saved">preference saved locally</span>
-            </div>
-            <SplitsBoardTable
-              boards={boards}
-              mode={vizMode}
-              bookLabel={
-                selectedBook ? selectedBook.label : "SharpAPI consensus"
-              }
-            />
-          </>
+      <div aria-live="polite">
+        {state.kind === "loading" && (
+          <p className="csx-state">Loading current split evidence…</p>
         )}
-      </section>
-    </>
+        {state.kind === "error" && (
+          <p className="csx-state" role="alert">
+            {state.message}
+          </p>
+        )}
+        {state.kind === "ready" && games.length === 0 && (
+          <p className="csx-state">
+            No scheduled games are available for this day.
+          </p>
+        )}
+      </div>
+      {state.kind === "ready" && games.length > 0 && (
+        <SplitsBoardTable
+          boards={boards}
+          mode={vizMode}
+          bookLabel={sourceLabel}
+        />
+      )}
+      <span className="sr-only">{activeMode.hint}</span>
+    </div>
   );
 }
 

@@ -142,11 +142,9 @@ test("renders compact accessible split bars on desktop and mobile", async ({
   await page.getByLabel("Eastern calendar day").fill("2026-08-01");
 
   await expect(page.getByText("Boston Red Sox").first()).toBeVisible();
+  await expect(page.getByText("SPREAD", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("columnheader", { name: "Spread" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("columnheader", { name: "Handle vs bets" }).first(),
+    page.getByText("HANDLE vs BETS", { exact: true }).first(),
   ).toBeVisible();
   await expect(
     page.getByRole("img", {
@@ -158,7 +156,10 @@ test("renders compact accessible split bars on desktop and mobile", async ({
       name: "Spread for New York Yankees: 36% handle, 62% bets, 26 percentage points ticket-heavy",
     }),
   ).toBeVisible();
-  await expect(page.getByText("No line")).toHaveCount(2);
+  // Missing moneyline prices render as a dash in the compact line column.
+  await expect(page.locator(".csx-line").filter({ hasText: "—" })).toHaveCount(
+    2,
+  );
   // The splits screen is MLB-only: the provider publishes no soccer splits.
   await expect(page.getByRole("button", { name: "MLS" })).toHaveCount(0);
 
@@ -173,17 +174,17 @@ test("renders compact accessible split bars on desktop and mobile", async ({
       (element) => element.scrollWidth > element.clientWidth,
     ),
   ).toBe(true);
-  const stickyTeam = page.locator(".split-team").first();
-  await expect(stickyTeam).toHaveCSS("position", "sticky");
-  const beforeScroll = await stickyTeam.boundingBox();
+  // The compact grid scrolls as one unit; the team column travels with it.
+  const teamCell = page.locator(".csx-row-team").first();
+  const beforeScroll = await teamCell.boundingBox();
   expect(beforeScroll).not.toBeNull();
   await board.evaluate((element) => {
     element.scrollLeft = 420;
     element.dispatchEvent(new Event("scroll"));
   });
   await expect
-    .poll(async () => (await stickyTeam.boundingBox())?.x)
-    .toBeCloseTo(beforeScroll!.x, 0);
+    .poll(async () => (await teamCell.boundingBox())?.x)
+    .toBeLessThan(beforeScroll!.x);
 });
 
 test("opens multi-book comparison directly and keeps Hard Rock first", async ({

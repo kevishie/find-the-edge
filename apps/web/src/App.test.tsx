@@ -1794,6 +1794,23 @@ describe("Games", () => {
 });
 
 describe("Betting splits", () => {
+  const boardStats = () =>
+    (document.querySelector(".csx-stats")?.textContent ?? "")
+      .replace(/\u00b7/g, " \u00b7 ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const expectStats = async (
+    games: number,
+    withData: number,
+    count: number,
+  ) => {
+    await waitFor(() =>
+      expect(boardStats()).toBe(
+        `${games} games \u00b7 ${withData} with data \u00b7 ${count} observations \u00b7 tickets vs money across each market`,
+      ),
+    );
+  };
+
   it("refreshes an empty board when newly ingested splits become available", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -1816,15 +1833,11 @@ describe("Betting splits", () => {
         />,
       );
 
-      expect(
-        await screen.findByText("1 games · 0 with data · 0 observations"),
-      ).toBeInTheDocument();
+      await expectStats(1, 0, 0);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
-      expect(
-        await screen.findByText("1 games · 1 with data · 6 observations"),
-      ).toBeInTheDocument();
+      await expectStats(1, 1, 6);
       expect(listSplits).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -1860,11 +1873,13 @@ describe("Betting splits", () => {
         />,
       );
 
-      expect(await screen.findByText("45%")).toBeInTheDocument();
+      expect(
+        await screen.findByRole("img", { name: /45% bets/ }),
+      ).toBeInTheDocument();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
-      expect(screen.getByText("45%")).toBeInTheDocument();
+      expect(screen.getByRole("img", { name: /45% bets/ })).toBeInTheDocument();
       expect(
         screen.queryByText("Betting splits are temporarily unavailable."),
       ).not.toBeInTheDocument();
@@ -1876,7 +1891,9 @@ describe("Betting splits", () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
-      expect(await screen.findByText("47%")).toBeInTheDocument();
+      expect(
+        await screen.findByRole("img", { name: /47% bets/ }),
+      ).toBeInTheDocument();
       expect(screen.queryByText("Refresh delayed.")).not.toBeInTheDocument();
       expect(listSplits).toHaveBeenCalledTimes(3);
     } finally {
@@ -1898,23 +1915,14 @@ describe("Betting splits", () => {
       />,
     );
 
-    expect((await screen.findByText("Boston")).closest("th")).toHaveAttribute(
-      "scope",
-      "row",
-    );
-    expect(screen.getByText("New York").closest("th")).toHaveAttribute(
-      "scope",
-      "row",
-    );
     expect(
-      screen.getByRole("columnheader", { name: "Spread" }),
-    ).toBeInTheDocument();
+      (await screen.findByText("Boston")).closest(".csx-row-team"),
+    ).not.toBeNull();
     expect(
-      screen.getByRole("columnheader", { name: "Total" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("columnheader", { name: "Moneyline" }),
-    ).toBeInTheDocument();
+      screen.getByText("New York").closest(".csx-row-team"),
+    ).not.toBeNull();
+    for (const market of ["SPREAD", "TOTAL", "MONEYLINE"])
+      expect(screen.getByText(market)).toBeInTheDocument();
     expect(screen.getByText("+1.5")).toBeInTheDocument();
     expect(screen.getByText("O 8.5")).toBeInTheDocument();
     expect(screen.getByText("U 8.5")).toBeInTheDocument();
@@ -1922,28 +1930,32 @@ describe("Betting splits", () => {
       screen.getByRole("img", {
         name: "Spread for Boston: 64% handle, 38% bets, 26 percentage points money-heavy",
       }),
-    ).toHaveAttribute("data-direction", "money-heavy");
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("img", {
         name: "Spread for New York: 36% handle, 62% bets, 26 percentage points ticket-heavy",
       }),
-    ).toHaveAttribute("data-direction", "ticket-heavy");
+    ).toBeInTheDocument();
     expect(screen.getByText("+26")).toBeInTheDocument();
     expect(screen.getByText("−26")).toBeInTheDocument();
-    expect(screen.getAllByText("No line")).toHaveLength(2);
-    expect(screen.getAllByText("Circa/DK")).toHaveLength(2);
+    // The book renders once per game under the away team; the header status
+    // chip repeats it beside the freshest time.
+    expect(screen.getAllByText("Circa/DK")).toHaveLength(1);
+    expect(screen.getByText(/Circa\/DK · /)).toBeInTheDocument();
+    // The consensus explainer sits behind the info toggle now.
+    expect(
+      screen.queryByText("Consensus is context—not a pick."),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "What consensus means" }),
+    );
     expect(
       screen.getByText("Consensus is context—not a pick."),
     ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(
-      screen.getByText(/combines its public-betting data into one consensus/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Handle as fill, bets as notch — divergence is the tinted gap between them. Fastest to scan.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByText("preference saved locally")).toBeInTheDocument();
+      screen.queryByText("Consensus is context—not a pick."),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("Game details →")).not.toBeInTheDocument();
   });
 
@@ -2005,23 +2017,23 @@ describe("Betting splits", () => {
     );
 
     await screen.findByText("Boston");
-    expect(screen.queryByText("—%")).not.toBeInTheDocument();
-    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
-    expect(screen.getByText("49%")).toBeInTheDocument();
-    expect(
-      screen.getByRole("img", {
-        name: "Total for New York: handle unavailable, 49% bets",
-      }),
-    ).toHaveAttribute("data-direction", "partial");
-    expect(screen.queryByText("−49")).not.toBeInTheDocument();
-    expect(screen.queryByText("+49")).not.toBeInTheDocument();
+    // A missing side never manufactures a divergence: the delta shows a dash.
+    const betsOnlyBar = screen.getByRole("img", {
+      name: "Total for New York: handle unavailable, 49% bets",
+    });
+    expect(betsOnlyBar.querySelector(".csx-bar-fill")).toBeNull();
+    expect(betsOnlyBar.querySelector(".csx-bar-notch")).not.toBeNull();
+    expect(betsOnlyBar.querySelector(".csx-bar-delta")).toHaveTextContent("—");
     const handleOnlyBar = screen.getByRole("img", {
       name: "Spread for Boston: 64% handle, bets unavailable",
     });
-    expect(handleOnlyBar).toHaveAttribute("data-direction", "partial");
-    expect(handleOnlyBar.querySelector(".split-bar-handle")).toHaveStyle({
-      width: "64%",
+    expect(handleOnlyBar.querySelector(".csx-bar-notch")).toBeNull();
+    expect(handleOnlyBar.querySelector(".csx-bar-fill")).toHaveStyle({
+      width: "74.24px",
     });
+    expect(handleOnlyBar.querySelector(".csx-bar-delta")).toHaveTextContent(
+      "—",
+    );
   });
 
   it("keeps endpoint notches visible and labels even splits without relying on color", async () => {
@@ -2071,30 +2083,29 @@ describe("Betting splits", () => {
     const endpoint = await screen.findByRole("img", {
       name: "Spread for Boston: 0% handle, 100% bets, 100 percentage points ticket-heavy",
     });
-    expect(endpoint).toHaveAttribute("data-direction", "ticket-heavy");
-    expect(endpoint.querySelector(".split-bar-handle")).toHaveStyle({
-      width: "0%",
+    expect(endpoint.querySelector(".csx-bar-fill")).toHaveStyle({
+      width: "0px",
     });
-    expect(endpoint.querySelector(".split-bar-bets")).toHaveStyle({
-      left: "calc(100% - 2px)",
+    // The notch never leaves the visible track, even at 100%.
+    expect(endpoint.querySelector(".csx-bar-notch")).toHaveStyle({
+      left: "114px",
     });
     const zeroNotch = screen.getByRole("img", {
       name: "Spread for New York: 100% handle, 0% bets, 100 percentage points money-heavy",
     });
-    expect(zeroNotch).toHaveAttribute("data-direction", "money-heavy");
-    expect(zeroNotch.querySelector(".split-bar-bets")).toHaveStyle({
-      left: "0",
+    expect(zeroNotch.querySelector(".csx-bar-notch")).toHaveStyle({
+      left: "0px",
     });
     expect(
       screen.getByRole("img", {
         name: "Total for Boston: 50% handle, 50% bets, 0 percentage points even",
       }),
-    ).toHaveAttribute("data-direction", "even");
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("img", {
         name: "Moneyline for Boston: 50.004% handle, 50.001% bets, 0.003 percentage points money-heavy",
       }),
-    ).toHaveAttribute("data-direction", "money-heavy");
+    ).toBeInTheDocument();
     expect(screen.getByText("−100")).toBeInTheDocument();
     expect(screen.getByText("+100")).toBeInTheDocument();
     expect(screen.getByText("0")).toBeInTheDocument();
@@ -2124,9 +2135,7 @@ describe("Betting splits", () => {
       />,
     );
 
-    expect(
-      await screen.findByText("1 games · 0 with data · 0 observations"),
-    ).toBeInTheDocument();
+    await expectStats(1, 0, 0);
     expect(screen.getByText("No split data")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Show line-only-book splits" }),
@@ -2202,13 +2211,13 @@ describe("Betting splits", () => {
       />,
     );
 
-    expect(await screen.findByText("64%")).toBeInTheDocument();
-    expect(screen.queryByText("71%")).not.toBeInTheDocument();
-    expect(screen.queryByText("29%")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Boston")).toHaveLength(1);
     expect(
-      screen.getByText("1 games · 1 with data · 1 observations"),
+      await screen.findByRole("img", { name: /64% handle/ }),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /71% handle/ })).toBeNull();
+    expect(screen.queryByRole("img", { name: /29% handle/ })).toBeNull();
+    expect(screen.getAllByText("Boston")).toHaveLength(1);
+    await expectStats(1, 1, 1);
     expect(screen.queryByText("All books")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Show .* splits/ }),
@@ -2265,13 +2274,13 @@ describe("Betting splits", () => {
       />,
     );
 
-    expect(await screen.findByText("71%")).toBeInTheDocument();
-    expect(screen.queryByText("29%")).not.toBeInTheDocument();
-    expect(screen.getByText("43%")).toBeInTheDocument();
-    expect(screen.getAllByText("Boston")).toHaveLength(1);
     expect(
-      screen.getByText("2 games · 2 with data · 2 observations"),
+      await screen.findByRole("img", { name: /71% handle/ }),
     ).toBeInTheDocument();
+    expect(screen.queryByText("29%")).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /43% handle/ })).toBeInTheDocument();
+    expect(screen.getAllByText("Boston")).toHaveLength(1);
+    await expectStats(2, 2, 2);
     expect(screen.getByText("Chicago")).toBeInTheDocument();
     expect(screen.getByText("Detroit")).toBeInTheDocument();
     expect(screen.queryByText("All books")).not.toBeInTheDocument();
@@ -2304,57 +2313,7 @@ describe("Betting splits", () => {
 
     expect(await screen.findByText("Chicago")).toBeInTheDocument();
     expect(screen.getByText("Detroit")).toBeInTheDocument();
-    expect(
-      screen.getByText(/2 games · 2 with data · 12 observations/),
-    ).toBeInTheDocument();
-  });
-
-  it("renders the draw row for a three-way soccer moneyline", async () => {
-    const base = splitGame.splits[0]!;
-    const { point: omittedPoint, ...baseWithoutPoint } = base;
-    void omittedPoint;
-    const drawGame: SplitsPageDto["items"][number] = {
-      ...soccerGame,
-      splits: [
-        {
-          ...baseWithoutPoint,
-          id: "soccer-away",
-          canonicalEventId: soccerGame.id,
-          sportKey: "soccer",
-          leagueKey: "mls",
-          marketKey: "moneyline",
-          selectionKey: "away",
-          moneyPercent: 30,
-          betPercent: 28,
-          scope: "Soccer consensus",
-        },
-        {
-          ...baseWithoutPoint,
-          id: "soccer-draw",
-          canonicalEventId: soccerGame.id,
-          sportKey: "soccer",
-          leagueKey: "mls",
-          marketKey: "moneyline",
-          selectionKey: "draw",
-          moneyPercent: 41,
-          betPercent: 36,
-          scope: "Soccer consensus",
-        },
-      ],
-    };
-    const listSplits = vi
-      .fn<NonNullable<GamesClient["listSplits"]>>()
-      .mockResolvedValue(splitsPage([drawGame]));
-    render(
-      <App
-        initialPath="/splits?sport=soccer"
-        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
-      />,
-    );
-
-    expect(await screen.findByText("Draw")).toBeInTheDocument();
-    expect(screen.getByText("41%")).toBeInTheDocument();
-    expect(screen.getByText("36%")).toBeInTheDocument();
+    await expectStats(2, 2, 12);
   });
 
   it("labels stale and unknown freshness without claiming live data", async () => {
@@ -2370,7 +2329,10 @@ describe("Betting splits", () => {
         }}
       />,
     );
-    expect(await screen.findByText(/Stale splits board/)).toBeInTheDocument();
+    // Freshness now renders as the status dot, never as a live claim.
+    await waitFor(() =>
+      expect(document.querySelector(".csx-dot.stale")).not.toBeNull(),
+    );
     expect(screen.queryByText(/LIVE CONSENSUS/)).not.toBeInTheDocument();
     unmount();
     // A second app instance must not inherit the first instance's board.
@@ -2399,10 +2361,11 @@ describe("Betting splits", () => {
         }}
       />,
     );
-    expect(
-      await screen.findByText(/Freshness unknown splits board/),
-    ).toBeInTheDocument();
-    expect(screen.getAllByText("Circa/DK")).toHaveLength(2);
+    // Without a single valid timestamp there is no freshness time to show.
+    await waitFor(() =>
+      expect(document.querySelector(".csx-dot.stale")).not.toBeNull(),
+    );
+    expect(screen.queryByText(/Circa\/DK · /)).not.toBeInTheDocument();
   });
 
   it("shows scheduled games without observations in the consensus board", async () => {
@@ -2466,11 +2429,7 @@ describe("Betting splits", () => {
       />,
     );
 
-    expect(
-      await screen.findByText(
-        `8 games · 1 with data · ${covered.splits.length} observations`,
-      ),
-    ).toBeInTheDocument();
+    await expectStats(8, 1, covered.splits.length);
     expect(screen.getAllByText("No split data")).toHaveLength(7);
     expect(screen.getAllByText(/Away [1-7]/)).toHaveLength(7);
   });
@@ -2486,10 +2445,11 @@ describe("Betting splits", () => {
       />,
     );
 
-    expect(
-      await screen.findByText("Freshness unknown splits board"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Timestamp unavailable")).toBeInTheDocument();
+    await screen.findByText("Boston");
+    // Page timestamps never masquerade as split freshness: without any split
+    // observation the status chip shows no time and the dot reads stale.
+    expect(document.querySelector(".csx-dot.stale")).not.toBeNull();
+    expect(screen.queryByText(/Circa\/DK · /)).not.toBeInTheDocument();
   });
 
   it("toggles between the three visualizations and keeps the choice", async () => {
@@ -2505,20 +2465,22 @@ describe("Betting splits", () => {
     await screen.findByText("Boston");
 
     // Default is split bars.
-    expect(
-      document.querySelectorAll(".split-bar-visual").length,
-    ).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".csx-bar-track").length).toBeGreaterThan(
+      0,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Heat Cells" }));
-    expect(document.querySelectorAll(".split-bar-visual")).toHaveLength(0);
-    expect(document.querySelectorAll(".split-heat").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".csx-bar-track")).toHaveLength(0);
+    expect(document.querySelectorAll(".csx-heat-cell").length).toBeGreaterThan(
+      0,
+    );
     // Both percentages stay visible as numbers.
     expect(screen.getAllByText("64%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("38%").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Divergence" }));
-    expect(document.querySelectorAll(".split-heat")).toHaveLength(0);
-    const divergence = document.querySelectorAll(".split-divergence-value");
+    expect(document.querySelectorAll(".csx-heat-cell")).toHaveLength(0);
+    const divergence = document.querySelectorAll(".csx-divergence-big");
     expect(divergence.length).toBeGreaterThan(0);
     // handle 64 − bets 38 = +26 points on the away spread.
     expect(screen.getAllByText("+26").length).toBeGreaterThan(0);
@@ -2537,9 +2499,9 @@ describe("Betting splits", () => {
     );
     await screen.findByText("Boston");
     expect(
-      document.querySelectorAll(".split-divergence-value").length,
+      document.querySelectorAll(".csx-divergence-big").length,
     ).toBeGreaterThan(0);
-    expect(document.querySelectorAll(".split-bar-visual")).toHaveLength(0);
+    expect(document.querySelectorAll(".csx-bar-track")).toHaveLength(0);
   });
 
   it("offers no book chip when only one book covers the day", async () => {
@@ -2561,7 +2523,8 @@ describe("Betting splits", () => {
     expect(
       screen.queryByRole("button", { name: /Circa\/DK|BetMGM/ }),
     ).not.toBeInTheDocument();
-    expect(screen.getAllByText("BetMGM")).toHaveLength(2);
+    expect(screen.getAllByText("BetMGM")).toHaveLength(1);
+    expect(screen.getByText(/BetMGM · /)).toBeInTheDocument();
   });
 
   it("filters the board between the consensus and BetMGM without duplicating games", async () => {
@@ -2590,23 +2553,19 @@ describe("Betting splits", () => {
       />,
     );
 
-    // One row-label per game proves the second book adds a chip, not a copy.
-    expect(
-      await screen.findByText("1 games · 1 with data · 6 observations"),
-    ).toBeInTheDocument();
-    expect(document.querySelectorAll(".split-scope")).toHaveLength(1);
-    expect(document.querySelector(".split-scope")).toHaveTextContent(
-      "Circa/DK",
-    );
-    expect(screen.queryByText("11%")).not.toBeInTheDocument();
+    // One book label per game proves the second book adds a chip, not a copy.
+    await expectStats(1, 1, 6);
+    expect(document.querySelectorAll(".csx-book")).toHaveLength(1);
+    expect(document.querySelector(".csx-book")).toHaveTextContent("Circa/DK");
+    expect(screen.queryByRole("img", { name: /89% handle/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "BetMGM" }));
 
+    await expectStats(1, 1, 6);
+    expect(document.querySelectorAll(".csx-book")).toHaveLength(1);
+    expect(document.querySelector(".csx-book")).toHaveTextContent("BetMGM");
     expect(
-      screen.getByText("1 games · 1 with data · 6 observations"),
-    ).toBeInTheDocument();
-    expect(document.querySelectorAll(".split-scope")).toHaveLength(1);
-    expect(document.querySelector(".split-scope")).toHaveTextContent("BetMGM");
-    expect(screen.getAllByText("11%").length).toBeGreaterThan(0);
+      screen.getAllByRole("img", { name: /89% handle/ }).length,
+    ).toBeGreaterThan(0);
   });
 });
