@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assessEventMetadata,
   type GameOddsCellDto,
@@ -16,7 +16,15 @@ import {
   type OddsHistoryRepository,
   type RankedOpportunityRepository,
 } from "@find-the-edge/database";
-import { createEventHandler, publishedSplitScopes } from "./handler";
+import {
+  clearHandlerCaches,
+  createEventHandler,
+  publishedSplitScopes,
+} from "./handler";
+
+// Response and split caches live at module scope so warm Lambda invocations
+// share them; tests must not share them with each other.
+beforeEach(clearHandlerCaches);
 import { parseCursorSecretRing } from "./secrets";
 const repository: EventRepository = {
   list: async () => ({
@@ -1007,6 +1015,38 @@ describe("event API", () => {
       expect(result.statusCode).toBe(400);
     }
     expect(reads).toBe(0);
+  });
+  it("serves repeated board requests from the response cache", async () => {
+    let reads = 0;
+    const games = {
+      list: async () => {
+        await Promise.resolve();
+        reads += 1;
+        return {
+          items: [],
+          nextCursor: null,
+          projectionState: "ready" as const,
+          evaluationState: "complete" as const,
+          hasMoreUnknown: false,
+          snapshotAt: null,
+          freshness: null,
+          unavailableReason: null,
+        };
+      },
+    };
+    const handler = createEventHandler(repository, games);
+    const query = { sport: "mlb", status: "scheduled", day: "2026-08-02" };
+    const first = await handler({ route: "games", query });
+    const second = await handler({ route: "games", query });
+    expect(first.statusCode).toBe(200);
+    expect(second.body).toBe(first.body);
+    expect(reads).toBe(1);
+    // A different day is a different board, never a cache hit.
+    await handler({
+      route: "games",
+      query: { ...query, day: "2026-08-03" },
+    });
+    expect(reads).toBe(2);
   });
   it("accepts every games lifecycle but keeps splits scheduled-only", async () => {
     let reads = 0;

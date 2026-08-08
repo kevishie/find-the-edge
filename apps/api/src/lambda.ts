@@ -55,10 +55,12 @@ const tableName = process.env["FTE_EVENT_TABLE_NAME"] ?? "";
 const secretArn = process.env["FTE_EVENT_CURSOR_SECRET_ARN"] ?? "";
 if (!tableName || !secretArn)
   throw new Error("missing-event-api-configuration");
-const gateway = new AwsDynamoGateway(
-  DynamoDBDocumentClient.from(new DynamoDBClient({})),
-  tableName,
+// One client per process: a client created inside the handler opens a fresh
+// TLS connection on every request, which is pure added latency.
+const sharedDocumentClient = DynamoDBDocumentClient.from(
+  new DynamoDBClient({}),
 );
+const gateway = new AwsDynamoGateway(sharedDocumentClient, tableName);
 const secrets = new SecretsManagerClient({});
 export const handler = async (event: LambdaEvent) => {
   const ring = await loadSecretRing(secrets, secretArn);
@@ -88,7 +90,7 @@ export const handler = async (event: LambdaEvent) => {
     gateway,
     detailSportsbooks,
   );
-  const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  const documentClient = sharedDocumentClient;
   const scoutingJobs = new DynamoScoutingJobRepository(
     documentClient,
     tableName,
@@ -193,10 +195,7 @@ export const handler = async (event: LambdaEvent) => {
     repository,
     games,
     undefined,
-    new DynamoBettingSplitRepository(
-      DynamoDBDocumentClient.from(new DynamoDBClient({})),
-      tableName,
-    ),
+    new DynamoBettingSplitRepository(sharedDocumentClient, tableName),
     new DynamoCohortRepository(documentClient, tableName),
     new DynamoRetrospectiveRepository(documentClient, tableName, cursorCodec),
     new DynamoDbStrategyExperimentRepository(

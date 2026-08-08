@@ -10,16 +10,22 @@ export interface SplitLookupCacheOptions {
   readonly now?: () => number;
 }
 
+export interface SplitLookupCache<T> {
+  (key: string, load: () => Promise<T>): Promise<T>;
+  /** Drops every entry; exists so tests can isolate module-scope caches. */
+  clear(): void;
+}
+
 export const createSplitLookupCache = <T>({
   ttlMs,
   maxEntries,
   now = Date.now,
-}: SplitLookupCacheOptions) => {
+}: SplitLookupCacheOptions): SplitLookupCache<T> => {
   const entries = new Map<
     string,
     { readonly value: Promise<T>; readonly expiresAt: number }
   >();
-  return (key: string, load: () => Promise<T>): Promise<T> => {
+  const lookup = (key: string, load: () => Promise<T>): Promise<T> => {
     const current = entries.get(key);
     if (current && current.expiresAt > now()) return current.value;
     // Storing the promise rather than its result also collapses concurrent
@@ -38,4 +44,6 @@ export const createSplitLookupCache = <T>({
     }
     return value;
   };
+  lookup.clear = () => entries.clear();
+  return lookup;
 };

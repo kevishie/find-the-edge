@@ -37,33 +37,42 @@ export class AwsDynamoGateway implements DynamoGateway {
   async batchGet(
     keys: readonly { readonly pk: string; readonly sk: string }[],
   ) {
-    const items: DynamoItem[] = [];
-    for (let offset = 0; offset < keys.length; offset += 100) {
-      let pending = keys.slice(offset, offset + 100);
-      for (let attempt = 0; pending.length && attempt < 3; attempt++) {
-        const result = await this.client.send(
-          new BatchGetCommand({
-            RequestItems: {
-              [this.tableName]: {
-                Keys: pending,
-                ConsistentRead: true,
-                ProjectionExpression: "pk, sk, #value, expiresAt",
-                ExpressionAttributeNames: { "#value": "value" },
+    const chunks: (readonly { readonly pk: string; readonly sk: string }[])[] =
+      [];
+    for (let offset = 0; offset < keys.length; offset += 100)
+      chunks.push(keys.slice(offset, offset + 100));
+    // Chunks are independent, so a request that fans out to hundreds of keys
+    // pays one round trip rather than one per hundred.
+    const responses = await Promise.all(
+      chunks.map(async (chunk) => {
+        const items: DynamoItem[] = [];
+        let pending = chunk;
+        for (let attempt = 0; pending.length && attempt < 3; attempt++) {
+          const result = await this.client.send(
+            new BatchGetCommand({
+              RequestItems: {
+                [this.tableName]: {
+                  Keys: [...pending],
+                  ConsistentRead: true,
+                  ProjectionExpression: "pk, sk, #value, expiresAt",
+                  ExpressionAttributeNames: { "#value": "value" },
+                },
               },
-            },
-          }),
-        );
-        items.push(
-          ...((result.Responses?.[this.tableName] ?? []) as DynamoItem[]),
-        );
-        pending = (result.UnprocessedKeys?.[this.tableName]?.Keys ?? []) as {
-          pk: string;
-          sk: string;
-        }[];
-      }
-      if (pending.length) throw new Error("dynamo-batch-get-incomplete");
-    }
-    return items;
+            }),
+          );
+          items.push(
+            ...((result.Responses?.[this.tableName] ?? []) as DynamoItem[]),
+          );
+          pending = (result.UnprocessedKeys?.[this.tableName]?.Keys ?? []) as {
+            pk: string;
+            sk: string;
+          }[];
+        }
+        if (pending.length) throw new Error("dynamo-batch-get-incomplete");
+        return items;
+      }),
+    );
+    return responses.flat();
   }
   async queryUpTo(pk: string, limit: number) {
     const items: DynamoItem[] = [];

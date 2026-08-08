@@ -86,6 +86,20 @@ const splitLookupCache = createSplitLookupCache<
   Awaited<ReturnType<BettingSplitRepository["listCurrent"]>>
 >({ ttlMs: 30_000, maxEntries: 512 });
 
+// Whole-response cache for the anonymous games and splits boards. The window
+// is short against the five-minute ingest cadence, so it trades at most
+// fifteen seconds of staleness for serving repeats without any storage reads.
+const boardResponseCache = createSplitLookupCache<{
+  readonly body: ApiResponse;
+  readonly counts: { stale: number; partial: number; unavailable: number };
+}>({ ttlMs: 15_000, maxEntries: 64 });
+
+/** Test hook: module-scope caches otherwise bleed between handler instances. */
+export const clearHandlerCaches = () => {
+  splitLookupCache.clear();
+  boardResponseCache.clear();
+};
+
 export const publishedSplitScopes = <T extends { readonly scope?: string }>(
   splits: readonly T[],
 ) => {
@@ -746,49 +760,68 @@ export const createEventHandler =
           ? gamesRepository
           : repository;
       if (!target) throw new Error("games-repository-not-configured");
-      const page = await target.list(
-        {
-          sportKey: query["sport"] ?? "",
-          ...(query["league"] ? { leagueKey: query["league"] } : {}),
-          status: (query["status"] ?? "") as Parameters<
-            EventRepository["list"]
-          >[0]["status"],
-          day: query["day"] ?? "",
-        },
-        Number(rawLimit),
-        query["cursor"],
-      );
-      metadataCounts = page.items.reduce(
-        (counts, item) => ({
-          stale:
-            counts.stale + (item.metadata.freshness.state === "stale" ? 1 : 0),
-          partial:
-            counts.partial + (item.metadata.availability === "partial" ? 1 : 0),
-          unavailable:
-            counts.unavailable +
-            (item.metadata.availability === "unavailable" ? 1 : 0),
-        }),
-        { stale: 0, partial: 0, unavailable: 0 },
-      );
-      if (page.projectionState === "uninitialized")
-        metadataCounts.unavailable = 1;
-      if (request.route !== "splits") return response(200, page);
-      if (!splitsRepository)
-        throw new Error("splits-repository-not-configured");
-      const items = await Promise.all(
-        page.items.map(async (game) => ({
-          ...game,
-          // Schedule refreshes may advance the canonical event version even
-          // when the event identity and split evidence are unchanged. Return
-          // the freshest logical split per market/selection across versions.
-          splits: publishedSplitScopes(
-            await splitLookupCache(game.id, () =>
-              splitsRepository.listCurrent(game.id),
+      // The board is identical for every anonymous caller and its evidence
+      // refreshes on a five-minute cadence, so repeat requests within the
+      // cache window serve the already-built response instead of re-running
+      // the projection and its DynamoDB fan-out.
+      const boardKey = [
+        request.route,
+        query["sport"] ?? "",
+        query["league"] ?? "",
+        query["status"] ?? "",
+        query["day"] ?? "",
+        rawLimit,
+        query["cursor"] ?? "",
+      ].join("|");
+      const board = await boardResponseCache(boardKey, async () => {
+        const page = await target.list(
+          {
+            sportKey: query["sport"] ?? "",
+            ...(query["league"] ? { leagueKey: query["league"] } : {}),
+            status: (query["status"] ?? "") as Parameters<
+              EventRepository["list"]
+            >[0]["status"],
+            day: query["day"] ?? "",
+          },
+          Number(rawLimit),
+          query["cursor"],
+        );
+        const counts = page.items.reduce(
+          (accumulated, item) => ({
+            stale:
+              accumulated.stale +
+              (item.metadata.freshness.state === "stale" ? 1 : 0),
+            partial:
+              accumulated.partial +
+              (item.metadata.availability === "partial" ? 1 : 0),
+            unavailable:
+              accumulated.unavailable +
+              (item.metadata.availability === "unavailable" ? 1 : 0),
+          }),
+          { stale: 0, partial: 0, unavailable: 0 },
+        );
+        if (page.projectionState === "uninitialized") counts.unavailable = 1;
+        if (request.route !== "splits")
+          return { body: response(200, page), counts };
+        if (!splitsRepository)
+          throw new Error("splits-repository-not-configured");
+        const items = await Promise.all(
+          page.items.map(async (game) => ({
+            ...game,
+            // Schedule refreshes may advance the canonical event version even
+            // when the event identity and split evidence are unchanged. Return
+            // the freshest logical split per market/selection across versions.
+            splits: publishedSplitScopes(
+              await splitLookupCache(game.id, () =>
+                splitsRepository.listCurrent(game.id),
+              ),
             ),
-          ),
-        })),
-      );
-      return response(200, { ...page, items });
+          })),
+        );
+        return { body: response(200, { ...page, items }), counts };
+      });
+      metadataCounts = board.counts;
+      return board.body;
     } catch (error) {
       if (
         request.route.startsWith("opportunity-") &&
