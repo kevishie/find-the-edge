@@ -3118,6 +3118,12 @@ footer {
   padding: 12px 14px;
 }
 
+/* Sport buttons and the day picker read as one control row. */
+.splits-primary-filters fieldset button,
+.splits-primary-filters input[type="date"] {
+  height: 40px;
+}
+
 .splits-primary-filters legend,
 .splits-primary-filters label > span {
   margin-bottom: 6px;

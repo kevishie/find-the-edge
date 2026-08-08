@@ -1793,10 +1793,18 @@ describe("Betting splits", () => {
   it("refreshes an empty board when newly ingested splits become available", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
+      let mlbCalls = 0;
       const listSplits = vi
         .fn<NonNullable<GamesClient["listSplits"]>>()
-        .mockResolvedValueOnce(splitsPage([{ ...splitGame, splits: [] }]))
-        .mockResolvedValueOnce(splitsPage());
+        .mockImplementation((filter) => {
+          if (filter.sport !== "mlb") return Promise.resolve(splitsPage([]));
+          mlbCalls += 1;
+          return Promise.resolve(
+            mlbCalls === 1
+              ? splitsPage([{ ...splitGame, splits: [] }])
+              : splitsPage(),
+          );
+        });
       render(
         <App
           initialPath="/splits"
@@ -1813,7 +1821,8 @@ describe("Betting splits", () => {
       expect(
         await screen.findByText("1 games · 1 with data · 6 observations"),
       ).toBeInTheDocument();
-      expect(listSplits).toHaveBeenCalledTimes(2);
+      // Two MLB loads plus the soccer coverage probe.
+      expect(listSplits).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
     }
@@ -1830,11 +1839,17 @@ describe("Betting splits", () => {
             : { ...split, scope: "consensus" },
         ),
       };
+      let mlbCalls = 0;
       const listSplits = vi
         .fn<NonNullable<GamesClient["listSplits"]>>()
-        .mockResolvedValueOnce(splitsPage())
-        .mockRejectedValueOnce(new Error("temporary failure"))
-        .mockResolvedValueOnce(splitsPage([refreshed]));
+        .mockImplementation((filter) => {
+          if (filter.sport !== "mlb") return Promise.resolve(splitsPage([]));
+          mlbCalls += 1;
+          if (mlbCalls === 1) return Promise.resolve(splitsPage());
+          if (mlbCalls === 2)
+            return Promise.reject(new Error("temporary failure"));
+          return Promise.resolve(splitsPage([refreshed]));
+        });
       render(
         <App
           initialPath="/splits"
@@ -1860,7 +1875,8 @@ describe("Betting splits", () => {
       });
       expect(await screen.findByText("47%")).toBeInTheDocument();
       expect(screen.queryByText("Refresh delayed.")).not.toBeInTheDocument();
-      expect(listSplits).toHaveBeenCalledTimes(3);
+      // Three MLB loads plus the soccer coverage probe.
+      expect(listSplits).toHaveBeenCalledTimes(4);
     } finally {
       vi.useRealTimers();
     }
@@ -2115,10 +2131,19 @@ describe("Betting splits", () => {
   });
 
   it("keeps filters usable for empty results and reports failures", async () => {
+    // The MLS tab only appears once the soccer board proves it carries split
+    // percentages, so the probe succeeds and later loads fail.
+    let soccerCalls = 0;
     const listSplits = vi
       .fn<NonNullable<GamesClient["listSplits"]>>()
-      .mockResolvedValueOnce(splitsPage([]))
-      .mockRejectedValueOnce(new Error("redacted provider failure"));
+      .mockImplementation((filter) => {
+        if (filter.sport === "soccer") {
+          soccerCalls += 1;
+          if (soccerCalls === 1) return Promise.resolve(splitsPage());
+          return Promise.reject(new Error("redacted provider failure"));
+        }
+        return Promise.resolve(splitsPage([]));
+      });
     render(
       <App
         initialPath="/splits"

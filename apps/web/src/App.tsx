@@ -1515,6 +1515,10 @@ function SplitsExplorer() {
   const validBoardKey = useRef<string | null>(
     readCachedSplits(sport, day) ? splitsCacheKey(sport, day) : null,
   );
+  // The provider publishes splits for far fewer sports than it schedules, so
+  // a sport's tab only appears when its board actually carries split
+  // percentages. The current sport always stays reachable.
+  const [peerCoverage, setPeerCoverage] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1578,6 +1582,27 @@ function SplitsExplorer() {
       }
     };
     if (!cachedIsFresh) void load();
+    const peerSport: GamesSport = sport === "mlb" ? "soccer" : "mlb";
+    const peerKey = splitsCacheKey(peerSport, day);
+    const probePeer = async () => {
+      const source = client.ok ? asSplitsSource(client.value) : undefined;
+      if (!source) return;
+      try {
+        const page = await loadSplits(source, peerSport, day);
+        if (controller.signal.aborted) return;
+        const covered = page.items.some((game) =>
+          game.splits.some(hasSplitPercent),
+        );
+        setPeerCoverage((current) =>
+          current[peerKey] === covered
+            ? current
+            : { ...current, [peerKey]: covered },
+        );
+      } catch {
+        // Coverage stays unknown; the tab simply does not appear.
+      }
+    };
+    void probePeer();
     const refreshInterval = window.setInterval(() => {
       void load();
     }, SPLITS_REFRESH_INTERVAL_MS);
@@ -1595,6 +1620,9 @@ function SplitsExplorer() {
     if (key === "circa") return 2;
     return 3;
   };
+  const visibleSports = (Object.keys(sportLabels) as GamesSport[]).filter(
+    (key) => key === sport || peerCoverage[splitsCacheKey(key, day)] === true,
+  );
   // Only offer a book the board can actually fill, and fall back to whatever
   // this day does carry so a stale selection never blanks the whole table.
   const availableBooks = splitBookGroups.filter((group) =>
@@ -1724,22 +1752,24 @@ function SplitsExplorer() {
         className="game-filters splits-primary-filters"
         aria-label="Split filters"
       >
-        <fieldset>
-          <legend className="sr-only">Sport</legend>
-          {(Object.keys(sportLabels) as GamesSport[]).map((key) => (
-            <button
-              key={key}
-              type="button"
-              className={sport === key ? "selected" : ""}
-              onClick={() => {
-                setState({ kind: "loading" });
-                setSport(key);
-              }}
-            >
-              {sportLabels[key]}
-            </button>
-          ))}
-        </fieldset>
+        {visibleSports.length > 1 && (
+          <fieldset>
+            <legend className="sr-only">Sport</legend>
+            {visibleSports.map((key) => (
+              <button
+                key={key}
+                type="button"
+                className={sport === key ? "selected" : ""}
+                onClick={() => {
+                  setState({ kind: "loading" });
+                  setSport(key);
+                }}
+              >
+                {sportLabels[key]}
+              </button>
+            ))}
+          </fieldset>
+        )}
         <label>
           <span className="sr-only">Eastern calendar day</span>
           <input
