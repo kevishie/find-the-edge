@@ -1320,6 +1320,184 @@ const hasSplitPercent = (split: {
   readonly betPercent?: number;
 }) => split.moneyPercent !== undefined || split.betPercent !== undefined;
 
+// Shared divergence encoding for the three splits visualizations, from the
+// density study: a gentle power ramp keeps the mid-range separable and the
+// extremes saturate instead of clipping. Money lean is purple, ticket lean
+// is amber, matching the split-bar legend.
+const SPLIT_DIVERGENCE_CAP = 62;
+const splitStrength = (divergence: number) =>
+  Math.pow(Math.min(Math.abs(divergence) / SPLIT_DIVERGENCE_CAP, 1), 0.75);
+const splitTintBg = (divergence: number, maxAlpha: number) => {
+  const alpha = splitStrength(divergence) * maxAlpha;
+  if (alpha < 0.012) return "transparent";
+  const rgb = divergence >= 0 ? "168,85,247" : "251,191,36";
+  return `rgba(${rgb},${alpha.toFixed(3)})`;
+};
+const splitTintFg = (divergence: number) => {
+  const s = splitStrength(divergence);
+  const base = [243, 241, 248];
+  const accent = divergence >= 0 ? [201, 164, 251] : [251, 208, 118];
+  const mix = base.map((c, i) => Math.round(c + (accent[i]! - c) * s));
+  return `rgb(${mix[0]},${mix[1]},${mix[2]})`;
+};
+
+type SplitsVizMode = "bars" | "heat" | "divergence";
+const SPLITS_VIZ_STORAGE_KEY = "fte.splits.viz";
+const splitsVizModes: readonly {
+  readonly id: SplitsVizMode;
+  readonly label: string;
+}[] = [
+  { id: "bars", label: "Split bars" },
+  { id: "heat", label: "Heat cells" },
+  { id: "divergence", label: "Divergence" },
+];
+const readStoredVizMode = (): SplitsVizMode => {
+  try {
+    const stored = window.localStorage.getItem(SPLITS_VIZ_STORAGE_KEY);
+    return stored === "heat" || stored === "divergence" ? stored : "bars";
+  } catch {
+    return "bars";
+  }
+};
+const storeVizMode = (mode: SplitsVizMode) => {
+  try {
+    window.localStorage.setItem(SPLITS_VIZ_STORAGE_KEY, mode);
+  } catch {
+    // Preference persistence is best-effort.
+  }
+};
+
+const splitCellNumbers = (
+  moneyPercent: number | undefined,
+  betPercent: number | undefined,
+) => {
+  const handle =
+    moneyPercent !== undefined && Number.isFinite(moneyPercent)
+      ? Math.max(0, Math.min(100, moneyPercent))
+      : null;
+  const bets =
+    betPercent !== undefined && Number.isFinite(betPercent)
+      ? Math.max(0, Math.min(100, betPercent))
+      : null;
+  const divergence =
+    handle !== null && bets !== null
+      ? Number((handle - bets).toPrecision(12))
+      : null;
+  return { handle, bets, divergence };
+};
+
+const splitUnavailable = (market: string, selection: string) => (
+  <span
+    className="split-bar-unavailable"
+    role="img"
+    aria-label={`${market} for ${selection}: split data unavailable`}
+  >
+    Unavailable
+  </span>
+);
+
+function HeatSplitCell({
+  moneyPercent,
+  betPercent,
+  market,
+  selection,
+}: {
+  readonly moneyPercent: number | undefined;
+  readonly betPercent: number | undefined;
+  readonly market: string;
+  readonly selection: string;
+}) {
+  const { handle, bets, divergence } = splitCellNumbers(
+    moneyPercent,
+    betPercent,
+  );
+  if (handle === null && bets === null)
+    return splitUnavailable(market, selection);
+  const label = `${market} for ${selection}: ${
+    handle === null
+      ? "handle unavailable"
+      : `${splitAccessibleNumber(handle)}% handle`
+  }, ${bets === null ? "bets unavailable" : `${splitAccessibleNumber(bets)}% bets`}`;
+  return (
+    <span className="split-heat" role="img" aria-label={label}>
+      <span
+        className="split-heat-handle"
+        style={
+          divergence === null
+            ? undefined
+            : {
+                background: splitTintBg(divergence, 0.42),
+                color: splitTintFg(divergence),
+              }
+        }
+      >
+        {handle === null ? "—" : splitPercent(handle)}
+      </span>
+      <span className="split-heat-bets">
+        {bets === null ? "—" : splitPercent(bets)}
+      </span>
+    </span>
+  );
+}
+
+function DivergenceSplitCell({
+  moneyPercent,
+  betPercent,
+  market,
+  selection,
+}: {
+  readonly moneyPercent: number | undefined;
+  readonly betPercent: number | undefined;
+  readonly market: string;
+  readonly selection: string;
+}) {
+  const { handle, bets, divergence } = splitCellNumbers(
+    moneyPercent,
+    betPercent,
+  );
+  if (handle === null && bets === null)
+    return splitUnavailable(market, selection);
+  const magnitude = divergence === null ? null : Math.abs(divergence);
+  const direction =
+    divergence === null
+      ? null
+      : divergence >= 0
+        ? "money-heavy"
+        : "ticket-heavy";
+  const label = `${market} for ${selection}: ${
+    divergence === null
+      ? "divergence unavailable"
+      : `${splitAccessibleNumber(magnitude!)} percentage points ${direction}`
+  }; handle ${handle === null ? "unavailable" : splitPercent(handle)}, bets ${
+    bets === null ? "unavailable" : splitPercent(bets)
+  }`;
+  return (
+    <span
+      className="split-divergence-cell"
+      role="img"
+      aria-label={label}
+      style={
+        divergence === null
+          ? undefined
+          : { background: splitTintBg(divergence, 0.16) }
+      }
+    >
+      <span
+        className="split-divergence-value"
+        style={
+          divergence === null ? undefined : { color: splitTintFg(divergence) }
+        }
+      >
+        {divergence === null ? "—" : splitPointGap(divergence)}
+      </span>
+      <span className="split-divergence-pair">
+        {handle === null ? "—" : splitNumber(handle)} /{" "}
+        {bets === null ? "—" : splitNumber(bets)}
+      </span>
+    </span>
+  );
+}
+
 function SplitBar({
   moneyPercent,
   betPercent,
@@ -1483,6 +1661,12 @@ function SplitsExplorer() {
   const [sport, setSport] = useState<GamesSport>("mlb");
   const [day, setDay] = useState(() => currentEasternDay());
   const [book, setBook] = useState<SplitBookGroup["id"]>("consensus");
+  // The chosen visualization persists as the default until changed again.
+  const [vizMode, setVizMode] = useState<SplitsVizMode>(readStoredVizMode);
+  const chooseVizMode = (mode: SplitsVizMode) => {
+    storeVizMode(mode);
+    setVizMode(mode);
+  };
   const [state, setState] = useState<
     | { readonly kind: "loading" }
     | {
@@ -1858,32 +2042,56 @@ function SplitsExplorer() {
             <div
               className="split-reading-guide"
               role="note"
-              aria-label="How to read split bars"
+              aria-label="How to read the splits board"
             >
               <div>
                 <strong>How to read this</strong>
                 <span>
-                  Fill is handle (money). The white notch is bets (tickets). The
-                  gap shows which one is leading.
+                  {vizMode === "bars"
+                    ? "Fill is handle (money). The white notch is bets (tickets). The gap shows which one is leading."
+                    : vizMode === "heat"
+                      ? `Handle-cell tint is handle − bets, saturating at ±${String(SPLIT_DIVERGENCE_CAP)} points. Purple means money-heavy, amber means ticket-heavy.`
+                      : "The large value is handle − bets in points; the small pair beneath is handle / bets."}
                 </span>
               </div>
-              <div className="split-bar-legend">
-                <span>
-                  <i className="split-legend-handle" aria-hidden="true" />
-                  Handle % fill
-                </span>
-                <span>
-                  <i className="split-legend-bets" aria-hidden="true" />
-                  Bets % notch
-                </span>
-                <span>
-                  <i className="split-legend-money" aria-hidden="true" />+
-                  Money-heavy
-                </span>
-                <span>
-                  <i className="split-legend-ticket" aria-hidden="true" />−
-                  Ticket-heavy
-                </span>
+              <div className="split-guide-controls">
+                <div
+                  className="split-viz-toggle"
+                  role="group"
+                  aria-label="Visualization"
+                >
+                  {splitsVizModes.map((mode) => (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      className={vizMode === mode.id ? "selected" : ""}
+                      aria-pressed={vizMode === mode.id}
+                      onClick={() => chooseVizMode(mode.id)}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+                {vizMode === "bars" && (
+                  <div className="split-bar-legend">
+                    <span>
+                      <i className="split-legend-handle" aria-hidden="true" />
+                      Handle % fill
+                    </span>
+                    <span>
+                      <i className="split-legend-bets" aria-hidden="true" />
+                      Bets % notch
+                    </span>
+                    <span>
+                      <i className="split-legend-money" aria-hidden="true" />+
+                      Money-heavy
+                    </span>
+                    <span>
+                      <i className="split-legend-ticket" aria-hidden="true" />−
+                      Ticket-heavy
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
             <div
@@ -2018,12 +2226,28 @@ function SplitsExplorer() {
                                   key={`${marketIndex}-split`}
                                   className="split-bar-cell"
                                 >
-                                  <SplitBar
-                                    moneyPercent={split?.moneyPercent}
-                                    betPercent={split?.betPercent}
-                                    market={market}
-                                    selection={row.label}
-                                  />
+                                  {vizMode === "heat" ? (
+                                    <HeatSplitCell
+                                      moneyPercent={split?.moneyPercent}
+                                      betPercent={split?.betPercent}
+                                      market={market}
+                                      selection={row.label}
+                                    />
+                                  ) : vizMode === "divergence" ? (
+                                    <DivergenceSplitCell
+                                      moneyPercent={split?.moneyPercent}
+                                      betPercent={split?.betPercent}
+                                      market={market}
+                                      selection={row.label}
+                                    />
+                                  ) : (
+                                    <SplitBar
+                                      moneyPercent={split?.moneyPercent}
+                                      betPercent={split?.betPercent}
+                                      market={market}
+                                      selection={row.label}
+                                    />
+                                  )}
                                 </td>,
                               ];
                             })}

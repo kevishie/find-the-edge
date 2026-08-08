@@ -3234,3 +3234,94 @@ footer {
     padding: 7px;
   }
 }
+
+/* Splits visualization toggle and the two denser encodings. */
+.split-guide-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.split-viz-toggle {
+  display: inline-flex;
+  border: 1px solid #302a3b;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.split-viz-toggle button {
+  padding: 5px 11px;
+  border: none;
+  background: #111016;
+  color: #aaa2b5;
+  font:
+    600 10px "IBM Plex Mono",
+    monospace;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.split-viz-toggle button + button {
+  border-left: 1px solid #302a3b;
+}
+
+.split-viz-toggle button:hover,
+.split-viz-toggle button:focus-visible {
+  color: #d8cced;
+}
+
+.split-viz-toggle button.selected {
+  background: rgba(124, 58, 237, 0.18);
+  color: #d7c4ff;
+}
+
+.split-heat {
+  display: inline-flex;
+  width: 100%;
+}
+
+.split-heat-handle,
+.split-heat-bets {
+  flex: 1 1 50%;
+  padding: 7px 4px;
+  text-align: center;
+  font:
+    600 14px "IBM Plex Mono",
+    monospace;
+}
+
+.split-heat-bets {
+  color: #8b8494;
+}
+
+.split-divergence-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 4px;
+  border-radius: 5px;
+}
+
+.split-divergence-value {
+  font:
+    600 16px "IBM Plex Mono",
+    monospace;
+  line-height: 1;
+}
+
+.split-divergence-pair {
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  color: #6b6678;
+}
+
+@media (max-width: 900px) {
+  .split-guide-controls {
+    align-items: flex-start;
+  }
+}

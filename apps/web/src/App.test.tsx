@@ -27,7 +27,10 @@ import {
 
 // The splits board cache is process-wide so it survives navigation; tests must
 // not inherit a board warmed by an earlier case.
-beforeEach(clearSplitsCache);
+beforeEach(() => {
+  clearSplitsCache();
+  window.localStorage.removeItem("fte.splits.viz");
+});
 
 const hex = (value: string) => value.repeat(64);
 const retrospective: RetrospectiveDto = {
@@ -1937,7 +1940,7 @@ describe("Betting splits", () => {
       screen.getByText(/combines its public-betting data into one consensus/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("note", { name: "How to read split bars" }),
+      screen.getByRole("note", { name: "How to read the splits board" }),
     ).toHaveTextContent(
       "Fill is handle (money). The white notch is bets (tickets).",
     );
@@ -2489,6 +2492,53 @@ describe("Betting splits", () => {
       await screen.findByText("Freshness unknown splits board"),
     ).toBeInTheDocument();
     expect(screen.getByText("Timestamp unavailable")).toBeInTheDocument();
+  });
+
+  it("toggles between the three visualizations and keeps the choice", async () => {
+    const listSplits = vi
+      .fn<NonNullable<GamesClient["listSplits"]>>()
+      .mockResolvedValue(splitsPage());
+    const { unmount } = render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+    await screen.findByText("Boston");
+
+    // Default is split bars.
+    expect(
+      document.querySelectorAll(".split-bar-visual").length,
+    ).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Heat cells" }));
+    expect(document.querySelectorAll(".split-bar-visual")).toHaveLength(0);
+    expect(document.querySelectorAll(".split-heat").length).toBeGreaterThan(0);
+    // Both percentages stay visible as numbers.
+    expect(screen.getAllByText("64%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("38%").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Divergence" }));
+    expect(document.querySelectorAll(".split-heat")).toHaveLength(0);
+    const divergence = document.querySelectorAll(".split-divergence-value");
+    expect(divergence.length).toBeGreaterThan(0);
+    // handle 64 − bets 38 = +26 points on the away spread.
+    expect(screen.getAllByText("+26").length).toBeGreaterThan(0);
+    expect(window.localStorage.getItem("fte.splits.viz")).toBe("divergence");
+    unmount();
+
+    // A fresh mount keeps the stored choice as its default.
+    render(
+      <App
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
+      />,
+    );
+    await screen.findByText("Boston");
+    expect(
+      document.querySelectorAll(".split-divergence-value").length,
+    ).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".split-bar-visual")).toHaveLength(0);
   });
 
   it("offers no book chip when only one book covers the day", async () => {
