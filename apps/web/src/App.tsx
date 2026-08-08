@@ -31,7 +31,7 @@ import {
   removeVig,
   type EdgeEvaluation,
 } from "@find-the-edge/odds";
-import { mlbFindTheEdgeStrategy, sportRegistry } from "@find-the-edge/sports";
+import { mlbFindTheEdgeStrategy } from "@find-the-edge/sports";
 import {
   eventFreshnessPresentation,
   eventCompetitionOptions,
@@ -454,8 +454,6 @@ export const GamesClientContext =
   createContext<GamesClientResult>(defaultGamesClient);
 
 function AppShell() {
-  const modules = sportRegistry.list();
-
   return (
     <div className="shell">
       <aside>
@@ -488,11 +486,6 @@ function AppShell() {
             Games
           </Link>
         </nav>
-        <div className="model-card">
-          <span>REGISTERED MODULES</span>
-          <strong>{modules.length} sports</strong>
-          <small>registry-driven shell</small>
-        </div>
       </aside>
       <main>
         <Outlet />
@@ -1875,7 +1868,9 @@ function SplitsBoardTable({
 
 function SplitsExplorer() {
   const client = useContext(GamesClientContext);
-  const [sport, setSport] = useState<GamesSport>("mlb");
+  // The provider publishes splits only for MLB among the sports we serve, so
+  // the splits screen is MLB-only; the games screen keeps every sport.
+  const sport: GamesSport = "mlb";
   const [day, setDay] = useState(() => currentEasternDay());
   const [book, setBook] = useState<SplitBookGroup["id"]>("consensus");
   // The chosen visualization persists as the default until changed again.
@@ -1996,16 +1991,21 @@ function SplitsExplorer() {
     if (key === "circa") return 2;
     return 3;
   };
-  // Every served sport keeps its tab: a sport without split coverage still
-  // shows its schedule with an explicit no-percentages notice.
-  const visibleSports = Object.keys(sportLabels) as GamesSport[];
   // Only offer a book the board can actually fill, and fall back to whatever
   // this day does carry so a stale selection never blanks the whole table.
+  // A book earns its chip only with complete evidence: handle and bets
+  // together. Tickets-only feeds (BetMGM publishes handle_pct as null) cannot
+  // express the board's divergence signal, and we do not surface splits with
+  // missing data.
+  const hasCompleteSplit = (split: {
+    readonly moneyPercent?: number;
+    readonly betPercent?: number;
+  }) => split.moneyPercent !== undefined && split.betPercent !== undefined;
   const availableBooks = splitBookGroups.filter((group) =>
     games.some((game) =>
       game.splits.some(
         (split) =>
-          hasSplitPercent(split) && splitBookGroupFor(split.scope) === group,
+          hasCompleteSplit(split) && splitBookGroupFor(split.scope) === group,
       ),
     ),
   );
@@ -2110,24 +2110,6 @@ function SplitsExplorer() {
         className="game-filters splits-primary-filters"
         aria-label="Split filters"
       >
-        {visibleSports.length > 1 && (
-          <fieldset>
-            <legend className="sr-only">Sport</legend>
-            {visibleSports.map((key) => (
-              <button
-                key={key}
-                type="button"
-                className={sport === key ? "selected" : ""}
-                onClick={() => {
-                  setState({ kind: "loading" });
-                  setSport(key);
-                }}
-              >
-                {sportLabels[key]}
-              </button>
-            ))}
-          </fieldset>
-        )}
         <label>
           <span className="sr-only">Eastern calendar day</span>
           <input
@@ -2198,9 +2180,9 @@ function SplitsExplorer() {
       )}
       {state.kind === "ready" && games.length > 0 && coveredGames === 0 && (
         <p className="splits-no-data-notice" role="status">
-          {sport === "soccer"
-            ? "SharpAPI does not publish betting splits for MLS. The complete schedule remains below."
-            : `No split percentages are available from ${selectedBook ? selectedBook.label : "SharpAPI consensus"} yet. The complete schedule remains below.`}
+          No split percentages are available from{" "}
+          {selectedBook ? selectedBook.label : "SharpAPI consensus"} yet. The
+          complete schedule remains below.
         </p>
       )}
       <section className="splits-terminal" aria-label="Betting splits">

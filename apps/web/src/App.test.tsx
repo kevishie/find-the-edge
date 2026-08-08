@@ -2134,13 +2134,15 @@ describe("Betting splits", () => {
   });
 
   it("keeps filters usable for empty results and reports failures", async () => {
+    let calls = 0;
     const listSplits = vi
       .fn<NonNullable<GamesClient["listSplits"]>>()
-      .mockImplementation((filter) =>
-        filter.sport === "soccer"
-          ? Promise.reject(new Error("redacted provider failure"))
-          : Promise.resolve(splitsPage([])),
-      );
+      .mockImplementation(() => {
+        calls += 1;
+        return calls === 1
+          ? Promise.resolve(splitsPage([]))
+          : Promise.reject(new Error("redacted provider failure"));
+      });
     render(
       <App
         initialPath="/splits"
@@ -2151,7 +2153,9 @@ describe("Betting splits", () => {
     expect(
       await screen.findByText("No scheduled games are available for this day."),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "MLS" }));
+    fireEvent.change(screen.getByLabelText("Eastern calendar day"), {
+      target: { value: "2026-08-02" },
+    });
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Betting splits are temporarily unavailable.",
     );

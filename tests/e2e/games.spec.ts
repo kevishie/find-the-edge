@@ -159,14 +159,8 @@ test("renders compact accessible split bars on desktop and mobile", async ({
     }),
   ).toBeVisible();
   await expect(page.getByText("No line")).toHaveCount(2);
-  await page.getByRole("button", { name: "MLS" }).click();
-  await expect(
-    page.getByRole("img", {
-      name: "Moneyline for Draw: 33% handle, 31% bets, 2 percentage points money-heavy",
-    }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "MLB" }).click();
-  await expect(page.getByText("Boston Red Sox").first()).toBeVisible();
+  // The splits screen is MLB-only: the provider publishes no soccer splits.
+  await expect(page.getByRole("button", { name: "MLS" })).toHaveCount(0);
 
   const board = page.getByRole("region", {
     name: /Betting splits comparison table/,

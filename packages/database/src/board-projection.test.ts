@@ -77,9 +77,17 @@ describe("materialization", () => {
     expect(
       materializationTargets(NOW).filter(({ status }) => status === "all"),
     ).toHaveLength(4);
+    // Splits boards exist only where the provider publishes splits.
+    expect(
+      materializationTargets(NOW).filter(({ route }) => route === "splits"),
+    ).toEqual(
+      materializationTargets(NOW).filter(
+        ({ route, sportKey }) => route === "splits" && sportKey === "mlb",
+      ),
+    );
     const targets = materializationTargets(NOW);
-    expect(targets).toHaveLength(12);
-    expect(new Set(targets.map(boardPartition)).size).toBe(12);
+    expect(targets).toHaveLength(10);
+    expect(new Set(targets.map(boardPartition)).size).toBe(10);
     for (const target of targets) expect(target.limit).toBe(50);
     expect(new Set(targets.map(({ day }) => day))).toEqual(
       new Set(["2026-08-08", "2026-08-09"]),
@@ -106,10 +114,10 @@ describe("materialization", () => {
       now: NOW,
     });
 
-    expect(result).toEqual({ stored: 12, skipped: 0 });
+    expect(result).toEqual({ stored: 10, skipped: 0 });
     const splitBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#splits#"));
     const gameBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#games#"));
-    expect(splitBoards).toHaveLength(4);
+    expect(splitBoards).toHaveLength(2);
     expect(gameBoards).toHaveLength(8);
     for (const board of splitBoards) {
       const parsed = JSON.parse(board.value.body) as {
@@ -136,7 +144,7 @@ describe("materialization", () => {
       },
       now: NOW,
     });
-    expect(result).toEqual({ stored: 0, skipped: 12 });
+    expect(result).toEqual({ stored: 0, skipped: 10 });
     expect(puts).toHaveLength(0);
   });
 });

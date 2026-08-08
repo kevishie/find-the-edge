@@ -292,7 +292,7 @@ export const materializationTargets = (now: Date): readonly BoardKey[] => {
   return sports.flatMap(([sportKey, leagueKey]) =>
     days.flatMap((day) => [
       // The games screen requests every lifecycle merged; splits is
-      // scheduled-only by contract.
+      // scheduled-only by contract and MLB-only by provider coverage.
       {
         route: "games" as const,
         sportKey,
@@ -309,14 +309,18 @@ export const materializationTargets = (now: Date): readonly BoardKey[] => {
         day,
         limit: 50,
       },
-      {
-        route: "splits" as const,
-        sportKey,
-        leagueKey,
-        status: "scheduled",
-        day,
-        limit: 50,
-      },
+      ...(sportKey === "mlb"
+        ? [
+            {
+              route: "splits" as const,
+              sportKey,
+              leagueKey,
+              status: "scheduled",
+              day,
+              limit: 50,
+            },
+          ]
+        : []),
     ]),
   );
 };
