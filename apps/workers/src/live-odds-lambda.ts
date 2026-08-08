@@ -508,9 +508,12 @@ const runLiveOddsHandler = async (event?: unknown) => {
         // listings still exist; a fetch failure disables the filter for this
         // run rather than hiding anything.
         scheduleListings: async (sportKey) => {
-          const league = sharpApiLeagueByKey(
-            sportKey === "mlb" ? "mlb" : "mls",
-          );
+          // Scoped to MLB: the withdrawn-listing class has only been observed
+          // there, the splits witness only exists there, and soccer club
+          // naming ("Inter Miami CF", "St. Louis City SC") defeats the
+          // nickname-anchored matcher — filtering soccer wiped real games.
+          if (sportKey !== "mlb") return null;
+          const league = sharpApiLeagueByKey("mlb");
           const events: {
             awayTeam?: string;
             homeTeam?: string;
