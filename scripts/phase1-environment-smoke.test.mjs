@@ -1030,9 +1030,15 @@ test("the release path never invokes ingestion or requires provider evidence", a
     "liveOddsInvocationArguments",
     "liveIngestionRecoveryAction",
     "no provider-backed games were visible",
+    "no provider-backed spread/total/moneyline board was visible",
   ])
     assert.ok(
       !releasePath.includes(forbidden),
       `release path must not depend on ingestion: ${forbidden}`,
     );
+  // Board-shape validation still runs, but only to be counted.
+  assert.ok(
+    releasePath.includes("invalidBoards += 1"),
+    "board validation must be recorded rather than thrown",
+  );
 });
