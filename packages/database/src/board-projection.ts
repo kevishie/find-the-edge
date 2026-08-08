@@ -32,6 +32,9 @@ export interface ScheduleListing {
 /** Start instants may shift by seconds between feeds; hours never do. */
 const START_TOLERANCE_MS = 15 * 60_000;
 
+/** How early the provider may flip a listing to in-play before first pitch. */
+const PRE_START_IN_PLAY_GRACE_MS = 15 * 60_000;
+
 const listingMatchesGame = (
   listing: ScheduleListing,
   game: {
@@ -112,7 +115,12 @@ export const withoutWithdrawnListings = async <
       items.push(game);
       continue;
     }
-    const startsInFuture = Date.parse(game.startsAt) > options.now.getTime();
+    // The provider flips a listing to in-play minutes before first pitch, so
+    // a game inside the pre-start window is judged like a started game — by
+    // its splits witness — rather than as a withdrawn future listing.
+    const startsInFuture =
+      Date.parse(game.startsAt) >
+      options.now.getTime() + PRE_START_IN_PLAY_GRACE_MS;
     if (startsInFuture) continue; // a future listing the provider no longer has
     if (!options.splitsExpected) {
       // In-play games leave the schedule feed; without a splits witness this

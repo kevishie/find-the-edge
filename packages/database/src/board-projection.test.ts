@@ -274,6 +274,28 @@ describe("withdrawn listings", () => {
     expect(filtered.items).toHaveLength(1);
   });
 
+  it("keeps a game the provider flipped to in-play just before first pitch", async () => {
+    // 16:07 now, 16:10 start: absent from the live=false schedule already,
+    // but its splits witness proves it is a real game about to begin.
+    const page = {
+      items: [
+        game(
+          "event:mlb%3Amlb:mlb_angels_marlins_2026-08-08_b2",
+          "2026-08-08T20:10:00.000Z",
+          ["Los Angeles Angels", "Miami Marlins"],
+        ),
+      ],
+      freshness: null as string | null,
+    };
+    const filtered = await withoutWithdrawnListings(page, {
+      schedule: [],
+      now: new Date("2026-08-08T20:07:00.000Z"),
+      splitsExpected: true,
+      hasSplitEvidence: withSplits,
+    });
+    expect(filtered.items).toHaveLength(1);
+  });
+
   it("drops a future listing the provider no longer has", async () => {
     const page = {
       items: [
