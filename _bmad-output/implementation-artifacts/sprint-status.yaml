@@ -852,6 +852,8 @@ stories:
     status: in-progress
     dependencies: [FTE-MVP-001D, FTE-MVP-001E]
     validationCommands: [pnpm check, "pnpm phase1:test", "pnpm phase1:preflight"]
-    blockerReason:
+    blockerReason: >-
+      Tasks 1-4 are complete and staging deploys from main. Task 5 remains:
+      production cutover is approval-gated on live DNS and certificate work.
     risk: High
     approvalRequiredBeforeMerge: true
