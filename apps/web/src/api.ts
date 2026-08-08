@@ -29,11 +29,12 @@ import type {
   RuntimeConfigError,
 } from "./runtime-config";
 
-// API Gateway decodes path parameters before they reach the Lambda. Canonical
-// event IDs already contain encoded semantic segments, so encode the complete
-// ID twice to preserve those inner escapes through the gateway boundary.
+// The gateway decodes a path parameter exactly once before the Lambda reads
+// it, so a canonical event ID is encoded exactly once. Encoding twice escapes
+// the percent signs its own inner segments already carry and resolves to a
+// different, non-existent event.
 const encodeCanonicalEventPathSegment = (eventId: string) =>
-  encodeURIComponent(encodeURIComponent(eventId));
+  encodeURIComponent(eventId);
 
 export type GamesSport = "mlb" | "soccer";
 
