@@ -2019,6 +2019,19 @@ function SplitsExplorer() {
                 type="date"
                 aria-label="Eastern calendar day"
                 value={day}
+                onClick={(event) => {
+                  // The input is invisible, so a click anywhere in the chip
+                  // must open the native picker rather than silently focus a
+                  // date segment.
+                  const input = event.currentTarget;
+                  if (typeof input.showPicker === "function") {
+                    try {
+                      input.showPicker();
+                    } catch {
+                      input.focus();
+                    }
+                  }
+                }}
                 onChange={(event) => {
                   setState({ kind: "loading" });
                   setDay(event.currentTarget.value);

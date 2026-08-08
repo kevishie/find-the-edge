@@ -90,6 +90,33 @@ test("projects one SharpAPI consensus board across every scheduled MLB game", as
   ).toHaveCount(3);
 });
 
+test("opens the date picker from anywhere in the date chip", async ({
+  page,
+}) => {
+  await page.goto("/splits");
+  await expect(page.locator(".csx-date-chip")).toBeVisible();
+  await page.evaluate(() => {
+    const input = document.querySelector<HTMLInputElement>(
+      '.csx-date-chip input[type="date"]',
+    )!;
+    (window as { __pickerOpened?: boolean }).__pickerOpened = false;
+    input.showPicker = () => {
+      (window as { __pickerOpened?: boolean }).__pickerOpened = true;
+    };
+  });
+  // Click the far-left glyph edge of the chip, away from the native
+  // calendar-indicator hotspot.
+  const chip = await page.locator(".csx-date-chip").boundingBox();
+  await page.mouse.click(chip!.x + 8, chip!.y + chip!.height / 2);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as { __pickerOpened?: boolean }).__pickerOpened,
+      ),
+    )
+    .toBe(true);
+});
+
 test("pins the column headers below the card header while scrolling", async ({
   page,
 }) => {
