@@ -4,6 +4,7 @@ import {
   boardPartition,
   materializationTargets,
   materializeBoards,
+  scheduleListingKeys,
   validateStoredBoard,
   withoutWithdrawnListings,
 } from "./board-projection";
@@ -141,51 +142,146 @@ describe("materialization", () => {
 });
 
 describe("withdrawn listings", () => {
+  const NOON = new Date("2026-08-08T16:00:00.000Z");
   const game = (
     id: string,
+    startsAt: string,
     status = "scheduled",
     freshness: string | null = "2026-08-08T12:00:00.000Z",
-  ) => ({
-    id,
-    status,
-    freshness,
+  ) => ({ id, status, startsAt, freshness });
+  const noSplits = () => Promise.resolve(false);
+  const withSplits = () => Promise.resolve(true);
+
+  it("keeps a real game whose suffix churned between schedule runs", async () => {
+    const page = {
+      items: [
+        game(
+          "event:mlb%3Amlb:mlb_guardians_whitesox_2026-08-08_b3",
+          "2026-08-08T23:15:00.000Z",
+        ),
+      ],
+      freshness: "2026-08-08T12:00:00.000Z",
+    };
+    const filtered = await withoutWithdrawnListings(page, {
+      // The schedule lists the same game under a different suffix.
+      scheduleKeys: scheduleListingKeys([
+        {
+          providerEventId: "mlb_guardians_whitesox_2026-08-08_b2",
+          startsAt: "2026-08-08T23:15:00.000Z",
+        },
+      ]),
+      now: NOON,
+      splitsExpected: true,
+      hasSplitEvidence: noSplits,
+    });
+    expect(filtered.items).toHaveLength(1);
   });
 
-  it("drops a scheduled game whose listing left the provider schedule", () => {
+  it("drops a withdrawn duplicate that shares its base with the real game", async () => {
     const page = {
       items: [
         game(
           "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b0",
+          "2026-08-08T06:50:00.000Z",
           "scheduled",
           "2026-08-08T06:00:00.000Z",
         ),
-        game("event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b2"),
         game(
-          "event:mlb%3Amlb:mlb_started_game_b1",
-          "started",
-          "2026-08-08T05:00:00.000Z",
+          "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b2",
+          "2026-08-08T20:10:00.000Z",
         ),
       ],
-      freshness: "2026-08-08T05:00:00.000Z",
+      freshness: "2026-08-08T06:00:00.000Z",
     };
-    const filtered = withoutWithdrawnListings(
-      page,
-      new Set(["mlb_athletics_redsox_2026-08-08_b2"]),
-    );
+    const filtered = await withoutWithdrawnListings(page, {
+      scheduleKeys: scheduleListingKeys([
+        {
+          providerEventId: "mlb_athletics_redsox_2026-08-08_b2",
+          startsAt: "2026-08-08T20:10:00.000Z",
+        },
+      ]),
+      now: NOON,
+      splitsExpected: true,
+      hasSplitEvidence: noSplits,
+    });
     expect(filtered.items.map(({ id }) => id)).toEqual([
       "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b2",
-      // Non-scheduled lifecycles are never withdrawn by schedule absence.
-      "event:mlb%3Amlb:mlb_started_game_b1",
     ]);
-    // The oldest remaining freshness becomes the page freshness again.
-    expect(filtered.freshness).toBe("2026-08-08T05:00:00.000Z");
+    expect(filtered.freshness).toBe("2026-08-08T12:00:00.000Z");
   });
 
-  it("fails open without a schedule and keeps every game", () => {
+  it("keeps an in-play game through its splits witness", async () => {
+    // In-play games leave the schedule feed but their splits persist.
     const page = {
-      items: [game("event:mlb%3Amlb:mlb_phantom_b0")],
+      items: [
+        game(
+          "event:mlb%3Amlb:mlb_braves_yankees_2026-08-08_b2",
+          "2026-08-08T15:05:00.000Z",
+        ),
+      ],
       freshness: null,
     };
-    expect(withoutWithdrawnListings(page, null)).toBe(page);
+    const filtered = await withoutWithdrawnListings(page, {
+      scheduleKeys: scheduleListingKeys([]),
+      now: NOON,
+      splitsExpected: true,
+      hasSplitEvidence: withSplits,
+    });
+    expect(filtered.items).toHaveLength(1);
+  });
+
+  it("drops a future listing the provider no longer has", async () => {
+    const page = {
+      items: [
+        game(
+          "event:mlb%3Amlb:mlb_future_phantom_2026-08-08_b1",
+          "2026-08-08T23:59:00.000Z",
+        ),
+      ],
+      freshness: null,
+    };
+    const filtered = await withoutWithdrawnListings(page, {
+      scheduleKeys: scheduleListingKeys([]),
+      now: NOON,
+      splitsExpected: true,
+      hasSplitEvidence: withSplits,
+    });
+    expect(filtered.items).toHaveLength(0);
+  });
+
+  it("keeps past-start absentees in a league without split coverage", async () => {
+    const page = {
+      items: [
+        game(
+          "event:soccer%3Amls:mls_inplay_2026-08-08_b1",
+          "2026-08-08T15:00:00.000Z",
+        ),
+      ],
+      freshness: null,
+    };
+    const filtered = await withoutWithdrawnListings(page, {
+      scheduleKeys: scheduleListingKeys([]),
+      now: NOON,
+      splitsExpected: false,
+      hasSplitEvidence: noSplits,
+    });
+    expect(filtered.items).toHaveLength(1);
+  });
+
+  it("fails open without a schedule and keeps every game", async () => {
+    const page = {
+      items: [
+        game("event:mlb%3Amlb:mlb_phantom_b0", "2026-08-08T06:50:00.000Z"),
+      ],
+      freshness: null,
+    };
+    expect(
+      await withoutWithdrawnListings(page, {
+        scheduleKeys: null,
+        now: NOON,
+        splitsExpected: true,
+        hasSplitEvidence: noSplits,
+      }),
+    ).toBe(page);
   });
 });
