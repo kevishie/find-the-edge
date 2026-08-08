@@ -7,9 +7,9 @@ import type {
 } from "@find-the-edge/domain";
 import { approvedSportsbookCollection } from "./sportsbooks";
 
-export const feedCoverageCatalogVersion = "2026-08-04.v7";
+export const feedCoverageCatalogVersion = "2026-08-08.v8";
 export const oddsCollectionPolicyVersion =
-  "2026-08-04.control-plane.sharpapi-pro.v3";
+  "2026-08-08.control-plane.sharpapi-pro.v4";
 
 export type OddsBookRole = "offered" | "comparison" | "collected" | "splits";
 export interface OddsProviderPolicy {
@@ -62,12 +62,14 @@ const providerPolicy = (
   leagueKey: LeagueOddsCollectionPolicy["leagueKey"],
 ): LeagueOddsCollectionPolicy => ({
   leagueKey,
-  // Lines refresh on every one-minute scheduler tick; the near-start window
-  // keeps a faster nominal cadence so a tick can never skip it.
+  // Lines refresh on every one-minute scheduler tick; inside the six-hour
+  // pre-start window the worker's intra-tick fast lane re-runs due leagues
+  // every ten seconds, the fastest cadence the provider's request window
+  // sustains with an order-of-magnitude margin.
   baseCadenceSeconds: 60,
   nearStart: {
-    windowSeconds: leagueKey === "mlb" ? 5_400 : 7_200,
-    cadenceSeconds: 30,
+    windowSeconds: 21_600,
+    cadenceSeconds: 10,
   },
   markets:
     leagueKey === "mlb"

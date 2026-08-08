@@ -398,6 +398,62 @@ const withBoundedInvocationStage = async <T>(
   }
 };
 
+/**
+ * Intra-tick fast lane: EventBridge cannot tick faster than once a minute, so
+ * the invocation itself re-runs the control plane until the budget is spent.
+ * Each pass is fully checkpoint-gated — only leagues whose near-start cadence
+ * is due pay for a refresh, and schedule, splits, and account collection stay
+ * on their own checkpoints. The FIFO message group serializes ticks, so the
+ * budget must stay below the tick interval. A zero budget (the default when
+ * the environment does not opt in) disables the lane entirely.
+ */
+export const runLiveOddsFastLane = async (input: {
+  readonly budgetMs: number;
+  readonly pauseMs: number;
+  readonly runPass: () => Promise<readonly { readonly pages: number }[]>;
+  readonly materialize: () => Promise<void>;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly now?: () => number;
+}): Promise<number> => {
+  const now = input.now ?? Date.now;
+  const sleep =
+    input.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const startedAt = now();
+  let passes = 0;
+  while (
+    Number.isFinite(input.budgetMs) &&
+    input.pauseMs > 0 &&
+    now() - startedAt + input.pauseMs <= input.budgetMs
+  ) {
+    await sleep(input.pauseMs);
+    try {
+      const summary = await input.runPass();
+      const committedPages = summary.reduce(
+        (total, result) => total + result.pages,
+        0,
+      );
+      passes += 1;
+      process.stdout.write(
+        `${JSON.stringify({ event: "live-odds-fast-lane-pass", committedPages })}\n`,
+      );
+      if (committedPages > 0) await input.materialize();
+    } catch (error) {
+      // The tick's first pass already committed its evidence; a fast-lane
+      // failure waits for the next tick instead of failing the invocation.
+      process.stdout.write(
+        `${JSON.stringify({
+          event: "live-odds-fast-lane-failed",
+          errorMessage:
+            error instanceof Error ? error.message.slice(0, 200) : "unknown",
+        })}\n`,
+      );
+      break;
+    }
+  }
+  return passes;
+};
+
 const runLiveOddsHandler = async (event?: unknown) => {
   const invocation = parseLiveOddsInvocation(event);
   const tableName = process.env["FTE_EVENT_TABLE"];
@@ -473,9 +529,48 @@ const runLiveOddsHandler = async (event?: unknown) => {
   process.stdout.write(
     `${JSON.stringify({ event: "live-odds-ingestion-complete", provider, summary })}\n`,
   );
+  // The provider's live schedule is the authority on which scheduled listings
+  // still exist; a fetch failure disables the filter for this run rather than
+  // hiding anything. One sweep serves every materialization in this
+  // invocation — the listing set cannot meaningfully change inside a tick.
+  let mlbListingsSweep:
+    Promise<ReturnType<typeof usableScheduleListings> | null> | undefined;
+  const scheduleListings = (sportKey: string) => {
+    // Scoped to MLB: the withdrawn-listing class has only been observed
+    // there, the splits witness only exists there, and soccer club
+    // naming ("Inter Miami CF", "St. Louis City SC") defeats the
+    // nickname-anchored matcher — filtering soccer wiped real games.
+    if (sportKey !== "mlb") return Promise.resolve(null);
+    mlbListingsSweep ??= (async () => {
+      const league = sharpApiLeagueByKey("mlb");
+      const events: {
+        awayTeam?: string;
+        homeTeam?: string;
+        startsAt: string;
+      }[] = [];
+      let offset: number | undefined = 0;
+      for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+        const schedulePage = await fetchSharpApiSchedulePage(
+          league,
+          sharpApiKey,
+          offset,
+        );
+        events.push(...schedulePage.events);
+        if (!schedulePage.hasMore) return usableScheduleListings(events);
+        if (
+          schedulePage.nextOffset === undefined ||
+          schedulePage.nextOffset <= (offset ?? 0)
+        )
+          return null;
+        offset = schedulePage.nextOffset;
+      }
+      return null;
+    })();
+    return mlbListingsSweep;
+  };
   // Materialize the default boards so the API serves a stored body instead of
   // re-running the projection per request. Never allowed to fail ingestion.
-  if (!invocation.focused) {
+  const materializeDefaultBoards = async () => {
     try {
       const boardGateway = new AwsDynamoGateway(client, tableName);
       const boardEvents = new DynamoEventRepository(
@@ -504,39 +599,7 @@ const runLiveOddsHandler = async (event?: unknown) => {
         splits: new DynamoBettingSplitRepository(client, tableName),
         put: (item) => boardGateway.put(item),
         now: new Date(),
-        // The provider's live schedule is the authority on which scheduled
-        // listings still exist; a fetch failure disables the filter for this
-        // run rather than hiding anything.
-        scheduleListings: async (sportKey) => {
-          // Scoped to MLB: the withdrawn-listing class has only been observed
-          // there, the splits witness only exists there, and soccer club
-          // naming ("Inter Miami CF", "St. Louis City SC") defeats the
-          // nickname-anchored matcher — filtering soccer wiped real games.
-          if (sportKey !== "mlb") return null;
-          const league = sharpApiLeagueByKey("mlb");
-          const events: {
-            awayTeam?: string;
-            homeTeam?: string;
-            startsAt: string;
-          }[] = [];
-          let offset: number | undefined = 0;
-          for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
-            const schedulePage = await fetchSharpApiSchedulePage(
-              league,
-              sharpApiKey,
-              offset,
-            );
-            events.push(...schedulePage.events);
-            if (!schedulePage.hasMore) return usableScheduleListings(events);
-            if (
-              schedulePage.nextOffset === undefined ||
-              schedulePage.nextOffset <= (offset ?? 0)
-            )
-              return null;
-            offset = schedulePage.nextOffset;
-          }
-          return null;
-        },
+        scheduleListings,
       });
       process.stdout.write(
         `${JSON.stringify({ event: "board-materialization", ...boards })}\n`,
@@ -551,6 +614,19 @@ const runLiveOddsHandler = async (event?: unknown) => {
         })}\n`,
       );
     }
+  };
+  if (!invocation.focused) {
+    await materializeDefaultBoards();
+    await runLiveOddsFastLane({
+      budgetMs: Number(process.env["FTE_FAST_LANE_BUDGET_MS"] ?? "0"),
+      pauseMs: Number(process.env["FTE_FAST_LANE_PAUSE_MS"] ?? "10000"),
+      runPass: () =>
+        runProductionOddsControlPlane({
+          ...common,
+          splits: new DynamoBettingSplitRepository(client, tableName),
+        }),
+      materialize: materializeDefaultBoards,
+    });
   }
   if (invocation.sqs) {
     const retryDecision = liveOddsSummaryRetryDecision(summary);

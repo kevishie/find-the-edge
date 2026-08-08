@@ -132,6 +132,10 @@ describe("foundation CDK app", () => {
           FTE_SHARP_API_ENABLED: "true",
           FTE_SHARP_API_SECRET_ID: Match.anyValue(),
           FTE_LIVE_ODDS_QUEUE_URL: Match.anyValue(),
+          // The fast-lane budget must stay below the one-minute tick so the
+          // FIFO group never delays the next tick.
+          FTE_FAST_LANE_BUDGET_MS: "50000",
+          FTE_FAST_LANE_PAUSE_MS: "10000",
         }),
       },
     });

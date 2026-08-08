@@ -8,6 +8,7 @@ import {
   liveOddsSummaryRetryDecision,
   liveOddsSummaryRetryReason,
   parseLiveOddsInvocation,
+  runLiveOddsFastLane,
 } from "./live-odds-lambda";
 import { SharpApiError } from "@find-the-edge/providers";
 
@@ -219,5 +220,95 @@ describe("live odds Lambda invocation", () => {
         new Date("2026-08-05T20:00:00.000Z"),
       ),
     ).rejects.toThrow("maintenance-active");
+  });
+});
+
+describe("intra-tick fast lane", () => {
+  const virtualClock = () => {
+    let at = 0;
+    return {
+      now: () => at,
+      sleep: (ms: number) => {
+        at += ms;
+        return Promise.resolve();
+      },
+      advance: (ms: number) => {
+        at += ms;
+      },
+    };
+  };
+
+  it("stays disabled without an explicit budget", async () => {
+    const passes = await runLiveOddsFastLane({
+      budgetMs: 0,
+      pauseMs: 10_000,
+      runPass: () => Promise.reject(new Error("must not run")),
+      materialize: () => Promise.reject(new Error("must not run")),
+    });
+    expect(passes).toBe(0);
+  });
+
+  it("re-runs checkpoint-gated passes until the budget is spent and only rebuilds boards after committed pages", async () => {
+    const clock = virtualClock();
+    const passResults = [
+      [{ pages: 2 }],
+      [{ pages: 0 }, { pages: 0 }],
+      [{ pages: 1 }],
+      [{ pages: 0 }],
+    ];
+    let materialized = 0;
+    const passes = await runLiveOddsFastLane({
+      budgetMs: 50_000,
+      pauseMs: 10_000,
+      runPass: () => Promise.resolve(passResults.shift() ?? [{ pages: 0 }]),
+      materialize: () => {
+        materialized += 1;
+        return Promise.resolve();
+      },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    // Five 10s pauses fit a 50s budget.
+    expect(passes).toBe(5);
+    // Only the two committing passes rebuilt the stored boards.
+    expect(materialized).toBe(2);
+  });
+
+  it("stops the lane on a pass failure instead of failing the invocation", async () => {
+    const clock = virtualClock();
+    let attempts = 0;
+    const passes = await runLiveOddsFastLane({
+      budgetMs: 50_000,
+      pauseMs: 10_000,
+      runPass: () => {
+        attempts += 1;
+        return attempts === 2
+          ? Promise.reject(new Error("provider-unavailable"))
+          : Promise.resolve([{ pages: 0 }]);
+      },
+      materialize: () => Promise.resolve(),
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(attempts).toBe(2);
+    expect(passes).toBe(1);
+  });
+
+  it("respects time consumed by the passes themselves", async () => {
+    const clock = virtualClock();
+    const passes = await runLiveOddsFastLane({
+      budgetMs: 50_000,
+      pauseMs: 10_000,
+      runPass: () => {
+        // Each pass burns 15 virtual seconds beyond the pause.
+        clock.advance(15_000);
+        return Promise.resolve([{ pages: 0 }]);
+      },
+      materialize: () => Promise.resolve(),
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    // 10s pause + 15s pass per iteration: the third pause would overrun.
+    expect(passes).toBe(2);
   });
 });

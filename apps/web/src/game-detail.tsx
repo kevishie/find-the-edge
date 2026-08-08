@@ -26,6 +26,10 @@ import {
 type MovementMetric = "line" | "american" | "probability";
 type MovementWindow = "all" | "6h" | "24h" | "7d";
 
+// Near-start ingestion runs on a ten-second cadence; the detail screen polls
+// at the same rate so fresh lines land within seconds of collection.
+export const DETAIL_REFRESH_INTERVAL_MS = 10_000;
+
 const historyPointState = (point: OddsHistorySeriesDto["points"][number]) =>
   point.state ?? "active";
 
@@ -555,17 +559,21 @@ function DecisionWorkbench({
     useState<FocusedHistoryObservation | null>(null);
   useEffect(() => {
     const controller = new AbortController();
+    let hasHistory = false;
     const load = () => {
       if (!client.oddsHistory) setHistoryState({ kind: "unavailable" });
       else
         client
           .oddsHistory(game.id, controller.signal)
           .then((value) => {
-            if (!controller.signal.aborted)
+            if (!controller.signal.aborted) {
+              hasHistory = true;
               setHistoryState({ kind: "ready", value });
+            }
           })
           .catch(() => {
-            if (!controller.signal.aborted)
+            // A background refresh failure must not blank loaded history.
+            if (!controller.signal.aborted && !hasHistory)
               setHistoryState({ kind: "unavailable" });
           });
       if (client.listSplits)
@@ -586,7 +594,13 @@ function DecisionWorkbench({
           .catch(() => undefined);
     };
     load();
-    return () => controller.abort();
+    // Ingestion refreshes near-start lines every ten seconds; polling at the
+    // same cadence keeps the chart effectively live without a push channel.
+    const interval = window.setInterval(load, DETAIL_REFRESH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(interval);
+      controller.abort();
+    };
   }, [client, game.eastern.calendarDay, game.id, game.sportKey]);
 
   const history = historyState.kind === "ready" ? historyState.value : null;
@@ -1118,17 +1132,19 @@ export default function GameDetail() {
       setState({ kind: "loading" });
       setActiveMarket("");
     });
+    let hasGame = false;
     const load = async () => {
       try {
         const game = await detailClient.detail!(gameId, controller.signal);
-        if (!controller.signal.aborted)
-          setState(
-            game
-              ? { kind: "ready", game }
-              : { kind: "error", message: "This game was not found." },
-          );
+        if (controller.signal.aborted) return;
+        if (game) {
+          hasGame = true;
+          setState({ kind: "ready", game });
+        } else if (!hasGame)
+          setState({ kind: "error", message: "This game was not found." });
       } catch (error) {
-        if (!controller.signal.aborted)
+        // A background refresh failure must not blank an already-loaded game.
+        if (!controller.signal.aborted && !hasGame)
           setState(
             error instanceof GamesClientError && error.code === "not-found"
               ? { kind: "not-found", message: "This game was not found." }
@@ -1140,7 +1156,16 @@ export default function GameDetail() {
       }
     };
     void load();
-    return () => controller.abort();
+    // Match the ingest cadence so newly collected lines appear within
+    // seconds of the provider publishing them.
+    const interval = window.setInterval(
+      () => void load(),
+      DETAIL_REFRESH_INTERVAL_MS,
+    );
+    return () => {
+      window.clearInterval(interval);
+      controller.abort();
+    };
   }, [client, detailSearch, gameId, reload]);
 
   if (state.kind === "loading") return <p>Loading game details…</p>;

@@ -857,3 +857,11 @@ stories:
       production cutover is approval-gated on live DNS and certificate work.
     risk: High
     approvalRequiredBeforeMerge: true
+  - id: FTE-060
+    title: Max-Cadence Line Ingestion and Instant Delivery
+    epic: Odds ingestion and market normalization
+    status: in-progress
+    dependencies: [FTE-026, FTE-026A]
+    validationCommands: [pnpm check, "pnpm phase1:preflight"]
+    risk: Medium
+    approvalRequiredBeforeMerge: false

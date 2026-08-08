@@ -594,6 +594,13 @@ export class FoundationStack extends Stack {
         FTE_EVENT_TABLE: table.tableName,
         FTE_SHARP_API_ENABLED: "true",
         FTE_SHARP_API_SECRET_ID: sharpApiSecret.secretName,
+        // Intra-tick fast lane: the invocation re-runs the checkpoint-gated
+        // control plane every ten seconds until fifty seconds of the
+        // one-minute tick are spent, so near-start leagues refresh at the
+        // ten-second cadence the policy declares. Must stay below the tick
+        // interval or FIFO grouping would delay the next tick.
+        FTE_FAST_LANE_BUDGET_MS: "50000",
+        FTE_FAST_LANE_PAUSE_MS: "10000",
       },
       bundling: { minify: true, sourceMap: true },
     });

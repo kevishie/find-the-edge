@@ -1444,10 +1444,10 @@ describe("production odds control-plane composition", () => {
       [...control.gaps.values()].filter((gap) => gap.reason === "unsupported"),
     ).toHaveLength(5);
 
-    // Inside every cadence: nothing is due twenty seconds after the run.
+    // Inside every cadence: nothing is due five seconds after the run.
     const gated = await runProductionOddsControlPlane({
       ...options,
-      now: new Date("2026-08-03T12:00:20.000Z"),
+      now: new Date("2026-08-03T12:00:05.000Z"),
     });
     expect(gated.map((result) => result.status)).toEqual([
       "skipped",
@@ -1458,12 +1458,13 @@ describe("production odds control-plane composition", () => {
     ]);
     expect(fetchSharpOdds).toHaveBeenCalledTimes(5);
 
-    // Forty-five seconds in, the base cadence is still not due; only the
-    // durable 12:45 scheduled start puts every league in its near-start
-    // window, so odds refresh while schedule discovery stays skipped.
+    // Twenty seconds in, the base cadence is still not due; only the
+    // durable 12:45 scheduled start puts every league in its ten-second
+    // near-start cadence, so odds refresh while schedule discovery stays
+    // skipped.
     const second = await runProductionOddsControlPlane({
       ...options,
-      now: new Date("2026-08-03T12:00:45.000Z"),
+      now: new Date("2026-08-03T12:00:20.000Z"),
     });
     expect(second.map((result) => result.status)).toEqual([
       "completed",
