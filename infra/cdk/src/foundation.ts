@@ -651,7 +651,9 @@ export class FoundationStack extends Stack {
     );
     const liveOddsScheduler = new Rule(this, "LiveOddsScheduler", {
       enabled: props.schedulerEnabled,
-      schedule: Schedule.rate(Duration.minutes(5)),
+      // One-minute ticks: games and lines refresh each tick, splits keep
+      // their own five-minute checkpoint inside the control plane.
+      schedule: Schedule.rate(Duration.minutes(1)),
     });
     liveOddsScheduler.addTarget(
       new SqsQueue(liveOddsQueue, { messageGroupId: "odds-cadence" }),

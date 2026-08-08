@@ -72,11 +72,13 @@ describe("materialization", () => {
   });
 
   it("targets both sports and both Eastern days with the default query", () => {
+    expect(
+      materializationTargets(NOW).filter(({ status }) => status === "all"),
+    ).toHaveLength(4);
     const targets = materializationTargets(NOW);
-    expect(targets).toHaveLength(8);
-    expect(new Set(targets.map(boardPartition)).size).toBe(8);
-    for (const target of targets)
-      expect(target).toMatchObject({ status: "scheduled", limit: 50 });
+    expect(targets).toHaveLength(12);
+    expect(new Set(targets.map(boardPartition)).size).toBe(12);
+    for (const target of targets) expect(target.limit).toBe(50);
     expect(new Set(targets.map(({ day }) => day))).toEqual(
       new Set(["2026-08-08", "2026-08-09"]),
     );
@@ -102,11 +104,11 @@ describe("materialization", () => {
       now: NOW,
     });
 
-    expect(result).toEqual({ stored: 8, skipped: 0 });
+    expect(result).toEqual({ stored: 12, skipped: 0 });
     const splitBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#splits#"));
     const gameBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#games#"));
     expect(splitBoards).toHaveLength(4);
-    expect(gameBoards).toHaveLength(4);
+    expect(gameBoards).toHaveLength(8);
     for (const board of splitBoards) {
       const parsed = JSON.parse(board.value.body) as {
         items: { splits: { id: string }[] }[];
@@ -132,7 +134,7 @@ describe("materialization", () => {
       },
       now: NOW,
     });
-    expect(result).toEqual({ stored: 0, skipped: 8 });
+    expect(result).toEqual({ stored: 0, skipped: 12 });
     expect(puts).toHaveLength(0);
   });
 });

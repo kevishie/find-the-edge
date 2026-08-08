@@ -100,6 +100,9 @@ import {
 // Ingestion refreshes the provider board every five minutes, so polling faster
 // than this only repeats work behind the splits route.
 const SPLITS_REFRESH_INTERVAL_MS = 60_000;
+// Games ingest on a one-minute cadence, so the explorer revalidates on the
+// same clock; a failed background refresh keeps the last good page.
+const GAMES_REFRESH_INTERVAL_MS = 60_000;
 export const oddsCellTimestamp = (
   cell: import("@find-the-edge/domain").GameOddsCellDto,
 ) =>
@@ -816,6 +819,7 @@ function GamesExplorer() {
     const controller = new AbortController();
     const activeClient = client.ok ? client.value : undefined;
     const clientError = client.ok ? undefined : client.error.message;
+    let hasPage = false;
     const load = async (): Promise<void> => {
       await Promise.resolve();
       if (controller.signal.aborted) return;
@@ -838,10 +842,14 @@ function GamesExplorer() {
           { sport, day, status },
           controller.signal,
         );
-        if (id === requestId.current && !controller.signal.aborted)
+        if (id === requestId.current && !controller.signal.aborted) {
+          hasPage = true;
           setState({ kind: "ready", page });
+        }
       } catch (error: unknown) {
         if (id !== requestId.current || controller.signal.aborted) return;
+        // A background refresh failure must not blank an already-loaded page.
+        if (hasPage) return;
         setState({
           kind: "error",
           message:
@@ -852,7 +860,13 @@ function GamesExplorer() {
       }
     };
     void load();
-    return () => controller.abort();
+    const refreshInterval = window.setInterval(() => {
+      void load();
+    }, GAMES_REFRESH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(refreshInterval);
+      controller.abort();
+    };
   }, [client, day, retry, sport, status]);
 
   const updateSearch = (patch: Partial<typeof search>) =>

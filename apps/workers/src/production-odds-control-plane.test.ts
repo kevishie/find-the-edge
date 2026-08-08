@@ -1444,19 +1444,36 @@ describe("production odds control-plane composition", () => {
       [...control.gaps.values()].filter((gap) => gap.reason === "unsupported"),
     ).toHaveLength(5);
 
-    const second = await runProductionOddsControlPlane({
+    // Inside every cadence: nothing is due twenty seconds after the run.
+    const gated = await runProductionOddsControlPlane({
       ...options,
-      now: new Date("2026-08-03T12:15:00.000Z"),
+      now: new Date("2026-08-03T12:00:20.000Z"),
     });
-    expect(second.map((result) => result.status)).toEqual([
-      "completed",
+    expect(gated.map((result) => result.status)).toEqual([
+      "skipped",
       "skipped",
       "skipped",
       "skipped",
       "skipped",
     ]);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(5);
+
+    // Forty-five seconds in, the base cadence is still not due; only the
+    // durable 12:45 scheduled start puts every league in its near-start
+    // window, so odds refresh while schedule discovery stays skipped.
+    const second = await runProductionOddsControlPlane({
+      ...options,
+      now: new Date("2026-08-03T12:00:45.000Z"),
+    });
+    expect(second.map((result) => result.status)).toEqual([
+      "completed",
+      "completed",
+      "completed",
+      "completed",
+      "completed",
+    ]);
     expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(10);
   });
 
   it("keeps an approved book active when the same event continues on another page", async () => {

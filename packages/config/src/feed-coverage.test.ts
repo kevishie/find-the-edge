@@ -39,7 +39,7 @@ describe("production odds policy", () => {
     expect(oddsCollectionPolicyVersion).toContain("control-plane");
     expect(productionOddsCollectionPolicies).toHaveLength(5);
     for (const policy of productionOddsCollectionPolicies) {
-      expect(policy.baseCadenceSeconds).toBe(3600);
+      expect(policy.baseCadenceSeconds).toBe(60);
       expect(policy.nearStart.cadenceSeconds).toBeLessThan(
         policy.baseCadenceSeconds,
       );

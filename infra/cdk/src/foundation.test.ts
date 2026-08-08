@@ -252,9 +252,10 @@ describe("foundation CDK app", () => {
     template.resourceCountIs("AWS::Lambda::Function", 14);
     template.resourceCountIs("AWS::Events::Rule", 6);
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 2);
+    // Live odds tick every minute; opportunity expiration keeps five.
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
-      ScheduleExpression: "rate(5 minutes)",
+      ScheduleExpression: "rate(1 minute)",
     });
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",

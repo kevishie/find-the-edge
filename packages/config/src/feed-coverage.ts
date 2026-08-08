@@ -50,7 +50,9 @@ export const productionScheduleDiscoveryPolicies: readonly ScheduleDiscoveryPoli
     {
       providerId: "sharpapi",
       role: "primary",
-      cadenceSeconds: 3_600,
+      // The scheduler ticks once a minute and the schedule refresh rides
+      // every tick: the games catalog is the source of truth for the board.
+      cadenceSeconds: 60,
       quotaReserve: 20,
       requestCost: 1,
     },
@@ -60,10 +62,12 @@ const providerPolicy = (
   leagueKey: LeagueOddsCollectionPolicy["leagueKey"],
 ): LeagueOddsCollectionPolicy => ({
   leagueKey,
-  baseCadenceSeconds: 3_600,
+  // Lines refresh on every one-minute scheduler tick; the near-start window
+  // keeps a faster nominal cadence so a tick can never skip it.
+  baseCadenceSeconds: 60,
   nearStart: {
     windowSeconds: leagueKey === "mlb" ? 5_400 : 7_200,
-    cadenceSeconds: leagueKey === "mlb" ? 900 : 1_800,
+    cadenceSeconds: 30,
   },
   markets:
     leagueKey === "mlb"

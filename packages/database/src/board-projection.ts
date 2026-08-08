@@ -151,16 +151,34 @@ export const materializationTargets = (now: Date): readonly BoardKey[] => {
     ["soccer", "mls"],
   ];
   return sports.flatMap(([sportKey, leagueKey]) =>
-    days.flatMap((day) =>
-      (["games", "splits"] as const).map((route) => ({
-        route,
+    days.flatMap((day) => [
+      // The games screen requests every lifecycle merged; splits is
+      // scheduled-only by contract.
+      {
+        route: "games" as const,
+        sportKey,
+        leagueKey,
+        status: "all",
+        day,
+        limit: 50,
+      },
+      {
+        route: "games" as const,
         sportKey,
         leagueKey,
         status: "scheduled",
         day,
         limit: 50,
-      })),
-    ),
+      },
+      {
+        route: "splits" as const,
+        sportKey,
+        leagueKey,
+        status: "scheduled",
+        day,
+        limit: 50,
+      },
+    ]),
   );
 };
 
@@ -191,7 +209,7 @@ export const materializeBoards = async (input: {
       {
         sportKey: key.sportKey,
         leagueKey: key.leagueKey,
-        status: key.status as "scheduled",
+        status: key.status as "scheduled" | "all",
         day: key.day,
       },
       key.limit,
