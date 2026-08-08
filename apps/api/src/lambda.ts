@@ -18,9 +18,13 @@ import {
   DynamoOddsControlPlaneStore,
   DynamoScoutingJobRepository,
   OpportunityCursorCodec,
+  boardPartition,
+  validateStoredBoard,
+  type BoardKey,
 } from "@find-the-edge/database";
 import { impliedProbability } from "@find-the-edge/odds";
 import {
+  approvedDetailSportsbooks,
   approvedSportsbookCollection,
   defaultOpportunityRankingPolicy,
   sportsbookRegistry,
@@ -30,6 +34,7 @@ import { createEventHandler } from "./handler";
 import { buildProviderStatusPage } from "./provider-status";
 import { createScoutingHttpHandler } from "./scouting-handler";
 import { loadSecretRing } from "./secrets";
+import { encodeApiResponse } from "./http-compression";
 interface LambdaEvent {
   readonly routeKey?: string;
   readonly pathParameters?: {
@@ -62,29 +67,41 @@ const sharedDocumentClient = DynamoDBDocumentClient.from(
 );
 const gateway = new AwsDynamoGateway(sharedDocumentClient, tableName);
 const secrets = new SecretsManagerClient({});
+// Projection readiness is a one-way latch in practice; probing it on every
+// request added a storage read to every page load. A confirmed-ready answer is
+// trusted for a minute, an unready answer only briefly so initialization is
+// noticed promptly.
+let readinessCache: { readonly ready: boolean; readonly expiresAt: number } = {
+  ready: false,
+  expiresAt: 0,
+};
+const projectionReady = async () => {
+  if (readinessCache.expiresAt > Date.now()) return readinessCache.ready;
+  const item = await gateway.get("EVENT_PROJECTIONS", "READINESS");
+  const ready =
+    !!item &&
+    JSON.stringify(item.value) ===
+      JSON.stringify({ schemaVersion: 1, state: "initialized" });
+  readinessCache = {
+    ready,
+    expiresAt: Date.now() + (ready ? 60_000 : 5_000),
+  };
+  return ready;
+};
 export const handler = async (event: LambdaEvent) => {
   const ring = await loadSecretRing(secrets, secretArn);
   const cursorCodec = new EventCursorCodec(ring);
   const repository = new DynamoEventRepository(
     gateway,
     cursorCodec,
-    async () => {
-      const item = await gateway.get("EVENT_PROJECTIONS", "READINESS");
-      return (
-        !!item &&
-        JSON.stringify(item.value) ===
-          JSON.stringify({ schemaVersion: 1, state: "initialized" })
-      );
-    },
+    projectionReady,
   );
   const approvedLabels = Object.fromEntries(
     sportsbookRegistry
       .filter(({ id }) => id in approvedSportsbookCollection)
       .map(({ id, name }) => [id, name]),
   );
-  const detailSportsbooks = Object.entries(approvedLabels).map(
-    ([id, label]) => ({ id, label }),
-  );
+  const detailSportsbooks = approvedDetailSportsbooks;
   const games = new DynamoGamesRepository(
     repository,
     gateway,
@@ -191,7 +208,10 @@ export const handler = async (event: LambdaEvent) => {
   const idempotencyKey = Object.entries(event.headers ?? {}).find(
     ([key]) => key.toLowerCase() === "idempotency-key",
   )?.[1];
-  return createEventHandler(
+  const acceptEncoding = Object.entries(event.headers ?? {}).find(
+    ([key]) => key.toLowerCase() === "accept-encoding",
+  )?.[1];
+  const apiResponse = await createEventHandler(
     repository,
     games,
     undefined,
@@ -228,6 +248,10 @@ export const handler = async (event: LambdaEvent) => {
         new DynamoOddsControlPlaneStore(documentClient, tableName),
       ),
     createScoutingHttpHandler(repository, scoutingJobs),
+    async (key: BoardKey) => {
+      const item = await gateway.get(boardPartition(key), "CURRENT");
+      return item ? validateStoredBoard(item.value, new Date()) : null;
+    },
   )({
     route,
     ...(subject ? { subject } : {}),
@@ -247,4 +271,5 @@ export const handler = async (event: LambdaEvent) => {
     ...(contentType ? { contentType } : {}),
     ...(event.body ? { body: event.body } : {}),
   });
+  return encodeApiResponse(apiResponse, acceptEncoding);
 };

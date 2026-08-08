@@ -36,6 +36,7 @@ export class AwsDynamoGateway implements DynamoGateway {
   }
   async batchGet(
     keys: readonly { readonly pk: string; readonly sk: string }[],
+    options?: { readonly consistentRead?: boolean },
   ) {
     const chunks: (readonly { readonly pk: string; readonly sk: string }[])[] =
       [];
@@ -53,7 +54,7 @@ export class AwsDynamoGateway implements DynamoGateway {
               RequestItems: {
                 [this.tableName]: {
                   Keys: [...pending],
-                  ConsistentRead: true,
+                  ConsistentRead: options?.consistentRead ?? true,
                   ProjectionExpression: "pk, sk, #value, expiresAt",
                   ExpressionAttributeNames: { "#value": "value" },
                 },
@@ -94,13 +95,18 @@ export class AwsDynamoGateway implements DynamoGateway {
     } while (cursor && items.length < limit);
     return items.slice(0, limit);
   }
-  async queryPage(pk: string, startSk: string | undefined, limit: number) {
+  async queryPage(
+    pk: string,
+    startSk: string | undefined,
+    limit: number,
+    options?: { readonly consistentRead?: boolean },
+  ) {
     const result = await this.client.send(
       new QueryCommand({
         TableName: this.tableName,
         KeyConditionExpression: "pk = :pk",
         ExpressionAttributeValues: { ":pk": pk },
-        ConsistentRead: true,
+        ConsistentRead: options?.consistentRead ?? true,
         ScanIndexForward: true,
         Limit: limit,
         ...(startSk ? { ExclusiveStartKey: { pk, sk: startSk } } : {}),

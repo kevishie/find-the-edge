@@ -26,6 +26,7 @@ type ReadGateway = {
     pk: string,
     startSk: string | undefined,
     limit: number,
+    options?: { readonly consistentRead?: boolean },
   ): ReturnType<DynamoGateway["queryPage"]>;
   transactGet(
     keys: readonly { readonly pk: string; readonly sk: string }[],
@@ -102,10 +103,13 @@ export class DynamoEventRepository implements EventRepository {
       hasPhysicalMore = false,
       evaluated = 0;
     while (accepted.length < limit && evaluated < 200) {
+      // Projection rows change on the ingest cadence, so the list view reads
+      // eventually consistent.
       const result = await this.gateway.queryPage(
         pk,
         startSk,
         Math.min(50, 200 - evaluated),
+        { consistentRead: false },
       );
       if (!result.items.length) {
         hasPhysicalMore = false;
@@ -136,6 +140,7 @@ export class DynamoEventRepository implements EventRepository {
             pk,
             result.lastEvaluatedSk,
             1,
+            { consistentRead: false },
           );
           evaluated += probe.items.length;
           hasPhysicalMore = probe.items.length > 0;

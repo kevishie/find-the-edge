@@ -43,6 +43,7 @@ export interface CurrentOddsReadGateway {
       readonly pk: string;
       readonly sk: "CURRENT" | "AVAILABILITY";
     }[],
+    options?: { readonly consistentRead?: boolean },
   ): Promise<readonly unknown[]>;
 }
 export interface GameDetailSportsbook {
@@ -660,7 +661,10 @@ export class JoinedGamesRepository implements GamesRepository {
     });
     let rows: readonly unknown[];
     try {
-      rows = await this.odds.batchGet(requested);
+      // The board tolerates evidence a few hundred milliseconds stale, so the
+      // list path reads eventually consistent; the detail path keeps strong
+      // reads because its read-twice stability check depends on them.
+      rows = await this.odds.batchGet(requested, { consistentRead: false });
     } catch (error) {
       throw new EventStorageError("current-odds-read-failed", { cause: error });
     }

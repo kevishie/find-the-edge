@@ -396,7 +396,9 @@ export class DynamoBettingSplitRepository implements BettingSplitRepository {
           ":pk": splitPk(canonicalEventId),
           ":current": "CURRENT#",
         },
-        ConsistentRead: true,
+        // Split evidence refreshes every five minutes; the read path does not
+        // need the write path's strong consistency.
+        ConsistentRead: false,
       }),
     );
     return latestLogicalCurrent(
