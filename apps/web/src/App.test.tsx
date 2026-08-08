@@ -1825,8 +1825,7 @@ describe("Betting splits", () => {
       expect(
         await screen.findByText("1 games · 1 with data · 6 observations"),
       ).toBeInTheDocument();
-      // Two MLB loads plus the soccer coverage probe.
-      expect(listSplits).toHaveBeenCalledTimes(3);
+      expect(listSplits).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
@@ -1879,8 +1878,7 @@ describe("Betting splits", () => {
       });
       expect(await screen.findByText("47%")).toBeInTheDocument();
       expect(screen.queryByText("Refresh delayed.")).not.toBeInTheDocument();
-      // Three MLB loads plus the soccer coverage probe.
-      expect(listSplits).toHaveBeenCalledTimes(4);
+      expect(listSplits).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
     }
@@ -2136,19 +2134,13 @@ describe("Betting splits", () => {
   });
 
   it("keeps filters usable for empty results and reports failures", async () => {
-    // The MLS tab only appears once the soccer board proves it carries split
-    // percentages, so the probe succeeds and later loads fail.
-    let soccerCalls = 0;
     const listSplits = vi
       .fn<NonNullable<GamesClient["listSplits"]>>()
-      .mockImplementation((filter) => {
-        if (filter.sport === "soccer") {
-          soccerCalls += 1;
-          if (soccerCalls === 1) return Promise.resolve(splitsPage());
-          return Promise.reject(new Error("redacted provider failure"));
-        }
-        return Promise.resolve(splitsPage([]));
-      });
+      .mockImplementation((filter) =>
+        filter.sport === "soccer"
+          ? Promise.reject(new Error("redacted provider failure"))
+          : Promise.resolve(splitsPage([])),
+      );
     render(
       <App
         initialPath="/splits"
