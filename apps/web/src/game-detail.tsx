@@ -735,7 +735,7 @@ function DecisionWorkbench({
             movement with DraftKings and Circa betting splits.
           </p>
         </div>
-        <span className="provider-chip">SharpAPI evidence</span>
+        <span className="provider-chip">Live evidence</span>
       </div>
       <div className="movement-controls">
         <div role="group" aria-label="Movement market" className="market-tabs">
@@ -1174,7 +1174,7 @@ export default function GameDetail() {
     <>
       <header className="explorer-header">
         <div>
-          <p className="eyebrow">GAME DETAIL · SHARPAPI</p>
+          <p className="eyebrow">GAME DETAIL</p>
           <h1>{game.participants.map(({ label }) => label).join(" vs ")}</h1>
           <p className="lede">{easternDisplay(game.startsAt)} Eastern</p>
           <EventMetadataBadges game={game} />

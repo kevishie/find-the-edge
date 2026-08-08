@@ -1122,7 +1122,7 @@ const providerScope = (
 ): ProviderStatusPageDto["items"][number] => ({
   scopeId: "sharpapi:mlb:odds",
   providerId: "sharpapi",
-  providerName: "SharpAPI",
+  providerName: "Odds Feed",
   sportKey: "mlb",
   leagueKey: "mlb",
   capability: "odds",

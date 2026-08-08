@@ -1983,7 +1983,7 @@ function SplitsExplorer() {
       <div className="csx-header">
         <div className="csx-header-row">
           <h1 className="csx-title">Betting splits</h1>
-          <span className="csx-badge">SHARPAPI CONSENSUS</span>
+          <span className="csx-badge">CONSENSUS</span>
           <button
             type="button"
             className={`csx-info-button${infoOpen ? " open" : ""}`}
@@ -2074,9 +2074,10 @@ function SplitsExplorer() {
           <div className="csx-info-banner" role="note">
             <h3>Consensus is context—not a pick.</h3>
             <p>
-              SharpAPI combines its public-betting data into one consensus view.
-              Compare bet percentage with handle percentage to spot imbalances,
-              then confirm the signal with line movement and price value.
+              DraftKings and Circa public-betting data combine into one
+              consensus view. Compare bet percentage with handle percentage to
+              spot imbalances, then confirm the signal with line movement and
+              price value.
             </p>
             <button
               type="button"

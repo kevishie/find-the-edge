@@ -116,7 +116,7 @@ test("renders the ranked evidence dashboard without horizontal overflow", async 
           {
             scopeId: "sharpapi:mlb:odds",
             providerId: "sharpapi",
-            providerName: "SharpAPI",
+            providerName: "Odds Feed",
             sportKey: "mlb",
             leagueKey: "mlb",
             capability: "odds",

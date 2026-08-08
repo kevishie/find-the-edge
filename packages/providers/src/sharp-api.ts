@@ -1824,7 +1824,7 @@ export function sharpApiDescriptor(
   if (grouped.size === 0) throw new Error("sharpapi-coverage-empty");
   return {
     id: SHARP_API_PROVIDER_ID,
-    displayName: "SharpAPI",
+    displayName: "Odds Feed",
     capabilities: [...new Set(enabled.map(({ capability }) => capability))],
     coverage: {
       leagues: [...grouped.values()].map((entries) => ({

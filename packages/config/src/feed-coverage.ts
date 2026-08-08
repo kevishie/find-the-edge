@@ -105,7 +105,7 @@ export interface ProductionProviderStatusScope {
   readonly scopeId: string;
   readonly healthKey: string;
   readonly providerId: "sharpapi";
-  readonly providerName: "SharpAPI";
+  readonly providerName: "Odds Feed";
   readonly sportKey: "mlb" | "soccer" | null;
   readonly leagueKey: string;
   readonly capability: ProviderStatusCapability;
@@ -128,7 +128,7 @@ export const productionProviderStatusCatalog: readonly ProductionProviderStatusS
       scopeId: "sharpapi:account",
       healthKey: "sharpapi:account:account",
       providerId: "sharpapi",
-      providerName: "SharpAPI",
+      providerName: "Odds Feed",
       sportKey: null,
       leagueKey: "account",
       capability: "account",
@@ -169,7 +169,7 @@ export const productionProviderStatusCatalog: readonly ProductionProviderStatusS
         scopeId: `sharpapi:${policy.leagueKey}:${entry.capability}`,
         healthKey: `sharpapi:${policy.leagueKey}:${entry.capability}`,
         providerId: "sharpapi" as const,
-        providerName: "SharpAPI" as const,
+        providerName: "Odds Feed" as const,
         ...league,
         ...entry,
       }));
