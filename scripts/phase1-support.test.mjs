@@ -6,10 +6,28 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   checksums,
+  failureDetail,
   safeDevConfig,
   validateSafeDevConfig,
   validateTemplate,
 } from "./phase1-support.mjs";
+
+test("failed commands report their own diagnostics without leaking credentials", () => {
+  assert.equal(
+    failureDetail(
+      "\nAn error occurred (AccessDenied) when calling GetInvalidation\n",
+    ),
+    ": An error occurred (AccessDenied) when calling GetInvalidation",
+  );
+  const redacted = failureDetail(
+    "denied for ASIAZZZZZZZZZZZZZZZZ\naws_session_token=abc.def\n",
+  );
+  assert.doesNotMatch(redacted, /ASIAZZZZZZZZZZZZZZZZ|abc\.def/);
+  assert.match(redacted, /\[redacted]/);
+  assert.equal(failureDetail(undefined), "");
+  assert.equal(failureDetail("   \n  "), "");
+  assert.ok(failureDetail("x".repeat(900)).length <= 502);
+});
 
 test("safe defaults are credential-free dev placeholders", () => {
   const config = safeDevConfig({});

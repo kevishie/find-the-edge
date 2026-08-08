@@ -139,6 +139,27 @@ export function validateSafeDevConfig(config) {
   }
 }
 
+/**
+ * Captured failures otherwise report only an exit code, which cannot tell a
+ * missing permission from a missing resource. Carry a bounded, redacted tail of
+ * the process's own diagnostics instead.
+ */
+export function failureDetail(stderr) {
+  if (typeof stderr !== "string") return "";
+  const detail = stderr
+    .replace(
+      /\b(?:ASIA|AKIA)[0-9A-Z]{16}\b|\baws_(?:secret_access_key|session_token)\s*=\s*\S+/gi,
+      "[redacted]",
+    )
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-3)
+    .join(" | ")
+    .slice(0, 500);
+  return detail ? `: ${detail}` : "";
+}
+
 export function run(command, arguments_, options = {}) {
   const result = spawnSync(command, arguments_, {
     cwd: projectRoot,
@@ -150,7 +171,7 @@ export function run(command, arguments_, options = {}) {
   if (result.error) throw result.error;
   if (result.status !== 0)
     throw new Error(
-      `${command} failed with exit code ${String(result.status)}`,
+      `${command} failed with exit code ${String(result.status)}${failureDetail(result.stderr)}`,
     );
   return result.stdout ?? "";
 }
