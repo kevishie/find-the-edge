@@ -28,3 +28,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-fte-026-odds-history-api-and-chart-series-projection.md`
   summary: Bound chart sampling even when required gap-transition points exceed the nominal limit.
   evidence: Alternating active and unavailable evidence can bypass the 2,400-point rendering cap.
+- source_spec: `_bmad-output/implementation-artifacts/spec-fte-026-odds-history-api-and-chart-series-projection.md`
+  summary: Re-land within-market timestamp tolerance without letting a board mix observation moments.
+  evidence: Dropping the observedAt/retrievedAt grouping in `JoinedGamesRepository` let one board join a total observed at 20:39 with a moneyline observed at 22:25, which the browser client, `assertLiveGame`, and the product's meaning of a board all reject. Tolerating sub-second skew between two sides of one market needs a bound and agreement across all three consumers.

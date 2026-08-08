@@ -714,7 +714,10 @@ export class JoinedGamesRepository implements GamesRepository {
           const first = market[0]!;
           if (
             !market.every(
-              (selection) => selection.sportsbookId === first.sportsbookId,
+              (selection) =>
+                selection.sportsbookId === first.sportsbookId &&
+                selection.observedAt === first.observedAt &&
+                selection.retrievedAt === first.retrievedAt,
             )
           ) {
             if (specification.required) return null;
@@ -726,7 +729,10 @@ export class JoinedGamesRepository implements GamesRepository {
         if (!requiredAvailable) return null;
         const first = selections[0]!;
         return selections.filter(
-          (selection) => selection.sportsbookId === first.sportsbookId,
+          (selection) =>
+            selection.sportsbookId === first.sportsbookId &&
+            selection.observedAt === first.observedAt &&
+            selection.retrievedAt === first.retrievedAt,
         );
       });
       const selected = candidates.find(
