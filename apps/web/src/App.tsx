@@ -2032,6 +2032,7 @@ function SplitsExplorer() {
                   type="button"
                   className={vizMode === mode.id ? "selected" : ""}
                   aria-pressed={vizMode === mode.id}
+                  aria-label={mode.label}
                   title={mode.hint}
                   onClick={() => chooseVizMode(mode.id)}
                 >
