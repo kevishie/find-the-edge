@@ -150,8 +150,104 @@ UX-DR18: Keep authoritative betting and entitlement decisions out of React compo
 
 ### FR Coverage Map
 
-{{requirements_coverage_map}}
+FR1: Epic 4 - Universal sport-agnostic betting domain.
+FR2: Epic 4 - Registered versioned sport modules.
+FR3: Epic 4 - Mechanics and strategy separation.
+FR4: Epic 4 - Generic storage, APIs, routes, pricing, and UI.
+FR5: Epic 4 - Capability-based provider resolution.
+FR6: Epic 4 - Reproducible versions and provenance.
+FR7: Epic 4 - Visible module maturity.
+FR8: Epic 4 - Contract-tested sport extensibility.
+FR9: Epic 4 - Multi-sport schedule ingestion.
+FR10: Epic 4 - Immutable odds evidence.
+FR11: Epic 5 - Complete versioned evaluation records.
+FR12: Epic 6 - Sport-specific AI policy and deterministic boundaries.
+FR13: Epic 8 - Immutable paper-pick ledger.
+FR14: Epic 8 - Automated results and grading.
+FR15: Epic 8 - Evaluation beyond win rate.
+FR16: Epic 8 - Leakage-resistant retrospectives.
+FR17: Epic 8 - Controlled strategy promotion.
+FR18: Epic 8 - Real-money safety boundary.
+FR19: Epic 2 - User authentication.
+FR20: Epic 2 - Sign-out and session invalidation.
+FR21: Epic 2 - Protected routes and safe redirect restoration.
+FR22: Epic 2 - Session expiry behavior.
+FR23: Epic 2 - Extensible identity and permission context.
+FR24: Epic 4 - Event discovery and normalization.
+FR25: Epic 4 - Event browsing and filtering.
+FR26: Epic 4 - Coverage, missing, and stale states.
+FR27: Epic 4 - Target/comparison odds and provider health capture.
+FR28: Epic 4 - Sportsbook, competition, market, and weight configuration.
+FR29: Epic 4 - Canonical entity normalization.
+FR30: Epic 4 - Deterministic betting calculations.
+FR31: Epic 5 - Opportunity qualification policies.
+FR32: Epic 5 - Qualification and disqualification explanations.
+FR33: Epic 5 - Fresh active opportunity ranking.
+FR34: Epic 5 - Restrained non-promotional language.
+FR35: Epic 5 - Decision-focused dashboard.
+FR36: Epic 6 - Scouting jobs and progress states.
+FR37: Epic 6 - Duplicate prevention and report versioning.
+FR38: Epic 6 - Complete structured reports.
+FR39: Epic 6 - Report provenance and version metadata.
+FR40: Epic 6 - No invented facts and clear responsibility boundaries.
+FR41: Epic 4 - Odds history and movement.
+FR42: Epic 7 - Watchlists and change monitoring.
+FR43: Epic 7 - Manual and recommendation-linked bet records.
+FR44: Epic 7 - Complete bet lifecycle states.
+FR45: Epic 7 - Settlement, profit/loss, ROI, and CLV.
+FR46: Epic 7 - Segmented performance reporting.
+FR47: Epic 4 - User-configurable analysis and display settings.
+FR48: Epic 1 - Public landing experience.
+FR49: Epic 1 - Production React adaptation of supplied design.
+FR50: Epic 1 - Acquisition and pricing calls to action.
+FR51: Epic 2 - Phone-number OTP request.
+FR52: Epic 2 - Pluggable, enumeration-safe SMS delivery.
+FR53: Epic 2 - OTP verification and session creation.
+FR54: Epic 2 - OTP abuse rate limits.
+FR55: Epic 2 - Resend, expiry, lockout, and recovery states.
+FR56: Epic 2 - Terms, privacy, and risk acceptance.
+FR57: Epic 3 - Public-route and paid-route access boundary.
+FR58: Epic 3 - Subscriber paywall.
+FR59: Epic 3 - Server-created Stripe Checkout.
+FR60: Epic 3 - Trusted Stripe identity association.
+FR61: Epic 3 - Verified idempotent Stripe webhooks.
+FR62: Epic 3 - Subscription-derived entitlements.
+FR63: Epic 3 - Server-confirmed checkout activation.
+FR64: Epic 3 - Stripe Customer Portal access.
+FR65: Epic 3 - Subscription and recovery UX.
+FR66: Epic 3 - Billing race and failure handling.
+FR67: Epic 3 - Support reconciliation.
 
 ## Epic List
 
-{{epics_list}}
+### Epic 1: Discover FIND THE EDGE
+Visitors can understand the product, its evidence-first approach, pricing path, and risk posture through a polished public landing experience adapted from the supplied design.
+**FRs covered:** FR48, FR49, FR50.
+
+### Epic 2: Create and Secure an Account
+Visitors can accept required terms, sign in using phone number and OTP, recover from common verification problems, maintain a secure session, and sign out.
+**FRs covered:** FR19, FR20, FR21, FR22, FR23, FR51, FR52, FR53, FR54, FR55, FR56.
+
+### Epic 3: Subscribe and Unlock the Product
+Authenticated users can understand the paid offering, subscribe through Stripe, gain server-verified access, manage billing, and recover from payment or entitlement problems.
+**FRs covered:** FR57, FR58, FR59, FR60, FR61, FR62, FR63, FR64, FR65, FR66, FR67.
+
+### Epic 4: Explore Trustworthy Sports Markets
+Subscribers can browse registered sports and upcoming events, inspect normalized target/comparison odds and movement, understand freshness and provider coverage, and configure their analysis preferences using reproducible deterministic data.
+**FRs covered:** FR1, FR2, FR3, FR4, FR5, FR6, FR7, FR8, FR9, FR10, FR24, FR25, FR26, FR27, FR28, FR29, FR30, FR41, FR47.
+
+### Epic 5: Find and Understand the Edge
+Subscribers can open a decision-focused dashboard, see only fresh qualified opportunities, and understand the evidence, confidence, and exact reasons to play or pass.
+**FRs covered:** FR11, FR31, FR32, FR33, FR34, FR35.
+
+### Epic 6: Scout an Event with Verifiable Evidence
+Subscribers can launch and monitor scouting, review versioned structured reports, distinguish verified facts from deterministic calculations and AI interpretation, and receive an honest PASS when evidence is insufficient.
+**FRs covered:** FR12, FR36, FR37, FR38, FR39, FR40.
+
+### Epic 7: Track Decisions and Measure Process Quality
+Subscribers can maintain a watchlist, record and settle bets, and evaluate ROI, CLV, confidence, and performance segments without over-weighting short-term win rate.
+**FRs covered:** FR42, FR43, FR44, FR45, FR46.
+
+### Epic 8: Learn Safely from Paper Picks
+Subscribers and product operators can run an immutable paper-pick feedback loop, grade results, evaluate strategies without leakage, and promote improvements through controlled evidence-based gates while real-money execution remains disabled.
+**FRs covered:** FR13, FR14, FR15, FR16, FR17, FR18.

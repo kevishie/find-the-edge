@@ -2157,18 +2157,37 @@ export async function runProductionOddsControlPlane(input: {
                 markets: "main",
                 quota: "reserved",
               });
+              const cursor = pageToken === "start" ? undefined : pageToken;
               const fetchPage = () =>
                 input.fetchSharpOdds
-                  ? input.fetchSharpOdds(
-                      sharpLeague,
-                      input.sharpApiKey,
-                      pageToken === "start" ? undefined : pageToken,
-                    )
+                  ? input.fetchSharpOdds(sharpLeague, input.sharpApiKey, cursor)
                   : (input.fetchSharpFeatured ?? fetchSharpApiFeaturedOdds)(
                       sharpLeague,
                       input.sharpApiKey,
-                      pageToken === "start" ? undefined : pageToken,
-                    ).then(({ page }) => page);
+                      cursor,
+                    )
+                      .then(({ page }) => page)
+                      .catch((error) => {
+                        // The provider withdrew featured coverage for some
+                        // leagues in its 2026-08 feed migration; the standard
+                        // odds endpoint still serves them. A featured 4xx
+                        // must degrade to that endpoint, not fail the league.
+                        if (
+                          error instanceof SharpApiError &&
+                          error.code === "provider-rejected"
+                        ) {
+                          input.metrics?.emit("OddsFeaturedFallback", 1, {
+                            provider: SHARP_API_PROVIDER_ID,
+                            league: policy.leagueKey,
+                          });
+                          return fetchSharpApiOddsPage(
+                            sharpLeague,
+                            input.sharpApiKey,
+                            cursor,
+                          );
+                        }
+                        throw error;
+                      });
               const fetched = await fetchSharpOddsPageWithRetry(fetchPage, () =>
                 input.metrics?.emit("OddsProviderInvalidResponseRetry", 1, {
                   provider: SHARP_API_PROVIDER_ID,

@@ -1757,7 +1757,7 @@ describe("Games", () => {
     expect(screen.getByText("+145")).toBeInTheDocument();
     expect(screen.getByText("+220")).toBeInTheDocument();
     expect(screen.getByText("+175")).toBeInTheDocument();
-    expect(screen.getByText(/draw/)).toBeInTheDocument();
+    expect(screen.getByText("Tie")).toBeInTheDocument();
   });
 
   it("shows configuration failure without making a request", async () => {

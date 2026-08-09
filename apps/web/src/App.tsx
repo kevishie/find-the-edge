@@ -1213,7 +1213,7 @@ const americanToProbability = (odds: number) =>
 
 function FairCell({
   selection,
-  counterpart,
+  counterparts,
   marketKey,
 }: {
   readonly selection?:
@@ -1223,7 +1223,7 @@ function FairCell({
         readonly selectionKey: string;
       }
     | undefined;
-  readonly counterpart?: { readonly americanOdds: number } | undefined;
+  readonly counterparts?: readonly { readonly americanOdds: number }[];
   readonly marketKey: string;
 }) {
   if (!selection)
@@ -1240,10 +1240,13 @@ function FairCell({
         : linePoint(selection.point);
   let fair: number | null = null;
   let ev: number | null = null;
-  if (counterpart) {
+  if (counterparts && counterparts.length > 0) {
     const pSelf = americanToProbability(selection.americanOdds);
-    const pOther = americanToProbability(counterpart.americanOdds);
-    const fairProbability = pSelf / (pSelf + pOther);
+    const pOthers = counterparts.reduce(
+      (total, other) => total + americanToProbability(other.americanOdds),
+      0,
+    );
+    const fairProbability = pSelf / (pSelf + pOthers);
     fair = probabilityToAmerican(fairProbability);
     ev =
       (fairProbability * americanToDecimal(selection.americanOdds) - 1) * 100;
@@ -1294,6 +1297,11 @@ function EventGameBlock({
         selectionLabel === (side === "away" ? away : home),
     );
   };
+  const drawSelection = prices.find(
+    ({ marketKey, selectionKey, selectionLabel }) =>
+      marketKey === "moneyline" &&
+      (selectionKey === "draw" || selectionLabel === "Draw"),
+  );
   const openDetail = () =>
     void navigate({
       to: "/events/$gameId",
@@ -1343,7 +1351,12 @@ function EventGameBlock({
             key={marketKey}
             marketKey={marketKey}
             selection={bySide(marketKey, side)}
-            counterpart={bySide(marketKey, side === "away" ? "home" : "away")}
+            counterparts={[
+              bySide(marketKey, side === "away" ? "home" : "away"),
+              ...(marketKey === "moneyline" && drawSelection
+                ? [drawSelection]
+                : []),
+            ].filter((value) => value !== undefined)}
           />
         ))}
       </tr>
@@ -1364,8 +1377,35 @@ function EventGameBlock({
         }
       }}
     >
-      {teamRow("away")}
-      {teamRow("home")}
+      {game.sportKey === "soccer" ? (
+        <>
+          {teamRow("home")}
+          <tr className="evb-team-row">
+            <th scope="row">
+              <span className="evb-crest" aria-hidden="true">
+                TIE
+              </span>
+              <span className="evb-name">Tie</span>
+            </th>
+            <td className="evb-cell-wrap" />
+            <td className="evb-cell-wrap" />
+            <FairCell
+              marketKey="moneyline"
+              selection={drawSelection}
+              counterparts={[
+                bySide("moneyline", "home"),
+                bySide("moneyline", "away"),
+              ].filter((value) => value !== undefined)}
+            />
+          </tr>
+          {teamRow("away")}
+        </>
+      ) : (
+        <>
+          {teamRow("away")}
+          {teamRow("home")}
+        </>
+      )}
       <tr className="evb-footer-row">
         <td colSpan={4}>
           <div className="evb-footer">
@@ -1384,19 +1424,6 @@ function EventGameBlock({
                 {game.metadata.freshness.state === "stale" && " — stale"}
               </span>
             )}
-            {(() => {
-              // Three-way markets carry a draw side that has no team row.
-              const draw = prices.find(
-                ({ marketKey, selectionKey, selectionLabel }) =>
-                  marketKey === "moneyline" &&
-                  (selectionKey === "draw" || selectionLabel === "Draw"),
-              );
-              return draw ? (
-                <span className="evb-draw">
-                  · draw <strong>{oddsPrice(draw.americanOdds)}</strong>
-                </span>
-              ) : null;
-            })()}
           </div>
         </td>
       </tr>
