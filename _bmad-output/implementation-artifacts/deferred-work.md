@@ -104,3 +104,21 @@ Paying for Sharp ($399/mo, 1000 rpm, all endpoints); currently consuming only
    10s fast lane remains the fallback.
 7. Reference endpoints /teams /markets /sportsbooks — real team abbreviations
    for the block crests instead of derived monograms.
+
+## Soccer lines: serving-join gap after the featured fallback (2026-08-09 evening)
+
+Ingestion is healthy post-fallback (1,500+ MLS snapshots persisted), but the
+board still shows soccer as unavailable. Diagnosis so far:
+
+- Detail cells for MLS events read 309 unavailable + 3 "partial"; partial ==
+  availability evidence state "incomplete" written at persist time.
+- FIXTURE_ODDS current keys embed canonicalEventVersion; soccer events churn
+  versions (and even id BASES — "usa_-_major_league_soccer_*", now "mls+_*")
+  faster than MLB, so odds persisted at version N orphan when reconciliation
+  advances the event to N+1 before the next odds pass.
+- Next fixes: (1) make the current-odds read tolerate the immediately prior
+  version (or key current rows version-independently), (2) inspect why the
+  standard-endpoint persist emits "incomplete" availability for markets the
+  raw feed fully prices, (3) FTE-061 aliasing is holding starts steady but
+  provider id-base churn keeps minting new canonical events mid-day — the
+  identity claim may need base-insensitive treatment.
