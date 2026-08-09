@@ -4094,3 +4094,57 @@ footer {
     monospace;
   color: #56515f;
 }
+
+/* Event Explorer — design-compact table cells */
+.evx-kickoff {
+  white-space: nowrap;
+}
+.event-explorer-table tbody th[scope="row"] small {
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  color: #6b6678;
+  letter-spacing: 0.5px;
+}
+.event-explorer-table .event-metadata-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  max-width: 250px;
+}
+.event-explorer-table .event-metadata-badge {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+  letter-spacing: 0.5px;
+}
+.event-explorer-table .event-metadata-badges time,
+.event-explorer-table .event-metadata-badges p {
+  font-size: 10px;
+  color: #56515f;
+  margin: 0;
+  line-height: 1.4;
+}
+.event-explorer-table .event-metadata-badges time {
+  flex-basis: 100%;
+}
+/* Reason prose and action footnotes are tooltip-depth detail in the
+   compact table; they stay in the DOM for assistive tech. */
+.event-explorer-table .event-metadata-reason,
+.event-explorer-table .scout-action small,
+.event-explorer-table .disabled-action small {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.event-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}

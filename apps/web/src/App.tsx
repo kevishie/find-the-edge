@@ -34,7 +34,6 @@ import {
 import { mlbFindTheEdgeStrategy } from "@find-the-edge/sports";
 import {
   eventFreshnessPresentation,
-  eventCompetitionOptions,
   eventMatchupLabel,
   filterAndSortEvents,
   eventLifecyclePresentation,
@@ -855,6 +854,27 @@ interface ExplorerSearch {
   readonly direction: EventExplorerSortDirection;
 }
 
+const gamesShortDay = (day: string) =>
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(`${day}T12:00:00-05:00`));
+const kickoffDisplay = (instant: string) => {
+  const at = new Date(instant);
+  const day = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+  }).format(at);
+  const time = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(at);
+  return `${day} · ${time} ET`;
+};
+
 function GamesExplorer() {
   const client = useContext(GamesClientContext);
   const search = useSearch({ from: "/events" });
@@ -961,7 +981,6 @@ function GamesExplorer() {
       replace: true,
     });
   const baseItems = state.kind === "ready" ? state.page.items : [];
-  const competitions = eventCompetitionOptions(baseItems);
   const visibleItems = filterAndSortEvents(baseItems, {
     competition,
     query,
@@ -1005,11 +1024,25 @@ function GamesExplorer() {
             </button>
           ))}
         </fieldset>
-        <label>
-          <span>Eastern calendar day</span>
+        <label className="csx-chip csx-date-chip" title="Slate date">
+          <span className="csx-chip-glyph" aria-hidden="true">
+            ▤
+          </span>
+          {gamesShortDay(day)}
           <input
             type="date"
+            aria-label="Eastern calendar day"
             value={day}
+            onClick={(event) => {
+              const input = event.currentTarget;
+              if (typeof input.showPicker === "function") {
+                try {
+                  input.showPicker();
+                } catch {
+                  input.focus();
+                }
+              }
+            }}
             onChange={(event) => {
               setState({ kind: "loading" });
               updateSearch({ day: event.currentTarget.value });
@@ -1043,22 +1076,6 @@ function GamesExplorer() {
             ))}
           </select>
         </label>
-        <label>
-          <span>Competition</span>
-          <select
-            value={competition}
-            onChange={(event) =>
-              updateSearch({ competition: event.currentTarget.value })
-            }
-          >
-            <option value="">All competitions</option>
-            {competitions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
         <label className="event-search">
           <span>Participant search</span>
           <input
@@ -1069,38 +1086,6 @@ function GamesExplorer() {
               updateSearch({ query: event.currentTarget.value })
             }
           />
-        </label>
-        <label>
-          <span>Sort events</span>
-          <select
-            value={sort}
-            onChange={(event) =>
-              updateSearch({
-                sort: event.currentTarget.value as EventExplorerSortField,
-              })
-            }
-          >
-            <option value="kickoff">Kickoff</option>
-            <option value="matchup">Matchup</option>
-            <option value="competition">Competition</option>
-            <option value="lifecycle">Lifecycle</option>
-            <option value="freshness">Freshness</option>
-          </select>
-        </label>
-        <label>
-          <span>Sort direction</span>
-          <select
-            value={direction}
-            onChange={(event) =>
-              updateSearch({
-                direction: event.currentTarget
-                  .value as EventExplorerSortDirection,
-              })
-            }
-          >
-            <option value="asc">Ascending</option>
-            <option value="desc">Descending</option>
-          </select>
         </label>
         <div
           className="event-view-toggle"
@@ -1192,11 +1177,8 @@ function GamesExplorer() {
                   <tr>
                     {(
                       [
-                        ["matchup", "Matchup"],
-                        ["kickoff", "Kickoff"],
-                        ["competition", "Competition"],
-                        ["lifecycle", "Lifecycle"],
-                        ["freshness", "Freshness"],
+                        ["matchup", "Event"],
+                        ["kickoff", "Kickoff (ET)"],
                       ] as const
                     ).map(([field, label]) => (
                       <th scope="col" key={field}>
@@ -1223,6 +1205,7 @@ function GamesExplorer() {
                         </button>
                       </th>
                     ))}
+                    <th scope="col">Status</th>
                     <th scope="col">Spread</th>
                     <th scope="col">Total</th>
                     <th scope="col">ML</th>
@@ -1294,16 +1277,22 @@ function EventExplorerRow({
     <tr className="event-card" data-event-id={game.id}>
       <th scope="row">
         <h2>{eventMatchupLabel(game)}</h2>
-        {prices[0] && (
-          <small>Observed {easternDisplay(prices[0].observedAt)} Eastern</small>
-        )}
+        <small>
+          {game.competition.key.toUpperCase()}
+          {prices[0] && (
+            <> · Observed {easternDisplay(prices[0].observedAt)} Eastern</>
+          )}
+        </small>
       </th>
-      <td>{easternDisplay(game.startsAt)} Eastern</td>
-      <td>{game.competition.key}</td>
+      <td
+        className="evx-kickoff"
+        title={`${easternDisplay(game.startsAt)} Eastern`}
+      >
+        {kickoffDisplay(game.startsAt)}
+      </td>
       <td>
         <EventMetadataBadges game={game} />
       </td>
-      <td>{eventFreshnessPresentation(game.metadata.freshness.state).label}</td>
       <td>{marketValues("spread")}</td>
       <td>{marketValues("total")}</td>
       <td>{marketValues("moneyline")}</td>
@@ -1347,7 +1336,7 @@ function EventExplorerCard({
   return (
     <article className="event-explorer-card" data-event-id={game.id}>
       <p className="eyebrow">
-        {game.competition.key} · {easternDisplay(game.startsAt)} Eastern
+        {game.competition.key.toUpperCase()} · {kickoffDisplay(game.startsAt)}
       </p>
       <h2>{eventMatchupLabel(game)}</h2>
       <EventMetadataBadges game={game} />

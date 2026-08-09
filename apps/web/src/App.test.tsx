@@ -1681,9 +1681,7 @@ describe("Games", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("+1.5")).toBeInTheDocument();
     expect(screen.getByText("O 8.5")).toBeInTheDocument();
-    expect(
-      screen.getByText("Aug 1, 2026, 7:05 PM Eastern"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Aug 1 · 7:05 PM ET")).toBeInTheDocument();
     const price = screen.getByText("+120");
     expect(price.closest(".event-card")).toHaveTextContent(
       "Observed Aug 1, 2026, 8:00 AM Eastern",
@@ -1727,9 +1725,7 @@ describe("Games", () => {
     render(
       <App initialPath="/events" gamesClient={{ ok: true, value: { list } }} />,
     );
-    expect(
-      await screen.findByText("Aug 1, 2026, 7:05 PM Eastern"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Aug 1 · 7:05 PM ET")).toBeInTheDocument();
     expect(screen.queryByText(/UNTRUSTED/)).not.toBeInTheDocument();
   });
 

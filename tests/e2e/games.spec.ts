@@ -42,7 +42,7 @@ test("shows unchanged seeded MLB and MLS identifiers without authentication", as
       "moneyline Boston Red Sox +120",
     );
   }
-  await expect(page.getByText("Aug 1, 2026, 7:05 PM Eastern")).toBeVisible();
+  await expect(page.getByText("Aug 1 · 7:05 PM ET")).toBeVisible();
   await expect(boston.getByLabel("Lifecycle: scheduled")).toBeVisible();
   await expect(boston.getByLabel("Event metadata is current")).toBeVisible();
   await expect(boston.getByText(/Evidence .* Eastern/)).toBeVisible();
@@ -72,10 +72,9 @@ test("shows unchanged seeded MLB and MLS identifiers without authentication", as
 test("combines lifecycle and participant filters and opens canonical detail", async ({
   page,
 }) => {
-  await page.goto("/games?day=2026-08-01&sport=mlb&status=all");
+  await page.goto("/games?day=2026-08-01&sport=mlb&status=all&sort=matchup");
   // Legacy /games links redirect to the renamed /events route.
   await expect(page).toHaveURL(/\/events\?/);
-  await page.getByLabel("Sort events").selectOption("matchup");
   await expect
     .poll(async () =>
       page
@@ -86,9 +85,6 @@ test("combines lifecycle and participant filters and opens canonical detail", as
       "Baltimore Orioles vs Toronto Blue Jays",
       "Boston Red Sox vs New York Yankees",
     ]);
-  await page
-    .getByRole("combobox", { name: "Competition" })
-    .selectOption("mlb-cup");
   await page.getByLabel("Participant search").fill("Toronto");
   await expect(
     page.getByRole("heading", {
@@ -104,14 +100,13 @@ test("combines lifecycle and participant filters and opens canonical detail", as
   await expect(page.getByRole("button", { name: "Scout" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Watchlist" })).toBeDisabled();
   await expect(
-    page.getByText("Scouting is unavailable in this environment."),
-  ).toBeVisible();
+    page.getByText("Scouting is unavailable in this environment.").first(),
+  ).toBeAttached();
   await expect(
-    page.getByText("Unavailable: Watchlist API is not built yet."),
-  ).toBeVisible();
+    page.getByText("Unavailable: Watchlist API is not built yet.").first(),
+  ).toBeAttached();
   await page.getByRole("link", { name: "View Details" }).click();
   await expect(page).toHaveURL(/status=all/);
-  await expect(page).toHaveURL(/competition=mlb-cup/);
   await expect(page).toHaveURL(/query=Toronto/);
   await expect(page).toHaveURL(/sort=matchup/);
   await expect(
@@ -122,10 +117,7 @@ test("combines lifecycle and participant filters and opens canonical detail", as
   await expect(page.getByLabel("Lifecycle: postponed")).toBeVisible();
   await page.getByRole("link", { name: "Back to events" }).click();
   await expect(page.getByLabel("Participant search")).toHaveValue("Toronto");
-  await expect(page.getByLabel("Sort events")).toHaveValue("matchup");
-  await expect(
-    page.getByRole("combobox", { name: "Competition", exact: true }),
-  ).toHaveValue("mlb-cup");
+  await expect(page).toHaveURL(/sort=matchup/);
 });
 
 test("uses an explicit second MLB Eastern day", async ({ page }) => {
