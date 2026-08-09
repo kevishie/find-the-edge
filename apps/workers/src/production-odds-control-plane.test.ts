@@ -1882,6 +1882,67 @@ describe("production odds control-plane composition", () => {
     });
   });
 
+  it("sets drifted cross-page participants aside instead of failing the run", async () => {
+    // The provider's prediction-exchange rows drift participant labels for
+    // the same event identity; the merge keeps the first-seen participants,
+    // rejects the drifted candidate, and never fails the league run.
+    const material = (awayTeam: string, homeTeam: string, book: string) => ({
+      kind: "sharpapi",
+      page: {
+        events: [
+          {
+            providerEventId: "drift-event",
+            providerEventUuid: "drift-event-uuid",
+            awayTeam,
+            homeTeam,
+            startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+            bookmakers: [{ id: book, label: book, prices: [] }],
+          },
+        ],
+        hasMore: false,
+        retrievedAt: "2026-08-03T12:00:00.000Z" as IsoTimestamp,
+      },
+    });
+    const control = new MemoryOddsControlPlaneStore();
+    await control.sealPage({
+      runId: "drift-run",
+      pageToken: "start",
+      nextPageToken: "two",
+      responseDigest: "drift-run:start",
+      normalizedItems: [
+        material("Toronto Blue Jays", "Philadelphia Phillies", "pinnacle"),
+      ],
+      gaps: [],
+      quotaCost: 1,
+      sealedAt: at,
+    });
+    await control.sealPage({
+      runId: "drift-run",
+      pageToken: "two",
+      responseDigest: "drift-run:two",
+      normalizedItems: [material("", "Philadelphia Phillies", "polymarket")],
+      gaps: [],
+      quotaCost: 1,
+      sealedAt: at,
+    });
+    const merged = await reconstructSharpOddsRun(control, "drift-run");
+    expect(merged.events).toHaveLength(1);
+    expect(merged.events[0]).toMatchObject({
+      awayTeam: "Toronto Blue Jays",
+      homeTeam: "Philadelphia Phillies",
+    });
+    // The drifted candidate's book never contaminates the merged event.
+    expect(merged.events[0]!.bookmakers.map(({ id }) => id)).toEqual([
+      "pinnacle",
+    ]);
+    expect(merged.rejections).toContainEqual(
+      expect.objectContaining({
+        reason: "participant-conflict",
+        providerEventId: "drift-event",
+      }),
+    );
+  });
+
   it("persists scoped missing availability for a scheduled event omitted from odds", async () => {
     const events = new MemoryEventIngestionStore();
     const control = new MemoryOddsControlPlaneStore();

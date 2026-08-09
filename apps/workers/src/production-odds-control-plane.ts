@@ -184,6 +184,7 @@ import {
 import {
   SHARP_API_PROVIDER_ID,
   SharpApiError,
+  type SharpApiNormalizationRejection,
   fetchSharpApiFeaturedOdds,
   fetchSharpApiOddsPage,
   fetchSharpApiEventOdds,
@@ -627,6 +628,7 @@ const mergeSharpOddsPages = (
 ): SharpApiOddsPage => {
   const events = new Map<string, SharpApiOddsPage["events"][number]>();
   const eventRetrievedAt = new Map<string, IsoTimestamp>();
+  const participantConflicts: SharpApiNormalizationRejection[] = [];
   const withRetrievalBoundary = (
     event: SharpApiOddsPage["events"][number],
     pageRetrievedAt: IsoTimestamp,
@@ -687,13 +689,20 @@ const mergeSharpOddsPages = (
         !reversed &&
         (current.awayTeam !== candidate.awayTeam ||
           current.homeTeam !== candidate.homeTeam)
-      )
-        throw new SharpApiError(
-          "invalid-response",
-          false,
-          undefined,
-          "odds:cross-page-event-participants",
-        );
+      ) {
+        // The provider's prediction-exchange rows drift participant labels
+        // for the same event identity (empty away teams, per-book naming).
+        // A drifted candidate must neither corrupt the merged event nor
+        // fail the whole league run — its rows are set aside as rejections
+        // and the first-seen participants stand.
+        participantConflicts.push({
+          providerId: SHARP_API_PROVIDER_ID,
+          reason: "participant-conflict",
+          auditId: candidate.providerEventId.slice(0, 64),
+          providerEventId: candidate.providerEventId,
+        });
+        continue;
+      }
       // Schedule reconciliation owns canonical start time. Odds pages for the
       // same exact provider event UUID can disagree after a delay or
       // postponement, so retain the first normalized start and merge books.
@@ -759,7 +768,10 @@ const mergeSharpOddsPages = (
     }
   return {
     events: [...events.values()],
-    rejections: pages.flatMap((page) => page.rejections ?? []),
+    rejections: [
+      ...pages.flatMap((page) => page.rejections ?? []),
+      ...participantConflicts,
+    ],
     hasMore: false,
     retrievedAt: (retrievedAt ?? new Date(0).toISOString()) as IsoTimestamp,
     eventRetrievedAt: Object.fromEntries(eventRetrievedAt),
