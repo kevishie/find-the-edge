@@ -4430,3 +4430,62 @@ footer {
     font-size: 10px;
   }
 }
+
+/* Sport rail — icon pills with count badges on the terminal slate. */
+.sport-rail {
+  display: flex;
+  gap: 8px;
+  margin: 24px 0 0;
+  padding: 8px;
+  background: #131318;
+  border: 1px solid #201e29;
+  border-radius: 12px;
+  overflow-x: auto;
+}
+.sport-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 100px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #a29daf;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sport-pill-icon {
+  opacity: 0.55;
+  font-size: 15px;
+}
+.sport-pill.selected {
+  border-color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.16);
+  color: #fff;
+}
+.sport-pill.selected .sport-pill-icon {
+  opacity: 1;
+  color: #c084fc;
+}
+.sport-pill-count {
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  background: #221f2e;
+  border-radius: 100px;
+  padding: 2px 7px;
+  color: #a29daf;
+}
+.sport-pill-count.qualified {
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+}
+.result-count {
+  text-align: right;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+}

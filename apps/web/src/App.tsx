@@ -782,7 +782,34 @@ export function EdgeLab() {
   );
 }
 
-const sportLabels: Record<GamesSport, string> = { mlb: "MLB", soccer: "MLS" };
+const sportLabels: Record<GamesSport, string> = {
+  mlb: "MLB",
+  soccer: "Soccer",
+};
+// A game qualifies when any cell is priced better than its no-vig fair line.
+const gameHasEdge = (game: UiGamesPage["items"][number]) => {
+  if (game.odds.state !== "available") return false;
+  const byMarket = new Map<string, { readonly americanOdds: number }[]>();
+  for (const price of game.odds.selections)
+    byMarket.set(price.marketKey, [
+      ...(byMarket.get(price.marketKey) ?? []),
+      price,
+    ]);
+  for (const sides of byMarket.values()) {
+    if (sides.length < 2) continue;
+    const total = sides.reduce(
+      (sum, side) => sum + americanToProbability(side.americanOdds),
+      0,
+    );
+    for (const side of sides) {
+      const fairProbability = americanToProbability(side.americanOdds) / total;
+      const ev =
+        (fairProbability * americanToDecimal(side.americanOdds) - 1) * 100;
+      if (ev > 0.05) return true;
+    }
+  }
+  return false;
+};
 
 const validDay = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -896,6 +923,9 @@ function GamesExplorer() {
     | { readonly kind: "ready"; readonly page: UiGamesPage }
     | { readonly kind: "error"; readonly message: string }
   >({ kind: "loading" });
+  const [otherSportItems, setOtherSportItems] = useState<UiGamesPage["items"]>(
+    [],
+  );
   const requestId = useRef(0);
 
   useEffect(() => {
@@ -931,6 +961,17 @@ function GamesExplorer() {
         return;
       }
       try {
+        const otherSport: GamesSport = sport === "mlb" ? "soccer" : "mlb";
+        // The sport rail needs the other slate's count for the day; it must
+        // not wait on the selected slate, and a failure just leaves the pill
+        // hidden until the next poll.
+        void activeClient
+          .list({ sport: otherSport, day, status }, controller.signal)
+          .then((otherPage) => {
+            if (id === requestId.current && !controller.signal.aborted)
+              setOtherSportItems(otherPage.items);
+          })
+          .catch(() => undefined);
         const page = await activeClient.list(
           { sport, day, status },
           controller.signal,
@@ -992,14 +1033,18 @@ function GamesExplorer() {
         <span className="maturity beta">live odds</span>
       </header>
 
-      <section className="game-filters" aria-label="Event filters">
-        <fieldset>
-          <legend>Sport</legend>
-          {(Object.keys(sportLabels) as GamesSport[]).map((key) => (
+      <nav className="sport-rail" aria-label="Sport rail">
+        {(Object.keys(sportLabels) as GamesSport[]).map((key) => {
+          const items = key === sport ? baseItems : otherSportItems;
+          // A sport with no slate for the day does not earn a pill.
+          if (items.length === 0 && key !== sport) return null;
+          const qualified = items.filter(gameHasEdge).length;
+          return (
             <button
               key={key}
               type="button"
-              className={sport === key ? "selected" : ""}
+              className={`sport-pill${sport === key ? " selected" : ""}`}
+              aria-label={sportLabels[key]}
               aria-pressed={sport === key}
               onClick={() => {
                 if (key === sport) return;
@@ -1007,10 +1052,20 @@ function GamesExplorer() {
                 updateSearch({ sport: key, competition: "", query: "" });
               }}
             >
+              <span className="sport-pill-icon" aria-hidden="true">
+                {key === "mlb" ? "◍" : "⊛"}
+              </span>
               {sportLabels[key]}
+              <span
+                className={`sport-pill-count${qualified > 0 ? " qualified" : ""}`}
+              >
+                {items.length}
+              </span>
             </button>
-          ))}
-        </fieldset>
+          );
+        })}
+      </nav>
+      <section className="game-filters" aria-label="Event filters">
         <label className="csx-chip csx-date-chip" title="Slate date">
           <span className="csx-chip-glyph" aria-hidden="true">
             ▤
@@ -1139,7 +1194,8 @@ function GamesExplorer() {
       {state.kind === "ready" && visibleItems.length > 0 && (
         <>
           <p className="result-count" role="status">
-            {visibleItems.length} events
+            {visibleItems.length} events · {sportLabels[sport]} ·{" "}
+            {visibleItems.filter(gameHasEdge).length} qualified
           </p>
           {!compact && (
             <div

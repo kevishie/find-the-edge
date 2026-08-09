@@ -5,6 +5,7 @@ import {
   screen,
   waitFor,
   within,
+  cleanup,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -1699,30 +1700,28 @@ describe("Games", () => {
     // The game block footer carries odds freshness instead of a timestamp.
     expect(price.closest(".event-card")?.textContent).toMatch(/odds \d+m old/);
     fireEvent.click(screen.getByRole("button", { name: "MLB" }));
-    expect(list).toHaveBeenCalledTimes(1);
+    // Both sports load per poll so the rail can size and hide its pills.
+    expect(list).toHaveBeenCalledTimes(2);
     expect(screen.queryByText("Loading games…")).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "MLS" }));
+    // A sport with no slate for the day earns no pill.
+    expect(
+      screen.queryByRole("button", { name: "Soccer" }),
+    ).not.toBeInTheDocument();
+    cleanup();
+    render(
+      <App
+        initialPath="/events?sport=soccer"
+        gamesClient={{ ok: true, value: { list } }}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "No Soccer events exist for this day and lifecycle selection.",
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Boston vs New York" }),
     ).not.toBeInTheDocument();
-    expect(
-      await screen.findByText(
-        "No MLS events exist for this day and lifecycle selection.",
-      ),
-    ).toBeInTheDocument();
-    expect(list).toHaveBeenLastCalledWith(
-      {
-        sport: "soccer",
-        status: "all",
-        day: new Intl.DateTimeFormat("en-CA", {
-          timeZone: "America/New_York",
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-        }).format(new Date()),
-      },
-      expect.any(AbortSignal),
-    );
   });
 
   it("derives the displayed Eastern start instead of trusting API display text", async () => {
@@ -1783,24 +1782,28 @@ describe("Games", () => {
     const old = new Promise<GamesPageDto>((resolve) => {
       resolveOld = resolve;
     });
+    // The initial soccer slate hangs; MLB resolves so its pill renders.
     const list = vi
       .fn<GamesClient["list"]>()
-      .mockImplementationOnce(() => old)
-      .mockResolvedValueOnce(page([]));
+      .mockImplementation(({ sport }) =>
+        sport === "soccer" ? old : Promise.resolve(page()),
+      );
     render(
-      <App initialPath="/events" gamesClient={{ ok: true, value: { list } }} />,
+      <App
+        initialPath="/events?sport=soccer"
+        gamesClient={{ ok: true, value: { list } }}
+      />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "MLS" }));
+    fireEvent.click(await screen.findByRole("button", { name: "MLB" }));
     expect(
-      await screen.findByText(
-        "No MLS events exist for this day and lifecycle selection.",
-      ),
+      await screen.findByRole("heading", { name: "Boston vs New York" }),
     ).toBeInTheDocument();
-    resolveOld(page());
+    // The abandoned soccer request resolves late and must not clobber MLB.
+    resolveOld(page([]));
     await Promise.resolve();
     expect(
-      screen.queryByRole("heading", { name: "Boston vs New York" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("heading", { name: "Boston vs New York" }),
+    ).toBeInTheDocument();
   });
 });
 

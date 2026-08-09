@@ -47,7 +47,7 @@ test("shows unchanged seeded MLB and MLS identifiers without authentication", as
   await expect(boston.getByLabel("Event metadata is current")).toBeVisible();
   await expect(boston.getByText(/Evidence .* Eastern/)).toBeVisible();
 
-  await page.getByRole("button", { name: "MLS" }).click();
+  await page.getByRole("button", { name: /Soccer/ }).click();
   await expect(
     page.getByRole("heading", { name: "Miami vs Atlanta" }),
   ).toBeVisible();
@@ -65,7 +65,9 @@ test("shows unchanged seeded MLB and MLS identifiers without authentication", as
 
   await page.getByLabel("Eastern calendar day").fill("2026-08-03");
   await expect(
-    page.getByText("No MLS events exist for this day and lifecycle selection."),
+    page.getByText(
+      "No Soccer events exist for this day and lifecycle selection.",
+    ),
   ).toBeVisible();
 });
 
@@ -156,7 +158,7 @@ test("renders compact accessible split bars on desktop and mobile", async ({
     2,
   );
   // The splits screen is MLB-only: the provider publishes no soccer splits.
-  await expect(page.getByRole("button", { name: "MLS" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Soccer/ })).toHaveCount(0);
 
   const board = page.getByRole("region", {
     name: /Betting splits comparison table/,

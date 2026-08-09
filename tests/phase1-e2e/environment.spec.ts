@@ -103,7 +103,7 @@ test("real hosted bundle loads provider MLB and MLS games by day", async ({
 
   const mls = await findProviderGame(request, "soccer", false);
   if (mls) {
-    await page.getByRole("button", { name: "MLS" }).click();
+    await page.getByRole("button", { name: /Soccer/ }).click();
     await page.getByLabel("Eastern calendar day").fill(mls.day);
     await expect(page.locator("[data-event-id]").first()).toBeVisible();
   }
