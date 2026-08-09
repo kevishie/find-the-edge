@@ -1501,14 +1501,25 @@ function EventGameBlock({
             {game.status !== "scheduled" && (
               <span className="evb-flag">· {game.status}</span>
             )}
-            {oddsAgeMinutes !== null && (
-              <span
-                className={`evb-age${game.metadata.freshness.state === "stale" ? " stale" : ""}`}
-              >
-                · odds {oddsAgeMinutes}m old
-                {game.metadata.freshness.state === "stale" && " — stale"}
-              </span>
-            )}
+            {(() => {
+              // Pre-game collection freezes at first pitch: past kickoff the
+              // numbers are closing lines, not stale quotes. Age (and the
+              // stale alarm) only mean something before the start.
+              const started =
+                snapshotAt !== null &&
+                snapshotAt !== undefined &&
+                Date.parse(game.startsAt) <= Date.parse(snapshotAt);
+              if (started)
+                return <span className="evb-age">· closing lines</span>;
+              return oddsAgeMinutes !== null ? (
+                <span
+                  className={`evb-age${game.metadata.freshness.state === "stale" ? " stale" : ""}`}
+                >
+                  · odds {oddsAgeMinutes}m old
+                  {game.metadata.freshness.state === "stale" && " — stale"}
+                </span>
+              ) : null;
+            })()}
           </div>
         </td>
       </tr>
