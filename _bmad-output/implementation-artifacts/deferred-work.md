@@ -77,3 +77,30 @@ Hardening candidates:
   from page one, so a poisoned run cannot permanently starve a league.
 - The `_b0` ghost rows still on boards are the churn-identity story
   (see the churn-split entry above) — now the top follow-up.
+
+## SharpAPI Sharp-plan capability audit (2026-08-09, docs.sharpapi.io)
+
+Paying for Sharp ($399/mo, 1000 rpm, all endpoints); currently consuming only
+/odds (featured+standard), /events, /splits, /account. Entitled but unused:
+
+1. `/opportunities/ev` — provider-computed +EV: Pinnacle-anchored no-vig fair
+   (Power method), EV%, Kelly %, confidence, quality tiers A/B/C, prop
+   support. Directly powers the dashboard "+EV Scanner" and opportunity
+   cards that exist in the design prototype. Highest value-per-effort.
+2. `/odds/best` — best price + consensus + per-book edge + market hold, with
+   Pinnacle in all_books on Sharp. Replaces the client-side same-book fair
+   line in the Event Explorer cells with a REAL fair reference, making the
+   green edge highlighting meaningful (the known gap).
+3. `/opportunities/arbitrage` (+ optimal stakes), `/opportunities/low_hold`,
+   `/opportunities/middles` — new alert surfaces.
+4. `/historical/clv` and closing odds — CLV tracking for the bet-tracker
+   designs; we already persist our own immutable history, CLV closes the loop.
+5. `/odds-delta` — compact line-move deltas; could cut fast-lane transfer.
+6. `/stream` SSE (odds/opportunities/gamestate channels, delta merge,
+   Last-Event-ID resume) — TRUE sub-second push, but requires the $99/mo
+   WebSocket add-on on any tier (10 concurrent streams). This flips the
+   FTE-060 polling-vs-push analysis: continuous ingestion becomes possible
+   if the add-on is purchased. Worker consumes SSE → persists → boards; the
+   10s fast lane remains the fallback.
+7. Reference endpoints /teams /markets /sportsbooks — real team abbreviations
+   for the block crests instead of derived monograms.
