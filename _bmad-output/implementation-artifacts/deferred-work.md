@@ -122,3 +122,27 @@ board still shows soccer as unavailable. Diagnosis so far:
   raw feed fully prices, (3) FTE-061 aliasing is holding starts steady but
   provider id-base churn keeps minting new canonical events mid-day — the
   identity claim may need base-insensitive treatment.
+
+## Version-tolerant current-odds reads — implementation plan (approved)
+
+Evidence: provider still prices mlb_astros_padres_2026-08-09_b3 (439 fresh
+rows at 22:42Z) while the canonical event sits at v2 with odds frozen at the
+v1→v2 advancement instant (16:40Z). Writes continue at the old version's
+keys; reads use event.version only. Same class as the soccer board flicker.
+
+Change (packages/database/src/games-repository.ts):
+- List path (~637-720): for each selection build key pairs — currentKey at
+  event.version AND event.version-1 (when >1). Batch both. In the join,
+  select per selection the row with the newer retrievedAt, validating each
+  row against ITS version's expected key (validateCurrent already takes the
+  expected key). allowedKeys/duplicate checks extend to the fallback pks.
+- Detail path (~332-380): same pairing for currentKey and the AVAILABILITY
+  keys; read-twice stability check unchanged (it compares snapshots, not
+  versions).
+- Root-cause follow-up (separate): the odds persist path pins the canonical
+  version from the exact-binding row at alias time; it should re-resolve the
+  CURRENT version each pass so writes follow advancements. Reads tolerant of
+  v-1 bridge the gap either way.
+- Tests: games-repository list/detail fixtures gain a case where fresh rows
+  live at v-1 and stale rows at v (newest retrievedAt wins), and one where
+  only v rows exist (unchanged behavior).
