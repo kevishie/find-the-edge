@@ -274,8 +274,16 @@ export const attachSplits = async (
       ...game,
       // Schedule refreshes may advance the canonical event version even when
       // the event identity and split evidence are unchanged. Return the
-      // freshest logical split per market/selection across versions.
-      splits: publishedSplitScopes(await listCurrent(game.id)),
+      // freshest logical split per market/selection across versions — but
+      // never evidence recorded against a HIGHER version than the event
+      // carries now (a rebuilt catalog restarts versions at one while
+      // retained split rows remember the old lineage; clients rightly
+      // refuse splits from the future).
+      splits: publishedSplitScopes(
+        (await listCurrent(game.id)).filter(
+          (split) => split.canonicalEventVersion <= game.version,
+        ),
+      ),
     })),
   ),
 });

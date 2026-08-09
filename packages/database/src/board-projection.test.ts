@@ -7,6 +7,7 @@ import {
   usableScheduleListings,
   validateStoredBoard,
   withoutWithdrawnListings,
+  attachSplits,
 } from "./board-projection";
 import type { BettingSplitRepository } from "./index";
 
@@ -57,6 +58,7 @@ describe("materialization", () => {
     items: [
       {
         id: `event:${day}`,
+        version: 1,
         metadata: {
           freshness: { state: "current" },
           availability: "available",
@@ -98,7 +100,7 @@ describe("materialization", () => {
     const puts: { pk: string; value: { body: string } }[] = [];
     const listCurrent = vi.fn(() =>
       Promise.resolve([
-        { id: "split-1", scope: "consensus" },
+        { id: "split-1", scope: "consensus", canonicalEventVersion: 1 },
         { id: "drop-me", scope: "draftkings" },
       ] as never),
     );
@@ -363,4 +365,29 @@ describe("withdrawn listings", () => {
       ]),
     ).toHaveLength(1);
   });
+});
+
+it("never attaches split evidence from a higher canonical version than the event", async () => {
+  // A rebuilt catalog restarts event versions at one while retained split
+  // rows remember the prior lineage; those rows must not reach clients.
+  const game = {
+    id: "event:mlb%3Amlb:mlb_a_b_2026-08-09_b2",
+    version: 1,
+    sportKey: "mlb",
+    leagueKey: "mlb",
+  } as never;
+  const splits = [
+    { id: "stale", canonicalEventVersion: 2, scope: "betmgm" },
+    { id: "fresh", canonicalEventVersion: 1, scope: "draftkings" },
+  ] as never[];
+  const page = await attachSplits(
+    { items: [game] } as never,
+    { listCurrent: () => Promise.resolve(splits) } as never,
+    () => Promise.resolve(splits as never),
+  );
+  expect(
+    (page.items[0] as { splits: readonly { id: string }[] }).splits.map(
+      ({ id }) => id,
+    ),
+  ).toEqual(["fresh"]);
 });
