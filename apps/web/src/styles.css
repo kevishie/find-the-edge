@@ -4177,10 +4177,10 @@ footer {
 .evb-block {
   cursor: pointer;
 }
-.evb-block:hover .evb-team-row th,
-.evb-block:hover .evb-team-row td,
-.evb-block:focus-visible .evb-team-row th,
-.evb-block:focus-visible .evb-team-row td {
+.evb-block:hover th,
+.evb-block:hover td,
+.evb-block:focus-visible th,
+.evb-block:focus-visible td {
   background: rgba(139, 92, 246, 0.05);
 }
 .evb-block:focus-visible {
