@@ -6,7 +6,7 @@ import { run } from "./phase1-support.mjs";
 
 export const RESET_ACCOUNT = "228246988391";
 export const RESET_REGION = "us-east-1";
-export const RESET_STACK = "FindTheEdge-dev-Foundation";
+export const RESET_STACK = "FindTheEdge-staging-Foundation";
 export const RESET_MODES = new Set(["dry-run", "apply"]);
 export const RESET_ENABLED_LEAGUES = Object.freeze([
   "mlb",

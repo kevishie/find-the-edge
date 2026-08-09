@@ -234,9 +234,9 @@ test("environment and identity require the exact dev target and apply confirmati
 
 const targetInput = () => {
   const stack = {
-    StackName: "FindTheEdge-dev-Foundation",
+    StackName: "FindTheEdge-staging-Foundation",
     StackId:
-      "arn:aws:cloudformation:us-east-1:228246988391:stack/FindTheEdge-dev-Foundation/id",
+      "arn:aws:cloudformation:us-east-1:228246988391:stack/FindTheEdge-staging-Foundation/id",
     StackStatus: "UPDATE_COMPLETE",
   };
   const resources = [
