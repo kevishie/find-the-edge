@@ -151,10 +151,11 @@ main:has(.game-filters) {
 }
 .event-actions {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-direction: row;
+  align-items: center;
   gap: 6px;
-  min-width: 11rem;
+  min-width: 15rem;
+  white-space: nowrap;
 }
 .event-actions .detail-link {
   margin-top: 0;
@@ -219,7 +220,7 @@ main:has(.game-filters) {
   background: #1b1a22;
   border: 1px solid #2a2833;
   border-radius: 7px;
-  padding: 7px 11px;
+  padding: 6px 10px;
   color: #f3f1f8;
   font-family: inherit;
   font-size: 11px;
@@ -4108,10 +4109,9 @@ footer {
 }
 .event-explorer-table .event-metadata-badges {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 4px 12px;
   max-width: 250px;
+  white-space: nowrap;
 }
 .event-explorer-table .event-metadata-badge {
   background: transparent;
@@ -4129,8 +4129,15 @@ footer {
   margin: 0;
   line-height: 1.4;
 }
+/* The design's status cell is one dot-label line; metadata freshness and
+   evidence timing stay in the DOM for assistive tech and tests. */
+.event-explorer-table .event-metadata-badge:not(:first-child),
 .event-explorer-table .event-metadata-badges time {
-  flex-basis: 100%;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
 }
 /* Reason prose and action footnotes are tooltip-depth detail in the
    compact table; they stay in the DOM for assistive tech. */

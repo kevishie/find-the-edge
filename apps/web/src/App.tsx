@@ -1275,14 +1275,16 @@ function EventExplorerRow({
     );
   return (
     <tr className="event-card" data-event-id={game.id}>
-      <th scope="row">
+      <th
+        scope="row"
+        title={
+          prices[0]
+            ? `Observed ${easternDisplay(prices[0].observedAt)} Eastern`
+            : undefined
+        }
+      >
         <h2>{eventMatchupLabel(game)}</h2>
-        <small>
-          {game.competition.key.toUpperCase()}
-          {prices[0] && (
-            <> · Observed {easternDisplay(prices[0].observedAt)} Eastern</>
-          )}
-        </small>
+        <small>{game.competition.key.toUpperCase()}</small>
       </th>
       <td
         className="evx-kickoff"

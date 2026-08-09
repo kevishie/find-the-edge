@@ -1683,9 +1683,13 @@ describe("Games", () => {
     expect(screen.getByText("O 8.5")).toBeInTheDocument();
     expect(screen.getByText("Aug 1 · 7:05 PM ET")).toBeInTheDocument();
     const price = screen.getByText("+120");
-    expect(price.closest(".event-card")).toHaveTextContent(
-      "Observed Aug 1, 2026, 8:00 AM Eastern",
-    );
+    // The observed timestamp moved from row text to the matchup tooltip.
+    expect(
+      price
+        .closest(".event-card")
+        ?.querySelector("th[scope=row]")
+        ?.getAttribute("title"),
+    ).toBe("Observed Aug 1, 2026, 8:00 AM Eastern");
     fireEvent.click(screen.getByRole("button", { name: "MLB" }));
     expect(list).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Loading games…")).not.toBeInTheDocument();
