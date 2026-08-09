@@ -154,7 +154,7 @@ main:has(.game-filters) {
   flex-direction: row;
   align-items: center;
   gap: 6px;
-  min-width: 15rem;
+  min-width: 19rem;
   white-space: nowrap;
 }
 .event-actions .detail-link {
