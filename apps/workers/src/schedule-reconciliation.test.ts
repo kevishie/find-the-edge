@@ -72,17 +72,38 @@ describe("scheduled provider reconciliation", () => {
       expect(store.events).toHaveLength(1);
     });
 
-  it("keeps a legitimate matchup outside the window separate", async () => {
+  it("keeps a doubleheader outside the window separate", async () => {
+    // Same matchup, same day, starts hours apart: two real games.
     const store = new MemoryEventIngestionStore();
     await bootstrap(store, event("game-1", "2026-08-04T17:00:00.000Z"));
     const result = await reconcileScheduledProviderEvent(
       store,
       "sharpapi",
-      event("game-2", "2026-08-04T17:02:01.000Z"),
+      event("game-2", "2026-08-04T21:05:00.000Z"),
       observedAt,
     );
     expect(["updated", "skipped"]).toContain(result.kind);
     expect(store.events).toHaveLength(2);
+  });
+
+  it("aliases a churned provider id with a rain-delay start shift", async () => {
+    // The provider rotates event ids alongside 30-60 minute schedule
+    // corrections; the shifted listing must continue the existing canonical
+    // event instead of bootstrapping an orphaned duplicate.
+    const store = new MemoryEventIngestionStore();
+    await bootstrap(store, event("game-1", "2026-08-04T17:00:00.000Z"));
+    const result = await reconcileScheduledProviderEvent(
+      store,
+      "sharpapi",
+      event("game-1_b3", "2026-08-04T17:40:00.000Z"),
+      observedAt,
+    );
+    expect(result.kind).toBe("updated");
+    expect(store.events).toHaveLength(1);
+    // The winning canonical schedule stays authoritative on replay.
+    expect([...store.events.values()][0]?.startsAt).toBe(
+      "2026-08-04T17:00:00.000Z",
+    );
   });
 
   it("does not merge reversed participants", async () => {

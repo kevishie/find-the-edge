@@ -2,7 +2,7 @@
 title: 'Churn-Stable Canonical Event Identity'
 type: 'feature'
 created: '2026-08-08'
-status: 'in-progress'
+status: 'done'
 ---
 
 <intent-contract>
@@ -52,6 +52,16 @@ orphans).
   consequence; withdrawn-listing filter unchanged.
 - Cleanup: after deploy, run the gated `reset-phase1-feed.yml` workflow so
   staging re-ingests cleanly (existing orphans are not retro-merged).
+
+## Resolution (2026-08-09)
+
+The alias machinery already existed (near-canonical candidate matching
+before bootstrap); the leak was NEAR_CANONICAL_START_TOLERANCE_SECONDS=120.
+Providers rotate ids alongside 30-60 minute schedule corrections, so churned
+listings fell outside two minutes and bootstrapped ghosts. Tolerance is now
+3600s; doubleheaders remain distinct (hours apart) and two candidates in the
+window stay ambiguous, never merged. Existing orphans are cleaned by the
+gated staging feed reset after deploy.
 
 ## Discovery (2026-08-08, pre-implementation)
 

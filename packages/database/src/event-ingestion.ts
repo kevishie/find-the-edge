@@ -45,7 +45,13 @@ export type EventIngestionOutcome =
       readonly kind: "unresolved";
       readonly reason: "no-candidate" | "ambiguous-candidates";
     };
-export const NEAR_CANONICAL_START_TOLERANCE_SECONDS = 120;
+// One hour: providers rotate event ids alongside rain-delay and schedule
+// corrections of 30-60+ minutes, and a miss here bootstraps a duplicate
+// canonical event (orphaned record, split line history). The same-matchup
+// same-day space this widens into is only doubleheaders, whose starts sit
+// hours apart; two candidates inside the window stay "ambiguous" and are
+// never merged.
+export const NEAR_CANONICAL_START_TOLERANCE_SECONDS = 3_600;
 export type NearCanonicalLookup = Pick<
   EventIngestionInput,
   | "sportKey"

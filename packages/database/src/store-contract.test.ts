@@ -608,8 +608,8 @@ function contract(name: string, create: () => EventIngestionStore) {
       const store = create();
       const candidates = [
         { id: "near-zero", seconds: 0 },
-        { id: "near-edge", seconds: 120 },
-        { id: "outside", seconds: 121 },
+        { id: "near-edge", seconds: 3_600 },
+        { id: "outside", seconds: 3_601 },
       ] as const;
       for (const candidate of candidates)
         await store.bootstrapCanonicalEvent(
