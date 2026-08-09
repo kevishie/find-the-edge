@@ -101,10 +101,11 @@ test("real hosted bundle loads provider MLB and MLS games by day", async ({
   await expect(row).toBeVisible();
   await expect(row).toContainText(/[+-]\d{2,4}/);
 
-  const mls = await findProviderGame(request, "soccer", false);
+  // Lines-only listings: soccer earns a pill (and rows) only when a priced
+  // slate exists, so the check navigates directly to a day known to have one.
+  const mls = await findProviderGame(request, "soccer", true);
   if (mls) {
-    await page.getByRole("button", { name: /Soccer/ }).click();
-    await page.getByLabel("Eastern calendar day").fill(mls.day);
+    await page.goto(`/events?sport=soccer&day=${mls.day}&status=all`);
     await expect(page.locator("[data-event-id]").first()).toBeVisible();
   }
 
