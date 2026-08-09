@@ -4177,10 +4177,10 @@ footer {
 .evb-block {
   cursor: pointer;
 }
-.evb-block:hover th,
-.evb-block:hover td,
-.evb-block:focus-visible th,
-.evb-block:focus-visible td {
+/* Paint the block itself: cells stay transparent, so the tint is one
+   seamless band across every row including the footer. */
+.evb-block:hover,
+.evb-block:focus-visible {
   background: rgba(139, 92, 246, 0.05);
 }
 .evb-block:focus-visible {
@@ -4193,11 +4193,18 @@ footer {
   vertical-align: middle;
 }
 .evb-team-row th {
-  display: flex;
-  align-items: center;
-  gap: 11px;
   min-width: 240px;
   border-bottom: 0;
+  white-space: nowrap;
+}
+.evb-team-row th > * {
+  vertical-align: middle;
+}
+.evb-team-row th .evb-crest {
+  margin-right: 11px;
+}
+.evb-team-row th .evb-home {
+  margin-left: 8px;
 }
 .evb-crest {
   width: 30px;
@@ -4371,8 +4378,8 @@ footer {
   .event-explorer-table tbody .evb-team-row th[scope="row"] {
     min-width: 0;
     width: 108px;
-    gap: 7px;
     padding: 8px 6px;
+    white-space: normal;
   }
   .evb-team-row th .evb-crest {
     display: none;
