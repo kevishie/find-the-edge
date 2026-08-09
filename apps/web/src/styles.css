@@ -3903,7 +3903,10 @@ footer {
 
   .csx-head {
     position: sticky;
-    top: var(--csx-header-height, 0px);
+    /* Tucked a few pixels under the opaque card header so zoom and
+       subpixel measurement drift can never open a seam between the two
+       sticky bars; the overlap hides only the head's own top padding. */
+    top: calc(var(--csx-header-height, 0px) - 8px);
     z-index: 3;
   }
 }

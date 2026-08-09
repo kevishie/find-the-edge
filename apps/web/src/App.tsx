@@ -2070,8 +2070,13 @@ function SplitsExplorer() {
     const card = cardRef.current;
     const header = headerRef.current;
     if (!card || !header) return;
+    // Fractional height: integer offsetHeight rounds under browser zoom
+    // and the rounding error becomes a visible seam between sticky bars.
     const sync = () =>
-      card.style.setProperty("--csx-header-height", `${header.offsetHeight}px`);
+      card.style.setProperty(
+        "--csx-header-height",
+        `${header.getBoundingClientRect().height}px`,
+      );
     sync();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(sync);

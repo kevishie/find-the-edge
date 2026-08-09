@@ -132,9 +132,10 @@ test("pins the column headers below the card header while scrolling", async ({
   const head = await page.locator(".csx-head").boundingBox();
   expect(header).not.toBeNull();
   expect(head).not.toBeNull();
-  // The column headers rest directly beneath the sticky card header.
-  expect(Math.abs(head!.y - (header!.y + header!.height))).toBeLessThanOrEqual(
-    2,
-  );
+  // The column headers tuck slightly under the sticky card header — an
+  // overlap, never a gap.
+  const offset = head!.y - (header!.y + header!.height);
+  expect(offset).toBeLessThanOrEqual(0);
+  expect(offset).toBeGreaterThanOrEqual(-10);
   expect(header!.y).toBeLessThanOrEqual(1);
 });
