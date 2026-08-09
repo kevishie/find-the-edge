@@ -1015,12 +1015,21 @@ function GamesExplorer() {
   // render, on any surface.
   const hasLines = (game: UiGamesPage["items"][number]) =>
     game.odds.state === "available" && game.odds.selections.length > 0;
-  const visibleItems = filterAndSortEvents(baseItems.filter(hasLines), {
-    competition,
-    query,
-    sort,
-    direction,
-  });
+  const pageSnapshotAt =
+    state.kind === "ready" ? state.page.snapshotAt : undefined;
+  const notStarted = (game: UiGamesPage["items"][number]) =>
+    status !== "scheduled" ||
+    !pageSnapshotAt ||
+    Date.parse(game.startsAt) > Date.parse(pageSnapshotAt);
+  const visibleItems = filterAndSortEvents(
+    baseItems.filter(hasLines).filter(notStarted),
+    {
+      competition,
+      query,
+      sort,
+      direction,
+    },
+  );
   const partial =
     state.kind === "ready" &&
     (state.page.lifecycleCoverage?.unavailable.length ?? 0) > 0;
@@ -1099,22 +1108,21 @@ function GamesExplorer() {
             }}
           />
         </label>
-        <label>
-          <span>Lifecycle</span>
-          {/* People filter for games that have not started; every other
-              lifecycle (in progress, completed, cancelled …) is "All". */}
-          <select
-            value={status === "scheduled" ? "scheduled" : "all"}
-            onChange={(event) =>
-              updateSearch({
-                status: event.currentTarget.value as EventExplorerStatus,
-              })
-            }
-          >
-            <option value="all">All statuses</option>
-            <option value="scheduled">Not started</option>
-          </select>
-        </label>
+        {/* Kickoff decides "started": provider id churn leaves in-progress
+            games' lifecycle stuck at scheduled, so a lifecycle filter cannot
+            tell them apart — the clock can. */}
+        <button
+          type="button"
+          className={`csx-chip evx-toggle${status === "scheduled" ? " selected" : ""}`}
+          aria-pressed={status === "scheduled"}
+          onClick={() =>
+            updateSearch({
+              status: status === "scheduled" ? "all" : "scheduled",
+            })
+          }
+        >
+          Hide started
+        </button>
         <label className="event-search">
           <span>Participant search</span>
           <input

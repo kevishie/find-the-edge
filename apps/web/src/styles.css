@@ -4915,3 +4915,9 @@ footer {
   gap: 4px;
   line-height: 1.2;
 }
+
+.evx-toggle.selected {
+  border-color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.16);
+  color: #fff;
+}
