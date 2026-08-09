@@ -500,10 +500,14 @@ export function validateResetTarget({
       512,
     ) ||
     liveConfiguration?.Environment?.Variables?.FTE_SHARP_API_SECRET_ID !==
-      "find-the-edge/dev/sharpapi" ||
-    endpoint?.hostname.split(".")[0] !== api.PhysicalResourceId ||
-    apiStage.PhysicalResourceId !== "dev" ||
-    endpoint?.pathname !== "/dev"
+      "find-the-edge/staging/sharpapi" ||
+    // The staging API sits behind its custom domain: the endpoint output is
+    // the bare domain root rather than an execute-api stage path.
+    (endpoint?.hostname === "api-staging.kevishie.com"
+      ? endpoint.pathname !== "/"
+      : endpoint?.hostname.split(".")[0] !== api.PhysicalResourceId ||
+        endpoint?.pathname !== "/staging") ||
+    apiStage.PhysicalResourceId !== "staging"
   )
     throw new Error("reset-live-ingestion-binding-invalid");
   return {
@@ -828,7 +832,8 @@ const validApiBase = (value) => {
     const url = new URL(value);
     return (
       url.protocol === "https:" &&
-      url.hostname.endsWith(".execute-api.us-east-1.amazonaws.com") &&
+      (url.hostname.endsWith(".execute-api.us-east-1.amazonaws.com") ||
+        url.hostname === "api-staging.kevishie.com") &&
       !url.username &&
       !url.password &&
       !url.search &&

@@ -273,7 +273,7 @@ const targetInput = () => {
     ["UpcomingEventsProducerABC", "AWS::Lambda::Function", "producer"],
     ["UpcomingEventsSchedulerReadyABC", "AWS::Events::Rule", "upcoming-rule"],
     ["EventsHttpApiABC", "AWS::ApiGatewayV2::Api", "example"],
-    ["EventApiStageABC", "AWS::ApiGatewayV2::Stage", "dev"],
+    ["EventApiStageABC", "AWS::ApiGatewayV2::Stage", "staging"],
   ].map(([LogicalResourceId, ResourceType, PhysicalResourceId]) => ({
     LogicalResourceId,
     ResourceType,
@@ -286,7 +286,7 @@ const targetInput = () => {
       LiveOddsIngestionFunctionName: "live",
       FixtureOddsProjectionFunctionName: "projection",
       EventsApiEndpoint:
-        "https://example.execute-api.us-east-1.amazonaws.com/dev",
+        "https://example.execute-api.us-east-1.amazonaws.com/staging",
     },
     lambdaConfigurations: [
       {
@@ -298,7 +298,7 @@ const targetInput = () => {
             FTE_LIVE_ODDS_QUEUE_URL:
               "https://sqs.us-east-1.amazonaws.com/228246988391/queue",
             FTE_SHARP_API_ENABLED: "true",
-            FTE_SHARP_API_SECRET_ID: "find-the-edge/dev/sharpapi",
+            FTE_SHARP_API_SECRET_ID: "find-the-edge/staging/sharpapi",
           },
         },
       },
@@ -836,7 +836,7 @@ test("public verification requires unique matchups, fresh valid odds, and fresh 
   };
   await assert.doesNotReject(
     verifyPublicFeed({
-      apiBase: "https://example.execute-api.us-east-1.amazonaws.com/dev",
+      apiBase: "https://example.execute-api.us-east-1.amazonaws.com/staging",
       day: "2026-08-05",
       fetcher,
       now: () => now,
