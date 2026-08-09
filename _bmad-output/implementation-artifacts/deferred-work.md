@@ -53,3 +53,27 @@ carries one continuous history and the board never shows the same game
 twice. FTE-026's "continue history across canonical event versions"
 contract covers versions of one id, not churned ids; extending identity
 resolution to merge churned ids (or alias them) is the clean fix.
+
+## Incident 2026-08-08: provider feed change froze ingestion (resolved)
+
+SharpAPI onboarded prediction exchanges (Polymarket/Kalshi) on 08-07/08.
+Futures listings (empty away team) and per-book participant naming began
+sharing event identities with sportsbook rows. The cross-page merge
+treated any participant mismatch as provider corruption
+(`odds:cross-page-event-participants`), failing whole league runs,
+tripping 15-minute cooldowns, and ratcheting the failed continuation's
+quota cost toward the 100 reserve — while the account health probe
+stayed green. Boards froze at 2026-08-08T16:16Z.
+
+Fix (e764ac5): drifted candidates become `participant-conflict`
+rejections; first-seen participants stand; runs complete. Recovery also
+required deleting the poisoned `ODDS_CONTROL#CONTINUATION#<league>` and
+`ODDS_CONTROL#HEALTH#sharpapi:<league>:odds` rows on staging.
+
+Hardening candidates:
+- A freshness alarm on board/event `retrievedAt` age (provider health
+  alone proved blind to persistence stalls).
+- Continuation quota should reset when a terminal-cursor run restarts
+  from page one, so a poisoned run cannot permanently starve a league.
+- The `_b0` ghost rows still on boards are the churn-identity story
+  (see the churn-split entry above) — now the top follow-up.
