@@ -14,6 +14,8 @@ import {
 
 export interface ScheduledProviderEvent {
   readonly providerEventId: string;
+  /** SharpAPI atlas uuid — the feed-stable identity across id churn. */
+  readonly providerEventUuid?: string;
   readonly sportKey: SportKey;
   readonly leagueKey: string;
   readonly participantLabels: readonly [string, string];
@@ -64,8 +66,9 @@ export async function reconcileScheduledProviderEvent(
   observedAt: IsoTimestamp,
 ) {
   const bootstrap = fixtureBootstrap(event, event.providerEventId);
+  const { providerEventUuid, ...listed } = event;
   const original = {
-    ...event,
+    ...listed,
     providerId,
     normalizedIdentity: normalizedUpcomingEventIdentity(event),
     participantIdentityIds: bootstrap.participantIds,
@@ -75,6 +78,7 @@ export async function reconcileScheduledProviderEvent(
     const result = await store.reconcileScheduledEvent({
       event: original,
       bootstrap,
+      ...(providerEventUuid ? { providerEventUuid } : {}),
     });
     if (result.kind === "unresolved")
       throw new ScheduleEventConflictError("schedule-mapping-unresolved");

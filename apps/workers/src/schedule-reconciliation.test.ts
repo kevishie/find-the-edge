@@ -16,8 +16,10 @@ const event = (
   providerEventId: string,
   startsAt: string,
   labels: readonly [string, string] = ["Away Club", "Home Club"],
+  providerEventUuid?: string,
 ): ScheduledProviderEvent => ({
   providerEventId,
+  ...(providerEventUuid ? { providerEventUuid } : {}),
   sportKey: "mlb" as SportKey,
   leagueKey: "mlb",
   participantLabels: labels,
@@ -71,6 +73,51 @@ describe("scheduled provider reconciliation", () => {
       expect(replay.kind).toBe("skipped");
       expect(store.events).toHaveLength(1);
     });
+
+  it("re-attaches a fully churned provider id through the atlas uuid", async () => {
+    // The provider renamed the id base AND moved the start beyond the
+    // near-candidate window; only the atlas uuid ties the listings to the
+    // same physical game. One canonical event, no ghost.
+    const store = new MemoryEventIngestionStore();
+    await bootstrap(
+      store,
+      event(
+        "mls_a_b_2026-08-04_b1",
+        "2026-08-04T17:00:00.000Z",
+        undefined,
+        "atlas-1",
+      ),
+    );
+    const first = await reconcileScheduledProviderEvent(
+      store,
+      "sharpapi",
+      event(
+        "mls_a_b_2026-08-04_b1",
+        "2026-08-04T17:00:00.000Z",
+        undefined,
+        "atlas-1",
+      ),
+      observedAt,
+    );
+    expect(["updated", "skipped"]).toContain(first.kind);
+    const churned = await reconcileScheduledProviderEvent(
+      store,
+      "sharpapi",
+      event(
+        "usa_-_major_league_soccer_a_b_2026-08-04_b2",
+        "2026-08-04T19:30:00.000Z",
+        undefined,
+        "atlas-1",
+      ),
+      observedAt,
+    );
+    expect(churned.kind).toBe("updated");
+    expect(store.events).toHaveLength(1);
+    // The original canonical schedule stays authoritative.
+    expect([...store.events.values()][0]?.startsAt).toBe(
+      "2026-08-04T17:00:00.000Z",
+    );
+  });
 
   it("keeps a doubleheader outside the window separate", async () => {
     // Same matchup, same day, starts hours apart: two real games.
