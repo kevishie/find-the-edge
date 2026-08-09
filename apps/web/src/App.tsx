@@ -1291,7 +1291,6 @@ function EventGameBlock({
   readonly explorerSearch: ExplorerSearch;
   readonly snapshotAt: string | null | undefined;
 }) {
-  const client = useContext(GamesClientContext);
   const navigate = useNavigate();
   const prices = game.odds.state === "available" ? game.odds.selections : [];
   const away = game.participants[0]?.label ?? "Unknown";
@@ -1411,18 +1410,6 @@ function EventGameBlock({
                 </span>
               ) : null;
             })()}
-            <span
-              className="evb-actions"
-              onClick={(event) => event.stopPropagation()}
-              onKeyDown={(event) => event.stopPropagation()}
-            >
-              <ScoutEventButton
-                eventId={game.id}
-                eligible={game.status === "scheduled"}
-                disabledReason={`Scouting is available only for scheduled events. This event is ${game.status}.`}
-                client={client}
-              />
-            </span>
           </div>
         </td>
       </tr>
