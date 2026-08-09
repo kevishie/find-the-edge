@@ -4327,3 +4327,99 @@ footer {
   color: #c084fc;
   font-weight: 600;
 }
+
+/* Mobile-first: hamburger menu and game blocks that fit a phone. */
+.menu-toggle {
+  display: none;
+}
+@media (max-width: 900px) {
+  .menu-toggle {
+    display: block;
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    background: #131319;
+    border: 1px solid #2a2833;
+    border-radius: 8px;
+    color: #f3f1f8;
+    font-size: 18px;
+    padding: 6px 12px;
+    cursor: pointer;
+    z-index: 20;
+  }
+  .shell > aside {
+    position: relative;
+  }
+  .shell > aside > nav {
+    display: none;
+  }
+  .shell > aside.menu-open > nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 16px 14px;
+  }
+}
+@media (max-width: 760px) {
+  .event-explorer-table {
+    min-width: 0;
+    width: 100%;
+    /* Columns honor declared widths; content wraps inside the cells. */
+    table-layout: fixed;
+  }
+  /* Outranks the desktop compact-table matchup min-width. */
+  .event-explorer-table tbody .evb-team-row th[scope="row"] {
+    min-width: 0;
+    width: 108px;
+    gap: 7px;
+    padding: 8px 6px;
+  }
+  .evb-team-row th .evb-crest {
+    display: none;
+  }
+  .evb-crest {
+    width: 24px;
+    height: 24px;
+    font-size: 8px;
+  }
+  .evb-name {
+    font-size: 13px;
+    white-space: normal;
+  }
+  .evb-home {
+    display: none;
+  }
+  .evb-team-row td {
+    padding: 6px 3px;
+  }
+  .evb-cell-wrap {
+    width: auto;
+  }
+  .evb-cell {
+    padding: 5px 4px;
+    min-height: 38px;
+    border-radius: 8px;
+  }
+  .evb-price {
+    font-size: 12px;
+  }
+  .evb-point {
+    font-size: 10px;
+  }
+  .evb-price-line {
+    gap: 4px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .evb-fair {
+    font-size: 8px;
+  }
+  .evb-footer-row td {
+    padding: 4px 8px 10px;
+  }
+  .evb-footer {
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 10px;
+  }
+}

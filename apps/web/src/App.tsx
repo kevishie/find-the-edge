@@ -470,6 +470,7 @@ function AppShell() {
       }
       return next;
     });
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const eventsSearch = {
     sport: "mlb" as const,
     day: currentEasternDay(),
@@ -481,7 +482,16 @@ function AppShell() {
   };
   return (
     <div className={`shell${navCollapsed ? " nav-collapsed" : ""}`}>
-      <aside>
+      <aside className={mobileMenuOpen ? "menu-open" : ""}>
+        <button
+          type="button"
+          className="menu-toggle"
+          aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={mobileMenuOpen}
+          onClick={() => setMobileMenuOpen((open) => !open)}
+        >
+          ☰
+        </button>
         <div className="brand">
           <svg
             className="brand-logo"
@@ -567,29 +577,6 @@ function AppShell() {
           Informational decision support only. No bet placement, guarantees, or
           hidden model arithmetic.
         </footer>
-        <nav
-          className="mobile-product-nav"
-          aria-label="Compact product navigation"
-        >
-          <Link to="/splits" activeProps={{ className: "active" }}>
-            Splits
-          </Link>
-          <Link
-            to="/events"
-            search={{
-              sport: "mlb",
-              day: currentEasternDay(),
-              status: "all",
-              competition: "",
-              query: "",
-              sort: "kickoff",
-              direction: "asc",
-            }}
-            activeProps={{ className: "active" }}
-          >
-            Events
-          </Link>
-        </nav>
       </main>
     </div>
   );
