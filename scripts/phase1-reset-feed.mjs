@@ -150,6 +150,10 @@ const deleteClassification = (pk, sk) => {
     sk === "CURRENT"
   )
     return "odds-control-plane";
+  // Materialized response boards are derived caches; ingestion rebuilds them
+  // on the next tick.
+  if (/^BOARD#[^\s]{1,512}$/.test(pk) && sk === "CURRENT")
+    return "materialized-board";
   if (fixturePartition(pk) && sk === "CURRENT") return "fixture-odds-current";
   if (/^FIXTURE_ODDS_GROUP#[a-f0-9]{64}$/.test(pk) && sk === "AVAILABILITY")
     return "fixture-odds-group-availability";
