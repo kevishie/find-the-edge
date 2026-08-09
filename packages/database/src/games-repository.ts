@@ -634,7 +634,13 @@ export class JoinedGamesRepository implements GamesRepository {
     items = items.slice(0, limit);
     const page: EventPage = { ...first, items, nextCursor: nextCursor ?? null };
     if (!page.items.length) return { ...page, items: [] };
+    // Provider id churn advances canonical versions faster than the odds
+    // persist path follows, so fresh rows can sit one version behind the
+    // event. Each selection reads both versions and the newer row wins.
+    const priorVersionEvent = (event: EventPage["items"][number]) =>
+      event.version > 1 ? { ...event, version: event.version - 1 } : null;
     const requestedByEvent = page.items.map((event) => {
+      const prior = priorVersionEvent(event);
       return this.sportsbookIds.map((sportsbookId) =>
         marketSpecifications(event).map((specification) => ({
           specification,
@@ -646,10 +652,27 @@ export class JoinedGamesRepository implements GamesRepository {
               sportsbookId,
             ),
           ),
+          fallbackKeys: specification.selectionKeys.map((selectionKey) =>
+            prior
+              ? currentKey(
+                  prior,
+                  specification.marketKey,
+                  selectionKey,
+                  sportsbookId,
+                )
+              : null,
+          ),
         })),
       );
     });
-    const requested = requestedByEvent.flat(2).flatMap(({ keys }) => keys);
+    const requested = requestedByEvent
+      .flat(2)
+      .flatMap(({ keys, fallbackKeys }) => [
+        ...keys,
+        ...fallbackKeys.filter(
+          (key): key is NonNullable<typeof key> => key !== null,
+        ),
+      ]);
     const validationByKey = new Map<
       string,
       {
@@ -659,9 +682,14 @@ export class JoinedGamesRepository implements GamesRepository {
     >();
     requestedByEvent.forEach((books, eventIndex) => {
       const event = page.items[eventIndex]!;
-      for (const { keys } of books.flat())
+      const prior = priorVersionEvent(event);
+      for (const { keys, fallbackKeys } of books.flat()) {
         for (const expected of keys)
           validationByKey.set(expected.pk, { expected, event });
+        for (const expected of fallbackKeys)
+          if (expected && prior)
+            validationByKey.set(expected.pk, { expected, event: prior });
+      }
     });
     let rows: readonly unknown[];
     try {
@@ -701,24 +729,40 @@ export class JoinedGamesRepository implements GamesRepository {
       const candidates = requestedByEvent[index]!.map((groups) => {
         const selections: GameOddsSelectionDto[] = [];
         let requiredAvailable = false;
-        for (const { specification, keys } of groups) {
-          const rows = keys.map(({ pk }) => byKey.get(pk));
-          const present = rows.filter((row) => row !== undefined).length;
+        for (const { specification, keys, fallbackKeys } of groups) {
+          const prior = priorVersionEvent(event);
+          // Rows in byKey already passed validation; per selection the
+          // newer of the current-version and prior-version rows wins.
+          const merged = keys.map((key, selectionIndex) => {
+            const primary = byKey.get(key.pk);
+            const fallbackKey = fallbackKeys[selectionIndex];
+            const fallback =
+              fallbackKey && prior ? byKey.get(fallbackKey.pk) : undefined;
+            const current =
+              primary === undefined
+                ? null
+                : validateCurrent(primary, key, event);
+            const previous =
+              fallback === undefined || !fallbackKey || !prior
+                ? null
+                : validateCurrent(fallback, fallbackKey, prior);
+            if (current && previous)
+              return Date.parse(previous.retrievedAt) >
+                Date.parse(current.retrievedAt)
+                ? previous
+                : current;
+            return current ?? previous ?? undefined;
+          });
+          const present = merged.filter((row) => row !== undefined).length;
           if (present === 0) {
             if (specification.required) return null;
             continue;
           }
-          if (present !== rows.length) {
-            rows.forEach((row, selectionIndex) => {
-              if (row !== undefined)
-                validateCurrent(row, keys[selectionIndex]!, event);
-            });
+          if (present !== merged.length) {
             if (specification.required) return null;
             continue;
           }
-          const market = rows.map((row, selectionIndex) =>
-            validateCurrent(row, keys[selectionIndex]!, event),
-          );
+          const market = merged as NonNullable<(typeof merged)[number]>[];
           const first = market[0]!;
           if (
             !market.every(

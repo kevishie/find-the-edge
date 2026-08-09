@@ -955,7 +955,8 @@ describe("joined games repository", () => {
         { pk: home.partitionKey, sk: "CURRENT" },
       ]),
     );
-    expect(seen.keys).toHaveLength(30);
+    // Version-tolerant reads request the prior version's keys as well.
+    expect(seen.keys).toHaveLength(60);
     expect(page).toMatchObject({
       nextCursor: "next",
       snapshotAt: "2026-08-01T12:00:00.000Z",
@@ -1008,7 +1009,8 @@ describe("joined games repository", () => {
       pk: home.partitionKey,
       sk: "CURRENT",
     });
-    expect(requested).toHaveLength(18);
+    // Version-tolerant reads request the prior version's keys as well.
+    expect(requested).toHaveLength(36);
     expect(page.items[0]?.odds).toMatchObject({
       state: "available",
       selections: [
@@ -1202,7 +1204,30 @@ describe("joined games repository", () => {
         return Promise.resolve([]);
       },
     }).list({ sportKey: "soccer", status: "scheduled", day: "2026-08-01" }, 50);
-    expect(requested).toBe(1_750);
+    // Version-tolerant reads double the key set for versioned events.
+    expect(requested).toBe(3_500);
+  });
+
+  it("serves fresh odds persisted one version behind the event", async () => {
+    // Provider id churn advances the canonical version faster than the odds
+    // persist path; the newest row across the current and prior versions
+    // must win so lines never vanish on a version tick.
+    const priorVersion = { ...event, version: event.version - 1 };
+    const freshAway = current(priorVersion, "away", "Boston");
+    const freshHome = current(priorVersion, "home", "New York");
+    const rows = [
+      ...[freshAway, freshHome].map(row),
+      ...activeEvidence([freshAway, freshHome]),
+    ];
+    const page = await new JoinedGamesRepository(events([event]), {
+      batchGet: (keys) =>
+        Promise.resolve(
+          rows.filter((item) =>
+            keys.some(({ pk, sk }) => pk === item.pk && sk === item.sk),
+          ),
+        ),
+    }).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 50);
+    expect(page.items[0]?.odds).toMatchObject({ state: "available" });
   });
 
   it("never returns legacy provider duplicates within the schedule tolerance", async () => {
