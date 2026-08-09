@@ -533,6 +533,7 @@ function AppShell() {
             to="/events"
             search={eventsSearch}
             activeProps={{ className: "active" }}
+            activeOptions={{ includeSearch: false }}
             title="Events"
           >
             <span className="nav-icon" aria-hidden="true">
@@ -545,6 +546,7 @@ function AppShell() {
           <Link
             to="/splits"
             activeProps={{ className: "active" }}
+            activeOptions={{ includeSearch: false }}
             title="Splits"
           >
             <span className="nav-icon" aria-hidden="true">
