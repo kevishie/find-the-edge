@@ -22,6 +22,7 @@ import {
   redirect,
   useNavigate,
   useParams,
+  useRouterState,
   useSearch,
 } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -45,6 +46,7 @@ import type {
   EventExplorerStatus,
 } from "@find-the-edge/ui";
 import { sportsbookScopeKey } from "./sportsbooks";
+import { LandingPage } from "./landing-page";
 import { type OddsHistoryDto, type RetrospectiveDto } from "./api";
 // Off-nav screens load on demand so the landing path never parses them.
 const Dashboard = lazy(() =>
@@ -1009,7 +1011,11 @@ function GamesExplorer() {
       replace: true,
     });
   const baseItems = state.kind === "ready" ? state.page.items : [];
-  const visibleItems = filterAndSortEvents(baseItems, {
+  // If we show a game it is because we have lines: unpriced events never
+  // render, on any surface.
+  const hasLines = (game: UiGamesPage["items"][number]) =>
+    game.odds.state === "available" && game.odds.selections.length > 0;
+  const visibleItems = filterAndSortEvents(baseItems.filter(hasLines), {
     competition,
     query,
     sort,
@@ -1035,8 +1041,10 @@ function GamesExplorer() {
 
       <nav className="sport-rail" aria-label="Sport rail">
         {(Object.keys(sportLabels) as GamesSport[]).map((key) => {
-          const items = key === sport ? baseItems : otherSportItems;
-          // A sport with no slate for the day does not earn a pill.
+          const items = (key === sport ? baseItems : otherSportItems).filter(
+            hasLines,
+          );
+          // A sport with no priced slate for the day does not earn a pill.
           if (items.length === 0 && key !== sport) return null;
           const qualified = items.filter(gameHasEdge).length;
           return (
@@ -1208,9 +1216,19 @@ function GamesExplorer() {
                 <thead>
                   <tr>
                     <th scope="col">Matchup</th>
-                    <th scope="col">Spread</th>
-                    <th scope="col">Total</th>
-                    <th scope="col">Moneyline</th>
+                    {sport === "soccer" ? (
+                      <>
+                        <th scope="col">Home</th>
+                        <th scope="col">Tie</th>
+                        <th scope="col">Away</th>
+                      </>
+                    ) : (
+                      <>
+                        <th scope="col">Spread</th>
+                        <th scope="col">Total</th>
+                        <th scope="col">Moneyline</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 {visibleItems.map((game) => (
@@ -1434,28 +1452,39 @@ function EventGameBlock({
       }}
     >
       {game.sportKey === "soccer" ? (
-        <>
-          {teamRow("home")}
-          <tr className="evb-team-row">
-            <th scope="row">
-              <span className="evb-crest" aria-hidden="true">
-                TIE
-              </span>
-              <span className="evb-name">Tie</span>
-            </th>
-            <td className="evb-cell-wrap" />
-            <td className="evb-cell-wrap" />
+        <tr className="evb-team-row">
+          <th scope="row">
+            <span className="evb-name evb-stacked">
+              <span>{home}</span>
+              <span>{away}</span>
+            </span>
+            <span className="sr-only">
+              <h2>{eventMatchupLabel(game)}</h2>
+              <EventMetadataBadges game={game} />
+            </span>
+          </th>
+          {(
+            [
+              ["home", bySide("moneyline", "home")],
+              ["draw", drawSelection],
+              ["away", bySide("moneyline", "away")],
+            ] as const
+          ).map(([key, selection]) => (
             <FairCell
+              key={key}
               marketKey="moneyline"
-              selection={drawSelection}
+              selection={selection}
               counterparts={[
                 bySide("moneyline", "home"),
+                drawSelection,
                 bySide("moneyline", "away"),
-              ].filter((value) => value !== undefined)}
+              ].filter(
+                (value): value is NonNullable<typeof value> =>
+                  value !== undefined && value !== selection,
+              )}
             />
-          </tr>
-          {teamRow("away")}
-        </>
+          ))}
+        </tr>
       ) : (
         <>
           {teamRow("away")}
@@ -2410,20 +2439,21 @@ function SplitsExplorer() {
   );
 }
 
+function RootLayout() {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  });
+  return pathname === "/" ? <Outlet /> : <AppShell />;
+}
+
 const rootRoute = createRootRoute({
-  component: AppShell,
+  component: RootLayout,
   errorComponent: AppError,
 });
-// Splits is the product's landing screen. The dashboard is not built out, so
-// it keeps a route for direct links but is no longer what the root resolves to.
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  beforeLoad: () => {
-    // Throwing a redirect is how the router signals navigation from a loader.
-    // eslint-disable-next-line @typescript-eslint/only-throw-error
-    throw redirect({ to: "/splits" });
-  },
+  component: LandingPage,
 });
 const dashboardRoute = createRoute({
   getParentRoute: () => rootRoute,

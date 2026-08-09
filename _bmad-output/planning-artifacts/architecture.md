@@ -2,7 +2,7 @@
 title: "System Architecture: FIND THE EDGE"
 status: "final"
 created: "2026-07-15"
-updated: "2026-07-26"
+updated: "2026-08-09"
 sources:
   - "_bmad-output/planning-artifacts/product-brief.md"
   - "_bmad-output/planning-artifacts/prd.md"
@@ -107,11 +107,79 @@ Modules declare `planned`, `experimental`, `beta`, or `production`. Maturity is 
 
 The older soccer-first sections below document the original delivery plan. Where they prescribe soccer-specific shared models, routes, providers, or core behavior, this amendment wins. Sport-specific soccer details remain useful input to the soccer module.
 
+## 0C. Binding Public Membership, Phone OTP, and Stripe Amendment (2026-08-09)
+
+This amendment supersedes architectural statements below that make every route private, require email/password or password reset, prohibit public signup, assume a single user, or omit subscription entitlement from API authorization. The existing hexagonal, event-driven serverless paradigm remains binding.
+
+### 0C.1 Identity and access invariants
+
+- Internal `userId` is the durable owner key. Phone number is a verified login alias and Stripe customer ID is a billing alias; neither is a domain primary key.
+- Cognito remains the session/JWT authority and uses a custom phone OTP challenge flow. OTP delivery is behind an `OtpDeliveryProvider`; the initial AWS adapter may use SNS, but application code does not depend on SNS DTOs.
+- Authentication and entitlement are separate decisions. API authorization builds an `AccessContext` from a valid session plus a trusted server-side entitlement projection.
+- Public routes are limited to landing, legal, phone entry, OTP verification, pricing/paywall, checkout return, and billing recovery. Product APIs fail closed unless both identity and entitlement policy pass.
+- The browser never supplies authoritative Stripe customer, price, subscription, or entitlement state.
+
+### 0C.2 Billing and entitlement boundaries
+
+```text
+Public web -> Auth API -> Cognito custom challenge -> OtpDeliveryProvider
+Authenticated web -> Billing API -> Stripe Checkout / Customer Portal
+Stripe webhook -> raw-signature verifier -> immutable BillingEvent
+BillingEvent -> Subscription projection -> Entitlement projection
+Paid API request -> JWT validation + EntitlementRepository -> product handler
+```
+
+- `packages/auth` owns normalized phone input, auth/session context contracts, safe redirect validation, and OTP policy interfaces.
+- `packages/billing` owns Stripe ports, subscription normalization, entitlement policy, webhook ordering/idempotency rules, and billing-domain types. It does not depend on React or application handlers.
+- `apps/api` owns phone challenge endpoints, Checkout/Portal commands, raw webhook ingress, and paid-route middleware.
+- `apps/workers` may own asynchronous webhook projection and reconciliation when webhook latency or retries require it.
+- Stripe SDK types and SMS provider DTOs remain inside adapters. Domain and UI layers consume normalized contracts.
+
+### 0C.3 OTP security model
+
+- Phone input is normalized to E.164 and checked against a configured country allowlist before delivery.
+- Cognito custom challenge Lambdas define, create, and verify the OTP challenge. Codes are generated cryptographically, short-lived, single-use, attempt-limited, never logged, and never stored in recoverable plaintext.
+- DynamoDB rate-limit/idempotency records apply configurable windows by keyed phone digest, IP/device signal digest, and challenge/request ID. Raw phone and IP values are not used as partition keys or log attributes.
+- Request and verification responses are enumeration-safe. Resend cooldown, expiry, lockout, provider failure, and recovery are explicit states.
+- Local and CI environments use a fake delivery adapter and deterministic test challenge seam; no real SMS is required.
+
+### 0C.4 Stripe event and entitlement model
+
+- Checkout and Portal sessions are server-created using allowlisted price IDs and validated same-origin return paths.
+- Webhook signature verification uses the exact raw request bytes before JSON parsing. Accepted event IDs are stored immutably; duplicate delivery is a no-op.
+- Projection uses Stripe object identity plus event creation time/object version semantics so an older event cannot regress newer subscription state. Reconciliation can re-read Stripe as the recovery source and append a new projection decision.
+- Entitlement policy is versioned. `trialing` and `active` grant access; cancel-at-period-end grants through `currentPeriodEnd`; `incomplete`, `incomplete_expired`, `unpaid`, and ended subscriptions deny access. `past_due` follows an explicit configured grace policy and otherwise fails closed.
+- Checkout return polls or refreshes trusted entitlement state within a bounded window. Query parameters and Checkout success alone never grant access.
+
+### 0C.5 Storage additions
+
+The Core table adds these access-pattern-owned items:
+
+| Item Type | PK | SK | Purpose |
+| --- | --- | --- | --- |
+| User identity | `USER#{userId}` | `IDENTITY` | Account state and Cognito subject |
+| Phone alias | `PHONE#{phoneDigest}` | `USER` | Unique verified alias lookup without raw phone key |
+| OTP throttle | `OTP_LIMIT#{scopeDigest}` | `WINDOW#{windowStart}` | TTL-bound request/attempt counters |
+| Billing customer | `USER#{userId}` | `BILLING#CUSTOMER` | Trusted Stripe customer association |
+| Subscription | `USER#{userId}` | `BILLING#SUBSCRIPTION#{subscriptionId}` | Normalized current subscription projection |
+| Entitlement | `USER#{userId}` | `ENTITLEMENT#PRODUCT#{productKey}` | Versioned access decision and expiry/grace context |
+| Billing event | `STRIPE_EVENT#{eventId}` | `EVENT` | Immutable idempotency/audit record |
+| Legal consent | `USER#{userId}` | `CONSENT#{documentKey}#{version}` | Versioned Terms/Privacy/risk acceptance |
+
+Raw phone numbers, OTPs, webhook secrets, and payment details are not stored in these items. Sensitive aliases are encrypted where retained for display/delivery needs, and digest keys use a secret pepper held in Secrets Manager.
+
+### 0C.6 Operational requirements
+
+- Secrets Manager holds Stripe secret/webhook keys, phone-digest pepper, and SMS credentials/configuration.
+- CloudWatch emits privacy-safe metrics for OTP delivery/limits, auth outcomes, Checkout creation, webhook verification/lag/failure, subscription transitions, entitlement denials, and reconciliation.
+- DLQs and alarms cover asynchronous webhook projection. Replay tooling reprocesses persisted verified events idempotently.
+- Tests cover OTP request/verify/resend/expiry/lockout/enumeration, Checkout price ownership, webhook raw-signature verification, duplicate/out-of-order events, each subscription state, checkout delay/abandonment, paid-route denial, Portal creation, and reconciliation.
+
 ## 1. Architecture Purpose
 
-This document defines the initial system architecture for FIND THE EDGE, a private, soccer-first sports betting intelligence web application. It is the build substrate for later UX, epics, stories, and implementation. It does not scaffold the application, create infrastructure, install dependencies, or write production code.
+This document defines the system architecture for FIND THE EDGE, a public-acquisition, subscription-gated, multi-sport betting intelligence web application with private per-account product data. It is the build substrate for UX, epics, stories, and implementation.
 
-The Product Brief and PRD are binding source inputs. The architecture preserves the Hard Rock Bet Florida focus, soccer-first MVP, DynamoDB direction, Agon-aligned AWS serverless stack, immutable odds history, deterministic betting calculations, data provenance, and unresolved soccer enrichment provider decision.
+The PRD and its binding amendments are the current product contract. The architecture preserves the configurable target-sportsbook model, registered sport modules, DynamoDB direction, AWS serverless stack, immutable odds history, deterministic betting calculations, data provenance, phone OTP identity, and Stripe-derived paid entitlement.
 
 ## 2. Architecture Thesis
 
@@ -151,7 +219,8 @@ flowchart LR
   WeatherProvider["Weather Provider (future/TBD)"]
   AI["AI Report Provider"]
   Data["DynamoDB + S3"]
-  Auth["Cognito"]
+  Auth["Cognito custom phone OTP"]
+  Stripe["Stripe Billing"]
 
   User --> Web
   Web --> Auth
@@ -191,6 +260,7 @@ flowchart TB
   Browser --> CloudFront
   CloudFront --> S3Web
   Browser --> Cognito
+  Browser --> Stripe
   Browser --> HttpApi
   HttpApi --> ApiLambda
   ApiLambda --> DDBCore
@@ -228,7 +298,8 @@ packages/
   scouting/         # Scouting report contracts, validation, section rules, AI boundary contracts
   providers/        # Provider adapter interfaces and provider-specific implementations
   database/         # DynamoDB key builders, repositories, item mappers, pagination helpers
-  auth/             # Auth context, Cognito token utilities, permission claims
+  auth/             # Phone OTP policy, auth context, Cognito token utilities, permission claims
+  billing/          # Stripe ports, subscription normalization, entitlement policy
   config/           # Typed environment and runtime configuration
   observability/    # Logger, metrics, correlation IDs, provider request logging
   ui/               # Shared shadcn/ui wrappers, layout primitives, visual tokens
@@ -256,7 +327,9 @@ Dependency rules:
 
 | Module | Responsibility | Primary Package |
 | --- | --- | --- |
-| Authentication | Cognito-backed identity, private access, future role claims | `auth`, `api` |
+| Authentication | Cognito custom phone challenge, session identity, abuse controls | `auth`, `api` |
+| Billing | Stripe Checkout, Customer Portal, verified webhooks, reconciliation | `billing`, `api`, `workers` |
+| Entitlements | Versioned server-side paid-access decisions | `billing`, `database`, `api` |
 | Sports Catalog | Sports and sport enablement | `domain`, `providers` |
 | Competitions | Canonical competition model and settings | `domain`, `database` |
 | Teams | Canonical teams and aliases | `domain`, `database` |
@@ -477,7 +550,7 @@ S3 archival:
 
 Hot-partition risks:
 
-- Single-user MVP keeps risk low. Future multi-user scale may partition aggregates by user and period.
+- User-keyed partitions isolate subscriber data; future organization accounts may add organization/period partitions without changing individual ownership keys.
 
 Pagination:
 
@@ -927,47 +1000,55 @@ Endpoint categories:
 
 | Category | Method and Route | Request | Response | Auth | Pagination | Idempotency |
 | --- | --- | --- | --- | --- | --- | --- |
-| Auth Context | `GET /auth/session` | none | user, roles, session expiry | Cognito | none | no |
-| Sports | `GET /sports` | filters | enabled sports | Cognito | cursor | no |
-| Competitions | `GET /competitions` | sport, enabled | competitions | Cognito | cursor | no |
-| Events | `GET /events` | date, competition, status, watchlist | event list | Cognito | cursor | no |
-| Event Details | `GET /events/{eventId}` | path | event detail | Cognito | none | no |
-| Event Odds | `GET /events/{eventId}/odds` | market filters | current odds | Cognito | cursor by market | no |
-| Odds History | `GET /events/{eventId}/odds/history` | market, selection, bookmaker, cursor | history | Cognito | cursor | no |
-| Opportunities | `GET /opportunities` | status, sport, filters | ranked opportunities | Cognito | cursor | no |
-| Watchlist | `POST /watchlist/events/{eventId}` | none | watchlist item | Cognito | none | idempotent by event/user |
-| Watchlist | `DELETE /watchlist/events/{eventId}` | none | empty success | Cognito | none | idempotent |
-| Scouting Jobs | `POST /scouting/jobs` | eventId, options, idempotencyKey | job | Cognito | none | required |
-| Scouting Jobs | `GET /scouting/jobs/{jobId}` | path | job status | Cognito | none | no |
-| Reports | `GET /events/{eventId}/reports` | cursor | report heads | Cognito | cursor | no |
-| Report Version | `GET /reports/{reportId}/versions/{version}` | path | report version | Cognito | none | no |
-| Bets | `GET /bets` | status, date range | bets | Cognito | cursor | no |
-| Bets | `POST /bets` | bet fields | bet | Cognito | none | optional idempotency |
-| Bet Settlement | `POST /bets/{betId}/settlement` | status, payout, closing odds | settlement | Cognito | none | required |
-| Performance | `GET /performance` | period, dimensions | summaries | Cognito | cursor for details | no |
-| Settings | `GET /settings` | none | settings | Cognito | none | no |
-| Settings | `PUT /settings` | settings versioned payload | settings | Cognito | none | optimistic version |
-| Provider Status | `GET /providers/status` | provider filter | health, quota | Cognito | cursor | no |
+| Public content | `GET /public/product` | locale | landing/pricing/legal configuration | Public | none | no |
+| OTP request | `POST /auth/otp/request` | phone, consent versions, device signal | generic challenge state | Public, throttled | none | required |
+| OTP verify | `POST /auth/otp/verify` | challengeId, code | session result | Public, throttled | none | required |
+| Auth Context | `GET /auth/session` | none | user, roles, session expiry | Authenticated | none | no |
+| Checkout | `POST /billing/checkout-sessions` | allowlisted plan key, return path | hosted session URL | Authenticated | none | required |
+| Checkout status | `GET /billing/checkout-status` | session reference | trusted entitlement/pending state | Authenticated | none | no |
+| Customer Portal | `POST /billing/portal-sessions` | return path | hosted session URL | Authenticated | none | required |
+| Stripe webhook | `POST /webhooks/stripe` | raw signed body | acknowledgement | Stripe signature | none | event ID |
+| Billing status | `GET /billing/status` | none | subscription and entitlement presentation | Authenticated | none | no |
+| Sports | `GET /sports` | filters | enabled sports | Entitled | cursor | no |
+| Competitions | `GET /competitions` | sport, enabled | competitions | Entitled | cursor | no |
+| Events | `GET /events` | date, competition, status, watchlist | event list | Entitled | cursor | no |
+| Event Details | `GET /events/{eventId}` | path | event detail | Entitled | none | no |
+| Event Odds | `GET /events/{eventId}/odds` | market filters | current odds | Entitled | cursor by market | no |
+| Odds History | `GET /events/{eventId}/odds/history` | market, selection, bookmaker, cursor | history | Entitled | cursor | no |
+| Opportunities | `GET /opportunities` | status, sport, filters | ranked opportunities | Entitled | cursor | no |
+| Watchlist | `POST /watchlist/events/{eventId}` | none | watchlist item | Entitled | none | idempotent by event/user |
+| Watchlist | `DELETE /watchlist/events/{eventId}` | none | empty success | Entitled | none | idempotent |
+| Scouting Jobs | `POST /scouting/jobs` | eventId, options, idempotencyKey | job | Entitled | none | required |
+| Scouting Jobs | `GET /scouting/jobs/{jobId}` | path | job status | Entitled | none | no |
+| Reports | `GET /events/{eventId}/reports` | cursor | report heads | Entitled | cursor | no |
+| Report Version | `GET /reports/{reportId}/versions/{version}` | path | report version | Entitled | none | no |
+| Bets | `GET /bets` | status, date range | bets | Entitled | cursor | no |
+| Bets | `POST /bets` | bet fields | bet | Entitled | none | optional idempotency |
+| Bet Settlement | `POST /bets/{betId}/settlement` | status, payout, closing odds | settlement | Entitled | none | required |
+| Performance | `GET /performance` | period, dimensions | summaries | Entitled | cursor for details | no |
+| Settings | `GET /settings` | none | settings | Entitled | none | no |
+| Settings | `PUT /settings` | settings versioned payload | settings | Entitled | none | optimistic version |
+| Provider Status | `GET /providers/status` | provider filter | health, quota | Entitled | cursor | no |
 
 Authorization:
 
-- MVP requires authenticated Cognito user for every API route.
+- Public and authentication routes use explicit allowlists; all product APIs require both authenticated identity and eligible entitlement.
 - Future `ADMIN` and `VIEWER` claims are included in auth context but no admin UI is implemented for MVP.
-- Public registration is disabled.
+- Phone account entry is public and throttled; there is no unrestricted user-list or administration API.
 
 ## 18. Authentication and Authorization
 
-Cognito owns MVP authentication.
+Cognito owns session identity and JWT issuance through a custom phone OTP challenge; `packages/billing` and the entitlement repository own paid-access decisions.
 
 Rules:
 
-- Private user creation is handled outside public signup.
-- Login, logout, password reset, token validation, and session refresh use Cognito-supported flows.
+- Public phone entry invokes enumeration-safe Cognito custom challenge endpoints through the application API.
+- OTP request/verify, logout, token validation, revocation, and session refresh use Cognito-supported custom-auth/session flows; there is no password-reset route.
 - API Gateway authorizer or Lambda auth middleware validates JWTs on protected routes.
-- API handlers derive `userId`, future role claims, and correlation IDs from the auth context.
+- Paid API middleware derives `userId`, future role claims, correlation IDs, and current server-side entitlement before invoking handlers.
 - Future roles: `ADMIN` can manage settings/users later; `VIEWER` can read but not mutate later.
-- No public registration.
-- Audit logging records auth-sensitive API actions without secrets, tokens, or passwords.
+- Public phone account entry is enabled only for configured countries and legal-consent versions.
+- Audit logging records auth, consent, billing, reconciliation, and entitlement-sensitive actions without secrets, tokens, OTPs, raw phone/IP values, or payment data.
 
 ## 19. Frontend Architecture
 
@@ -975,8 +1056,14 @@ Route structure:
 
 ```text
 /
-  /login
-  /reset-password
+  /                         # public landing
+  /terms                    # public legal
+  /privacy                  # public legal
+  /sign-in                  # phone entry
+  /verify                   # OTP challenge
+  /subscribe                # authenticated paywall
+  /checkout/return          # authenticated pending/activation state
+  /billing/recovery         # authenticated recovery state
   /app
     /dashboard
     /events
@@ -989,6 +1076,7 @@ Route structure:
     /performance
     /settings
     /providers
+    /account/billing
 ```
 
 Frontend rules:
@@ -1049,7 +1137,7 @@ CloudWatch dashboards:
 - Opportunity qualification count by status.
 - DynamoDB throttles and consumed capacity.
 
-Do not log secrets, tokens, provider keys, raw passwords, or sensitive user notes.
+Do not log secrets, tokens, provider keys, OTPs, raw phone/IP identifiers, payment data, or sensitive user notes.
 
 ## 21. Security
 
@@ -1058,6 +1146,10 @@ Security requirements:
 - Store provider keys and AI credentials in Secrets Manager.
 - Use least-privilege IAM per Lambda and CDK construct.
 - Validate Cognito authorization on protected API routes.
+- Require an eligible entitlement from trusted server projection on every paid product route.
+- Verify Stripe webhook signatures from raw request bytes before parsing and persist event IDs for replay protection.
+- Rate-limit OTP request/resend/verify by keyed phone and network/device digests; never log codes or raw abuse-control identifiers.
+- Validate Checkout price keys and return paths against server allowlists.
 - Apply API throttling and request size limits.
 - Validate all API inputs with Zod.
 - Encode output in the UI and avoid unsafe HTML rendering of report content.
@@ -1105,6 +1197,9 @@ Contract tests:
 End-to-end tests with Playwright:
 
 - Login.
+- Phone OTP request, resend, expiry, invalid-code, lockout, enumeration resistance, and logout.
+- Stripe Checkout creation, webhook signature verification, duplicate/out-of-order delivery, entitlement projection, checkout delay/abandonment, Portal creation, and reconciliation.
+- Paid API denial for unauthenticated, unsubscribed, expired, unpaid, and policy-ineligible sessions.
 - Browsing events.
 - Viewing odds.
 - Scouting an event.
@@ -1127,12 +1222,13 @@ Environments:
 
 - `local`: local web/API where practical, mocked providers by default, optional DynamoDB local.
 - `dev`: deployed AWS development stack with non-production provider keys and test data.
-- `prod`: private production stack for Kevishie.
+- `prod`: paid production stack with public acquisition/authentication surfaces and private subscriber data.
 
 CDK stacks:
 
 - `WebStack`: S3 web assets, CloudFront, DNS if later needed.
-- `AuthStack`: Cognito User Pool, clients, auth settings.
+- `AuthStack`: Cognito User Pool, custom challenge Lambdas, clients, SMS adapter permissions, auth settings, and OTP abuse-control storage.
+- `BillingStack`: Stripe secret/webhook configuration, billing handlers, webhook ingress, queues/DLQs where enabled, and reconciliation permissions.
 - `ApiStack`: API Gateway HTTP API, Lambda handlers, authorizers.
 - `DataStack`: DynamoDB tables, streams, S3 archive buckets.
 - `WorkerStack`: SQS queues, DLQs, worker Lambdas, Step Functions, EventBridge schedules.
@@ -1184,7 +1280,7 @@ Cost controls:
 
 ### ADR-001: Vite and TanStack instead of Next.js
 
-- Context: The PRD requires React, Vite, TanStack Router, and TanStack Query, and the app is a private authenticated dashboard rather than an SEO-heavy public site.
+- Context: The product combines a public acquisition surface with an authenticated subscriber terminal; the PRD requires React, Vite, TanStack Router, and TanStack Query without a separate server-rendered application runtime.
 - Decision: Use Vite with TanStack Router and TanStack Query.
 - Consequences: Client-first architecture, strong route typing, simpler deployment to S3/CloudFront, no Next.js server runtime.
 - Alternatives considered: Next.js App Router, Remix/React Router framework mode.
@@ -1224,12 +1320,19 @@ Cost controls:
 - Consequences: Isolated failures, visible states, controlled retries, small added cost.
 - Alternatives considered: Single synchronous Lambda, cron-only worker.
 
-### ADR-007: Cognito for private authentication
+### ADR-007: Cognito custom phone OTP for identity
 
-- Context: MVP needs secure private auth, password reset, session handling, and future role claims.
-- Decision: Use Cognito.
-- Consequences: Avoids custom auth, supports future roles, requires careful UX around Cognito flows.
-- Alternatives considered: Custom auth, Auth0, Clerk.
+- Context: The paid release needs public phone account entry, OTP abuse controls, secure sessions, and future role claims without owning password credentials.
+- Decision: Use Cognito custom authentication for phone OTP, with delivery behind a provider port and internal user IDs separate from phone aliases.
+- Consequences: Challenge Lambdas and rate-limit state become security-critical; local tests use a fake delivery adapter; email/password and password reset are out of scope.
+- Alternatives considered: Cognito password auth, custom session service, Auth0, Clerk.
+
+### ADR-012: Stripe as billing source, entitlement projection as access source
+
+- Context: Hosted Checkout and Customer Portal reduce payment-data scope, while webhook delivery is asynchronous, duplicated, and potentially out of order.
+- Decision: Stripe owns billing objects; verified events and reconciliation feed a versioned internal subscription/entitlement projection used by API authorization.
+- Consequences: Checkout return is pending until trusted projection confirms access; raw-body verification, event idempotency, ordering guards, and reconciliation are mandatory.
+- Alternatives considered: Client-asserted Checkout success, synchronous Stripe lookup on every request, custom payment collection.
 
 ### ADR-008: Provider adapter pattern
 
@@ -1305,7 +1408,11 @@ MVP cost controls:
 First vertical slice:
 
 ```text
-Cognito login
+public landing
+  -> phone OTP identity
+  -> paywall
+  -> Stripe Checkout
+  -> verified entitlement
   -> soccer event ingestion
   -> event explorer
   -> Hard Rock and comparison odds
@@ -1320,7 +1427,7 @@ Cognito login
 Architectural milestones:
 
 1. Monorepo substrate: TypeScript strict mode, pnpm workspaces, Turborepo, package boundaries, config, observability, test utilities.
-2. Auth and shell: Cognito, protected API routes, protected web routes, session context.
+2. Public acquisition, auth, and paywall: landing route, Cognito custom phone OTP, Stripe Checkout/webhooks, entitlement middleware, billing recovery, protected web/API routes.
 3. Domain and odds core: canonical models, market normalization, pure betting calculations, algorithm versioning, unit tests.
 4. DynamoDB repositories: Core, Odds, Performance table mappers, key builders, pagination, conditional writes.
 5. The Odds API adapter: sports/events/odds ingestion, quota capture, provider health, contract tests.
@@ -1336,7 +1443,7 @@ Do not create detailed implementation stories in this architecture task.
 
 ## 28. Review Against Product Brief and PRD
 
-- MVP remains soccer-first.
+- Shared architecture remains sport-agnostic; sport delivery follows registered module maturity and provider coverage.
 - DynamoDB remains the primary database.
 - Stack remains Agon-aligned.
 - Soccer enrichment provider remains unresolved and behind adapter interfaces.

@@ -77,49 +77,44 @@ test("combines lifecycle and participant filters and opens canonical detail", as
   await page.goto("/games?day=2026-08-01&sport=mlb&status=all&sort=matchup");
   // Legacy /games links redirect to the renamed /events route.
   await expect(page).toHaveURL(/\/events\?/);
+  // The unpriced postponed fixture never renders: no lines, no listing.
   await expect
     .poll(async () =>
       page
         .locator(".event-explorer-table h2, .event-explorer-cards h2")
         .allTextContents(),
     )
-    .toEqual([
-      "Baltimore Orioles vs Toronto Blue Jays",
-      "Boston Red Sox vs New York Yankees",
-    ]);
-  await page.getByLabel("Participant search").fill("Toronto");
-  await expect(
-    page.getByRole("heading", {
-      name: "Baltimore Orioles vs Toronto Blue Jays",
-    }),
-  ).toBeVisible();
+    .toEqual(["Boston Red Sox vs New York Yankees"]);
   await page.getByLabel("Participant search").fill("Nobody");
   await expect(
     page.getByText("No events match the active filters."),
   ).toBeVisible();
-  await page.getByLabel("Participant search").fill("Toronto");
-  await expect(page.getByLabel("Lifecycle: postponed").first()).toBeAttached();
+  await page.getByLabel("Participant search").fill("Boston");
+  await expect(
+    page.getByRole("heading", {
+      name: "Boston Red Sox vs New York Yankees",
+    }),
+  ).toBeVisible();
   // The table row is the navigation affordance; cards keep their link.
   if (await page.locator(".event-explorer-cards").count())
     await page.getByRole("link", { name: "View Details" }).first().click();
   else
     await page
       .getByRole("link", {
-        name: /Open Baltimore Orioles vs Toronto Blue Jays/,
+        name: /Open Boston Red Sox vs New York Yankees/,
       })
       .first()
       .click();
   await expect(page).toHaveURL(/status=all/);
-  await expect(page).toHaveURL(/query=Toronto/);
+  await expect(page).toHaveURL(/query=Boston/);
   await expect(page).toHaveURL(/sort=matchup/);
   await expect(
     page.getByRole("heading", {
-      name: "Baltimore Orioles vs Toronto Blue Jays",
+      name: "Boston Red Sox vs New York Yankees",
     }),
   ).toBeVisible();
-  await expect(page.getByLabel("Lifecycle: postponed")).toBeVisible();
   await page.getByRole("link", { name: "Back to events" }).click();
-  await expect(page.getByLabel("Participant search")).toHaveValue("Toronto");
+  await expect(page.getByLabel("Participant search")).toHaveValue("Boston");
   await expect(page).toHaveURL(/sort=matchup/);
 });
 

@@ -2,7 +2,7 @@
 title: "PRD: FIND THE EDGE"
 status: "final"
 created: "2026-07-15"
-updated: "2026-07-29"
+updated: "2026-08-09"
 source: "_bmad-output/planning-artifacts/product-brief.md"
 ---
 
@@ -84,15 +84,78 @@ This amendment makes the measurable paper-pick feedback loop an early product ca
 4. A performance cohort distinguishes hit rate from profitability and reports uncertainty for small samples.
 5. A retrospective can compare a challenger with a frozen baseline without training/evaluation leakage.
 
+## 0C. Binding Public Membership and Paid Access Amendment (2026-08-09)
+
+This amendment supersedes every statement below that limits FIND THE EDGE to Kevishie as the only user, prohibits public account creation or paying subscribers, requires email/password authentication or password reset, makes every route private, or treats subscriptions as post-MVP. The sports intelligence product remains gated and private to each account, but the landing, legal, authentication, pricing, paywall, and checkout-return surfaces are public or pre-entitlement surfaces as specified here.
+
+### Audience and access model
+
+- Prospective subscribers may visit the public landing page and review product positioning, illustrative previews, pricing, FAQs, legal terms, and responsible-gaming information without an account.
+- Users create or resume an account by verifying a supported phone number with a short-lived, single-use OTP. There is no email/password or password-reset flow in the current product direction.
+- Authentication proves identity; it does not grant paid product access. Every protected product request also requires a current server-derived entitlement.
+- Kevishie remains the initial product owner and operator, not the only permitted account.
+- User sports data, settings, scouting reports, watchlists, picks, bets, performance, phone identifiers, and billing metadata are private per account.
+
+### Functional requirements
+
+**FR-GATE-001 — Public acquisition surface.** The system serves the supplied landing-page design as a maintained, responsive React experience at the public root route. Prototype scripts and demo calculations are not production dependencies.
+
+**FR-GATE-002 — Public route policy.** Landing, legal, phone entry, OTP verification, pricing/paywall, checkout return, and billing-recovery routes are reachable without paid entitlement. Sports data and account-specific APIs require both authentication and entitlement.
+
+**FR-GATE-003 — Phone challenge request.** A user can submit a supported phone number in normalized E.164 form, accept required terms, and request an OTP through a pluggable SMS provider.
+
+**FR-GATE-004 — OTP verification.** A valid, unexpired, unused OTP creates or resumes the internal user identity and establishes a secure session. Codes are single-use and never logged or stored in recoverable plaintext.
+
+**FR-GATE-005 — Abuse controls.** OTP request, resend, and verification paths enforce configurable phone, IP/device, cooldown, expiry, attempt, and lockout limits with enumeration-safe errors.
+
+**FR-GATE-006 — Session lifecycle.** Users can sign out; sessions expire or revoke according to policy; safe intended destinations can be restored after reauthentication without enabling open redirects.
+
+**FR-GATE-007 — Paywall.** An authenticated user without an eligible entitlement sees the configured plan, price, cadence, included access, renewal/cancellation context, and checkout action instead of protected product data.
+
+**FR-GATE-008 — Stripe Checkout.** The server creates Stripe Checkout sessions using server-owned price configuration and the authenticated internal user. The client cannot assert customer, price, subscription, or entitlement truth.
+
+**FR-GATE-009 — Billing identity.** Stripe customer and subscription identifiers are associated with the internal user through trusted server records; phone number is not used as the durable billing primary key.
+
+**FR-GATE-010 — Webhook projection.** Verified Stripe webhooks are persisted and processed idempotently, tolerate duplicate and out-of-order delivery, and project subscription state into an auditable entitlement record.
+
+**FR-GATE-011 — Entitlement policy.** Paid access is derived server-side from configured subscription-state policy. `trialing` and `active` grant access; cancel-at-period-end retains access through the paid period; other states fail closed unless an explicit versioned grace policy applies.
+
+**FR-GATE-012 — Checkout return.** Returning from Checkout never grants access from URL parameters alone. The UI waits for or refreshes trusted entitlement state and provides bounded pending, abandoned, failed, and support states.
+
+**FR-GATE-013 — Billing management.** An authenticated Stripe-linked user can open a server-created Stripe Customer Portal session to manage payment method, invoices, and cancellation.
+
+**FR-GATE-014 — Reconciliation.** An authorized support operation can re-read Stripe customer/subscription state and rebuild entitlement projection without editing entitlement truth in a browser.
+
+**FR-GATE-015 — Legal consent.** Account onboarding records versioned acceptance of Terms, Privacy, and applicable betting-risk language. Launch copy, price, tax, refund, cancellation, trial, country allowlist, and support policy remain configurable and require business/legal approval.
+
+**FR-GATE-016 — Failure honesty.** SMS, authentication, Stripe, webhook, or entitlement degradation produces truthful pending/unavailable/recovery states and never accidental account enumeration or paid access.
+
+### Non-functional requirements
+
+- OTP artifacts are short-lived, single-use, attempt-limited, non-logged, and protected with cryptographic one-way verification.
+- Phone numbers and billing identifiers are sensitive personal data; access is least-privilege, encrypted, audit logged, and minimized.
+- Stripe webhook signatures are verified from the raw request body before parsing; event IDs and object versions/timestamps prevent replay and stale regression.
+- Authorization is enforced by trusted API middleware on every paid route. Hiding a link or component is never treated as authorization.
+- Local and CI tests use fake SMS and Stripe adapters and require no real messages, payments, paid provider calls, or production secrets.
+- Public landing and authentication surfaces target WCAG 2.1 AA and responsive, fast-loading behavior.
+
+### Acceptance outcomes
+
+1. A visitor can load the public landing page without runtime provider configuration or access to subscriber data.
+2. A supported phone can complete request, resend/expiry, verification, session, and logout flows with enumeration-safe failures.
+3. An authenticated unsubscribed user cannot read paid APIs and is shown the paywall.
+4. A verified Stripe subscription event grants entitlement idempotently; duplicate, delayed, or out-of-order events do not grant or regress access incorrectly.
+5. Cancellation, payment failure, checkout abandonment, webhook delay, and reconciliation have testable, fail-closed behavior.
+
 ## 0. Document Purpose
 
-This Product Requirements Document translates the FIND THE EDGE Product Brief into clear, testable requirements for the first deployable private MVP. It is written for product planning, downstream BMAD workflows, architecture, UX, epics, stories, and future automated tests. The Product Brief remains the source of truth for vision and scope; this PRD preserves the soccer-first MVP, Hard Rock Bet Florida focus, Agon-aligned AWS stack, DynamoDB direction, deterministic betting calculations, and unresolved soccer enrichment provider decision.
+This Product Requirements Document translates the FIND THE EDGE vision into clear, testable requirements for the first paid release. It is written for product planning, downstream BMAD workflows, architecture, UX, epics, stories, and future automated tests. The binding amendments in this PRD supersede older Product Brief assumptions where they differ; the product preserves its evidence-first purpose, AWS/DynamoDB direction, deterministic betting calculations, and registered multi-sport architecture.
 
 ## 1. Vision
 
-FIND THE EDGE is a private, login-protected sports betting intelligence web application for identifying positive expected value (+EV) opportunities and improving long-term betting process quality. It is not a pick-selling product, a sportsbook clone, or a winner-prediction engine. Its core promise is disciplined decision support: compare Hard Rock Bet Florida odds against the broader market, calculate fair value deterministically, preserve data provenance, and show when the best decision is no bet.
+FIND THE EDGE is a subscription-gated sports betting intelligence web application for identifying positive expected value (+EV) opportunities and improving long-term betting process quality. Public acquisition and account-entry surfaces lead into a private per-account product. It is not a pick-selling product, a sportsbook clone, or a winner-prediction engine. Its core promise is disciplined decision support: compare target-sportsbook odds against the broader market, calculate fair value deterministically, preserve data provenance, and show when the best decision is no bet.
 
-The MVP is built for Kevishie as a single private user. It focuses on soccer first because the betting markets, event cadence, and required scouting context need tight product boundaries before expanding to NFL, NBA, esports, or automated scouting schedules.
+The first paid release is operated by Kevishie and supports subscriber accounts. Sport delivery follows registered module maturity rather than a single-sport core; initial working slices may still prioritize the modules with the strongest data coverage.
 
 The product should feel premium, analytical, and trustworthy without casino aesthetics. It should reward patience, provenance, and closing line value (CLV) over action volume or short-term win rate.
 
@@ -114,7 +177,7 @@ Everything outside that loop is post-MVP unless it is a foundational setting, da
 
 ### 3.1 Primary User
 
-Kevishie is the initial and only MVP user. He primarily uses Hard Rock Bet in Florida and wants a private soccer-first workflow that helps answer: "Where is the edge right now?"
+Kevishie is the initial product owner, operator, and reference user. Paying subscribers share the same core job: access a private analytical workflow that answers, "Where is the edge right now?" for their configured target sportsbook and enabled sports.
 
 ### 3.2 Jobs To Be Done
 
@@ -124,10 +187,8 @@ Kevishie is the initial and only MVP user. He primarily uses Hard Rock Bet in Fl
 - When a bet is placed, Kevishie wants to track result, ROI, and CLV so he can judge process quality instead of only win/loss outcome.
 - When data is missing, stale, or conflicted, Kevishie wants the system to say so plainly and avoid forcing recommendations.
 
-### 3.3 Non-Users for MVP
+### 3.3 Non-Users for the First Paid Release
 
-- Public registrants.
-- Paying subscribers.
 - Social followers or picks buyers.
 - Multi-user admin teams.
 - Sportsbook operators.
@@ -202,17 +263,17 @@ Kevishie opens an event and sees available odds and market analysis, but the sys
 
 ## 6. MVP Features and Functional Requirements
 
-### 6.1 Authentication and Private Access
+### 6.1 Phone Authentication and Paid Access
 
-**Description:** FIND THE EDGE is private and login-protected for the MVP. Authentication should support secure access for Kevishie while preserving a future path to roles without building a full user administration system.
+**Description:** FIND THE EDGE exposes public acquisition and account-entry routes, while subscriber product data is protected per account. Phone + OTP establishes identity; a separately derived Stripe entitlement controls paid access.
 
-#### FR-001: Secure login
+#### FR-001: Secure phone login
 
-The user can log in with configured credentials before accessing the application. Realizes UJ-1.
+The user can request and verify a short-lived OTP for a supported phone number before accessing subscriber routes. Realizes UJ-1 and is further governed by FR-GATE-003 through FR-GATE-006.
 
 **Consequences:**
 - Unauthenticated users cannot access protected application routes.
-- Failed login attempts return a non-specific error.
+- Failed requests and verification attempts return enumeration-safe errors and enforce configured abuse limits.
 - Successful login creates an authenticated session.
 
 #### FR-002: Logout
@@ -231,13 +292,13 @@ All application routes containing events, odds, scouting, dashboard, settings, o
 - Direct navigation to a protected route while unauthenticated redirects to login.
 - Previously requested route can be restored after login when safe.
 
-#### FR-004: Password reset
+#### FR-004: OTP resend and recovery
 
-The user can initiate and complete a password reset flow.
+The user can resend an OTP after cooldown and recover from expired, invalid, used, or locked challenges.
 
 **Consequences:**
-- Password reset does not expose whether a specific email is valid.
-- A completed reset allows login with the new password.
+- Recovery does not expose whether a phone number already has an account.
+- Successful verification consumes the challenge and allows session creation without a password.
 
 #### FR-005: Session expiration
 
@@ -252,7 +313,7 @@ Authenticated sessions expire after a configured inactivity or token lifetime.
 The authentication model stores enough user identity and permission context to support future roles without implementing MVP multi-user administration.
 
 **Consequences:**
-- MVP can treat Kevishie as the only active user.
+- The first release supports subscriber accounts without requiring a full user-administration UI.
 - Role concepts are not exposed as admin UI in MVP.
 
 ### 6.2 Upcoming Soccer Events
@@ -803,7 +864,7 @@ Core read surfaces should degrade gracefully when providers are unavailable by s
 
 #### NFR-004: Performance
 
-Dashboard and event list interactions should feel responsive for private MVP scale and avoid blocking the UI on long-running scouting jobs.
+Landing, authentication, paywall, Dashboard, and event-list interactions should feel responsive at initial subscriber scale and avoid blocking the UI on long-running scouting jobs.
 
 #### NFR-005: Accessibility
 
@@ -839,7 +900,7 @@ Provider errors, quota exhaustion, stale data, and partial responses must be vis
 
 #### NFR-013: Cost awareness
 
-Provider requests, scheduled or manual scouting, and AWS usage must be designed with quota and cost visibility appropriate for a private MVP.
+SMS delivery, Stripe, provider requests, scheduled or manual scouting, and AWS usage must be designed with quota and cost visibility appropriate for the first paid release.
 
 #### NFR-014: Auditability
 
@@ -935,8 +996,10 @@ Given automatic scouting preferences are configured, when the MVP runs, then tho
 
 ### 9.1 Required for First Deployable MVP
 
-- Secure private login, logout, password reset, protected routes, and session expiration.
-- Single-user private access for Kevishie.
+- Public responsive landing, legal, authentication, pricing/paywall, and checkout-return surfaces.
+- Secure phone + OTP request, verification, resend/recovery, logout, protected routes, and session expiration.
+- Stripe Checkout, verified webhooks, server-derived subscription entitlements, Customer Portal, and billing recovery.
+- Private per-account access for subscribers with Kevishie as initial product owner/operator.
 - Soccer-first event discovery through The Odds API.
 - Upcoming Events list with filters and Watchlist.
 - Odds ingestion for Hard Rock Florida and configurable Comparison Bookmakers.
@@ -964,7 +1027,7 @@ Given automatic scouting preferences are configured, when the MVP runs, then tho
 - Cards.
 - Notifications.
 - Mobile application.
-- Multi-user subscriptions.
+- Multi-seat teams, organization billing, referrals, coupons, and complex plan catalogs.
 - Full multi-user administration UI.
 - Machine-learning probability models.
 - Automatic bet settlement.
@@ -980,7 +1043,7 @@ Given automatic scouting preferences are configured, when the MVP runs, then tho
 - Copying sportsbook interfaces.
 - Treating LLM output as verified data.
 - Supporting every sport or market at launch.
-- Public registration.
+- Email/password accounts and social login unless introduced by a later identity decision.
 - Selling picks.
 - Fully autonomous bankroll management.
 - Replacing DynamoDB with PostgreSQL.
@@ -988,7 +1051,7 @@ Given automatic scouting preferences are configured, when the MVP runs, then tho
 
 ## 11. Technology and Data Direction
 
-The implementation direction remains aligned with the Product Brief and the existing Agon platform: TypeScript, React, Vite, TanStack Router, TanStack Query, TanStack Table, Tailwind CSS, shadcn/ui, React Hook Form, Zod, AWS Lambda, API Gateway HTTP API, DynamoDB, DynamoDB Streams, SQS, EventBridge Scheduler, Step Functions, S3, CloudFront, Cognito, Secrets Manager, CloudWatch, AWS CDK, pnpm workspaces, and Turborepo.
+The implementation direction remains aligned with the existing platform: TypeScript, React, Vite, TanStack Router, TanStack Query, TanStack Table, Tailwind CSS, shadcn/ui, React Hook Form, Zod, AWS Lambda, API Gateway HTTP API, DynamoDB, DynamoDB Streams, SQS, EventBridge Scheduler, Step Functions, S3, CloudFront, Cognito custom authentication, a pluggable SMS adapter, Stripe, Secrets Manager, CloudWatch, AWS CDK, pnpm workspaces, and Turborepo.
 
 DynamoDB is the persistence direction. Provider abstractions are required. The Odds API is the initial provider for sportsbook markets, odds, and event discovery. A separate soccer enrichment provider is required for fixtures, teams, venues, lineups, injuries, and statistics, but the exact provider remains unresolved.
 
@@ -1006,7 +1069,8 @@ DynamoDB is the persistence direction. Provider abstractions are required. The O
 | OD-008 | Outlier handling rules | Resolved by ADR 0003 with an eight-point any-outcome median rule. | Revise with FTE-030 evidence | Product/Engineering | No |
 | OD-009 | CLV benchmark | Resolved by ADR 0003 as closing comparison consensus excluding the target. | Revise with benchmark evidence | Product | No |
 | OD-010 | Snapshot retention | Resolved by ADR 0003 as no immutable-snapshot TTL for MVP. | New ADR before destructive retention | Product/Engineering | No |
-| OD-011 | Authentication implementation details | Selects exact Cognito/session behavior and password policy. | Before auth implementation | Engineering | Yes |
+| OD-011 | SMS provider and phone-country allowlist | Determines sender registration, delivery coverage, cost controls, and supported E.164 numbers. Cognito custom authentication remains the identity direction. | Before production OTP delivery | Product/Engineering | Partially |
+| OD-013 | Commercial policy | Final plan price/currency, trial, tax, refund, cancellation, grace, legal copy, and support policy. | Before enabling production Checkout | Product/Legal review if available | Yes |
 | OD-012 | Compliance and responsible-gaming language | Reduces risk in betting-related product copy. | Before user-facing launch copy | Product/Legal review if available | Partially |
 
 ## 13. Success Metrics
@@ -1037,7 +1101,7 @@ DynamoDB is the persistence direction. Provider abstractions are required. The O
 
 | Product Goal | User Journeys | Functional Requirements | Non-Functional Requirements | Acceptance Criteria | Future Epic Candidate |
 | --- | --- | --- | --- | --- | --- |
-| Private access | UJ-1 | FR-001-FR-006 | NFR-001, NFR-002 | AC-001 | Authentication and access |
+| Public acquisition, identity, and paid access | UJ-1 | FR-001-FR-006, FR-GATE-001-FR-GATE-016 | NFR-001, NFR-002 | AC-001 and amendment outcomes | Landing, authentication, subscription, and entitlement |
 | Soccer event discovery | UJ-2 | FR-007-FR-011 | NFR-003, NFR-007, NFR-012 | AC-002 | Soccer events |
 | Odds ingestion and snapshots | UJ-5, UJ-8 | FR-012-FR-019 | NFR-006-NFR-009, NFR-012-NFR-014 | AC-003 | Odds ingestion |
 | Deterministic calculations | UJ-5, UJ-9 | FR-020-FR-030 | NFR-008, NFR-011, NFR-014 | AC-004 | Market normalization and calculations |
@@ -1051,9 +1115,9 @@ DynamoDB is the persistence direction. Provider abstractions are required. The O
 
 ## 15. Assumptions
 
-- MVP uses Kevishie as the only active user and does not expose public registration.
+- The first paid release supports public phone-based account entry and private per-subscriber product data; Kevishie is the initial operator and reference user.
 - The Odds API can provide enough soccer event and odds coverage to support the first MVP.
-- Hard Rock Florida odds are available through The Odds API for at least some target soccer Markets.
+- The configured target sportsbook has provider coverage for at least one enabled sport/market slice; Hard Rock Florida may remain the initial target where coverage exists.
 - Exact threshold values are intentionally deferred to Open Decisions rather than invented in this PRD.
 - The soccer enrichment provider is unresolved and may require separate research before enriched scouting sections can be fully implemented.
 - Automatic scouting preferences are stored for future use, but scheduled automatic scouting is post-MVP.
@@ -1062,8 +1126,8 @@ DynamoDB is the persistence direction. Provider abstractions are required. The O
 ## 16. Review Notes
 
 - Compared against Product Brief: aligned.
-- Scope creep removed: NFL, NBA, esports, live betting, notifications, public registration, direct bet placement, and automatic scouting schedules are post-MVP.
-- MVP remains soccer-first: confirmed.
+- Scope remains controlled: live betting, notifications, direct sportsbook bet placement, organization accounts, and automatic scouting schedules are post-MVP; public phone account entry and paid subscriptions are now in scope.
+- Shared product scope is sport-agnostic; soccer-specific requirements remain owned by the soccer module and delivery priority follows module/provider maturity.
 - DynamoDB and Agon-aligned AWS direction: preserved.
 - Soccer enrichment provider: unresolved and tracked as OD-001.
 - Calculations: deterministic and outside LLM.

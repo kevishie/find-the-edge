@@ -1169,10 +1169,27 @@ const providerPage = (
 });
 
 describe("Shell navigation", () => {
-  it("lands on splits from the root and advertises only built-out screens", async () => {
+  it("renders the public landing page at the root without terminal chrome", async () => {
+    render(<App initialPath="/" />);
+
+    expect(
+      await screen.findByRole("heading", { name: /price the bet/i }),
+    ).toBeVisible();
+    expect(screen.getByText("ILLUSTRATIVE DATA")).toBeVisible();
+    expect(screen.getByText(/Call 1-800-GAMBLER/)).toBeVisible();
+    expect(screen.getByRole("status", { name: "" })).toHaveTextContent(
+      "ACCOUNT ACCESS COMING SOON",
+    );
+    expect(
+      screen.queryByRole("navigation", { name: "Primary navigation" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Betting splits")).not.toBeInTheDocument();
+  });
+
+  it("keeps the terminal shell on a direct product route", async () => {
     render(
       <App
-        initialPath="/"
+        initialPath="/splits"
         gamesClient={{
           ok: true,
           value: {
