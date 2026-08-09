@@ -1173,13 +1173,12 @@ describe("Shell navigation", () => {
     render(<App initialPath="/" />);
 
     expect(
-      await screen.findByRole("heading", { name: /price the bet/i }),
+      await screen.findByRole("heading", { name: /stop shopping lines/i }),
     ).toBeVisible();
-    expect(screen.getByText("ILLUSTRATIVE DATA")).toBeVisible();
+    expect(screen.getByText(/LIVE ODDS · 6 BOOKS/)).toBeVisible();
+    expect(screen.getAllByText("+EV SCANNER")[0]).toBeVisible();
+    expect(screen.getByText("One plan. Every tool.")).toBeVisible();
     expect(screen.getByText(/Call 1-800-GAMBLER/)).toBeVisible();
-    expect(screen.getByRole("status", { name: "" })).toHaveTextContent(
-      "ACCOUNT ACCESS COMING SOON",
-    );
     expect(
       screen.queryByRole("navigation", { name: "Primary navigation" }),
     ).not.toBeInTheDocument();
@@ -1217,6 +1216,16 @@ describe("Shell navigation", () => {
       "Experiments",
     ])
       expect(within(nav).queryByText(removed)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["/terms", "Terms of Use"],
+    ["/privacy", "Privacy Notice"],
+  ])("renders %s as a public draft legal route", async (path, heading) => {
+    render(<App initialPath={path} />);
+    expect(await screen.findByRole("heading", { name: heading })).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("NOT APPROVED FOR LAUNCH");
+    expect(screen.queryByRole("navigation", { name: "Primary navigation" })).not.toBeInTheDocument();
   });
 });
 

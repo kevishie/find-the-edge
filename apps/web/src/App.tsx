@@ -47,6 +47,7 @@ import type {
 } from "@find-the-edge/ui";
 import { sportsbookScopeKey } from "./sportsbooks";
 import { LandingPage } from "./landing-page";
+import { PublicLegalPage } from "./public-legal";
 import { type OddsHistoryDto, type RetrospectiveDto } from "./api";
 // Off-nav screens load on demand so the landing path never parses them.
 const Dashboard = lazy(() =>
@@ -2454,7 +2455,7 @@ function RootLayout() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
-  return pathname === "/" ? <Outlet /> : <AppShell />;
+  return ["/", "/terms", "/privacy"].includes(pathname) ? <Outlet /> : <AppShell />;
 }
 
 const rootRoute = createRootRoute({
@@ -2465,6 +2466,16 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   component: LandingPage,
+});
+const termsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/terms",
+  component: () => <PublicLegalPage kind="terms" />,
+});
+const privacyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/privacy",
+  component: () => <PublicLegalPage kind="privacy" />,
 });
 const dashboardRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -2639,6 +2650,8 @@ const legacyGameDetailRoute = createRoute({
 });
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  termsRoute,
+  privacyRoute,
   dashboardRoute,
   gamesRoute,
   gameDetailRoute,
