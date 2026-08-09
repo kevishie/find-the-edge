@@ -26,9 +26,12 @@ permissions:
 
 jobs:
   reset:
-    name: Guarded dev feed reset
+    name: Guarded staging feed reset
     if: github.repository == 'kevishie/find-the-edge' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # The deploy role's OIDC trust is scoped to the staging environment
+    # subject, so the reset must run inside it to assume the role.
+    environment: staging
     # The script enforces a 75-minute apply deadline; the remaining
     # reserve lets its finally block restore writer state before job timeout.
     timeout-minutes: 90
@@ -68,7 +71,7 @@ jobs:
       - name: Assume AWS deployment role
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::228246988391:role/github-actions-find-the-edge-deploy
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
       - name: Run guarded reset
