@@ -113,6 +113,17 @@ test("starts scouting and follows authoritative progress without fabricated phas
   await expect(
     page.getByRole("heading", { name: "Boston Red Sox vs New York Yankees" }),
   ).toBeVisible();
+  // On the table, scouting starts from the event detail reached through the
+  // row; cards keep their inline Scout button.
+  if (!(await page.locator(".event-explorer-cards").count())) {
+    await page
+      .getByRole("link", { name: /Open Boston Red Sox vs New York Yankees/ })
+      .first()
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Sportsbook comparison" }),
+    ).toBeVisible();
+  }
   await page.getByRole("button", { name: "Scout" }).first().click();
   await expect(page).toHaveURL(
     new RegExp(`/scout-jobs/${encodeURIComponent(jobId)}`),

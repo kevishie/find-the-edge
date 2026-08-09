@@ -4134,7 +4134,7 @@ footer {
 }
 /* The design's status cell is one dot-label line; metadata freshness and
    evidence timing stay in the DOM for assistive tech and tests. */
-.event-explorer-table .event-metadata-badge:not(:first-child),
+.event-explorer-table .event-metadata-badge,
 .event-explorer-table .event-metadata-badges time {
   position: absolute;
   width: 1px;
@@ -4157,4 +4157,173 @@ footer {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
+}
+
+/* Rows are the navigation affordance on the explorer table. */
+.event-explorer-table tbody tr.event-card {
+  cursor: pointer;
+}
+.event-explorer-table tbody tr.event-card:hover,
+.event-explorer-table tbody tr.event-card:focus-visible {
+  background: rgba(139, 92, 246, 0.07);
+  outline: none;
+}
+
+/* Events Explorer game blocks — templates/Find The Edge - Events Explorer.html
+   option 2b: target price large, no-vig fair line beneath, edge cells lit. */
+.event-explorer-table thead th {
+  text-transform: uppercase;
+}
+.evb-block {
+  cursor: pointer;
+}
+.evb-block:hover .evb-team-row th,
+.evb-block:hover .evb-team-row td,
+.evb-block:focus-visible .evb-team-row th,
+.evb-block:focus-visible .evb-team-row td {
+  background: rgba(139, 92, 246, 0.05);
+}
+.evb-block:focus-visible {
+  outline: none;
+}
+.evb-team-row th,
+.evb-team-row td {
+  border-bottom: 0;
+  padding: 8px 16px;
+  vertical-align: middle;
+}
+.evb-team-row th {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 240px;
+  border-bottom: 0;
+}
+.evb-crest {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #221f2e;
+  border: 1px solid #322e40;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font:
+    600 9px "IBM Plex Mono",
+    monospace;
+  letter-spacing: 0.5px;
+  color: #c3bdd1;
+  flex-shrink: 0;
+}
+.evb-name {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.evb-home {
+  font:
+    9px "IBM Plex Mono",
+    monospace;
+  letter-spacing: 1.5px;
+  color: #56515f;
+}
+.evb-cell-wrap {
+  width: 160px;
+}
+.evb-cell {
+  border: 1px solid #2a2833;
+  border-radius: 10px;
+  background: #131319;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  justify-content: center;
+}
+.evb-cell-empty {
+  color: #56515f;
+  font-family: "IBM Plex Mono", monospace;
+}
+.evb-price-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: "IBM Plex Mono", monospace;
+}
+.evb-point {
+  font-size: 12px;
+  color: #8b8494;
+}
+.evb-price {
+  font-size: 15px;
+  font-weight: 600;
+  color: #c084fc;
+}
+.evb-fair {
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  color: #6b6678;
+}
+.evb-edge {
+  border-color: rgba(52, 211, 153, 0.45);
+  background: rgba(52, 211, 153, 0.06);
+}
+.evb-edge .evb-price {
+  color: #34d399;
+}
+.evb-edge .evb-fair {
+  color: #2ea583;
+}
+.evb-footer-row td {
+  border-bottom: 1px solid #201e29;
+  padding: 6px 16px 14px;
+}
+.evb-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+  color: #6b6678;
+}
+.evb-flag {
+  color: #fbbf24;
+}
+.evb-age.stale {
+  color: #f87171;
+}
+.evb-actions {
+  margin-left: auto;
+}
+.evb-actions .scout-action button {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: #a855f7;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.evb-actions .scout-action button::after {
+  content: " →";
+}
+.evb-actions .scout-action button:disabled {
+  color: #56515f;
+  cursor: not-allowed;
+}
+.evb-actions .scout-action small {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.evb-draw strong {
+  color: #c084fc;
+  font-weight: 600;
 }

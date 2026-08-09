@@ -96,16 +96,17 @@ test("combines lifecycle and participant filters and opens canonical detail", as
     page.getByText("No events match the active filters."),
   ).toBeVisible();
   await page.getByLabel("Participant search").fill("Toronto");
-  await expect(page.getByLabel("Lifecycle: postponed")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Scout" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Watchlist" })).toBeDisabled();
-  await expect(
-    page.getByText("Scouting is unavailable in this environment.").first(),
-  ).toBeAttached();
-  await expect(
-    page.getByText("Unavailable: Watchlist API is not built yet.").first(),
-  ).toBeAttached();
-  await page.getByRole("link", { name: "View Details" }).click();
+  await expect(page.getByLabel("Lifecycle: postponed").first()).toBeAttached();
+  // The table row is the navigation affordance; cards keep their link.
+  if (await page.locator(".event-explorer-cards").count())
+    await page.getByRole("link", { name: "View Details" }).first().click();
+  else
+    await page
+      .getByRole("link", {
+        name: /Open Baltimore Orioles vs Toronto Blue Jays/,
+      })
+      .first()
+      .click();
   await expect(page).toHaveURL(/status=all/);
   await expect(page).toHaveURL(/query=Toronto/);
   await expect(page).toHaveURL(/sort=matchup/);

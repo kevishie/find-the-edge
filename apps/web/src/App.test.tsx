@@ -1548,7 +1548,14 @@ describe("Data Sources", () => {
 });
 
 describe("Games", () => {
+  beforeEach(() => {
+    // View preferences persist in localStorage; tests must not leak them.
+    window.localStorage.removeItem("fte.eventView");
+  });
   it("starts one scheduled-event scouting action and opens its authoritative route", async () => {
+    // Inline Scout actions live on the cards layout since the table
+    // rows became the navigation affordance.
+    window.localStorage.setItem("fte.eventView", "cards");
     const scoutingJob = {
       schemaVersion: 1 as const,
       jobId: `scout-job:${"a".repeat(64)}`,
@@ -1592,6 +1599,9 @@ describe("Games", () => {
   });
 
   it("resumes the initiating scouting action after the sign-in callback", async () => {
+    // Inline Scout actions live on the cards layout since the table
+    // rows became the navigation affordance.
+    window.localStorage.setItem("fte.eventView", "cards");
     const scoutingJob = {
       schemaVersion: 1 as const,
       jobId: `scout-job:${"a".repeat(64)}`,
@@ -1634,6 +1644,9 @@ describe("Games", () => {
   });
 
   it("disables scouting with explicit lifecycle guidance for nonscheduled events", async () => {
+    // Inline Scout actions live on the cards layout since the table
+    // rows became the navigation affordance.
+    window.localStorage.setItem("fte.eventView", "cards");
     const completed = { ...game, status: "completed" as const };
     const createScoutingJob = vi.fn();
     const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(game.id)}`;
@@ -1683,13 +1696,8 @@ describe("Games", () => {
     expect(screen.getByText("O 8.5")).toBeInTheDocument();
     expect(screen.getByText("Aug 1 · 7:05 PM ET")).toBeInTheDocument();
     const price = screen.getByText("+120");
-    // The observed timestamp moved from row text to the matchup tooltip.
-    expect(
-      price
-        .closest(".event-card")
-        ?.querySelector("th[scope=row]")
-        ?.getAttribute("title"),
-    ).toBe("Observed Aug 1, 2026, 8:00 AM Eastern");
+    // The game block footer carries odds freshness instead of a timestamp.
+    expect(price.closest(".event-card")?.textContent).toMatch(/odds \d+m old/);
     fireEvent.click(screen.getByRole("button", { name: "MLB" }));
     expect(list).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Loading games…")).not.toBeInTheDocument();
@@ -1749,7 +1757,7 @@ describe("Games", () => {
     expect(screen.getByText("+145")).toBeInTheDocument();
     expect(screen.getByText("+220")).toBeInTheDocument();
     expect(screen.getByText("+175")).toBeInTheDocument();
-    expect(screen.getByText("Draw")).toBeInTheDocument();
+    expect(screen.getByText(/draw/)).toBeInTheDocument();
   });
 
   it("shows configuration failure without making a request", async () => {

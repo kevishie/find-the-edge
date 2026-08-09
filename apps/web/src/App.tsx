@@ -1051,29 +1051,18 @@ function GamesExplorer() {
         </label>
         <label>
           <span>Lifecycle</span>
+          {/* People filter for games that have not started; every other
+              lifecycle (in progress, completed, cancelled …) is "All". */}
           <select
-            value={status}
+            value={status === "scheduled" ? "scheduled" : "all"}
             onChange={(event) =>
               updateSearch({
                 status: event.currentTarget.value as EventExplorerStatus,
               })
             }
           >
-            {(
-              [
-                "all",
-                "scheduled",
-                "started",
-                "postponed",
-                "completed",
-                "cancelled",
-                "unknown",
-              ] as const
-            ).map((value) => (
-              <option key={value} value={value}>
-                {value === "all" ? "All lifecycles" : value}
-              </option>
-            ))}
+            <option value="all">All statuses</option>
+            <option value="scheduled">Not started</option>
           </select>
         </label>
         <label className="event-search">
@@ -1175,52 +1164,20 @@ function GamesExplorer() {
                 <caption>Events matching the active explorer filters</caption>
                 <thead>
                   <tr>
-                    {(
-                      [
-                        ["matchup", "Event"],
-                        ["kickoff", "Kickoff (ET)"],
-                      ] as const
-                    ).map(([field, label]) => (
-                      <th scope="col" key={field}>
-                        <button
-                          type="button"
-                          aria-label={`Sort by ${label}`}
-                          aria-pressed={sort === field}
-                          onClick={() =>
-                            updateSearch({
-                              sort: field,
-                              direction:
-                                sort === field && direction === "asc"
-                                  ? "desc"
-                                  : "asc",
-                            })
-                          }
-                        >
-                          {label}
-                          {sort === field
-                            ? direction === "asc"
-                              ? " ↑"
-                              : " ↓"
-                            : ""}
-                        </button>
-                      </th>
-                    ))}
-                    <th scope="col">Status</th>
+                    <th scope="col">Matchup</th>
                     <th scope="col">Spread</th>
                     <th scope="col">Total</th>
-                    <th scope="col">ML</th>
-                    <th scope="col">Actions</th>
+                    <th scope="col">Moneyline</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {visibleItems.map((game) => (
-                    <EventExplorerRow
-                      key={game.id}
-                      game={game}
-                      explorerSearch={search}
-                    />
-                  ))}
-                </tbody>
+                {visibleItems.map((game) => (
+                  <EventGameBlock
+                    key={game.id}
+                    game={game}
+                    explorerSearch={search}
+                    snapshotAt={state.page.snapshotAt}
+                  />
+                ))}
               </table>
             </div>
           )}
@@ -1244,85 +1201,232 @@ function GamesExplorer() {
   );
 }
 
-function EventExplorerRow({
+const teamNickname = (label: string, sportKey: string) => {
+  if (sportKey !== "mlb") return label;
+  for (const nickname of ["Red Sox", "White Sox", "Blue Jays"])
+    if (label.endsWith(nickname)) return nickname;
+  const words = label.split(" ");
+  return words[words.length - 1] ?? label;
+};
+const teamMonogram = (label: string, sportKey: string) =>
+  teamNickname(label, sportKey)
+    .replace(/[^A-Za-z]/g, "")
+    .slice(0, 3)
+    .toUpperCase();
+const americanToDecimal = (odds: number) =>
+  odds >= 0 ? odds / 100 + 1 : 100 / -odds + 1;
+const probabilityToAmerican = (p: number) => {
+  const decimal = 1 / p;
+  return decimal >= 2
+    ? Math.round((decimal - 1) * 100)
+    : Math.round(-100 / (decimal - 1));
+};
+const americanToProbability = (odds: number) =>
+  odds >= 0 ? 100 / (odds + 100) : -odds / (-odds + 100);
+
+function FairCell({
+  selection,
+  counterpart,
+  marketKey,
+}: {
+  readonly selection?:
+    | {
+        readonly point?: number;
+        readonly americanOdds: number;
+        readonly selectionKey: string;
+      }
+    | undefined;
+  readonly counterpart?: { readonly americanOdds: number } | undefined;
+  readonly marketKey: string;
+}) {
+  if (!selection)
+    return (
+      <td className="evb-cell-wrap">
+        <div className="evb-cell evb-cell-empty">—</div>
+      </td>
+    );
+  const pointText =
+    selection.point === undefined
+      ? ""
+      : marketKey === "total"
+        ? `${selection.selectionKey === "over" ? "O" : "U"} ${selection.point}`
+        : linePoint(selection.point);
+  let fair: number | null = null;
+  let ev: number | null = null;
+  if (counterpart) {
+    const pSelf = americanToProbability(selection.americanOdds);
+    const pOther = americanToProbability(counterpart.americanOdds);
+    const fairProbability = pSelf / (pSelf + pOther);
+    fair = probabilityToAmerican(fairProbability);
+    ev =
+      (fairProbability * americanToDecimal(selection.americanOdds) - 1) * 100;
+  }
+  const edge = ev !== null && ev > 0.05;
+  return (
+    <td className="evb-cell-wrap">
+      <div className={`evb-cell${edge ? " evb-edge" : ""}`}>
+        <span className="evb-price-line">
+          {pointText && <span className="evb-point">{pointText}</span>}
+          <strong className="evb-price">
+            {oddsPrice(selection.americanOdds)}
+          </strong>
+        </span>
+        {fair !== null && (
+          <span className="evb-fair">
+            fair {oddsPrice(fair)}
+            {edge && ` · +${ev!.toFixed(1)}% EV`}
+          </span>
+        )}
+      </div>
+    </td>
+  );
+}
+
+function EventGameBlock({
   game,
   explorerSearch,
+  snapshotAt,
 }: {
   readonly game: UiGamesPage["items"][number];
   readonly explorerSearch: ExplorerSearch;
+  readonly snapshotAt: string | null | undefined;
 }) {
   const client = useContext(GamesClientContext);
+  const navigate = useNavigate();
   const prices = game.odds.state === "available" ? game.odds.selections : [];
-  const market = (key: string) =>
-    prices.filter(({ marketKey }) => marketKey === key);
-  const marketValues = (key: string) =>
-    market(key).length === 0 ? (
-      <span>—</span>
-    ) : (
-      market(key).map((selection) => (
-        <span key={selection.selectionKey} className="explorer-market-value">
-          {selection.selectionLabel && <span>{selection.selectionLabel}</span>}
-          {selection.point !== undefined && (
-            <span>
-              {key === "total"
-                ? `${selection.selectionKey === "over" ? "O" : "U"} ${selection.point}`
-                : linePoint(selection.point)}
+  const away = game.participants[0]?.label ?? "Unknown";
+  const home = game.participants[1]?.label ?? "Unknown";
+  const bySide = (marketKey: string, side: "away" | "home") => {
+    const rows = prices.filter((price) => price.marketKey === marketKey);
+    if (marketKey === "total")
+      return rows.find(
+        ({ selectionKey }) =>
+          selectionKey === (side === "away" ? "over" : "under"),
+      );
+    return rows.find(
+      ({ selectionLabel }) =>
+        selectionLabel === (side === "away" ? away : home),
+    );
+  };
+  const openDetail = () =>
+    void navigate({
+      to: "/events/$gameId",
+      params: { gameId: game.id },
+      search: explorerSearch,
+    });
+  const newestRetrievedAt = prices
+    .map(({ retrievedAt }) => retrievedAt)
+    .sort()
+    .at(-1);
+  // Age is measured against the page snapshot, not the wall clock: render
+  // stays pure and the number refreshes with every poll.
+  const oddsAgeMinutes =
+    newestRetrievedAt && snapshotAt
+      ? Math.max(
+          0,
+          Math.round(
+            (Date.parse(snapshotAt) - Date.parse(newestRetrievedAt)) / 60_000,
+          ),
+        )
+      : null;
+  const today = game.eastern.calendarDay === currentEasternDay();
+  const kickoffTime = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(game.startsAt));
+  const teamRow = (side: "away" | "home") => {
+    const label = side === "away" ? away : home;
+    return (
+      <tr className="evb-team-row">
+        <th scope="row" title={label}>
+          <span className="evb-crest" aria-hidden="true">
+            {teamMonogram(label, game.sportKey)}
+          </span>
+          <span className="evb-name">{teamNickname(label, game.sportKey)}</span>
+          {side === "home" && <span className="evb-home">HOME</span>}
+          {side === "away" && (
+            <span className="sr-only">
+              <h2>{eventMatchupLabel(game)}</h2>
+              <EventMetadataBadges game={game} />
             </span>
           )}
-          <strong>{oddsPrice(selection.americanOdds)}</strong>
-        </span>
-      ))
+        </th>
+        {(["spread", "total", "moneyline"] as const).map((marketKey) => (
+          <FairCell
+            key={marketKey}
+            marketKey={marketKey}
+            selection={bySide(marketKey, side)}
+            counterpart={bySide(marketKey, side === "away" ? "home" : "away")}
+          />
+        ))}
+      </tr>
     );
+  };
   return (
-    <tr className="event-card" data-event-id={game.id}>
-      <th
-        scope="row"
-        title={
-          prices[0]
-            ? `Observed ${easternDisplay(prices[0].observedAt)} Eastern`
-            : undefined
+    <tbody
+      className="event-card evb-block"
+      data-event-id={game.id}
+      role="link"
+      tabIndex={0}
+      aria-label={`Open ${eventMatchupLabel(game)}`}
+      onClick={openDetail}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openDetail();
         }
-      >
-        <h2>{eventMatchupLabel(game)}</h2>
-        <small>{game.competition.key.toUpperCase()}</small>
-      </th>
-      <td
-        className="evx-kickoff"
-        title={`${easternDisplay(game.startsAt)} Eastern`}
-      >
-        {kickoffDisplay(game.startsAt)}
-      </td>
-      <td>
-        <EventMetadataBadges game={game} />
-      </td>
-      <td>{marketValues("spread")}</td>
-      <td>{marketValues("total")}</td>
-      <td>{marketValues("moneyline")}</td>
-      <td className="event-actions">
-        <Link
-          className="detail-link"
-          to="/events/$gameId"
-          params={{ gameId: game.id }}
-          search={explorerSearch}
-        >
-          View Details
-        </Link>
-        <ScoutEventButton
-          eventId={game.id}
-          eligible={game.status === "scheduled"}
-          disabledReason={`Scouting is available only for scheduled events. This event is ${game.status}.`}
-          client={client}
-        />
-        <span className="disabled-action">
-          <button type="button" disabled aria-describedby={`watch-${game.id}`}>
-            Watchlist
-          </button>
-          <small id={`watch-${game.id}`}>
-            Unavailable: Watchlist API is not built yet.
-          </small>
-        </span>
-      </td>
-    </tr>
+      }}
+    >
+      {teamRow("away")}
+      {teamRow("home")}
+      <tr className="evb-footer-row">
+        <td colSpan={4}>
+          <div className="evb-footer">
+            <span className="evb-when">
+              {today ? "Today" : gamesShortDay(game.eastern.calendarDay)} ·{" "}
+              {kickoffTime} ET
+            </span>
+            {game.status !== "scheduled" && (
+              <span className="evb-flag">· {game.status}</span>
+            )}
+            {oddsAgeMinutes !== null && (
+              <span
+                className={`evb-age${game.metadata.freshness.state === "stale" ? " stale" : ""}`}
+              >
+                · odds {oddsAgeMinutes}m old
+                {game.metadata.freshness.state === "stale" && " — stale"}
+              </span>
+            )}
+            {(() => {
+              // Three-way markets carry a draw side that has no team row.
+              const draw = prices.find(
+                ({ marketKey, selectionKey, selectionLabel }) =>
+                  marketKey === "moneyline" &&
+                  (selectionKey === "draw" || selectionLabel === "Draw"),
+              );
+              return draw ? (
+                <span className="evb-draw">
+                  · draw <strong>{oddsPrice(draw.americanOdds)}</strong>
+                </span>
+              ) : null;
+            })()}
+            <span
+              className="evb-actions"
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              <ScoutEventButton
+                eventId={game.id}
+                eligible={game.status === "scheduled"}
+                disabledReason={`Scouting is available only for scheduled events. This event is ${game.status}.`}
+                client={client}
+              />
+            </span>
+          </div>
+        </td>
+      </tr>
+    </tbody>
   );
 }
 
