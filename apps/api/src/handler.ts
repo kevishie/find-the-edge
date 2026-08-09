@@ -123,6 +123,19 @@ export const eventIdCandidates = (
       if (segment) push(safeDecode(segment));
     }
   }
+  // Observed on the hosted gateway: rawPath arrives as fully decoded as the
+  // path parameters, so the raw id cannot be read off the request at all.
+  // The canonical grammar recovers it: an id is
+  // event:<sport%3Aleague>:<provider-event-id>, so a reported value with
+  // four or more colon parts had its interior %3A destroyed — re-encoding
+  // the interior joins reconstructs the stored id.
+  if (reported) {
+    const parts = reported.split(":");
+    if (parts.length >= 4 && parts.every((part) => part.length > 0))
+      push(
+        `${parts[0]}:${parts.slice(1, -1).join("%3A")}:${parts[parts.length - 1]}`,
+      );
+  }
   push(reported);
   return candidates;
 };

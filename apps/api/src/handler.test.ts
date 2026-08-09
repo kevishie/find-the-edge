@@ -1565,12 +1565,26 @@ describe("event id decode-variant resolution", () => {
         overDecoded,
       ),
     ).toEqual([rawId, overDecoded]);
-    // Misaligned paths fall back to the reported parameter alone.
+    // The hosted gateway decodes rawPath as much as the parameters, so the
+    // canonical grammar reconstructs the interior %3A joins.
+    expect(
+      eventIdCandidates(
+        `/events/${overDecoded}`,
+        "GET /events/{eventId}",
+        overDecoded,
+      ),
+    ).toEqual([overDecoded, rawId]);
+    // Misaligned paths still recover the id from the grammar.
     expect(
       eventIdCandidates("/events", "GET /events/{eventId}", overDecoded),
-    ).toEqual([overDecoded]);
+    ).toEqual([rawId, overDecoded]);
     expect(eventIdCandidates(undefined, undefined, overDecoded)).toEqual([
+      rawId,
       overDecoded,
+    ]);
+    // Ids without destroyed joins gain no fabricated variants.
+    expect(eventIdCandidates(undefined, undefined, "event:one")).toEqual([
+      "event:one",
     ]);
   });
 
