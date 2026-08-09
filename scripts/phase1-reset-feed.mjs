@@ -1599,7 +1599,8 @@ export const setResourceState = async (
         ).State,
       (value) => value === (enabled ? "Enabled" : "Disabled"),
       "reset-event-source-state-timeout",
-      60,
+      // Stream event-source mappings take minutes to transition.
+      300,
       delay,
       dependencies.check,
     );
@@ -1778,7 +1779,8 @@ export const quiesceTarget = async (target, environment, dependencies = {}) => {
           ).State,
         (value) => value === "Disabled",
         "reset-event-source-state-timeout",
-        60,
+        // Stream event-source mappings take minutes to transition.
+        300,
         dependencies.delay,
         dependencies.check,
       );
