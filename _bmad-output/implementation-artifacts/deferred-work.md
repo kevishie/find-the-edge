@@ -31,3 +31,25 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-fte-026-odds-history-api-and-chart-series-projection.md`
   summary: Re-land within-market timestamp tolerance without letting a board mix observation moments.
   evidence: Dropping the observedAt/retrievedAt grouping in `JoinedGamesRepository` let one board join a total observed at 20:39 with a moneyline observed at 22:25, which the browser client, `assertLiveGame`, and the product's meaning of a board all reject. Tolerating sub-second skew between two sides of one market needs a bound and agreement across all three consumers.
+
+## Provider-id churn splits line history across canonical events (found 2026-08-08)
+
+While verifying FTE-060 on staging: the odds-history mirror is healthy
+(50 series / hundreds of points on stable events), but when the provider
+rotates an event id (`_b0` → `_b2`, sometimes the base too), schedule
+reconciliation bootstraps a NEW canonical event. Consequences observed live:
+
+- Line history splits: the new canonical id starts empty while the old id
+  keeps the accumulated history (a chart can show one thin series ending at
+  the churn moment).
+- Duplicate board rows: both suffix variants can sit on the same day's
+  board (e.g. `mlb_athletics_redsox_2026-08-08_b0` and `_b2`), because the
+  withdrawn-listing filter only fires with a splits witness.
+
+Next story should make canonical identity survive provider-id churn —
+participants + start instant already identify the real-world game (the
+withdrawn-listing filter proves the technique) — so one canonical event
+carries one continuous history and the board never shows the same game
+twice. FTE-026's "continue history across canonical event versions"
+contract covers versions of one id, not churned ids; extending identity
+resolution to merge churned ids (or alias them) is the clean fix.

@@ -860,7 +860,7 @@ stories:
   - id: FTE-060
     title: Max-Cadence Line Ingestion and Instant Delivery
     epic: Odds ingestion and market normalization
-    status: in-progress
+    status: done
     dependencies: [FTE-026, FTE-026A]
     validationCommands: [pnpm check, "pnpm phase1:preflight"]
     risk: Medium

@@ -2,7 +2,7 @@
 title: 'Max-Cadence Line Ingestion and Instant Delivery'
 type: 'feature'
 created: '2026-08-08'
-status: 'in-progress'
+status: 'done'
 ---
 
 <intent-contract>
@@ -69,6 +69,15 @@ provider per-event (league pages are the unit); sacrifice deploy independence.
   comparison and line-movement history.
 - Tests beside each file; preflight cadence assertions unchanged
   (`rate(1 minute)` remains the scheduler contract).
+
+## Verified on staging (2026-08-08)
+
+- Fast lane live: near-start leagues refresh every ten seconds inside each
+  one-minute tick; boards re-materialize only after committing passes.
+- Event drill-in works end to end (after fixing the gateway's event-id
+  over-decode via grammar reconstruction — see the fix commits); the
+  line-movement chart renders per-book series with market/metric/window
+  filters and refreshes on the ten-second detail poll.
 
 ## Follow-ups
 
