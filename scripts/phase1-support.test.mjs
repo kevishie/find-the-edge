@@ -75,7 +75,7 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
 
 function validTemplate() {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const webOrigin = {
     "Fn::Join": [
       "",
@@ -812,12 +812,26 @@ test("template validation structurally binds public reads, outputs, and scoped I
   for (const [uri, expected] of [
     ["/games", "/index.html"],
     ["/auth/callback", "/index.html"],
+    ["/privacy", "/index.html"],
+    ["/terms", "/index.html"],
     ["/assets/missing.hash.js", "/assets/missing.hash.js"],
     ["/runtime-config.js", "/runtime-config.js"],
     ["/cognito-token-provider.js", "/cognito-token-provider.js"],
     ["/any.dotted/path", "/any.dotted/path"],
   ])
     assert.equal(handler({ request: { uri } }).uri, expected);
+  for (const legalRoute of ["/privacy", "/terms"]) {
+    const missingLegalRoute = structuredClone(template);
+    missingLegalRoute.Resources.SpaFunction.Properties.FunctionCode =
+      missingLegalRoute.Resources.SpaFunction.Properties.FunctionCode.replace(
+        `request.uri === '${legalRoute}' || `,
+        "",
+      );
+    assert.throws(
+      () => validateTemplate(missingLegalRoute, templateConfig),
+      /SPA navigation|CloudFront/,
+    );
+  }
   for (const mutate of [
     (copy) =>
       (copy.Resources.Distribution.Properties.DistributionConfig.CustomErrorResponses =
