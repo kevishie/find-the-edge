@@ -1317,6 +1317,37 @@ describe("joined games repository", () => {
       expect(selection.sharpAmericanOdds).toBeUndefined();
   });
 
+  it("serves detail cells persisted one version behind the event", async () => {
+    // Same churn as the list path: the canonical version advanced but the
+    // odds persist path still writes at the prior version's keys. The
+    // drill-in must serve those cells instead of a blank comparison grid.
+    const priorVersion = { ...event, version: event.version - 1 };
+    const prices = completeDetailPrices(priorVersion);
+    const rows = [...prices.map(row), ...activeEvidence(prices)];
+    const eventRepository = events();
+    eventRepository.detail = () =>
+      Promise.resolve({
+        projectionState: "ready",
+        item: event,
+        unavailableReason: null,
+      });
+    const detail = await new JoinedGamesRepository(
+      eventRepository,
+      { batchGet: () => Promise.resolve(rows) },
+      ["hardrock"],
+      () => new Date("2026-08-01T12:30:00.000Z"),
+    ).detail("event-1");
+    const moneyline = detail.item?.oddsComparison.markets.find(
+      ({ marketKey }) => marketKey === "moneyline",
+    );
+    expect(moneyline?.selections[0]?.cells).toMatchObject({
+      hardrock: { state: "active", eligible: true, americanOdds: 120 },
+    });
+    expect(moneyline?.selections[1]?.cells).toMatchObject({
+      hardrock: { state: "active", eligible: true, americanOdds: -135 },
+    });
+  });
+
   it("serves fresh odds persisted one version behind the event", async () => {
     // Provider id churn advances the canonical version faster than the odds
     // persist path; the newest row across the current and prior versions

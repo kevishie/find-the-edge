@@ -332,28 +332,37 @@ export class JoinedGamesRepository implements GamesRepository {
     )
       throw new EventStorageError("invalid-detail-sportsbook-roster");
     const specifications = detailMarketSpecifications(event);
-    const requested = this.detailSportsbooks.flatMap(({ id: sportsbookId }) =>
-      specifications.flatMap((specification) => [
-        ...specification.selectionKeys.flatMap((selectionKey) => {
-          const key = currentKey(
-            event,
-            specification.marketKey,
-            selectionKey,
-            sportsbookId,
-          );
-          return [key, { pk: key.pk, sk: "AVAILABILITY" as const }];
-        }),
-        {
-          pk: fixtureOddsGroupAvailabilityIdentity({
-            canonicalEventId: event.id,
-            canonicalEventVersion: event.version,
-            sportKey: event.sportKey,
-            marketKey: specification.marketKey,
-            sportsbookId,
+    // Provider id churn advances the canonical version faster than the odds
+    // persist path, so a market's rows can live one version behind. Both
+    // versions are read; each book's market then resolves to one version
+    // wholesale so availability evidence never mixes versions.
+    const priorEvent =
+      event.version > 1 ? { ...event, version: event.version - 1 } : null;
+    const versionVariants = priorEvent ? [event, priorEvent] : [event];
+    const requested = versionVariants.flatMap((variant) =>
+      this.detailSportsbooks.flatMap(({ id: sportsbookId }) =>
+        specifications.flatMap((specification) => [
+          ...specification.selectionKeys.flatMap((selectionKey) => {
+            const key = currentKey(
+              variant,
+              specification.marketKey,
+              selectionKey,
+              sportsbookId,
+            );
+            return [key, { pk: key.pk, sk: "AVAILABILITY" as const }];
           }),
-          sk: "AVAILABILITY" as const,
-        },
-      ]),
+          {
+            pk: fixtureOddsGroupAvailabilityIdentity({
+              canonicalEventId: variant.id,
+              canonicalEventVersion: variant.version,
+              sportKey: variant.sportKey,
+              marketKey: specification.marketKey,
+              sportsbookId,
+            }),
+            sk: "AVAILABILITY" as const,
+          },
+        ]),
+      ),
     );
     const allowed = new Set(requested.map(({ pk, sk }) => `${pk}|${sk}`));
     const readSnapshot = async () => {
@@ -424,14 +433,38 @@ export class JoinedGamesRepository implements GamesRepository {
       return value as FixtureOddsAvailabilityEvidence;
     };
     const generatedAt = capturedAt.toISOString();
+    // A book's market serves the current version when any of its rows exist
+    // there and otherwise falls back to the prior version wholesale.
+    const marketEventFor = (
+      specification: (typeof specifications)[number],
+      sportsbookId: string,
+    ) => {
+      if (!priorEvent) return event;
+      const hasCurrent = (variant: EventPage["items"][number]) =>
+        specification.selectionKeys.some((selectionKey) =>
+          byKey.has(
+            `${
+              currentKey(
+                variant,
+                specification.marketKey,
+                selectionKey,
+                sportsbookId,
+              ).pk
+            }|CURRENT`,
+          ),
+        );
+      if (hasCurrent(event)) return event;
+      return hasCurrent(priorEvent) ? priorEvent : event;
+    };
     const markets = specifications.map((specification) => ({
       marketKey: specification.marketKey,
       selections: specification.selectionKeys.map((selectionKey) => {
         const cells: Record<string, GameOddsCellDto> = {};
         const label = canonicalSelectionLabel(event, selectionKey);
         for (const { id: sportsbookId } of this.detailSportsbooks) {
+          const source = marketEventFor(specification, sportsbookId);
           const key = currentKey(
-            event,
+            source,
             specification.marketKey,
             selectionKey,
             sportsbookId,
@@ -440,9 +473,9 @@ export class JoinedGamesRepository implements GamesRepository {
           const exact = availability(key.pk);
           const group = availability(
             fixtureOddsGroupAvailabilityIdentity({
-              canonicalEventId: event.id,
-              canonicalEventVersion: event.version,
-              sportKey: event.sportKey,
+              canonicalEventId: source.id,
+              canonicalEventVersion: source.version,
+              sportKey: source.sportKey,
               marketKey: specification.marketKey,
               sportsbookId,
             }),
@@ -466,7 +499,7 @@ export class JoinedGamesRepository implements GamesRepository {
           }
           let price: GameOddsSelectionDto;
           try {
-            price = validateCurrent(raw, key, event);
+            price = validateCurrent(raw, key, source);
           } catch (error) {
             if (!isQuarantinableCurrentOddsError(error)) throw error;
             cells[sportsbookId] = {
