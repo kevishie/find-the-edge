@@ -527,6 +527,42 @@ describe("foundation CDK app", () => {
         RouteKey: routeKey,
         AuthorizationType: "NONE",
       });
+    // Watchlist rows belong to one user, so the routes are authenticated but
+    // deliberately carry no Cognito scope: the subject is the authorization.
+    for (const routeKey of [
+      "GET /watchlist",
+      "POST /watchlist",
+      "DELETE /watchlist/{eventId}",
+    ]) {
+      const matches = Object.values(resources).filter(
+        (resource) =>
+          resource.Type === "AWS::ApiGatewayV2::Route" &&
+          resource.Properties?.["RouteKey"] === routeKey,
+      );
+      expect(matches).toHaveLength(1);
+      expect(matches[0]?.Properties).toEqual(
+        expect.objectContaining({ AuthorizationType: "JWT" }),
+      );
+      expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
+    }
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "dynamodb:DeleteItem",
+            Effect: "Allow",
+            Condition: {
+              "ForAllValues:StringLike": {
+                "dynamodb:LeadingKeys": ["WATCHLIST#*"],
+              },
+            },
+          }),
+        ]),
+      },
+    });
+    expect(rendered).toContain(
+      '\\"AllowMethods\\":[\\"GET\\",\\"POST\\",\\"DELETE\\",\\"OPTIONS\\"]',
+    );
     expect(rendered).toContain(
       '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\",\\"idempotency-key\\"]',
     );

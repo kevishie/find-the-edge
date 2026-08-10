@@ -306,6 +306,25 @@ const withoutRetrievedAt = (observation: FixtureOddsObservation) => {
  * partition key, snapshot id, and sort key must still match exactly, so a
  * genuine content mismatch under one identity is still detected.
  */
+/**
+ * The quoted market state: what a book is actually offering, with BOTH clocks
+ * removed. The provider stamps its feed with its own poll time, so two
+ * consecutive observations of an unmoved price differ in `observedAt` (theirs)
+ * and `retrievedAt` (ours) while quoting the identical price. Only a change to
+ * one of these fields is a new price.
+ */
+const sameQuotedPrice = (
+  left: NormalizedFixtureOddsSnapshot,
+  right: NormalizedFixtureOddsSnapshot,
+) =>
+  left.partitionKey === right.partitionKey &&
+  left.americanOdds === right.americanOdds &&
+  (left.point ?? null) === (right.point ?? null) &&
+  left.selectionLabel === right.selectionLabel &&
+  left.sportsbookLabel === right.sportsbookLabel &&
+  JSON.stringify(left.provenance ?? null) ===
+    JSON.stringify(right.provenance ?? null);
+
 const sameSnapshotIdentity = (
   left: NormalizedFixtureOddsSnapshot,
   right: NormalizedFixtureOddsSnapshot,
@@ -556,11 +575,16 @@ export class DynamoFixtureOddsAdapter {
     } catch {
       publishedCurrent = null;
     }
-    if (publishedCurrent?.snapshotId === snapshot.snapshotId) {
-      if (!sameSnapshotIdentity(publishedCurrent, snapshot))
-        throw new FixtureOddsStateCorruptionError(
-          "snapshot identity maps to different content",
-        );
+    if (publishedCurrent && sameQuotedPrice(publishedCurrent, snapshot)) {
+      // The published price is unchanged, so this observation records nothing
+      // new. Identity still carries the provider's `observedAt`, and the
+      // provider stamps every poll with a fresh one, so comparing identities
+      // here would never match and the immutable log would grow a row per poll
+      // per book forever. The comparison that matters is the quote itself.
+      //
+      // History keeps its meaning: a price that moves away and later returns
+      // still writes a row each time, because each observation is compared
+      // against what is published at that moment, not against all history.
       // The exact-id and event-history mirrors are still reconciled. They are
       // conditional, idempotent, and are the ONLY repair path for a persist that
       // was interrupted after CURRENT advanced; skipping them here would make

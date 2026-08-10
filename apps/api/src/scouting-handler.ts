@@ -22,7 +22,7 @@ export interface ScoutingHttpRequest {
   readonly jobId?: string;
   readonly idempotencyKey?: string;
   readonly query?: Readonly<Record<string, string | undefined>>;
-  readonly method?: "GET" | "POST";
+  readonly method?: "GET" | "POST" | "DELETE";
   readonly contentType?: string;
   readonly body?: string;
 }

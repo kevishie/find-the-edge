@@ -1328,6 +1328,19 @@ export class FoundationStack extends Stack {
         resources: [`${table.tableArn}/index/opportunity-rank-v1`],
       }),
     );
+    // Removing a watchlist entry is the only delete the request path performs,
+    // and it can only ever touch a user's own watchlist partition.
+    eventApi.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["dynamodb:DeleteItem"],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["WATCHLIST#*"],
+          },
+        },
+      }),
+    );
     eventApi.addToRolePolicy(
       new PolicyStatement({
         actions: ["secretsmanager:GetSecretValue"],
@@ -1407,6 +1420,22 @@ export class FoundationStack extends Stack {
         authorizer,
         authorizationScopes: ["events/scouting:read"],
       });
+    // The watchlist is per-user data, so every route is authenticated. It
+    // carries no dedicated Cognito scope: the requester is the token subject
+    // and the storage partition is derived from it, so a scope would add a
+    // re-consent step without adding an authorization decision.
+    api.addRoutes({
+      path: "/watchlist",
+      methods: [HttpMethod.GET, HttpMethod.POST],
+      integration,
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/watchlist/{eventId}",
+      methods: [HttpMethod.DELETE],
+      integration,
+      authorizer,
+    });
     for (const path of [
       "/sports/{sportKey}/opportunities",
       "/sports/{sportKey}/opportunities/{opportunityId}",
@@ -1477,7 +1506,7 @@ export class FoundationStack extends Stack {
         CorsConfiguration: {
           AllowOrigins: [webOrigin],
           AllowHeaders: ["authorization", "content-type", "idempotency-key"],
-          AllowMethods: ["GET", "POST", "OPTIONS"],
+          AllowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
           ExposeHeaders: ["location"],
         },
       },

@@ -62,3 +62,4 @@ export * from "./dynamodb-scouting-job-repository";
 export * from "./scouting-report-repository";
 export * from "./dynamodb-scouting-report-repository";
 export * from "./board-projection";
+export * from "./watchlist-repository";

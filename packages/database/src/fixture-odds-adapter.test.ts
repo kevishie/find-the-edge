@@ -218,11 +218,13 @@ describe("DynamoFixtureOddsAdapter", () => {
     expect(gateway.writeLog.length).toBeGreaterThan(0);
     gateway.writeLog.length = 0;
 
+    // The provider stamps every poll with a fresh observedAt even when the
+    // quote is unchanged, so BOTH clocks move between polls. Neither is a
+    // price change.
     const replay = await adapter.persist({
-      ...input(),
+      ...input("2026-08-01T12:00:26.000Z"),
       observation: {
-        ...input().observation,
-        // Same price, same provider observedAt; only OUR fetch clock moved.
+        ...input("2026-08-01T12:00:26.000Z").observation,
         retrievedAt: "2026-08-01T12:01:12.000Z",
       },
     });
@@ -244,6 +246,19 @@ describe("DynamoFixtureOddsAdapter", () => {
       gateway.writeLog.some((entry) => entry.startsWith("transactSnapshot:")),
     ).toBe(true);
     expect(moved.value.americanOdds).toBe(-105);
+
+    // A price that moves away and comes back is still recorded: each
+    // observation is judged against what is published at that moment, so
+    // history never loses a real round trip.
+    gateway.writeLog.length = 0;
+    const returned = await adapter.persist(
+      input("2026-08-01T12:09:00.000Z", -110),
+    );
+    expect(returned.snapshot).toBe("created");
+    expect(returned.value.americanOdds).toBe(-110);
+    expect(
+      gateway.writeLog.some((entry) => entry.startsWith("transactSnapshot:")),
+    ).toBe(true);
   });
 
   it("keeps blocked prices historical and restores actionable current only with newer active evidence", async () => {

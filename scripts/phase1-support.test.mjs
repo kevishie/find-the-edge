@@ -102,7 +102,7 @@ function validTemplate() {
         { Ref: "Api" },
         '","CorsConfiguration":{"AllowOrigins":["https://',
         { "Fn::GetAtt": ["Distribution", "DomainName"] },
-        '"],"AllowHeaders":["authorization","content-type","idempotency-key"],"AllowMethods":["GET","POST","OPTIONS"],"ExposeHeaders":["location"]}},"physicalResourceId":{"id":"fixture-events-api-cors"}}',
+        '"],"AllowHeaders":["authorization","content-type","idempotency-key"],"AllowMethods":["GET","POST","DELETE","OPTIONS"],"ExposeHeaders":["location"]}},"physicalResourceId":{"id":"fixture-events-api-cors"}}',
       ],
     ],
   };
@@ -678,6 +678,27 @@ function validTemplate() {
           },
         },
       },
+      ...Object.fromEntries(
+        [
+          ["WatchlistListRoute", "GET /watchlist"],
+          ["WatchlistAddRoute", "POST /watchlist"],
+          ["WatchlistRemoveRoute", "DELETE /watchlist/{eventId}"],
+        ].map(([id, routeKey]) => [
+          id,
+          {
+            Type: "AWS::ApiGatewayV2::Route",
+            Properties: {
+              RouteKey: routeKey,
+              ApiId: { Ref: "Api" },
+              AuthorizationType: "JWT",
+              AuthorizerId: { Ref: "Auth" },
+              Target: {
+                "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+              },
+            },
+          },
+        ]),
+      ),
       Auth: {
         Type: "AWS::ApiGatewayV2::Authorizer",
         Properties: {
@@ -753,6 +774,16 @@ function validTemplate() {
                   "dynamodb:TransactWriteItems",
                 ],
                 Resource: [{ "Fn::GetAtt": ["Table", "Arn"] }],
+              },
+              {
+                Effect: "Allow",
+                Action: "dynamodb:DeleteItem",
+                Resource: { "Fn::GetAtt": ["Table", "Arn"] },
+                Condition: {
+                  "ForAllValues:StringLike": {
+                    "dynamodb:LeadingKeys": ["WATCHLIST#*"],
+                  },
+                },
               },
             ],
           },
@@ -1218,6 +1249,29 @@ test("template validation structurally binds public reads, outputs, and scoped I
     () => validateTemplate(broadDelete, templateConfig),
     /limited to reconciliation lock keys/,
   );
+  const broadApiDelete = structuredClone(template);
+  delete broadApiDelete.Resources.ApiPolicy.Properties.PolicyDocument
+    .Statement[1].Condition;
+  assert.throws(
+    () => validateTemplate(broadApiDelete, templateConfig),
+    /limited to watchlist partition keys/,
+  );
+  for (const mutation of [
+    (route) => {
+      route.Properties.AuthorizationType = "NONE";
+      delete route.Properties.AuthorizerId;
+    },
+    (route) => {
+      route.Properties.AuthorizationScopes = ["events/events:read"];
+    },
+  ]) {
+    const unscopedWatchlist = structuredClone(template);
+    mutation(unscopedWatchlist.Resources.WatchlistRemoveRoute);
+    assert.throws(
+      () => validateTemplate(unscopedWatchlist, templateConfig),
+      /Public reads must remain public/,
+    );
+  }
   const denyOnly = structuredClone(template);
   denyOnly.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Effect =
     "Deny";

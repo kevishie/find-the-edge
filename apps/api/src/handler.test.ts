@@ -26,12 +26,14 @@ import {
   MemoryCohortRepository,
   MemoryOddsHistoryRepository,
   MemoryScoutingReportRepository,
+  MemoryWatchlistRepository,
   RankedOpportunityUnavailableError,
   type GamesRepository,
   type EventRepository,
   type OddsHistoryRepository,
   type RankedOpportunityRepository,
   type ScoutingReportRepository,
+  type WatchlistRepository,
 } from "@find-the-edge/database";
 import {
   clearHandlerCaches,
@@ -2317,5 +2319,331 @@ describe("event id decode-variant resolution", () => {
     expect(list).toHaveBeenCalledWith(
       expect.objectContaining({ eventId: rawId, canonicalEventVersion: 3 }),
     );
+  });
+});
+
+describe("watchlist", () => {
+  const subject = "watchlist-user-1";
+  const otherSubject = "watchlist-user-2";
+  const storedEventId = "event:mlb%3Amlb:game-1";
+  // The gateway decodes path parameters twice, so the canonical id above
+  // reaches the handler with its %3A already destroyed.
+  const overDecodedEventId = "event:mlb:mlb:game-1";
+  const eventItem = (id: string) => ({
+    id,
+    version: 4,
+    sportKey: "mlb",
+    leagueKey: "mlb",
+    competition: { key: "mlb", state: "provisional" as const },
+    participants: [
+      { id: "away", label: "Away" },
+      { id: "home", label: "Home" },
+    ],
+    startsAt: "2026-08-11T23:05:00.000Z",
+    eastern: {
+      timeZone: "America/New_York" as const,
+      calendarDay: "2026-08-11",
+      display: "Aug 11",
+    },
+    status: "scheduled" as const,
+    freshness: null,
+    metadata: assessEventMetadata(
+      "scheduled",
+      null,
+      "2026-08-10T12:00:00.000Z",
+    ),
+  });
+
+  const eventsWith = (known: readonly string[]): EventRepository => ({
+    list: (filter, limit, cursor) => repository.list(filter, limit, cursor),
+    detail: async (eventId) => {
+      await Promise.resolve();
+      return {
+        projectionState: "ready" as const,
+        item: known.includes(eventId) ? eventItem(eventId) : null,
+        unavailableReason: null,
+      };
+    },
+  });
+
+  const watchlistHandler = (
+    watchlist: WatchlistRepository,
+    known: readonly string[] = [storedEventId],
+    log?: (entry: Readonly<Record<string, unknown>>) => void,
+  ) =>
+    createEventHandler(
+      eventsWith(known),
+      undefined,
+      log,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      watchlist,
+    );
+
+  const addRequest = (eventId: string, requester = subject) => ({
+    route: "watchlist-add" as const,
+    method: "POST" as const,
+    contentType: "application/json",
+    subject: requester,
+    body: JSON.stringify({ eventId }),
+  });
+
+  it("requires an authenticated subject on every watchlist route", async () => {
+    const handler = watchlistHandler(new MemoryWatchlistRepository());
+    for (const request of [
+      { route: "watchlist-list" as const, method: "GET" as const },
+      {
+        route: "watchlist-add" as const,
+        method: "POST" as const,
+        contentType: "application/json",
+        body: JSON.stringify({ eventId: storedEventId }),
+      },
+      {
+        route: "watchlist-remove" as const,
+        method: "DELETE" as const,
+        eventId: storedEventId,
+      },
+    ]) {
+      const result = await handler(request);
+      expect(result.statusCode).toBe(401);
+      expect(JSON.parse(result.body)).toEqual({ error: "unauthorized" });
+    }
+  });
+
+  it("adds, lists, and removes an event for the token subject", async () => {
+    const watchlist = new MemoryWatchlistRepository();
+    const handler = watchlistHandler(watchlist);
+    const created = await handler(addRequest(storedEventId));
+    expect(created.statusCode).toBe(201);
+    expect(JSON.parse(created.body)).toMatchObject({
+      schemaVersion: "watchlist-entry-v1",
+      eventId: storedEventId,
+      eventVersion: 4,
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      startsAt: "2026-08-11T23:05:00.000Z",
+    });
+    expect(Object.keys(JSON.parse(created.body) as object).sort()).toEqual([
+      "addedAt",
+      "eventId",
+      "eventVersion",
+      "leagueKey",
+      "schemaVersion",
+      "sportKey",
+      "startsAt",
+    ]);
+    const listed = await handler({
+      route: "watchlist-list",
+      method: "GET",
+      subject,
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.body)).toMatchObject({
+      schemaVersion: "watchlist-page-v1",
+      items: [{ eventId: storedEventId }],
+    });
+    const removed = await handler({
+      route: "watchlist-remove",
+      method: "DELETE",
+      subject,
+      eventId: storedEventId,
+      eventIdAlternatives: [storedEventId],
+    });
+    expect(removed.statusCode).toBe(204);
+    expect(removed.body).toBe("");
+    expect(
+      JSON.parse(
+        (await handler({ route: "watchlist-list", method: "GET", subject }))
+          .body,
+      ),
+    ).toMatchObject({ items: [] });
+  });
+
+  it("treats a repeated add as an existing entry and keeps the first addedAt", async () => {
+    const watchlist = new MemoryWatchlistRepository();
+    const handler = watchlistHandler(watchlist);
+    const first = JSON.parse(
+      (await handler(addRequest(storedEventId))).body,
+    ) as { addedAt: string };
+    const repeat = await handler(addRequest(storedEventId));
+    expect(repeat.statusCode).toBe(200);
+    expect(JSON.parse(repeat.body)).toMatchObject({ addedAt: first.addedAt });
+    expect(
+      JSON.parse(
+        (await handler({ route: "watchlist-list", method: "GET", subject }))
+          .body,
+      ),
+    ).toMatchObject({ items: [{ addedAt: first.addedAt }] });
+  });
+
+  it("removes idempotently, including an event that was never watched", async () => {
+    const handler = watchlistHandler(new MemoryWatchlistRepository());
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await handler({
+        route: "watchlist-remove",
+        method: "DELETE",
+        subject,
+        eventId: storedEventId,
+        eventIdAlternatives: [storedEventId],
+      });
+      expect(result.statusCode).toBe(204);
+    }
+  });
+
+  it("round-trips a percent-encoded canonical id through add, list, and delete", async () => {
+    const watchlist = new MemoryWatchlistRepository();
+    const handler = watchlistHandler(watchlist);
+    // The client echoes back the id the gateway handed it, already decoded.
+    const created = await handler(addRequest(overDecodedEventId));
+    expect(created.statusCode).toBe(201);
+    expect(JSON.parse(created.body)).toMatchObject({ eventId: storedEventId });
+    expect(
+      JSON.parse(
+        (await handler({ route: "watchlist-list", method: "GET", subject }))
+          .body,
+      ),
+    ).toMatchObject({ items: [{ eventId: storedEventId }] });
+    const removed = await handler({
+      route: "watchlist-remove",
+      method: "DELETE",
+      subject,
+      eventId: overDecodedEventId,
+      eventIdAlternatives: eventIdCandidates(
+        "/watchlist/event:mlb:mlb:game-1",
+        "DELETE /watchlist/{eventId}",
+        overDecodedEventId,
+      ),
+    });
+    expect(removed.statusCode).toBe(204);
+    expect(await watchlist.list(subject)).toEqual([]);
+  });
+
+  it("answers a missing or deleted event with a neutral not-found", async () => {
+    const handler = watchlistHandler(new MemoryWatchlistRepository(), []);
+    const result = await handler(addRequest(storedEventId));
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body)).toEqual({ error: "not-found" });
+  });
+
+  it("never exposes or mutates another subject's watchlist", async () => {
+    const watchlist = new MemoryWatchlistRepository();
+    const handler = watchlistHandler(watchlist);
+    await handler(addRequest(storedEventId, otherSubject));
+    expect(
+      JSON.parse(
+        (await handler({ route: "watchlist-list", method: "GET", subject }))
+          .body,
+      ),
+    ).toMatchObject({ items: [] });
+    const removed = await handler({
+      route: "watchlist-remove",
+      method: "DELETE",
+      subject,
+      eventId: storedEventId,
+      eventIdAlternatives: [storedEventId],
+    });
+    expect(removed.statusCode).toBe(204);
+    expect(await watchlist.list(otherSubject)).toHaveLength(1);
+  });
+
+  it("rejects unexpected query parameters, methods, and body shapes", async () => {
+    const handler = watchlistHandler(new MemoryWatchlistRepository());
+    const invalid = [
+      {
+        route: "watchlist-list" as const,
+        method: "GET" as const,
+        subject,
+        query: { limit: "5" },
+      },
+      { route: "watchlist-list" as const, method: "POST" as const, subject },
+      {
+        route: "watchlist-remove" as const,
+        method: "DELETE" as const,
+        subject,
+        eventId: "EVENT:MLB",
+        eventIdAlternatives: ["EVENT:MLB"],
+      },
+      { ...addRequest(storedEventId), method: "GET" as const },
+      { ...addRequest(storedEventId), contentType: "text/plain" },
+      {
+        route: "watchlist-add" as const,
+        method: "POST" as const,
+        contentType: "application/json",
+        subject,
+        body: "{",
+      },
+      {
+        route: "watchlist-add" as const,
+        method: "POST" as const,
+        contentType: "application/json",
+        subject,
+        body: JSON.stringify({
+          eventId: storedEventId,
+          requesterId: otherSubject,
+        }),
+      },
+      {
+        route: "watchlist-add" as const,
+        method: "POST" as const,
+        contentType: "application/json",
+        subject,
+        body: JSON.stringify({ eventId: 7 }),
+      },
+    ];
+    for (const request of invalid) {
+      const result = await handler(request);
+      expect(result.statusCode).toBe(400);
+      expect(JSON.parse(result.body)).toEqual({ error: "invalid-request" });
+      expect(result.body).not.toContain(otherSubject);
+    }
+  });
+
+  it("logs mutations with the event, a hashed requester, and the request id", async () => {
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const handler = watchlistHandler(
+      new MemoryWatchlistRepository(),
+      [storedEventId],
+      (entry) => logs.push(entry),
+    );
+    await handler({ ...addRequest(storedEventId), requestId: "request-1" });
+    await handler({
+      route: "watchlist-remove",
+      method: "DELETE",
+      subject,
+      eventId: storedEventId,
+      eventIdAlternatives: [storedEventId],
+      requestId: "request-2",
+    });
+    const mutations = logs.filter(
+      (entry) => entry["event"] === "watchlist-mutation",
+    );
+    expect(mutations).toHaveLength(2);
+    expect(mutations[0]).toMatchObject({
+      action: "add",
+      outcome: "created",
+      eventId: storedEventId,
+      requestId: "request-1",
+    });
+    expect(mutations[1]).toMatchObject({
+      action: "remove",
+      outcome: "removed",
+      eventId: storedEventId,
+      requestId: "request-2",
+    });
+    expect(typeof mutations[0]?.["requesterDigest"]).toBe("string");
+    expect(mutations[0]?.["requesterDigest"]).toBe(
+      mutations[1]?.["requesterDigest"],
+    );
+    expect(JSON.stringify(logs)).not.toContain(subject);
   });
 });

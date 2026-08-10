@@ -588,7 +588,7 @@ export function validateTemplate(template, config) {
           JSON.stringify({ "Fn::GetAtt": [distributionId, "DomainName"] }),
         ) && createRendered.includes('\\"AllowOrigins\\":[\\"https://')) ||
     !createRendered.includes(
-      '\\"AllowMethods\\":[\\"GET\\",\\"POST\\",\\"OPTIONS\\"]',
+      '\\"AllowMethods\\":[\\"GET\\",\\"POST\\",\\"DELETE\\",\\"OPTIONS\\"]',
     ) ||
     !createRendered.includes(
       '\\"AllowHeaders\\":[\\"authorization\\",\\"content-type\\",\\"idempotency-key\\"]',
@@ -680,6 +680,9 @@ export function validateTemplate(template, config) {
     "GET /scout-jobs/{jobId}/report",
     "GET /scout-reports/{reportId}/versions",
     "GET /scout-reports/{reportId}/versions/{versionNumber}",
+    "GET /watchlist",
+    "POST /watchlist",
+    "DELETE /watchlist/{eventId}",
   ];
   if (
     apiRoutes.length !== requiredRouteKeys.length ||
@@ -716,6 +719,21 @@ export function validateTemplate(template, config) {
           !isRef(value.Properties?.AuthorizerId, authorizerId) ||
           JSON.stringify(value.Properties?.AuthorizationScopes) !==
             JSON.stringify(["events/strategies:promote"])
+        );
+      // Watchlist rows are per-user data keyed by the token subject, so the
+      // routes must sit behind the JWT authorizer and must carry no scope:
+      // a scope here would be authorization theatre plus a re-consent step.
+      if (
+        [
+          "GET /watchlist",
+          "POST /watchlist",
+          "DELETE /watchlist/{eventId}",
+        ].includes(value.Properties?.RouteKey)
+      )
+        return (
+          value.Properties?.AuthorizationType !== "JWT" ||
+          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
+          value.Properties?.AuthorizationScopes !== undefined
         );
       const scoutingScope = [
         "GET /scout-jobs/{jobId}",
@@ -965,6 +983,7 @@ export function validateTemplate(template, config) {
     "dynamodb:GetItem",
     "dynamodb:PutItem",
     "dynamodb:Query",
+    "dynamodb:DeleteItem",
     "dynamodb:TransactGetItems",
     "dynamodb:TransactWriteItems",
   ];
@@ -995,19 +1014,34 @@ export function validateTemplate(template, config) {
     liveDynamoActions,
     "Live ingestion table-bound DynamoDB IAM",
   );
-  const liveDeleteStatements = entriesOfType(template, "AWS::IAM::Policy")
-    .filter(([, policy]) =>
-      (policy.Properties?.Roles ?? []).some((role) => isRef(role, liveRoleId)),
-    )
-    .flatMap(([, policy]) => policy.Properties?.PolicyDocument?.Statement ?? [])
-    .filter((statement) => {
-      const actions = Array.isArray(statement.Action)
-        ? statement.Action
-        : [statement.Action];
-      return (
-        statement.Effect === "Allow" && actions.includes("dynamodb:DeleteItem")
-      );
-    });
+  const deleteStatementsForRole = (roleId) =>
+    entriesOfType(template, "AWS::IAM::Policy")
+      .filter(([, policy]) =>
+        (policy.Properties?.Roles ?? []).some((role) => isRef(role, roleId)),
+      )
+      .flatMap(
+        ([, policy]) => policy.Properties?.PolicyDocument?.Statement ?? [],
+      )
+      .filter((statement) => {
+        const actions = Array.isArray(statement.Action)
+          ? statement.Action
+          : [statement.Action];
+        return (
+          statement.Effect === "Allow" &&
+          actions.includes("dynamodb:DeleteItem")
+        );
+      });
+  const apiDeleteStatements = deleteStatementsForRole(apiRoleId);
+  if (
+    apiDeleteStatements.length !== 1 ||
+    apiDeleteStatements[0].Condition?.["ForAllValues:StringLike"]?.[
+      "dynamodb:LeadingKeys"
+    ]?.[0] !== "WATCHLIST#*"
+  )
+    throw new Error(
+      "API DeleteItem IAM must be limited to watchlist partition keys",
+    );
+  const liveDeleteStatements = deleteStatementsForRole(liveRoleId);
   if (
     liveDeleteStatements.length !== 1 ||
     liveDeleteStatements[0].Condition?.["ForAllValues:StringLike"]?.[

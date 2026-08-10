@@ -18,6 +18,7 @@ import {
   type ClvRepository,
   type RankedOpportunityRepository,
   type ScoutingReportRepository,
+  type WatchlistRepository,
   attachSplits,
   boardCounts,
   type BoardKey,
@@ -29,14 +30,21 @@ import {
   defaultOpportunityRankingPolicy,
 } from "@find-the-edge/config";
 import {
+  assertWatchlistEventId,
+  assertWatchlistRequesterId,
   canonicalMvpMarketKeys,
+  createWatchlistEntry,
   EVENT_LIFECYCLE_STATES,
   opportunityWarningCodes,
   participantSelectionKey,
+  WATCHLIST_ENTRY_SCHEMA_VERSION,
   type EntityId,
+  type EventDisplayDto,
   type ProviderStatusPageDto,
   type ScoutingReportVersionRecord,
+  type WatchlistEntry,
 } from "@find-the-edge/domain";
+import { createHash } from "node:crypto";
 import type {
   ScoutingHttpRequest,
   ScoutingHttpResponse,
@@ -72,7 +80,10 @@ export interface ApiRequest {
     | "scout-retry"
     | "scout-report-by-job"
     | "scout-report-versions"
-    | "scout-report-version";
+    | "scout-report-version"
+    | "watchlist-list"
+    | "watchlist-add"
+    | "watchlist-remove";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
@@ -92,7 +103,7 @@ export interface ApiRequest {
   readonly idempotencyKey?: string;
   readonly requestId?: string;
   readonly query?: Readonly<Record<string, string | undefined>>;
-  readonly method?: "GET" | "POST";
+  readonly method?: "GET" | "POST" | "DELETE";
   readonly contentType?: string;
   readonly body?: string;
   readonly reviewerAuthorized?: boolean;
@@ -185,6 +196,43 @@ const response = (statusCode: number, body: unknown): ApiResponse => ({
   headers: { "content-type": "application/json", "cache-control": "no-store" },
   body: JSON.stringify(body),
 });
+/** A removal returns no representation, so it carries no body at all. */
+const noContent = (): ApiResponse => ({
+  statusCode: 204,
+  headers: { "cache-control": "no-store" },
+  body: "",
+});
+/**
+ * Public projection of a watchlist entry. The requester is never echoed: the
+ * caller already is the requester, and the subject is identity data that has
+ * no place in a response body or a log line.
+ */
+const toWatchlistDto = (entry: WatchlistEntry) => ({
+  schemaVersion: WATCHLIST_ENTRY_SCHEMA_VERSION,
+  eventId: entry.canonicalEventId,
+  eventVersion: entry.canonicalEventVersion,
+  sportKey: entry.sportKey,
+  leagueKey: entry.leagueKey,
+  startsAt: entry.startsAt,
+  addedAt: entry.addedAt,
+});
+/** The add body carries exactly one field: the event to watch. */
+const isWatchlistAddBody = (
+  value: unknown,
+): value is { readonly eventId: string } =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.keys(value).join("|") === "eventId" &&
+  "eventId" in value &&
+  typeof value.eventId === "string";
+/** Mutation logs identify the user by a stable digest, never by subject. */
+const requesterDigest = (requesterId: string): string =>
+  createHash("sha256")
+    .update("fte:watchlist-requester:v1")
+    .update(requesterId)
+    .digest("hex")
+    .slice(0, 32);
 const SCOUT_REPORT_ID = /^scout-report:[a-f0-9]{64}$/;
 const SCOUT_REPORT_JOB_ID = /^scout-job:[a-f0-9]{64}$/;
 /** Positive integer within the storage layer's 16-digit padding bound. */
@@ -233,6 +281,7 @@ export const createEventHandler =
     arbitrageBoardRepository?: ArbitrageBoardRepository,
     clvRepository?: ClvRepository,
     scoutingReportRepository?: ScoutingReportRepository,
+    watchlistRepository?: WatchlistRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -267,6 +316,134 @@ export const createEventHandler =
       cursorRejected: number;
     } | null = null;
     try {
+      if (request.route.startsWith("watchlist-")) {
+        if (!watchlistRepository)
+          throw new Error("watchlist-repository-not-configured");
+        if (!request.subject)
+          return response((status = 401), { error: "unauthorized" });
+        // The partition is derived from the token subject and nothing else,
+        // so a caller can only ever read or write their own watchlist.
+        let requesterId: string;
+        try {
+          requesterId = assertWatchlistRequesterId(request.subject);
+        } catch {
+          return response((status = 401), { error: "unauthorized" });
+        }
+        if (Object.keys(request.query ?? {}).length > 0)
+          throw new EventInputError("watchlist-query-invalid");
+        if (request.route === "watchlist-list") {
+          if (request.method !== "GET" || request.body !== undefined)
+            throw new EventInputError("watchlist-request-invalid");
+          const items = await watchlistRepository.list(requesterId);
+          return response(200, {
+            schemaVersion: "watchlist-page-v1",
+            items: items.map(toWatchlistDto),
+          });
+        }
+        if (request.route === "watchlist-remove") {
+          if (request.method !== "DELETE" || request.body !== undefined)
+            throw new EventInputError("watchlist-request-invalid");
+          // The gateway over-decodes path parameters, so the id on the wire
+          // may not be the stored id. The watchlist itself is the authority
+          // for a removal: whichever decode variant names a watched entry is
+          // the one to delete.
+          const candidates =
+            request.eventIdAlternatives &&
+            request.eventIdAlternatives.length > 0
+              ? request.eventIdAlternatives
+              : [request.eventId ?? ""];
+          const syntactic = candidates.filter((candidate) => {
+            try {
+              assertWatchlistEventId(candidate);
+              return true;
+            } catch {
+              return false;
+            }
+          });
+          if (syntactic.length === 0)
+            throw new EventInputError("watchlist-event-id-invalid");
+          const watched = await watchlistRepository.list(requesterId);
+          const match = syntactic.find((candidate) =>
+            watched.some((entry) => entry.canonicalEventId === candidate),
+          );
+          if (match) await watchlistRepository.remove(requesterId, match);
+          log({
+            event: "watchlist-mutation",
+            action: "remove",
+            outcome: match ? "removed" : "absent",
+            eventId: (match ?? syntactic[0] ?? "").slice(0, 512),
+            requesterDigest: requesterDigest(requesterId),
+            ...(request.requestId
+              ? { requestId: request.requestId.slice(0, 128) }
+              : {}),
+          });
+          status = 204;
+          return noContent();
+        }
+        if (
+          request.method !== "POST" ||
+          request.contentType?.split(";")[0]?.trim().toLowerCase() !==
+            "application/json" ||
+          !request.body ||
+          Buffer.byteLength(request.body) > 1024
+        )
+          throw new EventInputError("watchlist-body-invalid");
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(request.body);
+        } catch {
+          throw new EventInputError("watchlist-json-invalid");
+        }
+        if (!isWatchlistAddBody(parsed))
+          throw new EventInputError("watchlist-body-invalid");
+        const requestedEventId = parsed.eventId;
+        // A body-supplied id can also arrive with its percent sequences
+        // already destroyed, so it resolves through the same candidate
+        // machinery the detail route uses, against the same store.
+        let event: EventDisplayDto | null = null;
+        for (const candidate of eventIdCandidates(
+          undefined,
+          undefined,
+          requestedEventId,
+        )) {
+          try {
+            const found = await repository.detail(candidate);
+            if (found.item) {
+              event = found.item;
+              break;
+            }
+          } catch {
+            // A decode variant the grammar rejects is simply not the id.
+          }
+        }
+        // Missing, deleted, and never-existed events are one neutral answer.
+        if (!event) return response((status = 404), { error: "not-found" });
+        const result = await watchlistRepository.add(
+          createWatchlistEntry({
+            requesterId,
+            canonicalEventId: event.id,
+            canonicalEventVersion: event.version,
+            sportKey: event.sportKey,
+            leagueKey: event.leagueKey,
+            startsAt: event.startsAt,
+            addedAt: new Date().toISOString(),
+          }),
+        );
+        log({
+          event: "watchlist-mutation",
+          action: "add",
+          outcome: result.outcome,
+          eventId: result.entry.canonicalEventId,
+          requesterDigest: requesterDigest(requesterId),
+          ...(request.requestId
+            ? { requestId: request.requestId.slice(0, 128) }
+            : {}),
+        });
+        return response(
+          (status = result.outcome === "created" ? 201 : 200),
+          toWatchlistDto(result.entry),
+        );
+      }
       if (request.route.startsWith("scout-report-")) {
         if (!scoutingReportRepository)
           throw new Error("scouting-report-repository-not-configured");
