@@ -15,6 +15,7 @@ import {
   OddsHistoryInputError,
   RankedOpportunityUnavailableError,
   type ArbitrageBoardRepository,
+  type ClvRepository,
   type RankedOpportunityRepository,
   attachSplits,
   boardCounts,
@@ -62,6 +63,7 @@ export interface ApiRequest {
     | "opportunity-list"
     | "opportunity-detail"
     | "arbitrage-list"
+    | "clv-list"
     | "provider-status"
     | "scout-create"
     | "scout-status"
@@ -193,6 +195,7 @@ export const createEventHandler =
     ) => Promise<ScoutingHttpResponse>,
     loadStoredBoard?: (key: BoardKey) => Promise<StoredBoard | null>,
     arbitrageBoardRepository?: ArbitrageBoardRepository,
+    clvRepository?: ClvRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -242,6 +245,21 @@ export const createEventHandler =
         if (Object.keys(request.query ?? {}).length > 0)
           throw new EventInputError("provider-status-query-invalid");
         return response(200, await providerStatus());
+      }
+      if (request.route === "clv-list") {
+        if (!clvRepository) throw new Error("clv-repository-not-configured");
+        const sportKey = request.sportKey ?? "";
+        if (
+          !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(sportKey) ||
+          Object.keys(request.query ?? {}).length > 0
+        )
+          throw new EventInputError("clv-query-invalid");
+        const board = await clvRepository.board(sportKey);
+        return response(200, {
+          schemaVersion: "clv-page-v1",
+          updatedAt: board?.updatedAt ?? null,
+          items: board?.results ?? [],
+        });
       }
       if (request.route === "arbitrage-list") {
         if (!arbitrageBoardRepository)

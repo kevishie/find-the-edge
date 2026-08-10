@@ -12,6 +12,7 @@ import {
   EventStorageError,
   EventCursorCodec,
   MemoryArbitrageBoardRepository,
+  MemoryClvRepository,
   MemoryCohortRepository,
   MemoryOddsHistoryRepository,
   RankedOpportunityUnavailableError,
@@ -230,6 +231,65 @@ it("serves the arbitrage board and fails closed on bad queries", async () => {
     expect(
       await handler({ route: "arbitrage-list", method: "GET", ...bad }),
     ).toMatchObject({ statusCode: 400 });
+});
+
+it("serves the CLV board and rejects query parameters", async () => {
+  const clvResult = {
+    schemaVersion: "clv-result-v1" as const,
+    logicalOpportunityId: `opportunity:${"c".repeat(64)}`,
+    canonicalEventId: "event-1",
+    sportKey: "mlb",
+    leagueKey: "mlb",
+    marketKey: "moneyline",
+    selectionKey: "participant:away",
+    point: null,
+    entryAmericanOdds: 135,
+    entryFairProbability: 0.46,
+    evaluatedAt: "2026-08-10T20:00:00.000Z",
+    closingFairProbability: 0.4416,
+    closingSource: "display-book" as const,
+    clvPercent: (0.4416 * 2.35 - 1) * 100,
+    closingCapturedAt: "2026-08-10T23:20:00.000Z",
+  };
+  const clv = new MemoryClvRepository();
+  await clv.appendResults("mlb", [clvResult], "2026-08-10T23:20:00.000Z");
+  const handler = createEventHandler(
+    repository,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    clv,
+  );
+  const ok = await handler({
+    route: "clv-list",
+    sportKey: "mlb",
+    method: "GET",
+  });
+  expect(ok.statusCode).toBe(200);
+  const page = JSON.parse(ok.body) as {
+    schemaVersion: string;
+    items: { clvPercent: number }[];
+  };
+  expect(page.schemaVersion).toBe("clv-page-v1");
+  expect(page.items).toHaveLength(1);
+  expect(page.items[0]?.clvPercent).toBeCloseTo(3.78, 1);
+  expect(
+    await handler({
+      route: "clv-list",
+      sportKey: "mlb",
+      method: "GET",
+      query: { leaked: "1" },
+    }),
+  ).toMatchObject({ statusCode: 400 });
 });
 
 it("redacts unexpected scouting failures from structured logs", async () => {

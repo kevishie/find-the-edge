@@ -22,7 +22,7 @@ export type DashboardClientResult =
       readonly ok: true;
       readonly value: Pick<
         GamesClient,
-        "listOpportunities" | "listArbitrage" | "providerStatus"
+        "listOpportunities" | "listArbitrage" | "listClv" | "providerStatus"
       >;
     }
   | { readonly ok: false; readonly error: { readonly message: string } };
@@ -397,6 +397,59 @@ function ArbitrageSection({
   );
 }
 
+function RecentClvKpi({
+  client,
+  sport,
+}: {
+  readonly client: DashboardClientResult;
+  readonly sport: GamesSport;
+}) {
+  const available = client.ok && typeof client.value.listClv === "function";
+  const query = useQuery({
+    queryKey: ["clv", sport],
+    enabled: available,
+    retry: false,
+    refetchInterval: POLL_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    queryFn: ({ signal }) =>
+      client.ok && client.value.listClv
+        ? client.value.listClv(sport, signal)
+        : Promise.reject(new Error("CLV client unavailable")),
+  });
+  const items = query.data?.items ?? [];
+  if (!available || query.isError || items.length === 0)
+    return (
+      <article>
+        <span>Recent CLV</span>
+        <strong>—</strong>
+        <small>
+          {items.length === 0 && query.data
+            ? "No qualified entries scored at close yet"
+            : "Closing evidence loading"}
+        </small>
+      </article>
+    );
+  const sorted = [...items].sort((a, b) => a.clvPercent - b.clvPercent);
+  const middle = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2 === 1
+      ? sorted[middle]!.clvPercent
+      : (sorted[middle - 1]!.clvPercent + sorted[middle]!.clvPercent) / 2;
+  const beatClose = items.filter((item) => item.clvPercent > 0).length;
+  return (
+    <article>
+      <span>Recent CLV</span>
+      <strong>
+        {median >= 0 ? "+" : ""}
+        {median.toFixed(2)}%
+      </strong>
+      <small>
+        Median of {items.length} scored closes · {beatClose} beat the close
+      </small>
+    </article>
+  );
+}
+
 export function Dashboard({
   client,
 }: {
@@ -513,11 +566,7 @@ export function Dashboard({
           <strong>Unavailable</strong>
           <small>Bet Tracker is not connected.</small>
         </article>
-        <article>
-          <span>Recent CLV</span>
-          <strong>Unavailable</strong>
-          <small>Closing evidence is not connected.</small>
-        </article>
+        <RecentClvKpi client={client} sport={sport} />
       </section>
 
       {!available ? (

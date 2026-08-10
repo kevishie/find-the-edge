@@ -5,6 +5,7 @@ import {
   AwsDynamoGateway,
   AwsFixtureOddsGateway,
   DynamoArbitrageBoardRepository,
+  DynamoClvRepository,
   DynamoEventRepository,
   DynamoGamesRepository,
   DynamoOddsControlPlaneStore,
@@ -14,6 +15,7 @@ import {
   DynamoOpportunityLifecycleRepository,
   EventCursorCodec,
   EventEvaluationCandidateRepository,
+  type ClvRepository,
   type GamesRepository,
 } from "@find-the-edge/database";
 import type { GameDisplayDto } from "@find-the-edge/domain";
@@ -145,6 +147,7 @@ export async function runOpportunityGeneration(
     readonly games: GamesRepository;
     readonly service: Pick<OpportunityCandidateService, "generate">;
     readonly arbitrage?: Pick<ArbitrageScanService, "scanEvents">;
+    readonly clv?: Pick<ClvRepository, "putEntry">;
     readonly telemetry?: OpportunityGenerationRunTelemetry;
     readonly targets?: readonly {
       readonly sportKey: string;
@@ -234,6 +237,39 @@ export async function runOpportunityGeneration(
         totals.disqualifiedCount += result.disqualifiedCount;
         totals.createdCount += result.createdCount;
         totals.duplicateCount += result.duplicateCount;
+        // Qualified entries leave a compact breadcrumb so closing line value
+        // can be scored when the game's closing record lands. Best-effort:
+        // a failed breadcrumb never fails the pass.
+        if (dependencies.clv)
+          for (const candidate of result.candidates) {
+            if (
+              candidate.status !== "qualified" ||
+              candidate.values.targetAmericanOdds === null
+            )
+              continue;
+            try {
+              await dependencies.clv.putEntry({
+                logicalOpportunityId: candidate.logicalOpportunityId,
+                canonicalEventId: candidate.logicalIdentity.canonicalEventId,
+                sportKey: candidate.logicalIdentity.sportKey,
+                leagueKey: event.leagueKey,
+                marketKey: candidate.logicalIdentity.marketKey,
+                selectionKey: candidate.logicalIdentity.selectionKey,
+                point: candidate.logicalIdentity.point,
+                entryAmericanOdds: candidate.values.targetAmericanOdds,
+                entryFairProbability: candidate.values.consensusProbability,
+                evaluatedAt: candidate.evaluatedAt,
+              });
+            } catch (error) {
+              console.log(
+                JSON.stringify({
+                  event: "clv-entry-write-failed",
+                  eventId: event.eventId,
+                  errorName: error instanceof Error ? error.name : "unknown",
+                }),
+              );
+            }
+          }
       }
       if (events.length > 0 && totals.failedEvents === events.length)
         throw new Error("opportunity-generation-target-exhausted");
@@ -388,12 +424,13 @@ export const handler = (input: unknown) => {
       evidence,
       board: new DynamoArbitrageBoardRepository(client, tableName),
     });
+    const clv = new DynamoClvRepository(client, tableName);
     runtime = async (event: unknown) => {
       validateOpportunityGenerationInvocation(event);
       // The schedule tick can lag minutes behind delivery; evidence ages are
       // measured from the actual evaluation instant, not the tick.
       return runOpportunityGeneration(
-        { games, service, arbitrage, telemetry },
+        { games, service, arbitrage, clv, telemetry },
         new Date().toISOString(),
       );
     };

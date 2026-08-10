@@ -1,4 +1,7 @@
-import { MemoryClosingLinesRepository } from "@find-the-edge/database";
+import {
+  MemoryClosingLinesRepository,
+  MemoryClvRepository,
+} from "@find-the-edge/database";
 import type { GameDisplayDto } from "@find-the-edge/domain";
 import { describe, expect, it } from "vitest";
 import { captureClosingLines } from "./closing-lines-capture";
@@ -66,7 +69,7 @@ describe("closing lines capture", () => {
       },
       now,
     );
-    expect(first).toEqual({ captured: 1, failed: 0 });
+    expect(first).toEqual({ captured: 1, failed: 0, clvScored: 0 });
     const record = await closingLines.get("event-1");
     expect(record?.selections).toHaveLength(2);
     expect(record?.selections[0]?.sharpAmericanOdds).toBe(118);
@@ -80,7 +83,7 @@ describe("closing lines capture", () => {
       },
       new Date(now.getTime() + 60_000),
     );
-    expect(replay).toEqual({ captured: 0, failed: 0 });
+    expect(replay).toEqual({ captured: 0, failed: 0, clvScored: 0 });
     expect((await closingLines.get("event-1"))?.capturedAt).toBe(
       now.toISOString(),
     );
@@ -109,8 +112,68 @@ describe("closing lines capture", () => {
       },
       now,
     );
-    expect(result).toEqual({ captured: 0, failed: 0 });
+    expect(result).toEqual({ captured: 0, failed: 0, clvScored: 0 });
     expect(closingLines.records.size).toBe(0);
+  });
+
+  it("scores qualified entries against the closing fair line", async () => {
+    const closingLines = new MemoryClosingLinesRepository();
+    const clv = new MemoryClvRepository();
+    await clv.putEntry({
+      logicalOpportunityId: `opportunity:${"a".repeat(64)}`,
+      canonicalEventId: "event-1",
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey: "participant:away",
+      point: null,
+      entryAmericanOdds: 135,
+      entryFairProbability: 0.46,
+      evaluatedAt: "2026-08-10T20:00:00.000Z",
+    });
+    // A moved-line entry (different point) is skipped, never fabricated.
+    await clv.putEntry({
+      logicalOpportunityId: `opportunity:${"b".repeat(64)}`,
+      canonicalEventId: "event-1",
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      marketKey: "total",
+      selectionKey: "over",
+      point: 9.5,
+      entryAmericanOdds: -105,
+      entryFairProbability: null,
+      evaluatedAt: "2026-08-10T20:00:00.000Z",
+    });
+    const result = await captureClosingLines(
+      {
+        games: games([game()]),
+        closingLines,
+        clv,
+        targets: [{ sportKey: "mlb", leagueKey: "mlb" }],
+      },
+      now,
+    );
+    expect(result).toEqual({ captured: 1, failed: 0, clvScored: 1 });
+    const board = await clv.board("mlb");
+    expect(board?.results).toHaveLength(1);
+    const scored = board!.results[0]!;
+    // Closing anchor exists only on the away side, so the fair de-vigs the
+    // display book: p(+120)/(p(+120)+p(-135)) = 0.4416; entry +135 EV is
+    // positive — the entry beat the close.
+    expect(scored.closingSource).toBe("display-book");
+    expect(scored.clvPercent).toBeCloseTo(3.78, 1);
+    // Replay ticks never rescore: capture already exists.
+    const replay = await captureClosingLines(
+      {
+        games: games([game()]),
+        closingLines,
+        clv,
+        targets: [{ sportKey: "mlb", leagueKey: "mlb" }],
+      },
+      new Date(now.getTime() + 60_000),
+    );
+    expect(replay.clvScored).toBe(0);
+    expect((await clv.board("mlb"))?.results).toHaveLength(1);
   });
 
   it("counts a failing board read without aborting the pass", async () => {

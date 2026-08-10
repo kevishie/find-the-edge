@@ -1,10 +1,13 @@
 import type {
   ClosingLinesRepository,
+  ClvRepository,
   GamesRepository,
 } from "@find-the-edge/database";
 import {
   CLOSING_CAPTURE_WINDOW_MS,
+  computeClvResult,
   createClosingLinesRecord,
+  type ClvResult,
 } from "@find-the-edge/domain";
 
 const CAPTURE_TARGETS = [
@@ -22,6 +25,7 @@ const easternDayFormat = new Intl.DateTimeFormat("en-CA", {
 export interface ClosingLinesCaptureResult {
   readonly captured: number;
   readonly failed: number;
+  readonly clvScored: number;
 }
 
 /** Captures each just-started game's served prices as its immutable closing
@@ -32,6 +36,7 @@ export async function captureClosingLines(
   dependencies: {
     readonly games: GamesRepository;
     readonly closingLines: ClosingLinesRepository;
+    readonly clv?: Pick<ClvRepository, "listEntries" | "appendResults">;
     readonly targets?: readonly {
       readonly sportKey: string;
       readonly leagueKey: string;
@@ -49,6 +54,8 @@ export async function captureClosingLines(
   ];
   let captured = 0;
   let failed = 0;
+  let clvScored = 0;
+  const resultsBySport = new Map<string, ClvResult[]>();
   for (const target of dependencies.targets ?? CAPTURE_TARGETS) {
     for (const day of days) {
       let items;
@@ -78,18 +85,33 @@ export async function captureClosingLines(
         )
           continue;
         try {
-          const outcome = await dependencies.closingLines.capture(
-            createClosingLinesRecord({
-              canonicalEventId: game.id,
-              canonicalEventVersion: game.version,
-              sportKey: game.sportKey,
-              leagueKey: game.leagueKey,
-              startsAt: game.startsAt,
-              capturedAt: now.toISOString(),
-              selections: game.odds.selections,
-            }),
-          );
-          if (outcome === "created") captured += 1;
+          const record = createClosingLinesRecord({
+            canonicalEventId: game.id,
+            canonicalEventVersion: game.version,
+            sportKey: game.sportKey,
+            leagueKey: game.leagueKey,
+            startsAt: game.startsAt,
+            capturedAt: now.toISOString(),
+            selections: game.odds.selections,
+          });
+          const outcome = await dependencies.closingLines.capture(record);
+          if (outcome === "created") {
+            captured += 1;
+            // First capture for this game: score every qualified entry
+            // against the closing fair line. A moved line skips its entry —
+            // a skipped measurement, never a fabricated one.
+            if (dependencies.clv) {
+              const entries = await dependencies.clv.listEntries(game.id);
+              for (const entry of entries) {
+                const result = computeClvResult(entry, record);
+                if (!result) continue;
+                const bucket = resultsBySport.get(game.sportKey) ?? [];
+                bucket.push(result);
+                resultsBySport.set(game.sportKey, bucket);
+                clvScored += 1;
+              }
+            }
+          }
         } catch (error) {
           failed += 1;
           console.log(
@@ -107,5 +129,23 @@ export async function captureClosingLines(
       }
     }
   }
-  return { captured, failed };
+  if (dependencies.clv)
+    for (const [sportKey, results] of resultsBySport)
+      try {
+        await dependencies.clv.appendResults(
+          sportKey,
+          results,
+          now.toISOString(),
+        );
+      } catch (error) {
+        failed += 1;
+        console.log(
+          JSON.stringify({
+            event: "clv-board-append-failed",
+            sportKey,
+            errorName: error instanceof Error ? error.name : "unknown",
+          }),
+        );
+      }
+  return { captured, failed, clvScored };
 }

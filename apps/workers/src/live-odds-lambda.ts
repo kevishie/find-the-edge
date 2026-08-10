@@ -18,6 +18,7 @@ import {
   AwsFixtureOddsGateway,
   DynamoBettingSplitRepository,
   DynamoClosingLinesRepository,
+  DynamoClvRepository,
   DynamoEventIngestionStore,
   DynamoEventRepository,
   DynamoFixtureOddsAdapter,
@@ -609,6 +610,7 @@ const runLiveOddsHandler = async (event?: unknown) => {
           {
             games: boardGames,
             closingLines: new DynamoClosingLinesRepository(client, tableName),
+            clv: new DynamoClvRepository(client, tableName),
           },
           new Date(),
         );

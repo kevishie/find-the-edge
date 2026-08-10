@@ -180,6 +180,17 @@ export interface ArbitragePageDto {
   readonly items: readonly ArbitrageFindingDto[];
 }
 
+export interface ClvResultDto {
+  readonly clvPercent: number;
+  readonly closingSource: "sharp-anchor" | "display-book";
+  readonly closingCapturedAt: string;
+}
+
+export interface ClvPageDto {
+  readonly updatedAt: string | null;
+  readonly items: readonly ClvResultDto[];
+}
+
 export interface GamesClient {
   providerStatus?(signal: AbortSignal): Promise<ProviderStatusPageDto>;
   listOpportunities?(
@@ -190,6 +201,7 @@ export interface GamesClient {
     sportKey: GamesSport,
     signal: AbortSignal,
   ): Promise<ArbitragePageDto>;
+  listClv?(sportKey: GamesSport, signal: AbortSignal): Promise<ClvPageDto>;
   listExperiments?(signal: AbortSignal): Promise<
     readonly {
       readonly experimentId: string;
@@ -2885,6 +2897,69 @@ export function createGamesClient(
             );
           const body: unknown = await response.json().catch(() => null);
           return parseArbitragePage(body);
+        });
+      },
+      async listClv(sportKey, signal) {
+        if (sportKey !== "mlb" && sportKey !== "soccer")
+          throw new GamesClientError(
+            "invalid-response",
+            "The CLV sport was invalid.",
+          );
+        return boundedOpportunityRequest(signal, async (boundedSignal) => {
+          let response: Response;
+          try {
+            response = await fetcher(
+              `${bootstrap.value.config.apiBase}/sports/${encodeURIComponent(sportKey)}/clv`,
+              { signal: boundedSignal },
+            );
+          } catch (error) {
+            if (boundedSignal.aborted) throw error;
+            throw new GamesClientError(
+              "request-failed",
+              "Closing line value is temporarily unavailable.",
+            );
+          }
+          if (!response.ok)
+            throw new GamesClientError(
+              "request-failed",
+              "Closing line value is temporarily unavailable.",
+            );
+          const body: unknown = await response.json().catch(() => null);
+          const invalidClvPage = () =>
+            new GamesClientError(
+              "invalid-response",
+              "The CLV response was invalid.",
+            );
+          if (
+            !plain(body) ||
+            body["schemaVersion"] !== "clv-page-v1" ||
+            !Array.isArray(body["items"]) ||
+            (body["updatedAt"] !== null && !iso(body["updatedAt"]))
+          )
+            throw invalidClvPage();
+          const isClosingSource = (
+            candidate: unknown,
+          ): candidate is "sharp-anchor" | "display-book" =>
+            candidate === "sharp-anchor" || candidate === "display-book";
+          const items = (body["items"] as unknown[]).map(
+            (item): ClvResultDto => {
+              if (!plain(item)) throw invalidClvPage();
+              const closingSource = item["closingSource"];
+              if (
+                !isClosingSource(closingSource) ||
+                typeof item["clvPercent"] !== "number" ||
+                !Number.isFinite(item["clvPercent"]) ||
+                !iso(item["closingCapturedAt"])
+              )
+                throw invalidClvPage();
+              return {
+                clvPercent: item["clvPercent"],
+                closingSource,
+                closingCapturedAt: item["closingCapturedAt"],
+              };
+            },
+          );
+          return { updatedAt: body["updatedAt"], items };
         });
       },
       async listExperiments(signal: AbortSignal) {
