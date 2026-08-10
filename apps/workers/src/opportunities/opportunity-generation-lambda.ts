@@ -208,7 +208,7 @@ export async function runOpportunityGeneration(
           leagueKey: target.leagueKey,
           errorName: error instanceof Error ? error.name : "unknown",
           errorMessage:
-            error instanceof Error ? error.message.slice(0, 200) : "unknown",
+            error instanceof Error ? error.message.slice(0, 500) : "unknown",
         }),
       );
     }

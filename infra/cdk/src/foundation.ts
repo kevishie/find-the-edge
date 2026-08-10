@@ -806,10 +806,14 @@ export class FoundationStack extends Stack {
     opportunityExpiration.addToRolePolicy(
       new PolicyStatement({
         actions: [
+          // Lifecycle transactions authorize their per-item operations:
+          // condition checks on the event fence and deletes of retired rank
+          // rows, not a standalone TransactWriteItems action.
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:DeleteItem",
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:Query",
-          "dynamodb:TransactWriteItems",
         ],
         resources: [
           table.tableArn,
@@ -865,11 +869,15 @@ export class FoundationStack extends Stack {
     opportunityGeneration.addToRolePolicy(
       new PolicyStatement({
         actions: [
+          // Lifecycle transactions authorize their per-item operations:
+          // condition checks on the event fence and deletes of replaced rank
+          // rows, not a standalone TransactWriteItems action.
           "dynamodb:BatchGetItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:DeleteItem",
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:Query",
-          "dynamodb:TransactWriteItems",
         ],
         resources: [table.tableArn, `${table.tableArn}/index/*`],
       }),
