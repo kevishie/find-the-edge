@@ -1239,7 +1239,7 @@ describe("Shell navigation", () => {
       within(nav)
         .getAllByRole("link")
         .map((link) => link.textContent?.replace(/^[^A-Za-z]+/, "")),
-    ).toEqual(["Events", "Splits"]);
+    ).toEqual(["Events", "Splits", "Scanner"]);
     for (const removed of [
       "Dashboard",
       "Scout Reports",

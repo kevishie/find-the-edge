@@ -6094,14 +6094,6 @@ footer {
   .glass-tab.active .glass-label {
     color: #f3f1f8;
   }
-  .glass-more {
-    margin-left: auto;
-    color: #8b8494;
-    font-size: 16px;
-  }
-  .glass-more .glass-icon {
-    font-size: 16px;
-  }
   /* Content never hides behind the floating bar. */
   main {
     padding-bottom: 110px;

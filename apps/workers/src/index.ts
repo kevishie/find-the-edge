@@ -21,3 +21,9 @@ export * from "./strategy-promotion";
 export * from "./opportunity-candidate-service";
 export * from "./opportunities/opportunity-lifecycle-service";
 export * from "./opportunities/opportunity-expiration-worker";
+export {
+  marketVectorsFromGame,
+  opportunityGenerationDays,
+  runOpportunityGeneration,
+  validateOpportunityGenerationInvocation,
+} from "./opportunities/opportunity-generation-lambda";

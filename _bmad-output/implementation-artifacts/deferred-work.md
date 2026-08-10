@@ -166,6 +166,24 @@ only because every game started during the outage window and the provider
 drops started games from /odds — no closing lines existed to serve. Watch the
 first new soccer slate populates end-to-end.
 
+## Opportunity generation wired (2026-08-09/10)
+
+The full opportunity pipeline (candidate service → lifecycle → rank rows →
+/sports/{sportKey}/opportunities → dashboard) existed with NO producer: the
+OpportunityCandidateService was never instantiated outside its test, so the
+dashboard served empty pages by construction. Added
+apps/workers/src/opportunities/opportunity-generation-lambda.ts (EventBridge
+rate(5 minutes), same invocation contract as expiration): each pass lists the
+served board for today+tomorrow ET per ingested league, converts priced
+scheduled games into market vectors, and feeds OpportunityCandidateService —
+every number remains reproducible from our own stored snapshot evidence
+(policy: target hardrock, comparisons DK/FD/MGM/Caesars, min EV 2%).
+Dashboard is now linked in both navs as "Scanner" (/dashboard). Follow-ups:
+consider SharpAPI /opportunities/ev as a cross-reference lens (provider-
+asserted EV cannot enter the candidate evidence contract by design), and add
+Pinnacle to the comparison roster or as a dedicated anchor book in the
+evaluation policy.
+
 ## Pinnacle-anchored fair lines — shipped to the list path (2026-08-09)
 
 `sharpAmericanOdds?` on GameOddsSelectionDto; JoinedGamesRepository.list

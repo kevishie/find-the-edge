@@ -834,6 +834,63 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "OpportunityExpirationFunctionName", {
       value: opportunityExpiration.functionName,
     });
+    const opportunityGenerationLogs = new LogGroup(
+      this,
+      "OpportunityGenerationLogs",
+      {
+        retention: RetentionDays.ONE_MONTH,
+        removalPolicy: RemovalPolicy.DESTROY,
+      },
+    );
+    const opportunityGeneration = new NodejsFunction(
+      this,
+      "OpportunityGenerationWorker",
+      {
+        entry: path.resolve(
+          directory,
+          "../../../apps/workers/src/opportunities/opportunity-generation-lambda.ts",
+        ),
+        handler: "handler",
+        runtime: Runtime.NODEJS_24_X,
+        timeout: Duration.minutes(2),
+        memorySize: 512,
+        reservedConcurrentExecutions: 1,
+        logGroup: opportunityGenerationLogs,
+        environment: {
+          FTE_EVENT_TABLE: table.tableName,
+        },
+        bundling: { minify: true, sourceMap: true },
+      },
+    );
+    opportunityGeneration.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:BatchGetItem",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:TransactWriteItems",
+        ],
+        resources: [table.tableArn, `${table.tableArn}/index/*`],
+      }),
+    );
+    const opportunityGenerationSchedule = new Rule(
+      this,
+      "OpportunityGenerationSchedule",
+      {
+        enabled: props.schedulerEnabled,
+        schedule: Schedule.rate(Duration.minutes(5)),
+      },
+    );
+    opportunityGenerationSchedule.addTarget(
+      new LambdaFunction(opportunityGeneration, {
+        retryAttempts: 2,
+        maxEventAge: Duration.minutes(5),
+      }),
+    );
+    new CfnOutput(this, "OpportunityGenerationFunctionName", {
+      value: opportunityGeneration.functionName,
+    });
     const worker = new NodejsFunction(this, "UpcomingEventsWorker", {
       entry: path.resolve(directory, "../../../apps/workers/src/lambda.ts"),
       handler: "handler",

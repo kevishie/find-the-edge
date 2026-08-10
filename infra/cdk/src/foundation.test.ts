@@ -105,7 +105,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 15);
+    template.resourceCountIs("AWS::Lambda::Function", 16);
     // The request-path API is CPU-bound, and Lambda scales CPU with memory.
     // Starving it shows up directly as page load time.
     template.hasResourceProperties("AWS::Lambda::Function", {
@@ -236,7 +236,7 @@ describe("foundation CDK app", () => {
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 14);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 15);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -253,8 +253,8 @@ describe("foundation CDK app", () => {
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
     template.resourceCountIs("AWS::SQS::Queue", 9);
-    template.resourceCountIs("AWS::Lambda::Function", 14);
-    template.resourceCountIs("AWS::Events::Rule", 6);
+    template.resourceCountIs("AWS::Lambda::Function", 15);
+    template.resourceCountIs("AWS::Events::Rule", 7);
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 2);
     // Live odds tick every minute; opportunity expiration keeps five.
     template.hasResourceProperties("AWS::Events::Rule", {

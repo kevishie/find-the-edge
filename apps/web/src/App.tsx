@@ -504,17 +504,17 @@ function GlassNav({
         </span>
         <span className="glass-label">Splits</span>
       </Link>
-      <button
-        type="button"
-        className="glass-tab glass-more"
-        aria-label="More"
-        aria-disabled="true"
-        title="More screens land here as they are promoted to tabs"
+      <Link
+        to="/dashboard"
+        className="glass-tab"
+        activeProps={{ className: "glass-tab active" }}
+        activeOptions={{ includeSearch: false }}
       >
         <span className="glass-icon" aria-hidden="true">
-          ⋯
+          ⚡
         </span>
-      </button>
+        <span className="glass-label">Scanner</span>
+      </Link>
     </nav>
   );
 }
@@ -609,6 +609,19 @@ function AppShell() {
             </span>
             <span className={navCollapsed ? "sr-only" : "nav-label"}>
               Splits
+            </span>
+          </Link>
+          <Link
+            to="/dashboard"
+            activeProps={{ className: "active" }}
+            activeOptions={{ includeSearch: false }}
+            title="Scanner"
+          >
+            <span className="nav-icon" aria-hidden="true">
+              ⚡
+            </span>
+            <span className={navCollapsed ? "sr-only" : "nav-label"}>
+              Scanner
             </span>
           </Link>
         </nav>
