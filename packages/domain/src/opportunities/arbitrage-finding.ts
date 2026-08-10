@@ -21,13 +21,26 @@ const QUOTE_SKEW_TOLERANCE_MS = 5 * 60_000;
 
 export type ArbitrageClassification = "arbitrage" | "low-hold";
 
+/** A competing quote keeps only what proves "best" offline — the book, the
+ * price, and the exact snapshot pointer — so a full board of findings stays
+ * inside one storage item. The chosen leg keeps complete evidence. */
+export interface ArbitrageCompetingQuote {
+  readonly sportsbookId: string;
+  readonly americanOdds: number;
+  readonly point: number | null;
+  readonly snapshotId: string;
+  readonly partitionKey: string;
+  readonly sortKey: string;
+  readonly observedAt: string;
+}
+
 export interface ArbitrageLeg {
   readonly selectionKey: string;
   readonly point: number | null;
   /** The best actionable price for this outcome. */
   readonly best: OpportunitySnapshotEvidence;
   /** Every other actionable quote considered, proving "best" offline. */
-  readonly competing: readonly OpportunitySnapshotEvidence[];
+  readonly competing: readonly ArbitrageCompetingQuote[];
 }
 
 export interface ArbitrageExcludedBook {
@@ -201,9 +214,40 @@ export function createArbitrageFinding(
     throw new Error("arbitrage-point-vector-invalid");
   const legs = input.legs.map((leg) => {
     const best = validatedQuote(leg.best, input, leg);
-    const competing = leg.competing.map((quote) =>
-      validatedQuote(quote, input, leg),
-    );
+    const competing = leg.competing.map((quote): ArbitrageCompetingQuote => {
+      const observed = Date.parse(quote.observedAt);
+      const evaluated = Date.parse(input.evaluatedAt);
+      if (
+        !Number.isFinite(observed) ||
+        observed > evaluated + QUOTE_SKEW_TOLERANCE_MS ||
+        evaluated - observed > input.policy.maximumPriceAgeMinutes * 60_000
+      )
+        throw new Error("arbitrage-quote-time-invalid");
+      if ((quote.point ?? null) !== leg.point)
+        throw new Error("arbitrage-quote-binding-invalid");
+      americanToDecimalOdds(quote.americanOdds);
+      return Object.freeze({
+        sportsbookId: identity(
+          quote.sportsbookId,
+          "arbitrage-quote-sportsbook-invalid",
+        ),
+        americanOdds: quote.americanOdds,
+        point: leg.point,
+        snapshotId: identity(
+          quote.snapshotId,
+          "arbitrage-quote-snapshot-invalid",
+        ),
+        partitionKey: identity(
+          quote.partitionKey,
+          "arbitrage-quote-partition-invalid",
+        ),
+        sortKey: identity(quote.sortKey, "arbitrage-quote-sort-key-invalid"),
+        observedAt: instant(
+          quote.observedAt,
+          "arbitrage-quote-observed-invalid",
+        ),
+      });
+    });
     const books = [best, ...competing].map(({ sportsbookId }) => sportsbookId);
     if (new Set(books).size !== books.length)
       throw new Error("arbitrage-leg-duplicate-book");

@@ -9,10 +9,11 @@ import {
 } from "@find-the-edge/domain";
 
 export const ARBITRAGE_BOARD_SCHEMA_VERSION = "arbitrage-board-v1" as const;
-/** Bounded so one stored item always fits; the scanner sorts by hold before
- * persisting, so a truncated board keeps its best findings and records how
- * many were dropped. */
-export const ARBITRAGE_BOARD_LIMIT = 20;
+/** Bounded so one stored item always fits inside DynamoDB's 400KB item
+ * limit even with full slates and slim competing evidence; the scanner
+ * sorts by hold before persisting, so a truncated board keeps its best
+ * findings and records how many were dropped. */
+export const ARBITRAGE_BOARD_LIMIT = 12;
 
 export interface ArbitrageBoard {
   readonly schemaVersion: typeof ARBITRAGE_BOARD_SCHEMA_VERSION;
