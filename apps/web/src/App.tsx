@@ -2465,7 +2465,11 @@ function RootLayout() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
-  return ["/", "/terms", "/privacy"].includes(pathname) ? <Outlet /> : <AppShell />;
+  return ["/", "/terms", "/privacy"].includes(pathname) ? (
+    <Outlet />
+  ) : (
+    <AppShell />
+  );
 }
 
 const rootRoute = createRootRoute({

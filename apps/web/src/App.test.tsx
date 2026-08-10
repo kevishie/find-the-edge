@@ -1224,8 +1224,12 @@ describe("Shell navigation", () => {
   ])("renders %s as a public draft legal route", async (path, heading) => {
     render(<App initialPath={path} />);
     expect(await screen.findByRole("heading", { name: heading })).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("NOT APPROVED FOR LAUNCH");
-    expect(screen.queryByRole("navigation", { name: "Primary navigation" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "NOT APPROVED FOR LAUNCH",
+    );
+    expect(
+      screen.queryByRole("navigation", { name: "Primary navigation" }),
+    ).not.toBeInTheDocument();
   });
 });
 
