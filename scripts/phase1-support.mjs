@@ -677,6 +677,9 @@ export function validateTemplate(template, config) {
     "POST /events/{eventId}/scout",
     "GET /scout-jobs/{jobId}",
     "POST /scout-jobs/{jobId}/retry",
+    "GET /scout-jobs/{jobId}/report",
+    "GET /scout-reports/{reportId}/versions",
+    "GET /scout-reports/{reportId}/versions/{versionNumber}",
   ];
   if (
     apiRoutes.length !== requiredRouteKeys.length ||
@@ -714,15 +717,19 @@ export function validateTemplate(template, config) {
           JSON.stringify(value.Properties?.AuthorizationScopes) !==
             JSON.stringify(["events/strategies:promote"])
         );
-      const scoutingScope =
-        value.Properties?.RouteKey === "GET /scout-jobs/{jobId}"
-          ? "events/scouting:read"
-          : [
-                "POST /events/{eventId}/scout",
-                "POST /scout-jobs/{jobId}/retry",
-              ].includes(value.Properties?.RouteKey)
-            ? "events/scouting:write"
-            : undefined;
+      const scoutingScope = [
+        "GET /scout-jobs/{jobId}",
+        "GET /scout-jobs/{jobId}/report",
+        "GET /scout-reports/{reportId}/versions",
+        "GET /scout-reports/{reportId}/versions/{versionNumber}",
+      ].includes(value.Properties?.RouteKey)
+        ? "events/scouting:read"
+        : [
+              "POST /events/{eventId}/scout",
+              "POST /scout-jobs/{jobId}/retry",
+            ].includes(value.Properties?.RouteKey)
+          ? "events/scouting:write"
+          : undefined;
       if (scoutingScope)
         return (
           value.Properties?.AuthorizationType !== "JWT" ||

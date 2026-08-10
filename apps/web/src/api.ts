@@ -7,17 +7,26 @@ import type {
   RankedOpportunityDto,
   ProviderStatusPageDto,
   PublicScoutingJob,
+  ScoutingReportChangeField,
+  ScoutingReportChangeSummary,
+  ScoutingReportInlinePayload,
+  ScoutingReportProvenance,
+  ScoutingReportStatus,
 } from "@find-the-edge/domain";
 import {
   collapseNearDuplicateGames,
   EVENT_LIFECYCLE_STATES,
   normalizeRankedOpportunityDto,
   normalizeProviderStatusPageDto,
+  normalizeScoutingReportInlinePayload,
+  normalizeScoutingReportProvenance,
   validateEventMetadataAssessment,
   participantSelectionKey,
   SCOUTING_FAILURE_CODES,
   SCOUTING_JOB_STATUSES,
   SCOUTING_MAX_ATTEMPTS,
+  SCOUTING_REPORT_CHANGE_FIELDS,
+  SCOUTING_REPORT_STATUSES,
   SCOUTING_WORKFLOW_INTENT,
   isRetryableScoutingFailure,
 } from "@find-the-edge/domain";
@@ -191,6 +200,43 @@ export interface ClvPageDto {
   readonly items: readonly ClvResultDto[];
 }
 
+/**
+ * Public projection of one stored scouting report version (FTE-042). The
+ * payload and provenance are the domain contracts verbatim; the envelope adds
+ * only the identities and history depth the report screen needs.
+ */
+export interface ScoutReportDto {
+  readonly schemaVersion: "scout-report-v1";
+  readonly reportId: string;
+  readonly versionNumber: number;
+  readonly latestVersionNumber: number;
+  readonly jobId: string;
+  readonly eventId: string;
+  readonly eventVersion: number;
+  readonly generatedAt: string;
+  readonly validationOutcome: ScoutingReportStatus;
+  readonly changeSummary: ScoutingReportChangeSummary;
+  readonly payload: ScoutingReportInlinePayload;
+  readonly provenance: ScoutingReportProvenance;
+}
+
+export interface ScoutReportVersionSummaryDto {
+  readonly versionNumber: number;
+  readonly generatedAt: string;
+  readonly validationOutcome: ScoutingReportStatus;
+  readonly changeSummary: ScoutingReportChangeSummary;
+  readonly jobId: string;
+}
+
+export interface ScoutReportVersionsDto {
+  readonly schemaVersion: "scout-report-versions-v1";
+  readonly reportId: string;
+  readonly eventId: string;
+  readonly latestVersionNumber: number;
+  readonly updatedAt: string;
+  readonly items: readonly ScoutReportVersionSummaryDto[];
+}
+
 export interface GamesClient {
   providerStatus?(signal: AbortSignal): Promise<ProviderStatusPageDto>;
   listOpportunities?(
@@ -276,6 +322,19 @@ export interface GamesClient {
     idempotencyKey: string,
     signal: AbortSignal,
   ): Promise<PublicScoutingJob>;
+  getScoutReportByJob?(
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<ScoutReportDto>;
+  getScoutReportVersion?(
+    reportId: string,
+    versionNumber: number,
+    signal: AbortSignal,
+  ): Promise<ScoutReportDto>;
+  listScoutReportVersions?(
+    reportId: string,
+    signal: AbortSignal,
+  ): Promise<ScoutReportVersionsDto>;
 }
 export interface RetrospectiveDto {
   readonly retrospectiveId: string;
@@ -1024,6 +1083,206 @@ export function parsePublicScoutingJob(value: unknown): PublicScoutingJob {
       "The scouting response was invalid.",
     );
   return Object.freeze(value as unknown as PublicScoutingJob);
+}
+
+const SCOUT_REPORT_ID = /^scout-report:[a-f0-9]{64}$/;
+
+export const isScoutReportId = (value: string): boolean =>
+  SCOUT_REPORT_ID.test(value);
+
+const invalidScoutReport = () =>
+  new GamesClientError("invalid-response", "The report response was invalid.");
+
+const isScoutingReportStatus = (
+  value: unknown,
+): value is ScoutingReportStatus =>
+  SCOUTING_REPORT_STATUSES.includes(value as ScoutingReportStatus);
+
+const isScoutingReportChangeField = (
+  value: unknown,
+): value is ScoutingReportChangeField =>
+  SCOUTING_REPORT_CHANGE_FIELDS.includes(value as ScoutingReportChangeField);
+
+/**
+ * Change summaries are rendered as the reason a version exists, so the kind
+ * and the field list have to agree before either is shown.
+ */
+const parseScoutReportChangeSummary = (
+  value: unknown,
+): ScoutingReportChangeSummary => {
+  if (
+    !plain(value) ||
+    !exact(value, ["kind", "changedFields"]) ||
+    (value["kind"] !== "initial" &&
+      value["kind"] !== "unchanged" &&
+      value["kind"] !== "changed") ||
+    !Array.isArray(value["changedFields"])
+  )
+    throw invalidScoutReport();
+  const raw: readonly unknown[] = value["changedFields"];
+  if (
+    raw.length > SCOUTING_REPORT_CHANGE_FIELDS.length ||
+    !raw.every(isScoutingReportChangeField) ||
+    (value["kind"] === "changed") !== raw.length > 0
+  )
+    throw invalidScoutReport();
+  const changedFields: readonly ScoutingReportChangeField[] = raw;
+  // Stored change fields are strictly ascending, so a repeat or a reorder is
+  // a rewritten history rather than a version the storage layer wrote.
+  let previous = "";
+  for (const field of changedFields) {
+    if (field <= previous) throw invalidScoutReport();
+    previous = field;
+  }
+  return Object.freeze({
+    kind: value["kind"],
+    changedFields: Object.freeze([...changedFields]),
+  });
+};
+
+/**
+ * Fails closed on anything that is not exactly one stored report version: the
+ * envelope is checked field by field and the payload/provenance are re-derived
+ * through the same domain normalizers the storage layer writes with, so a
+ * corrupt or foreign-shaped response never reaches the screen.
+ */
+export function parseScoutReport(value: unknown): ScoutReportDto {
+  if (
+    !plain(value) ||
+    !exact(value, [
+      "schemaVersion",
+      "reportId",
+      "versionNumber",
+      "latestVersionNumber",
+      "jobId",
+      "eventId",
+      "eventVersion",
+      "generatedAt",
+      "validationOutcome",
+      "changeSummary",
+      "payload",
+      "provenance",
+    ]) ||
+    value["schemaVersion"] !== "scout-report-v1" ||
+    typeof value["reportId"] !== "string" ||
+    !isScoutReportId(value["reportId"]) ||
+    typeof value["jobId"] !== "string" ||
+    !isScoutingJobId(value["jobId"]) ||
+    !isCanonicalScoutingEventId(value["eventId"]) ||
+    !Number.isSafeInteger(value["versionNumber"]) ||
+    Number(value["versionNumber"]) < 1 ||
+    !Number.isSafeInteger(value["latestVersionNumber"]) ||
+    Number(value["latestVersionNumber"]) < Number(value["versionNumber"]) ||
+    !Number.isSafeInteger(value["eventVersion"]) ||
+    Number(value["eventVersion"]) < 1 ||
+    !iso(value["generatedAt"]) ||
+    !isScoutingReportStatus(value["validationOutcome"])
+  )
+    throw invalidScoutReport();
+  const changeSummary = parseScoutReportChangeSummary(value["changeSummary"]);
+  let payload: ScoutingReportInlinePayload;
+  let provenance: ScoutingReportProvenance;
+  try {
+    payload = normalizeScoutingReportInlinePayload(value["payload"]);
+    provenance = normalizeScoutingReportProvenance(value["provenance"]);
+  } catch {
+    throw invalidScoutReport();
+  }
+  const cited = new Set(
+    provenance.citedSourceObservations.map(
+      (observation) => observation.observationId,
+    ),
+  );
+  if (
+    payload.status !== value["validationOutcome"] ||
+    (Number(value["versionNumber"]) === 1) !==
+      (changeSummary.kind === "initial") ||
+    payload.assertions.some((assertion) =>
+      assertion.citationIds.some((citationId) => !cited.has(citationId)),
+    )
+  )
+    throw invalidScoutReport();
+  return Object.freeze({
+    schemaVersion: "scout-report-v1" as const,
+    reportId: value["reportId"],
+    versionNumber: Number(value["versionNumber"]),
+    latestVersionNumber: Number(value["latestVersionNumber"]),
+    jobId: value["jobId"],
+    eventId: value["eventId"],
+    eventVersion: Number(value["eventVersion"]),
+    generatedAt: value["generatedAt"],
+    validationOutcome: value["validationOutcome"],
+    changeSummary,
+    payload,
+    provenance,
+  });
+}
+
+/** Version manifests must be a contiguous ascending history ending at head. */
+export function parseScoutReportVersions(
+  value: unknown,
+): ScoutReportVersionsDto {
+  if (
+    !plain(value) ||
+    !exact(value, [
+      "schemaVersion",
+      "reportId",
+      "eventId",
+      "latestVersionNumber",
+      "updatedAt",
+      "items",
+    ]) ||
+    value["schemaVersion"] !== "scout-report-versions-v1" ||
+    typeof value["reportId"] !== "string" ||
+    !isScoutReportId(value["reportId"]) ||
+    !isCanonicalScoutingEventId(value["eventId"]) ||
+    !Number.isSafeInteger(value["latestVersionNumber"]) ||
+    Number(value["latestVersionNumber"]) < 1 ||
+    !iso(value["updatedAt"]) ||
+    !Array.isArray(value["items"]) ||
+    value["items"].length !== Number(value["latestVersionNumber"])
+  )
+    throw invalidScoutReport();
+  const items = value["items"].map(
+    (item, index): ScoutReportVersionSummaryDto => {
+      if (
+        !plain(item) ||
+        !exact(item, [
+          "versionNumber",
+          "generatedAt",
+          "validationOutcome",
+          "changeSummary",
+          "jobId",
+        ]) ||
+        item["versionNumber"] !== index + 1 ||
+        !iso(item["generatedAt"]) ||
+        !isScoutingReportStatus(item["validationOutcome"]) ||
+        typeof item["jobId"] !== "string" ||
+        !isScoutingJobId(item["jobId"])
+      )
+        throw invalidScoutReport();
+      const changeSummary = parseScoutReportChangeSummary(
+        item["changeSummary"],
+      );
+      if ((index === 0) !== (changeSummary.kind === "initial"))
+        throw invalidScoutReport();
+      return Object.freeze({
+        versionNumber: index + 1,
+        generatedAt: item["generatedAt"],
+        validationOutcome: item["validationOutcome"],
+        changeSummary,
+        jobId: item["jobId"],
+      });
+    },
+  );
+  return Object.freeze({
+    schemaVersion: "scout-report-versions-v1" as const,
+    reportId: value["reportId"],
+    eventId: value["eventId"],
+    latestVersionNumber: Number(value["latestVersionNumber"]),
+    updatedAt: value["updatedAt"],
+    items: Object.freeze(items),
+  });
 }
 
 const validAmericanOdds = (value: unknown): value is number =>
@@ -2715,6 +2974,86 @@ const scoutingJobRequest = async ({
   return job;
 };
 
+const scoutReportHttpError = (response: Response): GamesClientError => {
+  if (response.status === 401)
+    return new GamesClientError(
+      "authentication",
+      "Sign in is required to use scouting.",
+    );
+  if (response.status === 403)
+    return new GamesClientError(
+      "forbidden",
+      "This session does not have scouting access.",
+    );
+  // A missing report and another account's report are the same neutral 404.
+  if (response.status === 404)
+    return new GamesClientError("not-found", "This report is unavailable.");
+  return new GamesClientError(
+    "request-failed",
+    "This report is temporarily unavailable.",
+  );
+};
+
+const scoutReportRequest = async <T>({
+  apiBase,
+  providerKey,
+  expectedIssuer,
+  expectedClientId,
+  fetcher,
+  path,
+  signal,
+  parse,
+}: {
+  readonly apiBase: string;
+  readonly providerKey: string;
+  readonly expectedIssuer: string;
+  readonly expectedClientId: string;
+  readonly fetcher: typeof fetch;
+  readonly path: string;
+  readonly signal: AbortSignal;
+  readonly parse: (value: unknown) => T;
+}): Promise<T> => {
+  const timeoutSignal = AbortSignal.timeout(SCOUTING_REQUEST_TIMEOUT_MS);
+  const requestSignal = AbortSignal.any([signal, timeoutSignal]);
+  const unavailable = () =>
+    new GamesClientError(
+      "request-failed",
+      "This report is temporarily unavailable.",
+    );
+  let token: string;
+  try {
+    ({ token } = await awaitWithSignal(
+      scoutingSession(providerKey, expectedIssuer, expectedClientId),
+      requestSignal,
+    ));
+  } catch (error) {
+    if (signal.aborted) throw error;
+    if (timeoutSignal.aborted) throw unavailable();
+    throw error;
+  }
+  let response: Response;
+  try {
+    response = await awaitWithSignal(
+      fetcher(`${apiBase}${path}`, {
+        method: "GET",
+        credentials: "omit",
+        cache: "no-store",
+        signal: requestSignal,
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      requestSignal,
+    );
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw unavailable();
+  }
+  if (response.status !== 200) {
+    if (response.status === 401) invalidateScoutingSession(providerKey);
+    throw scoutReportHttpError(response);
+  }
+  return parse(await response.json().catch(() => null));
+};
+
 export function createGamesClient(
   bootstrap: Result<RuntimeBootstrap, RuntimeConfigError>,
   fetcher: typeof fetch = fetch,
@@ -2806,6 +3145,73 @@ export function createGamesClient(
                 body: { expectedStateVersion },
                 expectedJobId: jobId,
               });
+            },
+            async getScoutReportByJob(jobId, signal) {
+              if (!isScoutingJobId(jobId))
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The scouting job address was invalid.",
+                );
+              const report = await scoutReportRequest({
+                apiBase: bootstrap.value.config.apiBase,
+                providerKey: scoutingAuth.providerKey,
+                expectedIssuer: scoutingAuth.issuer,
+                expectedClientId: scoutingAuth.clientId,
+                fetcher,
+                path: `/scout-jobs/${encodeURIComponent(jobId)}/report`,
+                signal,
+                parse: parseScoutReport,
+              });
+              if (report.jobId !== jobId) throw invalidScoutReport();
+              return report;
+            },
+            async getScoutReportVersion(reportId, versionNumber, signal) {
+              if (
+                !isScoutReportId(reportId) ||
+                !Number.isSafeInteger(versionNumber) ||
+                versionNumber < 1
+              )
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The report address was invalid.",
+                );
+              const report = await scoutReportRequest({
+                apiBase: bootstrap.value.config.apiBase,
+                providerKey: scoutingAuth.providerKey,
+                expectedIssuer: scoutingAuth.issuer,
+                expectedClientId: scoutingAuth.clientId,
+                fetcher,
+                path: `/scout-reports/${encodeURIComponent(
+                  reportId,
+                )}/versions/${String(versionNumber)}`,
+                signal,
+                parse: parseScoutReport,
+              });
+              if (
+                report.reportId !== reportId ||
+                report.versionNumber !== versionNumber
+              )
+                throw invalidScoutReport();
+              return report;
+            },
+            async listScoutReportVersions(reportId, signal) {
+              if (!isScoutReportId(reportId))
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The report address was invalid.",
+                );
+              const versions = await scoutReportRequest({
+                apiBase: bootstrap.value.config.apiBase,
+                providerKey: scoutingAuth.providerKey,
+                expectedIssuer: scoutingAuth.issuer,
+                expectedClientId: scoutingAuth.clientId,
+                fetcher,
+                path: `/scout-reports/${encodeURIComponent(reportId)}/versions`,
+                signal,
+                parse: parseScoutReportVersions,
+              });
+              if (versions.reportId !== reportId) throw invalidScoutReport();
+              return versions;
             },
           }
         : {}),

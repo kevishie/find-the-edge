@@ -59,6 +59,7 @@ const DataSources = lazy(() =>
   })),
 );
 import { ScoutEventButton, ScoutingProgress } from "./scouting";
+import { ScoutReport } from "./scout-report";
 const GameDetail = lazy(() => import("./game-detail"));
 const PerformanceDashboard = lazy(() => import("./performance"));
 const RetrospectivesList = lazy(() =>
@@ -418,6 +419,15 @@ export interface UiGamesClient {
   getScoutingJob?: NonNullable<import("./api").GamesClient["getScoutingJob"]>;
   retryScoutingJob?: NonNullable<
     import("./api").GamesClient["retryScoutingJob"]
+  >;
+  getScoutReportByJob?: NonNullable<
+    import("./api").GamesClient["getScoutReportByJob"]
+  >;
+  getScoutReportVersion?: NonNullable<
+    import("./api").GamesClient["getScoutReportVersion"]
+  >;
+  listScoutReportVersions?: NonNullable<
+    import("./api").GamesClient["listScoutReportVersions"]
   >;
 }
 export interface StrategyExperimentDto {
@@ -2736,6 +2746,38 @@ const scoutingProgressRoute = createRoute({
   path: "/scout-jobs/$jobId",
   component: ScoutingProgressRoute,
 });
+function ScoutReportRoute() {
+  const { jobId } = useParams({ from: "/scout-jobs/$jobId/report" });
+  const { version } = useSearch({ from: "/scout-jobs/$jobId/report" });
+  const navigate = useNavigate();
+  return (
+    <ScoutReport
+      key={jobId}
+      jobId={jobId}
+      versionNumber={version}
+      client={useContext(GamesClientContext)}
+      onSelectVersion={(versionNumber) =>
+        void navigate({
+          to: "/scout-jobs/$jobId/report",
+          params: { jobId },
+          search: { version: versionNumber },
+        })
+      }
+    />
+  );
+}
+const scoutReportRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/scout-jobs/$jobId/report",
+  validateSearch: (search: Record<string, unknown>) => ({
+    version:
+      Number.isSafeInteger(Number(search["version"])) &&
+      Number(search["version"]) >= 1
+        ? Number(search["version"])
+        : undefined,
+  }),
+  component: ScoutReportRoute,
+});
 // The catalog moved from /games to /events; old links keep resolving.
 const legacyGamesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -2770,6 +2812,7 @@ const routeTree = rootRoute.addChildren([
   legacyGamesRoute,
   legacyGameDetailRoute,
   scoutingProgressRoute,
+  scoutReportRoute,
   splitsRoute,
   performanceRoute,
   dataSourcesRoute,

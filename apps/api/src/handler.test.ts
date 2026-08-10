@@ -1,11 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  SCOUTING_WORKFLOW_INTENT,
   assessEventMetadata,
   createArbitrageFinding,
+  createQueuedScoutingRecords,
+  createScoutingReportCompletionPointer,
+  createScoutingReportHead,
+  createScoutingReportVersion,
+  createScoutingReportVersionEnvelope,
   fixtureOddsGroupAvailabilityIdentity,
   normalizeFixtureOddsObservation,
+  validateScoutingAttempt,
+  validateScoutingJob,
   type GameOddsCellDto,
   type GameOddsComparisonDto,
+  type ScoutingReportInlinePayload,
+  type ScoutingReportProvenance,
 } from "@find-the-edge/domain";
 import { impliedProbability } from "@find-the-edge/odds";
 import {
@@ -15,11 +25,13 @@ import {
   MemoryClvRepository,
   MemoryCohortRepository,
   MemoryOddsHistoryRepository,
+  MemoryScoutingReportRepository,
   RankedOpportunityUnavailableError,
   type GamesRepository,
   type EventRepository,
   type OddsHistoryRepository,
   type RankedOpportunityRepository,
+  type ScoutingReportRepository,
 } from "@find-the-edge/database";
 import {
   clearHandlerCaches,
@@ -363,6 +375,430 @@ it("emits bounded scouting lifecycle metrics", async () => {
     ScoutingJobCreated: 1,
   });
   expect(JSON.stringify(logs.at(-1))).toContain('"Name":"ScoutingLatency"');
+});
+
+describe("scouting report read routes", () => {
+  const reportRequester = "user-123";
+  const foreignRequester = "user-456";
+  const reportEventId = "baseball:mlb:event-123";
+  const readScopes = ["events/scouting:read"];
+  const reportPayload = {
+    candidate: {
+      marketKey: "moneyline",
+      outcomeStructure: "two-way",
+      selection: { kind: "participant", participantId: "yankees" },
+    },
+    versions: {
+      contractVersion: "analysis-contract-v1",
+      promptBundleId: "bundle-mlb",
+      promptBundleVersion: "1.0.0",
+      promptSections: {
+        shared: { id: "shared-core", version: "1" },
+        sport: { id: "mlb-module", version: "2" },
+        strategy: { id: "core-strategy", version: "3" },
+        analysis: { id: "analysis-core", version: "1" },
+      },
+      inputSchemaId: "scouting-input",
+      inputSchemaVersion: "1",
+      outputSchemaId: "scouting-report",
+      outputSchemaVersion: "1",
+      modelId: "model-x",
+      modelVersion: "2026-01",
+    },
+    probability: { estimate: 0.55, low: 0.5, high: 0.6, uncertainty: 0.05 },
+    status: "complete",
+    abstentionCodes: [],
+    summary: "Yankees hold a pricing edge.",
+    assertions: [
+      {
+        text: "Yankees hold a pricing edge.",
+        classification: "inference",
+        citationIds: ["obs-1"],
+      },
+    ],
+  } satisfies ScoutingReportInlinePayload;
+  const reportProvenance = {
+    citedSourceObservations: [
+      {
+        observationId: "obs-1",
+        category: "lineup",
+        status: "verified",
+        observedAt: "2026-08-10T12:01:00.000Z",
+      },
+    ],
+    providerObservations: [
+      {
+        providerId: "sharpapi",
+        observationId: "obs-1",
+        observedAt: "2026-08-10T12:01:00.000Z",
+      },
+    ],
+    evidenceReferences: [
+      {
+        sourceId: "sharpapi",
+        observedAt: "2026-08-10T12:01:00.000Z",
+        retrievedAt: "2026-08-10T12:01:00.000Z",
+        verification: "verified",
+      },
+    ],
+    calculationVersions: [{ id: "no-vig-fair-line", version: "1" }],
+    referenceHashes: ["ab".repeat(32)],
+    oddsSnapshotIds: ["snap-1"],
+    inputHash: "cd".repeat(32),
+    inputSchema: { id: "scouting-input", version: "1" },
+    promptBundle: { id: "bundle-mlb", version: "1.0.0" },
+    model: { id: "model-x", version: "2026-01" },
+    sportModule: { id: "mlb-module", version: "2" },
+    strategy: { id: "core-strategy", version: "3" },
+    reportSchema: { id: "scouting-report", version: "1" },
+  } satisfies ScoutingReportProvenance;
+
+  const seedScoutReport = async () => {
+    const repo = new MemoryScoutingReportRepository();
+    const records = createQueuedScoutingRecords(
+      {
+        schemaVersion: 1,
+        requesterId: reportRequester,
+        idempotencyKey: "request-1",
+        eventId: reportEventId,
+        eventVersion: 7,
+        workflowIntent: SCOUTING_WORKFLOW_INTENT,
+      },
+      "2026-08-10T12:00:00.000Z",
+    );
+    const job = validateScoutingJob({
+      ...records.job,
+      status: "in_progress",
+      stateVersion: records.job.stateVersion + 1,
+      updatedAt: "2026-08-10T12:01:00.000Z",
+    });
+    const attempt = validateScoutingAttempt({
+      ...records.attempt,
+      status: "in_progress",
+      stateVersion: records.attempt.stateVersion + 1,
+      updatedAt: "2026-08-10T12:01:00.000Z",
+      startedAt: "2026-08-10T12:01:00.000Z",
+    });
+    repo.seedJob(job);
+    repo.seedAttempt(attempt);
+    repo.setActiveLock(job.semanticDigest, job.jobId, attempt.attemptId);
+    const version = createScoutingReportVersion({
+      requesterId: reportRequester,
+      eventId: reportEventId,
+      eventVersion: 7,
+      jobId: job.jobId,
+      attemptId: job.currentAttemptId,
+      versionNumber: 1,
+      payload: reportPayload,
+      provenance: reportProvenance,
+      generatedAt: "2026-08-10T12:02:00.000Z",
+      predecessor: null,
+    });
+    await repo.completeWithReport({
+      material: {
+        version,
+        head: createScoutingReportHead(version),
+        completionPointer: createScoutingReportCompletionPointer(version),
+        envelope: createScoutingReportVersionEnvelope(version),
+      },
+      completedAt: "2026-08-10T12:03:00.000Z",
+    });
+    return {
+      repo,
+      version,
+      jobId: job.jobId,
+      reportId: version.reportId,
+    };
+  };
+
+  const reportHandler = (
+    repo: ScoutingReportRepository,
+    log?: (entry: Readonly<Record<string, unknown>>) => void,
+  ) =>
+    createEventHandler(
+      repository,
+      undefined,
+      log,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      repo,
+    );
+
+  it("serves the job-bound report with history depth and no internal identities", async () => {
+    const { repo, jobId, reportId } = await seedScoutReport();
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const handler = reportHandler(repo, (entry) => logs.push(entry));
+    const result = await handler({
+      route: "scout-report-by-job",
+      method: "GET",
+      subject: reportRequester,
+      scopes: readScopes,
+      jobId,
+    });
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([
+      "changeSummary",
+      "eventId",
+      "eventVersion",
+      "generatedAt",
+      "jobId",
+      "latestVersionNumber",
+      "payload",
+      "provenance",
+      "reportId",
+      "schemaVersion",
+      "validationOutcome",
+      "versionNumber",
+    ]);
+    expect(body).toMatchObject({
+      schemaVersion: "scout-report-v1",
+      reportId,
+      versionNumber: 1,
+      latestVersionNumber: 1,
+      jobId,
+      eventId: reportEventId,
+      eventVersion: 7,
+      generatedAt: "2026-08-10T12:02:00.000Z",
+      validationOutcome: "complete",
+      changeSummary: { kind: "initial", changedFields: [] },
+    });
+    expect(body["payload"]).toEqual(reportPayload);
+    expect(body["provenance"]).toEqual(reportProvenance);
+    expect(result.body).not.toContain("draftHash");
+    expect(result.body).not.toContain("persistenceFingerprint");
+    expect(result.body).not.toContain("attemptId");
+    expect(result.body).not.toContain("predecessor");
+    // Report reads are not job lifecycle events: no duplicate metric.
+    expect(logs.at(-1)).toMatchObject({
+      Route: "scout-report-by-job",
+      Status: 200,
+    });
+    expect(JSON.stringify(logs.at(-1))).not.toContain("ScoutingDuplicate");
+    expect(JSON.stringify(logs)).not.toContain(reportRequester);
+  });
+
+  it("lists version metadata without payloads plus head info", async () => {
+    const { repo, jobId, reportId } = await seedScoutReport();
+    const handler = reportHandler(repo);
+    const result = await handler({
+      route: "scout-report-versions",
+      method: "GET",
+      subject: reportRequester,
+      scopes: readScopes,
+      reportId,
+    });
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body) as {
+      items: Record<string, unknown>[];
+    } & Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([
+      "eventId",
+      "items",
+      "latestVersionNumber",
+      "reportId",
+      "schemaVersion",
+      "updatedAt",
+    ]);
+    expect(body).toMatchObject({
+      schemaVersion: "scout-report-versions-v1",
+      reportId,
+      eventId: reportEventId,
+      latestVersionNumber: 1,
+      updatedAt: "2026-08-10T12:02:00.000Z",
+    });
+    expect(body.items).toHaveLength(1);
+    expect(Object.keys(body.items[0] ?? {}).sort()).toEqual([
+      "changeSummary",
+      "generatedAt",
+      "jobId",
+      "validationOutcome",
+      "versionNumber",
+    ]);
+    expect(body.items[0]).toEqual({
+      versionNumber: 1,
+      generatedAt: "2026-08-10T12:02:00.000Z",
+      validationOutcome: "complete",
+      changeSummary: { kind: "initial", changedFields: [] },
+      jobId,
+    });
+    expect(result.body).not.toContain('"payload"');
+    expect(result.body).not.toContain('"provenance"');
+  });
+
+  it("serves a full single version and treats unknown numbers as neutral missing", async () => {
+    const { repo, reportId } = await seedScoutReport();
+    const handler = reportHandler(repo);
+    const result = await handler({
+      route: "scout-report-version",
+      method: "GET",
+      subject: reportRequester,
+      scopes: readScopes,
+      reportId,
+      versionNumber: "1",
+    });
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toMatchObject({
+      schemaVersion: "scout-report-v1",
+      reportId,
+      versionNumber: 1,
+      latestVersionNumber: 1,
+    });
+    for (const versionNumber of ["2", "9999999999999999"])
+      expect(
+        await handler({
+          route: "scout-report-version",
+          method: "GET",
+          subject: reportRequester,
+          scopes: readScopes,
+          reportId,
+          versionNumber,
+        }),
+      ).toMatchObject({
+        statusCode: 404,
+        body: JSON.stringify({ error: "not-found" }),
+      });
+  });
+
+  it("gives foreign requesters the same neutral missing as absent reports", async () => {
+    const { repo, jobId, reportId } = await seedScoutReport();
+    const handler = reportHandler(repo);
+    const requests = [
+      { route: "scout-report-by-job" as const, jobId },
+      { route: "scout-report-versions" as const, reportId },
+      { route: "scout-report-version" as const, reportId, versionNumber: "1" },
+    ];
+    for (const request of requests) {
+      expect(
+        await handler({
+          ...request,
+          method: "GET",
+          subject: foreignRequester,
+          scopes: readScopes,
+        }),
+      ).toMatchObject({
+        statusCode: 404,
+        body: JSON.stringify({ error: "not-found" }),
+      });
+    }
+  });
+
+  it("requires authentication and the scouting read scope", async () => {
+    const { repo, jobId, reportId } = await seedScoutReport();
+    const handler = reportHandler(repo);
+    const requests = [
+      { route: "scout-report-by-job" as const, jobId },
+      { route: "scout-report-versions" as const, reportId },
+      { route: "scout-report-version" as const, reportId, versionNumber: "1" },
+    ];
+    for (const request of requests) {
+      expect(
+        await handler({ ...request, method: "GET", scopes: readScopes }),
+      ).toMatchObject({ statusCode: 401 });
+      expect(
+        await handler({
+          ...request,
+          method: "GET",
+          subject: reportRequester,
+          scopes: ["events/scouting:write"],
+        }),
+      ).toMatchObject({ statusCode: 403 });
+    }
+  });
+
+  it("rejects malformed identifiers and leaked query parameters", async () => {
+    const { repo, jobId, reportId } = await seedScoutReport();
+    const handler = reportHandler(repo);
+    const authorized = {
+      method: "GET" as const,
+      subject: reportRequester,
+      scopes: readScopes,
+    };
+    for (const badJobId of [undefined, "scout-job:short", reportId])
+      expect(
+        await handler({
+          ...authorized,
+          route: "scout-report-by-job",
+          ...(badJobId ? { jobId: badJobId } : {}),
+        }),
+      ).toMatchObject({ statusCode: 400 });
+    for (const badReportId of [undefined, "scout-report:short", jobId])
+      expect(
+        await handler({
+          ...authorized,
+          route: "scout-report-versions",
+          ...(badReportId ? { reportId: badReportId } : {}),
+        }),
+      ).toMatchObject({ statusCode: 400 });
+    for (const versionNumber of [
+      undefined,
+      "0",
+      "01",
+      "1.5",
+      "-1",
+      "abc",
+      "10000000000000000",
+    ])
+      expect(
+        await handler({
+          ...authorized,
+          route: "scout-report-version",
+          reportId,
+          ...(versionNumber ? { versionNumber } : {}),
+        }),
+      ).toMatchObject({ statusCode: 400 });
+    for (const request of [
+      { route: "scout-report-by-job" as const, jobId },
+      { route: "scout-report-versions" as const, reportId },
+      { route: "scout-report-version" as const, reportId, versionNumber: "1" },
+    ])
+      expect(
+        await handler({ ...request, ...authorized, query: { leaked: "1" } }),
+      ).toMatchObject({ statusCode: 400 });
+  });
+
+  it("fails closed on corrupt stored rows without leaking storage details", async () => {
+    const { repo, jobId, reportId, version } = await seedScoutReport();
+    const tampered = JSON.parse(JSON.stringify(version)) as {
+      payload: { summary: string };
+    };
+    tampered.payload.summary = `${tampered.payload.summary} tampered`;
+    repo.unsafeSeedVersionRow(reportId, 1, tampered);
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const handler = reportHandler(repo, (entry) => logs.push(entry));
+    for (const request of [
+      { route: "scout-report-by-job" as const, jobId },
+      { route: "scout-report-versions" as const, reportId },
+      { route: "scout-report-version" as const, reportId, versionNumber: "1" },
+    ])
+      expect(
+        await handler({
+          ...request,
+          method: "GET",
+          subject: reportRequester,
+          scopes: readScopes,
+        }),
+      ).toMatchObject({
+        statusCode: 500,
+        body: JSON.stringify({ error: "internal-error" }),
+      });
+    expect(logs).toContainEqual({
+      event: "event-api-internal-failure",
+      route: "scout-report-version",
+      errorName: "ScoutingInternalError",
+      errorMessage: "scouting-operation-failed",
+    });
+    expect(JSON.stringify(logs)).not.toContain("tampered");
+  });
 });
 const gamesWithDetail = (
   detail: NonNullable<GamesRepository["detail"]>,

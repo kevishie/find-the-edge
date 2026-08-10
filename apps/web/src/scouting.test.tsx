@@ -54,7 +54,7 @@ describe("ScoutingProgress", () => {
     [
       { ...base, status: "completed", stateVersion: 3 },
       "Scouting is complete",
-      "A report is not available yet",
+      "The scouting job finished successfully",
     ],
     [
       {
@@ -96,6 +96,20 @@ describe("ScoutingProgress", () => {
       expect(screen.queryByText(/workflow|fixture-v1/i)).toBeNull();
     },
   );
+
+  it("always offers the report link on a completed job", async () => {
+    const get = vi.fn(() =>
+      Promise.resolve({
+        ...base,
+        status: "completed" as const,
+        stateVersion: 3,
+      }),
+    );
+    render(<ScoutingProgress jobId={id} client={client(get)} />);
+    expect(
+      await screen.findByRole("link", { name: "View report" }),
+    ).toHaveAttribute("href", `/scout-jobs/${encodeURIComponent(id)}/report`);
+  });
 
   it("does not request malformed direct links", async () => {
     const get = vi.fn();

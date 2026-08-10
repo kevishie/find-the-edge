@@ -435,6 +435,17 @@ function validTemplate() {
           },
         },
       },
+      ClvRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /sports/{sportKey}/clv",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
       PerformanceCohortsRoute: {
         Type: "AWS::ApiGatewayV2::Route",
         Properties: {
@@ -623,6 +634,45 @@ function validTemplate() {
           AuthorizationType: "JWT",
           AuthorizerId: { Ref: "Auth" },
           AuthorizationScopes: ["events/scouting:write"],
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      ScoutReportByJobRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /scout-jobs/{jobId}/report",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "JWT",
+          AuthorizerId: { Ref: "Auth" },
+          AuthorizationScopes: ["events/scouting:read"],
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      ScoutReportVersionsRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /scout-reports/{reportId}/versions",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "JWT",
+          AuthorizerId: { Ref: "Auth" },
+          AuthorizationScopes: ["events/scouting:read"],
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
+      ScoutReportVersionRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /scout-reports/{reportId}/versions/{versionNumber}",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "JWT",
+          AuthorizerId: { Ref: "Auth" },
+          AuthorizationScopes: ["events/scouting:read"],
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },

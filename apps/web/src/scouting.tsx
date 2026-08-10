@@ -268,8 +268,7 @@ const jobPresentation = (job: PublicScoutingJob) => {
         tone: "complete",
         eyebrow: "COMPLETE",
         title: "Scouting is complete",
-        message:
-          "The scouting job finished successfully. A report is not available yet.",
+        message: "The scouting job finished successfully.",
       };
     case "failed_retryable":
       return {
@@ -679,6 +678,16 @@ export function ScoutingProgress({
         </p>
       )}
       <div className="scouting-progress-actions">
+        {view.job.status === "completed" && (
+          // The progress record does not say whether a report was stored, so
+          // the link is always offered and the report screen states the truth.
+          <a
+            className="detail-link"
+            href={`/scout-jobs/${encodeURIComponent(view.job.jobId)}/report`}
+          >
+            View report
+          </a>
+        )}
         {retryAllowed && (
           <button
             type="button"

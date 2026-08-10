@@ -1396,6 +1396,18 @@ export class FoundationStack extends Stack {
       authorizationScopes: ["events/scouting:write"],
     });
     for (const path of [
+      "/scout-jobs/{jobId}/report",
+      "/scout-reports/{reportId}/versions",
+      "/scout-reports/{reportId}/versions/{versionNumber}",
+    ])
+      api.addRoutes({
+        path,
+        methods: [HttpMethod.GET],
+        integration,
+        authorizer,
+        authorizationScopes: ["events/scouting:read"],
+      });
+    for (const path of [
       "/sports/{sportKey}/opportunities",
       "/sports/{sportKey}/opportunities/{opportunityId}",
       "/sports/{sportKey}/arbitrage",

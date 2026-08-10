@@ -22,6 +22,91 @@ const corsHeaders = {
   "access-control-expose-headers": "location",
 };
 
+const reportId = `scout-report:${"b".repeat(64)}`;
+const reportVersions = {
+  contractVersion: "soccer-ml-spread@1.0.0",
+  promptBundleId: "soccer-analysis",
+  promptBundleVersion: "1",
+  promptSections: {
+    shared: { id: "evidence-safety", version: "1" },
+    sport: { id: "soccer", version: "2" },
+    strategy: { id: "find-the-edge", version: "1.0.0-experimental" },
+    analysis: { id: "moneyline-spread", version: "1" },
+  },
+  inputSchemaId: "analysis-input/soccer",
+  inputSchemaVersion: "1",
+  outputSchemaId: "analysis-output/soccer",
+  outputSchemaVersion: "1",
+  modelId: "mls-v1.0-draft",
+  modelVersion: "1.0.0-draft",
+};
+const reportProvenance = {
+  citedSourceObservations: [
+    {
+      observationId: "evidence-form-1",
+      category: "form",
+      status: "verified",
+      observedAt: "2026-08-07T12:30:00.000Z",
+    },
+  ],
+  providerObservations: [],
+  evidenceReferences: [],
+  calculationVersions: [{ id: "fair-value", version: "1" }],
+  referenceHashes: [],
+  oddsSnapshotIds: ["odds-snapshot:1"],
+  inputHash: "c".repeat(64),
+  inputSchema: { id: "analysis-input/soccer", version: "1" },
+  promptBundle: { id: "soccer-analysis", version: "1" },
+  model: { id: "mls-v1.0-draft", version: "1.0.0-draft" },
+  sportModule: { id: "soccer", version: "2" },
+  strategy: { id: "find-the-edge", version: "1.0.0-experimental" },
+  reportSchema: { id: "analysis-output/soccer", version: "1" },
+};
+const reportPayload = (estimate: number) => ({
+  candidate: {
+    marketKey: "moneyline",
+    outcomeStructure: "two-way",
+    selection: { kind: "participant", participantId: "boston-red-sox" },
+  },
+  versions: reportVersions,
+  probability: {
+    estimate,
+    low: estimate - 0.05,
+    high: estimate + 0.05,
+    uncertainty: 0.06,
+  },
+  status: "complete",
+  abstentionCodes: [],
+  summary: "Boston start their strongest available rotation arm.",
+  assertions: [
+    {
+      text: "Boston start their strongest available rotation arm.",
+      classification: "factual",
+      citationIds: ["evidence-form-1"],
+    },
+  ],
+});
+const reportVersion = (versionNumber: 1 | 2, estimate: number) => ({
+  schemaVersion: "scout-report-v1",
+  reportId,
+  versionNumber,
+  latestVersionNumber: 2,
+  jobId,
+  eventId: queued.eventId,
+  eventVersion: 1,
+  generatedAt:
+    versionNumber === 1
+      ? "2026-08-07T13:02:00.000Z"
+      : "2026-08-07T13:20:00.000Z",
+  validationOutcome: "complete",
+  changeSummary:
+    versionNumber === 1
+      ? { kind: "initial", changedFields: [] }
+      : { kind: "changed", changedFields: ["probability"] },
+  payload: reportPayload(estimate),
+  provenance: reportProvenance,
+});
+
 test.beforeAll(async () => {
   api = await startLocalGamesApi();
 });
@@ -139,6 +224,96 @@ test("starts scouting and follows authoritative progress without fabricated phas
   await expect(
     page.getByText(/collecting|generating|calculating/i),
   ).toHaveCount(0);
+  await expect(page.locator("html")).toHaveJSProperty(
+    "scrollWidth",
+    await page.locator("html").evaluate((element) => element.clientWidth),
+  );
+});
+
+test("opens the stored report from a completed job and switches versions", async ({
+  page,
+}) => {
+  const completed = {
+    ...queued,
+    status: "completed",
+    stateVersion: 3,
+    updatedAt: "2026-08-07T13:02:00.000Z",
+  };
+  await page.route(`${api.apiBase}/scout-jobs/*`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      headers: corsHeaders,
+      body: JSON.stringify(completed),
+    });
+  });
+  await page.route(`${api.apiBase}/scout-jobs/*/report`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      headers: corsHeaders,
+      body: JSON.stringify(reportVersion(2, 0.41)),
+    });
+  });
+  await page.route(`${api.apiBase}/scout-reports/*/versions`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      headers: corsHeaders,
+      body: JSON.stringify({
+        schemaVersion: "scout-report-versions-v1",
+        reportId,
+        eventId: queued.eventId,
+        latestVersionNumber: 2,
+        updatedAt: "2026-08-07T13:20:00.000Z",
+        items: [1, 2].map((versionNumber) => {
+          const version = reportVersion(versionNumber as 1 | 2, 0.5);
+          return {
+            versionNumber,
+            generatedAt: version.generatedAt,
+            validationOutcome: version.validationOutcome,
+            changeSummary: version.changeSummary,
+            jobId,
+          };
+        }),
+      }),
+    });
+  });
+  await page.route(
+    `${api.apiBase}/scout-reports/*/versions/*`,
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        headers: corsHeaders,
+        body: JSON.stringify(reportVersion(1, 0.62)),
+      });
+    },
+  );
+
+  await page.goto(`/scout-jobs/${encodeURIComponent(jobId)}`);
+  await page.getByRole("link", { name: "View report" }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`/scout-jobs/${encodeURIComponent(jobId)}/report`),
+  );
+  await expect(
+    page.getByRole("heading", { name: "Market Edge" }),
+  ).toBeVisible();
+  // The story fixes the section order; every required section stays present.
+  expect(await page.getByRole("heading", { level: 2 }).allInnerTexts()).toEqual(
+    [
+      "Market Edge",
+      "Risk Assessment",
+      "Final Plays",
+      "Nuke or Pass",
+      "Summary",
+    ],
+  );
+  await expect(
+    page.getByText("No content in this version for Risk Assessment."),
+  ).toBeVisible();
+  await expect(page.getByText("41.0%").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Show version history" }).click();
+  await page.getByRole("button", { name: "View version 1" }).click();
+  await expect(page).toHaveURL(/version=1/);
+  await expect(page.getByText("62.0%").first()).toBeVisible();
   await expect(page.locator("html")).toHaveJSProperty(
     "scrollWidth",
     await page.locator("html").evaluate((element) => element.clientWidth),

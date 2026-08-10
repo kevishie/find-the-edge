@@ -849,6 +849,12 @@ describe("foundation CDK app", () => {
       ["POST /events/{eventId}/scout", "events/scouting:write"],
       ["GET /scout-jobs/{jobId}", "events/scouting:read"],
       ["POST /scout-jobs/{jobId}/retry", "events/scouting:write"],
+      ["GET /scout-jobs/{jobId}/report", "events/scouting:read"],
+      ["GET /scout-reports/{reportId}/versions", "events/scouting:read"],
+      [
+        "GET /scout-reports/{reportId}/versions/{versionNumber}",
+        "events/scouting:read",
+      ],
     ]) {
       const matches = Object.values(resources).filter(
         (resource) =>

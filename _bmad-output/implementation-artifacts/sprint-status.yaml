@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-044
+nextReadyStory: FTE-045
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -744,7 +744,7 @@ stories:
   - id: FTE-044
     title: Scouting Report Screen, Versions, Sources, and PASS State
     epic: Manual scouting workflow
-    status: backlog
+    status: done
     dependencies: [FTE-042, FTE-043]
     risk: High
     approvalRequiredBeforeMerge: false

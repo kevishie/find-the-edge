@@ -4053,6 +4053,334 @@ footer {
   }
 }
 
+/* FTE-044 scouting report: mobile-first single column, sections always stack. */
+.scout-report,
+.scout-report-state {
+  margin: min(8vh, 56px) auto 64px;
+  max-width: 880px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: clamp(20px, 4vw, 40px);
+  background: linear-gradient(145deg, #15111d, #0d0b13);
+}
+
+.scout-report-state.error {
+  border-color: #683c47;
+}
+
+.scout-report-state .dashboard-skeleton {
+  margin-top: 18px;
+}
+
+.scout-report.abstain {
+  border-color: #4a4155;
+}
+
+.scout-report-header {
+  display: grid;
+  gap: 14px;
+  align-items: start;
+}
+
+.scout-report-outcome {
+  justify-self: start;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 8px 12px;
+  color: #78d3a0;
+  font: 600 10px var(--mono);
+  letter-spacing: 1.5px;
+}
+
+.scout-report-outcome.reduced {
+  color: #e9bd5a;
+}
+
+.scout-report-outcome.abstain {
+  color: var(--muted);
+}
+
+.scout-report-meta,
+.scout-report-footer dl,
+.scout-report-calculated dl {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin: 22px 0 0;
+}
+
+.scout-report-meta > div,
+.scout-report-footer dl > div,
+.scout-report-calculated dl > div {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #100d16;
+}
+
+.scout-report-meta dt,
+.scout-report-footer dt,
+.scout-report-calculated dt {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font: 10px var(--mono);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.scout-report-meta dd,
+.scout-report-footer dd,
+.scout-report-calculated dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Calculated values are visually separated from narrative claims. */
+.scout-report-calculated {
+  margin-top: 16px;
+  border: 1px solid #2f4a5c;
+  border-radius: 12px;
+  padding: 14px;
+  background: #0c1219;
+}
+
+.scout-report-calculated .eyebrow {
+  color: #6fb6e0;
+}
+
+.scout-report-calculated dd {
+  font: 600 20px var(--mono);
+}
+
+.scout-report-narrative {
+  margin-top: 16px;
+  border-left: 2px solid var(--line);
+  padding-left: 14px;
+}
+
+.scout-report-narrative .eyebrow {
+  color: #a78bfa;
+}
+
+.scout-report-section {
+  margin-top: 30px;
+  border-top: 1px solid var(--line);
+  padding-top: 22px;
+}
+
+.scout-report-section h2,
+.scout-report-verdict h2 {
+  font-size: clamp(20px, 3vw, 28px);
+}
+
+.scout-report-empty {
+  margin: 14px 0 0;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  color: var(--muted);
+}
+
+.scout-report-assertions,
+.scout-report-citations,
+.scout-report-abstentions,
+.scout-report-version-list {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scout-report-assertions > li {
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: #100d16;
+}
+
+.scout-report-assertions p {
+  margin: 0 0 10px;
+  line-height: 1.55;
+}
+
+.scout-report-classification,
+.scout-report-evidence {
+  display: inline-block;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: var(--muted);
+  font: 600 9px var(--mono);
+  letter-spacing: 1px;
+}
+
+.scout-report-classification.factual,
+.scout-report-evidence.verified {
+  color: #78d3a0;
+}
+
+.scout-report-classification.stale,
+.scout-report-evidence.stale {
+  color: #e9bd5a;
+}
+
+.scout-report-classification.conflicting,
+.scout-report-evidence.conflicting {
+  color: #f0a4a4;
+}
+
+.scout-report-classification.inference,
+.scout-report-evidence.inference {
+  color: #a78bfa;
+}
+
+.scout-report-citation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.scout-report-citation code,
+.scout-report-meta code,
+.scout-report-footer code,
+.scout-report-abstentions code {
+  color: #cfc9db;
+  font: 11px var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.scout-report-citation-note {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.scout-report-verdict {
+  margin-top: 30px;
+  border: 1px solid #315345;
+  border-radius: 14px;
+  padding: clamp(16px, 3vw, 26px);
+  background: #0d1512;
+}
+
+.scout-report-verdict.reduced {
+  border-color: #665126;
+  background: #16130c;
+}
+
+.scout-report-verdict.pass {
+  border-color: #683c47;
+  background: #170f13;
+}
+
+.scout-report-verdict-label {
+  margin: 10px 0 6px;
+  font-family: Anton, sans-serif;
+  font-size: clamp(44px, 12vw, 84px);
+  line-height: 1;
+  letter-spacing: 2px;
+}
+
+.scout-report-verdict.pass .scout-report-verdict-label {
+  color: #f0a4a4;
+}
+
+.scout-report-abstentions > li {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: #100d16;
+}
+
+.scout-report-versions {
+  margin-top: 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  background: #100d16;
+}
+
+.scout-report-versions p {
+  margin: 0 0 8px;
+}
+
+.scout-report-change {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.scout-report-version-error {
+  color: #f0a4a4;
+}
+
+.scout-report-version-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.scout-report-version-number {
+  font: 600 12px var(--mono);
+}
+
+.scout-report-version-current {
+  color: var(--muted);
+  font: 10px var(--mono);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.scout-report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.scout-report-footer {
+  margin-top: 30px;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+
+.scout-report-footer .detail-link,
+.scout-report-actions .detail-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin: 16px 0 0;
+}
+
+.scout-report-versions button,
+.scout-report-version-list button,
+.scout-report-actions button,
+.scout-report-state button {
+  min-height: 44px;
+}
+
+@media (min-width: 720px) {
+  .scout-report-header {
+    grid-template-columns: 1fr auto;
+  }
+
+  .scout-report-meta,
+  .scout-report-footer dl,
+  .scout-report-calculated dl {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+}
+
 /* Splits keeps the full schedule visible, so its controls and rows stay dense. */
 .splits-primary-filters {
   gap: 14px;

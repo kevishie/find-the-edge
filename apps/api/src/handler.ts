@@ -17,6 +17,7 @@ import {
   type ArbitrageBoardRepository,
   type ClvRepository,
   type RankedOpportunityRepository,
+  type ScoutingReportRepository,
   attachSplits,
   boardCounts,
   type BoardKey,
@@ -34,6 +35,7 @@ import {
   participantSelectionKey,
   type EntityId,
   type ProviderStatusPageDto,
+  type ScoutingReportVersionRecord,
 } from "@find-the-edge/domain";
 import type {
   ScoutingHttpRequest,
@@ -67,7 +69,10 @@ export interface ApiRequest {
     | "provider-status"
     | "scout-create"
     | "scout-status"
-    | "scout-retry";
+    | "scout-retry"
+    | "scout-report-by-job"
+    | "scout-report-versions"
+    | "scout-report-version";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
@@ -81,6 +86,9 @@ export interface ApiRequest {
   readonly sportKey?: string;
   readonly opportunityId?: string;
   readonly jobId?: string;
+  readonly reportId?: string;
+  /** Raw path segment; validated as a bounded positive integer. */
+  readonly versionNumber?: string;
   readonly idempotencyKey?: string;
   readonly requestId?: string;
   readonly query?: Readonly<Record<string, string | undefined>>;
@@ -177,6 +185,34 @@ const response = (statusCode: number, body: unknown): ApiResponse => ({
   headers: { "content-type": "application/json", "cache-control": "no-store" },
   body: JSON.stringify(body),
 });
+const SCOUT_REPORT_ID = /^scout-report:[a-f0-9]{64}$/;
+const SCOUT_REPORT_JOB_ID = /^scout-job:[a-f0-9]{64}$/;
+/** Positive integer within the storage layer's 16-digit padding bound. */
+const SCOUT_REPORT_VERSION_NUMBER = /^[1-9][0-9]{0,15}$/;
+/**
+ * Public projection of a stored report version: the full payload, provenance,
+ * and change summary the report screen renders, plus the head's latest
+ * version number so the client knows history depth. Internal identities
+ * (attempt id, draft hash, predecessor fence, persistence fingerprint) never
+ * leave the storage layer.
+ */
+const toScoutReportDto = (
+  version: ScoutingReportVersionRecord,
+  latestVersionNumber: number,
+) => ({
+  schemaVersion: "scout-report-v1" as const,
+  reportId: version.reportId,
+  versionNumber: version.versionNumber,
+  latestVersionNumber,
+  jobId: version.jobId,
+  eventId: version.eventId,
+  eventVersion: version.eventVersion,
+  generatedAt: version.generatedAt,
+  validationOutcome: version.validationOutcome,
+  changeSummary: version.changeSummary,
+  payload: version.payload,
+  provenance: version.provenance,
+});
 export const createEventHandler =
   (
     repository: EventRepository,
@@ -196,6 +232,7 @@ export const createEventHandler =
     loadStoredBoard?: (key: BoardKey) => Promise<StoredBoard | null>,
     arbitrageBoardRepository?: ArbitrageBoardRepository,
     clvRepository?: ClvRepository,
+    scoutingReportRepository?: ScoutingReportRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -230,6 +267,94 @@ export const createEventHandler =
       cursorRejected: number;
     } | null = null;
     try {
+      if (request.route.startsWith("scout-report-")) {
+        if (!scoutingReportRepository)
+          throw new Error("scouting-report-repository-not-configured");
+        if (!request.subject)
+          return response((status = 401), { error: "unauthorized" });
+        if (!request.scopes?.includes("events/scouting:read"))
+          return response((status = 403), { error: "forbidden" });
+        if (
+          request.method !== "GET" ||
+          request.body !== undefined ||
+          Object.keys(request.query ?? {}).length > 0
+        )
+          throw new EventInputError("scout-report-request-invalid");
+        const requesterId = request.subject;
+        if (request.route === "scout-report-by-job") {
+          if (!SCOUT_REPORT_JOB_ID.test(request.jobId ?? ""))
+            throw new EventInputError("scout-report-job-id-invalid");
+          const version = await scoutingReportRepository.getByJobBinding(
+            request.jobId ?? "",
+            requesterId,
+          );
+          if (!version) return response((status = 404), { error: "not-found" });
+          const head = await scoutingReportRepository.getHead(
+            version.reportId,
+            requesterId,
+          );
+          if (!head) throw new Error("scout-report-head-missing");
+          return response(
+            200,
+            toScoutReportDto(version, head.latestVersionNumber),
+          );
+        }
+        const reportId = request.reportId ?? "";
+        if (!SCOUT_REPORT_ID.test(reportId))
+          throw new EventInputError("scout-report-id-invalid");
+        if (request.route === "scout-report-version") {
+          const versionText = request.versionNumber ?? "";
+          if (!SCOUT_REPORT_VERSION_NUMBER.test(versionText))
+            throw new EventInputError("scout-report-version-number-invalid");
+          const versionNumber = Number(versionText);
+          // 16-digit values above the safe-integer range cannot exist in
+          // storage; they resolve as neutral missing, never as a cast.
+          const version = Number.isSafeInteger(versionNumber)
+            ? await scoutingReportRepository.getVersion(
+                reportId,
+                versionNumber,
+                requesterId,
+              )
+            : null;
+          if (!version) return response((status = 404), { error: "not-found" });
+          const head = await scoutingReportRepository.getHead(
+            reportId,
+            requesterId,
+          );
+          if (!head) throw new Error("scout-report-head-missing");
+          return response(
+            200,
+            toScoutReportDto(version, head.latestVersionNumber),
+          );
+        }
+        const versions = await scoutingReportRepository.listVersions(
+          reportId,
+          requesterId,
+        );
+        // A report history always has version 1, so an empty list is the
+        // same neutral missing a foreign requester sees.
+        if (versions.length === 0)
+          return response((status = 404), { error: "not-found" });
+        const head = await scoutingReportRepository.getHead(
+          reportId,
+          requesterId,
+        );
+        if (!head) throw new Error("scout-report-head-missing");
+        return response(200, {
+          schemaVersion: "scout-report-versions-v1",
+          reportId,
+          eventId: head.eventId,
+          latestVersionNumber: head.latestVersionNumber,
+          updatedAt: head.updatedAt,
+          items: versions.map((version) => ({
+            versionNumber: version.versionNumber,
+            generatedAt: version.generatedAt,
+            validationOutcome: version.validationOutcome,
+            changeSummary: version.changeSummary,
+            jobId: version.jobId,
+          })),
+        });
+      }
       if (request.route.startsWith("scout-")) {
         if (!scoutingHandler)
           throw new Error("scouting-handler-not-configured");
@@ -1030,7 +1155,11 @@ export const createEventHandler =
       });
       return response(500, { error: "internal-error" });
     } finally {
-      const scoutingRoute = request.route.startsWith("scout-");
+      // Report reads share the scouting redaction rules but not the job
+      // lifecycle metrics: a 200 report read is not a duplicate creation.
+      const scoutingRoute =
+        request.route.startsWith("scout-") &&
+        !request.route.startsWith("scout-report-");
       const retrospectiveRoute = request.route.startsWith("retrospective-");
       const experimentRoute = request.route.startsWith("experiment-");
       const reviewRoute = request.route === "retrospective-review";
