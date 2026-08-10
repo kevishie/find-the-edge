@@ -98,6 +98,16 @@ Paying for Sharp ($399/mo, 1000 rpm, all endpoints); currently consuming only
    otherwise. /odds/best remains interesting only for best-price display.
 3. `/opportunities/arbitrage` (+ optimal stakes), `/opportunities/low_hold`,
    `/opportunities/middles` — new alert surfaces.
+   DONE 2026-08-10 without the provider endpoints, evidence-first: an
+   ArbitrageScanService rides the 5-minute generation pass, reads all 24
+   collected books through the torn-read-safe evidence repository, and
+   persists self-verifying findings (best legs with full snapshot evidence,
+   competing quotes slimmed to best-price proof, latest scan replaces each
+   sport's board, findings expire with the price-age window). Served at
+   /sports/{sportKey}/arbitrage, rendered as a dashboard section. First
+   verified live scan: 20 arbitrage + 8 low-hold sets on the MLB slate,
+   12 rendered cards (board caps at 12 by hold; totalCount records 28).
+   Middles remain unbuilt — needs alternate-line enumeration.
 4. `/historical/clv` and closing odds — CLV tracking for the bet-tracker
    designs; we already persist our own immutable history, CLV closes the loop.
 5. `/odds-delta` — compact line-move deltas; could cut fast-lane transfer.
