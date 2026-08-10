@@ -5055,18 +5055,20 @@ footer {
   margin-bottom: 20px;
   filter: drop-shadow(0 0 12px rgba(168, 85, 247, 0.5));
 }
-.ref-nav nav {
+.ref-main-nav {
   display: flex;
   align-items: center;
   gap: 26px;
   margin-left: auto;
 }
-.ref-nav nav a {
+.ref-main-nav a {
   color: #a29daf;
   font-size: 13.5px;
 }
-.ref-nav > .ref-primary {
+.ref-nav-cta {
   margin-left: 12px;
+}
+.ref-nav-cta .ref-primary {
   padding: 9px 17px;
   border-radius: 9px;
   box-shadow: 0 0 18px rgba(139, 92, 246, 0.35);
@@ -5074,8 +5076,12 @@ footer {
   font-weight: 600;
   line-height: normal;
 }
-.ref-nav nav a:hover {
+.ref-main-nav a:hover {
   color: #fff;
+}
+.ref-menu-button,
+.ref-mobile-menu {
+  display: none;
 }
 .ref-primary {
   display: inline-flex;
@@ -5691,6 +5697,218 @@ footer {
   color: #4a4653;
   font-size: 12px;
   line-height: 1.6;
+}
+
+@media (max-width: 720px) {
+  .ref-header {
+    min-height: 64px;
+  }
+  .ref-nav {
+    min-height: 64px;
+    padding: 12px 20px;
+  }
+  .ref-brand {
+    gap: 10px;
+    font-size: 17px;
+  }
+  .ref-crown {
+    width: 25px;
+    height: 21px;
+  }
+  .ref-main-nav,
+  .ref-nav-cta {
+    display: none;
+  }
+  .ref-menu-button {
+    width: 42px;
+    height: 40px;
+    margin-left: auto;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    border: 1px solid #2a2833;
+    border-radius: 9px;
+    background: #0d0c12;
+    color: #f3f1f8;
+    cursor: pointer;
+  }
+  .ref-menu-button span {
+    width: 20px;
+    height: 2px;
+    border-radius: 2px;
+    background: currentColor;
+    transition:
+      transform 160ms ease,
+      opacity 160ms ease;
+  }
+  .ref-header.menu-open .ref-menu-button span:first-child {
+    transform: translateY(7px) rotate(45deg);
+  }
+  .ref-header.menu-open .ref-menu-button span:nth-child(2) {
+    opacity: 0;
+  }
+  .ref-header.menu-open .ref-menu-button span:last-child {
+    transform: translateY(-7px) rotate(-45deg);
+  }
+  .ref-mobile-menu:not([hidden]) {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 100%;
+    padding: 8px 20px 20px;
+    display: grid;
+    gap: 14px;
+    border-bottom: 1px solid #24222e;
+    background: rgba(8, 8, 11, 0.98);
+    box-shadow: 0 18px 35px rgba(0, 0, 0, 0.42);
+    backdrop-filter: blur(14px);
+  }
+  .ref-mobile-menu nav {
+    display: grid;
+  }
+  .ref-mobile-menu nav a {
+    padding: 14px 2px;
+    border-bottom: 1px solid #1c1b24;
+    color: #cfcada;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .ref-mobile-menu .ref-primary {
+    width: 100%;
+    min-height: 46px;
+  }
+  .ref-hero > .ref-wrap {
+    padding: 48px 20px 52px;
+  }
+  .ref-florida {
+    top: -15px;
+    right: -230px;
+    width: 540px;
+    height: 645px;
+  }
+  .ref-live {
+    max-width: 100%;
+    margin-bottom: 24px;
+    padding: 7px 12px;
+    font-size: 9.5px;
+    line-height: 1.45;
+  }
+  .ref-hero h1 {
+    max-width: 350px;
+    margin-bottom: 20px;
+    font-size: clamp(44px, 13vw, 52px);
+    line-height: 1;
+  }
+  .ref-lede {
+    max-width: 520px;
+    margin-bottom: 28px;
+    font-size: 17px;
+    line-height: 1.55;
+  }
+  .ref-actions {
+    max-width: 360px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .ref-actions .ref-primary,
+  .ref-secondary {
+    width: 100%;
+    min-height: 50px;
+  }
+  .ref-price-note {
+    max-width: 340px;
+    font-size: 10.5px;
+    line-height: 1.55;
+  }
+  .ref-scanner {
+    width: 100%;
+    margin-top: 38px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+  .ref-scanner-top {
+    min-width: 460px;
+  }
+  .ref-books .ref-wrap {
+    padding: 22px 20px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+  .ref-section > .ref-wrap {
+    padding: 56px 20px;
+  }
+  .ref-section h2,
+  .ref-final h2 {
+    font-size: 34px;
+    line-height: 1.12;
+  }
+  .ref-section > .ref-wrap > p {
+    margin-bottom: 32px;
+    font-size: 15px;
+  }
+  .ref-features,
+  .ref-steps,
+  .ref-plans,
+  .ref-included > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ref-steps {
+    gap: 28px;
+    margin-top: 32px;
+  }
+  .ref-plans article,
+  .ref-included {
+    padding-left: 22px;
+    padding-right: 22px;
+  }
+  .ref-faq > div {
+    padding: 56px 20px;
+  }
+  .ref-final {
+    padding: 60px 20px 64px;
+  }
+  .ref-final p {
+    font-size: 15px;
+  }
+  .ref-footer > div {
+    padding: 30px 20px 38px;
+  }
+  .ref-footer nav {
+    width: 100%;
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 360px) {
+  .ref-brand {
+    font-size: 16px;
+  }
+  .ref-nav,
+  .ref-hero > .ref-wrap,
+  .ref-section > .ref-wrap,
+  .ref-faq > div,
+  .ref-final,
+  .ref-footer > div {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .ref-hero h1 {
+    font-size: 43px;
+  }
+  .ref-live {
+    letter-spacing: 1px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ref-menu-button span {
+    transition: none;
+  }
 }
 
 .evx-toggle.selected {

@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { landingConfig } from "./landing-config";
 
 const rows = [
@@ -171,21 +173,30 @@ function Crown({ large = false }: { readonly large?: boolean }) {
     </svg>
   );
 }
-const StartLink = ({ children }: { readonly children: string }) =>
+const StartLink = ({
+  children,
+  onClick,
+}: {
+  readonly children: string;
+  readonly onClick?: () => void;
+}) =>
   landingConfig.authPath ? (
-    <a className="ref-primary" href={landingConfig.authPath}>
+    <a className="ref-primary" href={landingConfig.authPath} onClick={onClick}>
       {children}
     </a>
   ) : (
-    <a className="ref-primary" href="#pricing">
+    <a className="ref-primary" href="#pricing" onClick={onClick}>
       {children}
     </a>
   );
 
 export function LandingPage() {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = () => setMenuOpen(false);
+
   return (
     <div className="ref-page">
-      <header className="ref-header">
+      <header className={`ref-header${menuOpen ? " menu-open" : ""}`}>
         <div className="ref-nav">
           <a className="ref-brand" href="#top">
             <Crown />
@@ -193,12 +204,44 @@ export function LandingPage() {
               FIND THE <i>EDGE</i>
             </b>
           </a>
-          <nav>
+          <nav className="ref-main-nav" aria-label="Landing page navigation">
             <a href="#features">Features</a>
             <a href="#how">How it works</a>
             <a href="#pricing">Pricing</a>
           </nav>
-          <StartLink>Start free trial</StartLink>
+          <div className="ref-nav-cta">
+            <StartLink>Start free trial</StartLink>
+          </div>
+          <button
+            className="ref-menu-button"
+            type="button"
+            aria-expanded={menuOpen}
+            aria-controls="mobile-landing-menu"
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+        </div>
+        <div
+          className="ref-mobile-menu"
+          id="mobile-landing-menu"
+          hidden={!menuOpen}
+        >
+          <nav aria-label="Mobile landing page navigation">
+            <a href="#features" onClick={closeMenu}>
+              Features
+            </a>
+            <a href="#how" onClick={closeMenu}>
+              How it works
+            </a>
+            <a href="#pricing" onClick={closeMenu}>
+              Pricing
+            </a>
+          </nav>
+          <StartLink onClick={closeMenu}>Start free trial</StartLink>
         </div>
       </header>
       <main>

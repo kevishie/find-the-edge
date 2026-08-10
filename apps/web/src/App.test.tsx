@@ -1185,6 +1185,35 @@ describe("Shell navigation", () => {
     expect(screen.queryByText("Betting splits")).not.toBeInTheDocument();
   });
 
+  it("opens and closes the accessible mobile landing menu", async () => {
+    render(<App initialPath="/" />);
+
+    const trigger = await screen.findByRole("button", { name: "Open menu" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("navigation", {
+        name: "Mobile landing page navigation",
+      }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole("button", { name: "Close menu" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    const mobileNavigation = screen.getByRole("navigation", {
+      name: "Mobile landing page navigation",
+    });
+    fireEvent.click(
+      within(mobileNavigation).getByRole("link", { name: "Features" }),
+    );
+
+    expect(screen.getByRole("button", { name: "Open menu" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
   it("keeps the terminal shell on a direct product route", async () => {
     render(
       <App
