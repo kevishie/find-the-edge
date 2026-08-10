@@ -96,6 +96,37 @@ the board-freshness alarm. Next: prod cutover (FTE-059, approval-gated),
 bet tracker (makes CLV personal), persist-path version re-resolution,
 middles, backlog FTE-044..058.
 
+## Snapshot identity excluded our fetch clock (2026-08-10)
+
+Cost review of a $77.64 AWS bill traced $18.95 of DynamoDB writes to a
+correctness defect: snapshotContent() hashed `retrievedAt` — OUR fetch
+timestamp — into snapshotId and therefore the SNAPSHOT# sort key. Proven
+locally: identical price, identical provider observedAt, fetch 12s apart
+=> different snapshotId and sortKey. With the insert conditioned on
+attribute_not_exists, every poll wrote a fresh immutable row for every
+selection of all 24 books whether or not the price moved (measured
+~257K write units per 15 minutes, ~1.03M/hour). Odds history was
+likewise polluted: chart points were fetches, not price moves.
+
+Fix: identity is the observed market state only; `retrievedAt` stays
+stored but out of the hash. Re-observing an unchanged price re-derives
+the same identity and short-circuits BEFORE the transaction (a losing
+conditional write is still billed, and TransactWrite bills double).
+Legacy rows keep authenticating through a frozen v1 hash used for
+verification only. Cadence, book coverage, and polling untouched.
+
+Consequences accepted: `retrievedAt` now means "first seen at this
+price", so a stable line honestly shows a growing age instead of
+resetting each minute; the board freshness alarm threshold moved
+30min -> 2h because a quiet market is not an outage (both real
+incidents ran 16h and 20h). Snapshot identity also feeds derived
+calculation input hashes, so newly written evaluations get new ids —
+existing rows remain valid under their own hash.
+
+Also noted during the review: OpenSearch (~$26/mo, 33% of the bill) is
+agon-serverless-*, a different project sharing the account. Out of
+scope, untouched, flagged to the owner.
+
 ## Incident 2026-08-10: poisoned splits continuation blanked the splits board (resolved)
 
 One splits run failed at 2026-08-09T18:25Z; its continuation survived with
