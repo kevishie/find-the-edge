@@ -1105,6 +1105,40 @@ describe("foundation CDK app", () => {
     );
   });
 
+  it("subscribes the alarm email and routes every alarm to it", () => {
+    const { stack } = createFoundationApp({
+      stage: "alerts",
+      ...eventConfig,
+      alarmEmail: "kevishie@gmail.com",
+    });
+    const template = Template.fromStack(stack);
+    template.resourceCountIs("AWS::SNS::Topic", 1);
+    template.hasResourceProperties("AWS::SNS::Subscription", {
+      Protocol: "email",
+      Endpoint: "kevishie@gmail.com",
+    });
+    const rendered = template.toJSON() as {
+      Resources: Record<
+        string,
+        { Type: string; Properties?: { AlarmActions?: unknown[] } }
+      >;
+    };
+    const alarms = Object.values(rendered.Resources).filter(
+      ({ Type }) => Type === "AWS::CloudWatch::Alarm",
+    );
+    expect(alarms.length).toBe(78);
+    expect(
+      alarms.every((alarm) => alarm.Properties?.AlarmActions?.length === 1),
+    ).toBe(true);
+    expect(() =>
+      createFoundationApp({
+        stage: "alerts",
+        ...eventConfig,
+        alarmEmail: "not an email",
+      }),
+    ).toThrow("plain email address");
+  });
+
   it("rejects an alarm topic outside the configured stack region", () => {
     expect(() =>
       createFoundationApp({

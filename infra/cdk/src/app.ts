@@ -77,6 +77,9 @@ const { app } = createFoundationApp({
   ...(process.env["FTE_UPCOMING_ALARM_TOPIC_ARN"]
     ? { alarmTopicArn: process.env["FTE_UPCOMING_ALARM_TOPIC_ARN"] }
     : {}),
+  ...(process.env["FTE_ALARM_EMAIL"]
+    ? { alarmEmail: process.env["FTE_ALARM_EMAIL"] }
+    : {}),
   account: launchAccount,
   region: launchRegion,
 });

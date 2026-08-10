@@ -424,6 +424,17 @@ function validTemplate() {
           },
         },
       },
+      ArbitrageRoute: {
+        Type: "AWS::ApiGatewayV2::Route",
+        Properties: {
+          RouteKey: "GET /sports/{sportKey}/arbitrage",
+          ApiId: { Ref: "Api" },
+          AuthorizationType: "NONE",
+          Target: {
+            "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+          },
+        },
+      },
       PerformanceCohortsRoute: {
         Type: "AWS::ApiGatewayV2::Route",
         Properties: {

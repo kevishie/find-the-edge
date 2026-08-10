@@ -2513,18 +2513,37 @@ export async function runProductionOddsControlPlane(input: {
             );
             if (ambiguity.blocked) continue;
             const existingContinuation = ambiguity.continuation;
+            // The runId encodes the split-history window. A failing run keeps
+            // its continuation, so resuming an aged runId re-requests the same
+            // stale window forever while the quota ratchet climbs — the
+            // poisoning that blanked the splits board on 2026-08-10. Splits
+            // runs are offset-paginated and restartable, so an aged run is
+            // abandoned for a fresh window with a reset quota.
+            const encodedRunStart = existingContinuation?.runId?.startsWith(
+              `splits:${league.leagueKey}:`,
+            )
+              ? Date.parse(
+                  existingContinuation.runId.slice(
+                    `splits:${league.leagueKey}:`.length,
+                  ),
+                )
+              : Number.NaN;
+            const staleRun =
+              !Number.isFinite(encodedRunStart) ||
+              claimNow.getTime() - encodedRunStart > 45 * 60_000;
             const continuation = await input.control.claimContinuation({
               ...existingContinuation,
               leagueKey: continuationKey,
               runId:
-                existingContinuation?.runId ??
-                `splits:${league.leagueKey}:${now.toISOString()}`,
+                existingContinuation?.runId && !staleRun
+                  ? existingContinuation.runId
+                  : `splits:${league.leagueKey}:${now.toISOString()}`,
               providerId: SHARP_API_PROVIDER_ID,
               updatedAt: claimNow.toISOString(),
               startedAt: claimNow.toISOString(),
               capability: "splits",
               evidenceCommitted: false,
-              quotaCost: existingContinuation?.quotaCost ?? 0,
+              quotaCost: staleRun ? 0 : (existingContinuation?.quotaCost ?? 0),
               ownerId,
               leaseUntil: new Date(claimNow.getTime() + 300_000).toISOString(),
             });

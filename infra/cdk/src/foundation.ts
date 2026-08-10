@@ -77,6 +77,7 @@ import {
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { Topic } from "aws-cdk-lib/aws-sns";
+import { EmailSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import {
   DefinitionBody,
   Fail,
@@ -131,6 +132,7 @@ export interface FoundationConfig {
   paperPickSchedulerEnabled?: boolean;
   paperPickGenerationMinutes?: number;
   alarmTopicArn?: string;
+  alarmEmail?: string;
   cursorSecretArn?: string;
   fixtureOddsSeedEnabled?: boolean;
   webOrigin?: string;
@@ -141,6 +143,7 @@ interface FoundationStackProps extends StackProps {
   paperPickSchedulerEnabled: boolean;
   paperPickGenerationMinutes: number;
   alarmTopicArn?: string;
+  alarmEmail?: string;
   stageName: string;
   releaseSha?: string;
   webDomainName?: string;
@@ -2041,6 +2044,16 @@ export class FoundationStack extends Stack {
       );
       for (const alarm of alarms) alarm.addAlarmAction(new SnsAction(topic));
     }
+    if (props.alarmEmail) {
+      // An alarm that notifies nobody is a dashboard curiosity; the
+      // expiration worker failed silently for weeks behind exactly that gap.
+      const notifications = new Topic(this, "AlarmNotifications");
+      notifications.addSubscription(new EmailSubscription(props.alarmEmail));
+      for (const alarm of alarms) {
+        alarm.addAlarmAction(new SnsAction(notifications));
+        alarm.addOkAction(new SnsAction(notifications));
+      }
+    }
   }
 }
 
@@ -2129,6 +2142,12 @@ export function createFoundationApp(config: FoundationConfig): {
       "FTE_UPCOMING_ALARM_TOPIC_ARN must be a valid SNS ARN in the stack region",
     );
 
+  if (
+    config.alarmEmail &&
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(config.alarmEmail)
+  )
+    throw new Error("FTE_ALARM_EMAIL must be a plain email address");
+
   const app = new App({ analyticsReporting: false });
   const environment =
     config.account && config.region
@@ -2156,6 +2175,7 @@ export function createFoundationApp(config: FoundationConfig): {
       cursorSecretArn: config.cursorSecretArn,
       fixtureOddsSeedEnabled: config.fixtureOddsSeedEnabled ?? false,
       ...(config.alarmTopicArn ? { alarmTopicArn: config.alarmTopicArn } : {}),
+      ...(config.alarmEmail ? { alarmEmail: config.alarmEmail } : {}),
       ...(environment ? { env: environment } : {}),
     },
   );

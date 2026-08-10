@@ -421,6 +421,98 @@ describe("production odds control-plane composition", () => {
     });
   });
 
+  it("abandons an aged splits run instead of re-requesting its stale window", async () => {
+    // A failing splits run keeps its continuation, and the runId encodes the
+    // history window — resuming it re-requests the same dead 30-minute slice
+    // forever while the quota ratchet climbs. That poisoning blanked the
+    // splits board on 2026-08-10. An aged runId must start a fresh run.
+    const control = new MemoryOddsControlPlaneStore();
+    const staleStarted = "2026-08-02T09:00:00.000Z";
+    await control.putContinuation({
+      leagueKey: "splits:mlb",
+      runId: `splits:mlb:${staleStarted}`,
+      providerId: "sharpapi",
+      updatedAt: staleStarted,
+      startedAt: staleStarted,
+      capability: "splits",
+      leaseUntil: staleStarted,
+      ownerId: "dead-owner",
+      quotaCost: 201,
+    });
+    const fetchSharpSplitHistory = vi.fn().mockResolvedValue({
+      items: [],
+      hasMore: false,
+      retrievedAt: at,
+    });
+    await runProductionOddsControlPlane({
+      events: new MemoryEventIngestionStore(),
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      sharpApiKey: "sharp-key",
+      now,
+      clock: () => now,
+      fetchSharpSchedule: vi
+        .fn()
+        .mockResolvedValue({ events: [], hasMore: false, retrievedAt: at }),
+      fetchSharpOdds: vi
+        .fn()
+        .mockResolvedValue({ events: [], hasMore: false, retrievedAt: at }),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: ["splits"],
+        requestsPerMinute: 300,
+        maxBooks: 25,
+        streamingEnabled: false,
+      }),
+      fetchSharpSplits: vi.fn((league: SharpApiLeague) =>
+        Promise.resolve({
+          items:
+            league.leagueKey === "mlb"
+              ? [
+                  {
+                    providerEventId: "mlb_cardinals_yankees_2026-08-03",
+                    sport: "baseball",
+                    league: "mlb",
+                    sportsbookId: "consensus",
+                    awayTeam: "St. Louis Cardinals",
+                    homeTeam: "New York Yankees",
+                    providerTimestamp: at,
+                    markets: [
+                      {
+                        marketKey: "moneyline" as const,
+                        selections: [
+                          { selectionKey: "away" as const, betPercent: 42 },
+                          { selectionKey: "home" as const, betPercent: 58 },
+                        ],
+                      },
+                    ],
+                  },
+                ]
+              : [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+      ),
+      fetchSharpSplitHistory,
+    });
+    // The history window derives from the fresh run's instant, not the
+    // day-old poisoned runId.
+    const historyCall = fetchSharpSplitHistory.mock.calls.at(0) as
+      [unknown, string, string] | undefined;
+    expect(historyCall).toBeDefined();
+    expect(historyCall![2]).toBe(at);
+    expect(await control.getContinuation("splits:mlb")).toBeNull();
+    expect(await control.getHealth("sharpapi:mlb:splits")).toMatchObject({
+      healthy: true,
+    });
+  });
+
   it("carries canonical odds candidates into suffixless MLB split persistence", async () => {
     const control = new MemoryOddsControlPlaneStore();
     const events = new MemoryEventIngestionStore();

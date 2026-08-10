@@ -111,6 +111,7 @@ jobs:
         env:
           AWS_ACCOUNT_ID: "228246988391"
           AWS_REGION: us-east-1
+          FTE_ALARM_EMAIL: kevishie@gmail.com
           FTE_AWS_STAGE: ${{ needs.target.outputs.stage }}
           FTE_API_CERTIFICATE_ARN: ${{ vars.API_CERTIFICATE_ARN }}
           FTE_DEPLOY_BRANCH: ${{ needs.target.outputs.branch }}

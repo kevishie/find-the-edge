@@ -12,10 +12,12 @@ import {
   sharpApiLeagueByKey,
 } from "@find-the-edge/providers";
 import { usableScheduleListings } from "@find-the-edge/database";
+import { captureClosingLines } from "./closing-lines-capture";
 import {
   AwsDynamoGateway,
   AwsFixtureOddsGateway,
   DynamoBettingSplitRepository,
+  DynamoClosingLinesRepository,
   DynamoEventIngestionStore,
   DynamoEventRepository,
   DynamoFixtureOddsAdapter,
@@ -590,17 +592,40 @@ const runLiveOddsHandler = async (event?: unknown) => {
           );
         },
       );
+      const boardGames = new DynamoGamesRepository(
+        boardEvents,
+        boardGateway,
+        approvedDetailSportsbooks,
+      );
       const boards = await materializeBoards({
-        games: new DynamoGamesRepository(
-          boardEvents,
-          boardGateway,
-          approvedDetailSportsbooks,
-        ),
+        games: boardGames,
         splits: new DynamoBettingSplitRepository(client, tableName),
         put: (item) => boardGateway.put(item),
         now: new Date(),
         scheduleListings,
       });
+      try {
+        const closing = await captureClosingLines(
+          {
+            games: boardGames,
+            closingLines: new DynamoClosingLinesRepository(client, tableName),
+          },
+          new Date(),
+        );
+        if (closing.captured > 0 || closing.failed > 0)
+          process.stdout.write(
+            `${JSON.stringify({ event: "closing-lines-capture", ...closing })}\n`,
+          );
+      } catch (error) {
+        process.stdout.write(
+          `${JSON.stringify({
+            event: "closing-lines-capture-failed",
+            errorName: error instanceof Error ? error.name : "unknown",
+            errorMessage:
+              error instanceof Error ? error.message.slice(0, 200) : "unknown",
+          })}\n`,
+        );
+      }
       process.stdout.write(
         `${JSON.stringify({ event: "board-materialization", ...boards })}\n`,
       );
