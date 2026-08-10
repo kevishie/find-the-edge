@@ -455,6 +455,70 @@ const defaultGamesClient: GamesClientResult = {
 export const GamesClientContext =
   createContext<GamesClientResult>(defaultGamesClient);
 
+function GlassNav({
+  eventsSearch,
+}: {
+  readonly eventsSearch: Record<string, unknown>;
+}) {
+  // Apple-glass behavior: the bar condenses while the page scrolls and
+  // springs back to full size the moment scrolling rests.
+  const [condensed, setCondensed] = useState(false);
+  useEffect(() => {
+    let timer: number | undefined;
+    const onScroll = () => {
+      setCondensed(true);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setCondensed(false), 240);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.clearTimeout(timer);
+    };
+  }, []);
+  return (
+    <nav
+      className={`glass-nav${condensed ? " condensed" : ""}`}
+      aria-label="Glass tab bar"
+    >
+      <Link
+        to="/events"
+        search={eventsSearch as never}
+        className="glass-tab"
+        activeProps={{ className: "glass-tab active" }}
+        activeOptions={{ includeSearch: false }}
+      >
+        <span className="glass-icon" aria-hidden="true">
+          ⊙
+        </span>
+        <span className="glass-label">Events</span>
+      </Link>
+      <Link
+        to="/splits"
+        className="glass-tab"
+        activeProps={{ className: "glass-tab active" }}
+        activeOptions={{ includeSearch: false }}
+      >
+        <span className="glass-icon" aria-hidden="true">
+          ▦
+        </span>
+        <span className="glass-label">Splits</span>
+      </Link>
+      <button
+        type="button"
+        className="glass-tab glass-more"
+        aria-label="More"
+        aria-disabled="true"
+        title="More screens land here as they are promoted to tabs"
+      >
+        <span className="glass-icon" aria-hidden="true">
+          ⋯
+        </span>
+      </button>
+    </nav>
+  );
+}
+
 function AppShell() {
   const [navCollapsed, setNavCollapsed] = useState(() => {
     try {
@@ -473,7 +537,6 @@ function AppShell() {
       }
       return next;
     });
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const eventsSearch = {
     sport: "mlb" as const,
     day: currentEasternDay(),
@@ -485,16 +548,7 @@ function AppShell() {
   };
   return (
     <div className={`shell${navCollapsed ? " nav-collapsed" : ""}`}>
-      <aside className={mobileMenuOpen ? "menu-open" : ""}>
-        <button
-          type="button"
-          className="menu-toggle"
-          aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
-          aria-expanded={mobileMenuOpen}
-          onClick={() => setMobileMenuOpen((open) => !open)}
-        >
-          ☰
-        </button>
+      <aside>
         <div className="brand">
           <svg
             className="brand-logo"
@@ -576,6 +630,7 @@ function AppShell() {
           </button>
         </div>
       </aside>
+      <GlassNav eventsSearch={eventsSearch} />
       <main>
         <Outlet />
         <footer>

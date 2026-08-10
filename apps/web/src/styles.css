@@ -4816,35 +4816,9 @@ footer {
 }
 
 /* Mobile-first: hamburger menu and game blocks that fit a phone. */
-.menu-toggle {
-  display: none;
-}
 @media (max-width: 900px) {
-  .menu-toggle {
-    display: block;
-    position: absolute;
-    top: 14px;
-    right: 16px;
-    background: #131319;
-    border: 1px solid #2a2833;
-    border-radius: 8px;
-    color: #f3f1f8;
-    font-size: 18px;
-    padding: 6px 12px;
-    cursor: pointer;
-    z-index: 20;
-  }
-  .shell > aside {
-    position: relative;
-  }
   .shell > aside > nav {
     display: none;
-  }
-  .shell > aside.menu-open > nav {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 0 16px 14px;
   }
 }
 @media (max-width: 760px) {
@@ -5915,4 +5889,109 @@ footer {
   border-color: #8b5cf6;
   background: rgba(139, 92, 246, 0.16);
   color: #fff;
+}
+
+/* Glass tab bar — templates/Find The Edge - Mobile Navigation.html.
+   Exact handoff: rgba(22,20,30,.78) + blur(28px) saturate(180%), 1px
+   rgba(255,255,255,.10) border, inner top highlight .07, 22px radius,
+   68x46 left-packed tabs, More anchored right, safe-area bottom inset. */
+.glass-nav {
+  display: none;
+}
+@media (max-width: 900px) {
+  .glass-nav {
+    position: fixed;
+    left: 14px;
+    right: 14px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    height: 62px;
+    background: rgba(22, 20, 30, 0.78);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 22px;
+    box-shadow:
+      0 14px 38px rgba(0, 0, 0, 0.55),
+      inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+    z-index: 40;
+    transform-origin: 50% 100%;
+    transition:
+      transform 0.28s cubic-bezier(0.32, 0.72, 0.35, 1.2),
+      height 0.28s ease;
+  }
+  /* Condensed while the page scrolls; springs back at rest. */
+  .glass-nav.condensed {
+    transform: scale(0.84) translateY(8px);
+  }
+  .glass-nav.condensed .glass-label {
+    opacity: 0;
+  }
+  .glass-tab {
+    width: 68px;
+    height: 46px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    border-radius: 15px;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .glass-icon {
+    position: relative;
+    width: 32px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    font-size: 14px;
+    color: #8b8494;
+  }
+  .glass-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #a29daf;
+    transition: opacity 0.15s ease;
+  }
+  .glass-tab.active .glass-icon {
+    background: rgba(168, 85, 247, 0.26);
+    box-shadow: 0 0 14px rgba(168, 85, 247, 0.3);
+    color: #e9d8ff;
+  }
+  .glass-tab.active .glass-icon::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #34d399;
+    box-shadow: 0 0 6px #34d399;
+  }
+  .glass-tab.active .glass-label {
+    color: #f3f1f8;
+  }
+  .glass-more {
+    margin-left: auto;
+    color: #8b8494;
+    font-size: 16px;
+  }
+  .glass-more .glass-icon {
+    font-size: 16px;
+  }
+  /* Content never hides behind the floating bar. */
+  main {
+    padding-bottom: 110px;
+  }
 }

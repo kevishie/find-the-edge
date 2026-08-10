@@ -174,8 +174,11 @@ test("renders the ranked evidence dashboard without horizontal overflow", async 
     cards.nth(0).getByRole("link", { name: /Open event/ }),
   ).toHaveAttribute("href", /\/events\/event-a/);
   if (testInfo.project.name.includes("mobile")) {
-    // The hamburger toggle owns navigation on small screens.
-    await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible();
+    // The glass tab bar owns navigation on small screens.
+    const bar = page.getByRole("navigation", { name: "Glass tab bar" });
+    await expect(bar).toBeVisible();
+    await expect(bar.getByRole("link", { name: "Events" })).toBeVisible();
+    await expect(bar.getByRole("link", { name: "Splits" })).toBeVisible();
   }
   await expect(page.locator("html")).toHaveJSProperty(
     "scrollWidth",
