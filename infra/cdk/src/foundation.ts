@@ -1794,13 +1794,21 @@ export class FoundationStack extends Stack {
         // Measures the served boards, not provider health: age of the newest
         // priced evidence across scheduled boards with upcoming games. An
         // empty slate emits nothing, so missing data stays healthy.
+        //
+        // Snapshot identity is the observed price, so this age is now the time
+        // since a price last MOVED, not since we last polled. A genuinely quiet
+        // market can sit still for a long while without anything being wrong,
+        // so the threshold buys enough room to never page on a calm board while
+        // still catching the failure mode it exists for: both real incidents
+        // (the 16-hour odds freeze and the 20-hour splits stall) ran far past
+        // two hours.
         metric: new Metric({
           namespace: "FindTheEdge/Boards",
           metricName: "ScheduledBoardOddsAgeSeconds",
           statistic: "Maximum",
           period: Duration.minutes(15),
         }),
-        threshold: 1_800,
+        threshold: 7_200,
         evaluationPeriods: 2,
         comparisonOperator:
           ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
