@@ -1616,12 +1616,16 @@ function EventGameBlock({
                 Date.parse(game.startsAt) <= Date.parse(snapshotAt);
               if (started)
                 return <span className="evb-age">· closing lines</span>;
+              // Staleness follows the same evidence the label shows: the
+              // odds rows themselves. The metadata freshness flag tracks
+              // schedule evidence, which legitimately idles for hours on an
+              // unchanged listing while prices refresh every minute — it
+              // must never contradict a fresh odds age here.
+              const oddsStale = oddsAgeMinutes !== null && oddsAgeMinutes > 15;
               return oddsAgeMinutes !== null ? (
-                <span
-                  className={`evb-age${game.metadata.freshness.state === "stale" ? " stale" : ""}`}
-                >
+                <span className={`evb-age${oddsStale ? " stale" : ""}`}>
                   · odds {oddsAgeMinutes}m old
-                  {game.metadata.freshness.state === "stale" && " — stale"}
+                  {oddsStale && " — stale"}
                 </span>
               ) : null;
             })()}

@@ -223,7 +223,7 @@ const game = {
         sportsbookLabel: "Fixture Book",
         americanOdds: 120,
         observedAt: "2026-08-01T12:00:00.000Z",
-        retrievedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:25:00.000Z",
       },
       {
         marketKey: "spread",
@@ -234,7 +234,7 @@ const game = {
         point: 1.5,
         americanOdds: -110,
         observedAt: "2026-08-01T12:00:00.000Z",
-        retrievedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:25:00.000Z",
       },
       {
         marketKey: "spread",
@@ -245,7 +245,7 @@ const game = {
         point: -1.5,
         americanOdds: -110,
         observedAt: "2026-08-01T12:00:00.000Z",
-        retrievedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:25:00.000Z",
       },
       {
         marketKey: "total",
@@ -256,7 +256,7 @@ const game = {
         point: 8.5,
         americanOdds: -105,
         observedAt: "2026-08-01T12:00:00.000Z",
-        retrievedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:25:00.000Z",
       },
       {
         marketKey: "total",
@@ -267,7 +267,7 @@ const game = {
         point: 8.5,
         americanOdds: -115,
         observedAt: "2026-08-01T12:00:00.000Z",
-        retrievedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:25:00.000Z",
       },
       {
         marketKey: "moneyline",
@@ -277,7 +277,7 @@ const game = {
         sportsbookLabel: "Fixture Book",
         americanOdds: -135,
         observedAt: "2026-08-01T12:00:00.000Z",
-        retrievedAt: "2026-08-01T12:00:00.000Z",
+        retrievedAt: "2026-08-01T12:25:00.000Z",
       },
     ],
   },
@@ -1773,6 +1773,10 @@ describe("Games", () => {
     const price = screen.getByText("+120");
     // The game block footer carries odds freshness instead of a timestamp.
     expect(price.closest(".event-card")?.textContent).toMatch(/odds \d+m old/);
+    // The stale flag follows the odds evidence the label shows. Schedule
+    // metadata legitimately idles for hours on an unchanged listing while
+    // prices refresh every minute — fresh odds must never read "stale".
+    expect(price.closest(".event-card")?.textContent).not.toContain("stale");
     fireEvent.click(screen.getByRole("button", { name: "MLB" }));
     // Both sports load per poll so the rail can size and hide its pills.
     expect(list).toHaveBeenCalledTimes(2);
