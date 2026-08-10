@@ -91,6 +91,11 @@ Paying for Sharp ($399/mo, 1000 rpm, all endpoints); currently consuming only
    Pinnacle in all_books on Sharp. Replaces the client-side same-book fair
    line in the Event Explorer cells with a REAL fair reference, making the
    green edge highlighting meaningful (the known gap).
+   DONE 2026-08-09 without the extra endpoint: we already collect Pinnacle
+   rows, so the list join now attaches `sharpAmericanOdds` per selection
+   (point-matched only) and FairCell/gameHasEdge de-vig the Pinnacle market
+   when every side carries an anchor, falling back to same-book no-vig
+   otherwise. /odds/best remains interesting only for best-price display.
 3. `/opportunities/arbitrage` (+ optimal stakes), `/opportunities/low_hold`,
    `/opportunities/middles` — new alert surfaces.
 4. `/historical/clv` and closing odds — CLV tracking for the bet-tracker
@@ -146,3 +151,26 @@ Change (packages/database/src/games-repository.ts):
 - Tests: games-repository list/detail fixtures gain a case where fresh rows
   live at v-1 and stale rows at v (newest retrievedAt wins), and one where
   only v rows exist (unchanged behavior).
+
+## Cursor-expiry recovery — RESOLVED (2026-08-09/10)
+
+Root cause of the soccer provider-recovering loop: /odds cursors die when the
+feed refreshes (~15s); a continuation resuming a dead cursor got 4xx →
+whole-run failure → cooldown → new run → new continuation → same death. Fix
+(71c4206): a provider-rejected error on a CURSOR page (never the first page)
+completes the run with what was committed and emits OddsCursorExpired. After
+deploy + one-time deletion of the poisoned ODDS_CONTROL continuation/health
+rows, all five leagues run healthy (verified 2026-08-10T01:10Z: consecutive
+successes, no cooldowns, MLB boards fresh). Soccer 8/9 boards stayed empty
+only because every game started during the outage window and the provider
+drops started games from /odds — no closing lines existed to serve. Watch the
+first new soccer slate populates end-to-end.
+
+## Pinnacle-anchored fair lines — shipped to the list path (2026-08-09)
+
+`sharpAmericanOdds?` on GameOddsSelectionDto; JoinedGamesRepository.list
+attaches Pinnacle's merged candidate price per selection (same market +
+selection + exact point). FE FairCell and gameHasEdge de-vig the anchor when
+every side of a market has one; otherwise the old same-book fallback (which
+by construction can never show an edge). Follow-ups: detail path could badge
+"vs sharp" per cell; consider surfacing anchor age.

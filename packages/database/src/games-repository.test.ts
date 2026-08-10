@@ -84,6 +84,7 @@ const current = (
   sportsbookId = "draftkings",
   observedAt = "2026-08-01T12:00:00.000Z",
   point?: number,
+  americanOdds?: number,
 ) => {
   const canonicalSelectionKey =
     selectionKey === "away"
@@ -101,7 +102,7 @@ const current = (
     sportsbookId,
     sportsbookLabel: sportsbookId === "draftkings" ? "DraftKings" : "FanDuel",
     ...(point === undefined ? {} : { point }),
-    americanOdds: selectionKey === "home" ? -135 : 120,
+    americanOdds: americanOdds ?? (selectionKey === "home" ? -135 : 120),
     observedAt,
     retrievedAt: "2026-08-01T12:00:00.000Z",
   });
@@ -1206,6 +1207,114 @@ describe("joined games repository", () => {
     }).list({ sportKey: "soccer", status: "scheduled", day: "2026-08-01" }, 50);
     // Version-tolerant reads double the key set for versioned events.
     expect(requested).toBe(3_500);
+  });
+
+  it("anchors served selections to the sharp book's prices", async () => {
+    // Pinnacle's candidate is fetched alongside the display books; each
+    // served hardrock price carries the pinnacle price for the same
+    // proposition so fair lines de-vig the sharp market, not the display
+    // book's own vig. A spread quoted at a different point is a different
+    // proposition and must not anchor.
+    const books = ["hardrock", "pinnacle"];
+    const rows = [
+      current(event, "away", "Boston", "moneyline", "hardrock"),
+      current(event, "home", "New York", "moneyline", "hardrock"),
+      current(
+        event,
+        "away",
+        "Boston",
+        "spread",
+        "hardrock",
+        undefined,
+        1.5,
+        130,
+      ),
+      current(
+        event,
+        "home",
+        "New York",
+        "spread",
+        "hardrock",
+        undefined,
+        -1.5,
+        -150,
+      ),
+      current(
+        event,
+        "away",
+        "Boston",
+        "moneyline",
+        "pinnacle",
+        undefined,
+        undefined,
+        112,
+      ),
+      current(
+        event,
+        "home",
+        "New York",
+        "moneyline",
+        "pinnacle",
+        undefined,
+        undefined,
+        -124,
+      ),
+      // Different point: same market, different proposition.
+      current(
+        event,
+        "away",
+        "Boston",
+        "spread",
+        "pinnacle",
+        undefined,
+        2.5,
+        105,
+      ),
+      current(
+        event,
+        "home",
+        "New York",
+        "spread",
+        "pinnacle",
+        undefined,
+        -2.5,
+        -117,
+      ),
+    ];
+    const page = await new JoinedGamesRepository(
+      events(),
+      { batchGet: () => Promise.resolve(rows.map(row)) },
+      books,
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+    expect(page.items[0]?.odds).toMatchObject({
+      state: "available",
+      selections: [
+        {
+          marketKey: "moneyline",
+          selectionKey: participantKey("bos"),
+          sportsbookId: "hardrock",
+          americanOdds: 120,
+          sharpAmericanOdds: 112,
+        },
+        {
+          marketKey: "moneyline",
+          selectionKey: participantKey("nyy"),
+          sportsbookId: "hardrock",
+          americanOdds: -135,
+          sharpAmericanOdds: -124,
+        },
+        { marketKey: "spread", selectionKey: participantKey("bos") },
+        { marketKey: "spread", selectionKey: participantKey("nyy") },
+      ],
+    });
+    const selections =
+      page.items[0]?.odds.state === "available"
+        ? page.items[0].odds.selections
+        : [];
+    for (const selection of selections.filter(
+      ({ marketKey }) => marketKey === "spread",
+    ))
+      expect(selection.sharpAmericanOdds).toBeUndefined();
   });
 
   it("serves fresh odds persisted one version behind the event", async () => {

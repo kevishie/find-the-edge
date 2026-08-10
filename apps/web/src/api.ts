@@ -1578,9 +1578,12 @@ const validSelection = (value: unknown): value is GameOddsSelectionDto => {
     "observedAt",
     "retrievedAt",
   ];
-  const optional = ["selectionLabel", "sportsbookLabel", "point"].filter(
-    (key) => key in value,
-  );
+  const optional = [
+    "selectionLabel",
+    "sportsbookLabel",
+    "point",
+    "sharpAmericanOdds",
+  ].filter((key) => key in value);
   if (!exact(value, [...required, ...optional])) return false;
   return (
     boundedString(value["marketKey"], 64) &&
@@ -1597,6 +1600,10 @@ const validSelection = (value: unknown): value is GameOddsSelectionDto => {
     Number.isInteger(value["americanOdds"]) &&
     Math.abs(value["americanOdds"] as number) >= 100 &&
     Math.abs(value["americanOdds"] as number) <= 100_000 &&
+    (value["sharpAmericanOdds"] === undefined ||
+      (Number.isInteger(value["sharpAmericanOdds"]) &&
+        Math.abs(value["sharpAmericanOdds"] as number) >= 100 &&
+        Math.abs(value["sharpAmericanOdds"] as number) <= 100_000)) &&
     iso(value["observedAt"]) &&
     iso(value["retrievedAt"])
   );

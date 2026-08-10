@@ -847,9 +847,15 @@ const sportLabels: Record<GamesSport, string> = {
   soccer: "Soccer",
 };
 // A game qualifies when any cell is priced better than its no-vig fair line.
+// Fair probabilities come from the sharp anchor when the whole market carries
+// one; a market priced only by the displayed book de-vigs against itself and
+// can never beat its own fair line.
 const gameHasEdge = (game: UiGamesPage["items"][number]) => {
   if (game.odds.state !== "available") return false;
-  const byMarket = new Map<string, { readonly americanOdds: number }[]>();
+  const byMarket = new Map<
+    string,
+    { readonly americanOdds: number; readonly sharpAmericanOdds?: number }[]
+  >();
   for (const price of game.odds.selections)
     byMarket.set(price.marketKey, [
       ...(byMarket.get(price.marketKey) ?? []),
@@ -857,12 +863,17 @@ const gameHasEdge = (game: UiGamesPage["items"][number]) => {
     ]);
   for (const sides of byMarket.values()) {
     if (sides.length < 2) continue;
+    const anchored = sides.every(
+      (side) => side.sharpAmericanOdds !== undefined,
+    );
+    const baseline = (side: (typeof sides)[number]) =>
+      anchored ? side.sharpAmericanOdds! : side.americanOdds;
     const total = sides.reduce(
-      (sum, side) => sum + americanToProbability(side.americanOdds),
+      (sum, side) => sum + americanToProbability(baseline(side)),
       0,
     );
     for (const side of sides) {
-      const fairProbability = americanToProbability(side.americanOdds) / total;
+      const fairProbability = americanToProbability(baseline(side)) / total;
       const ev =
         (fairProbability * americanToDecimal(side.americanOdds) - 1) * 100;
       if (ev > 0.05) return true;
@@ -1360,10 +1371,14 @@ function FairCell({
     | {
         readonly point?: number;
         readonly americanOdds: number;
+        readonly sharpAmericanOdds?: number;
         readonly selectionKey: string;
       }
     | undefined;
-  readonly counterparts?: readonly { readonly americanOdds: number }[];
+  readonly counterparts?: readonly {
+    readonly americanOdds: number;
+    readonly sharpAmericanOdds?: number;
+  }[];
   readonly marketKey: string;
 }) {
   if (!selection)
@@ -1381,9 +1396,20 @@ function FairCell({
   let fair: number | null = null;
   let ev: number | null = null;
   if (counterparts && counterparts.length > 0) {
-    const pSelf = americanToProbability(selection.americanOdds);
+    // De-vig the sharp anchor when the whole market carries one; a book's
+    // own prices can never beat the fair line derived from themselves.
+    const anchored =
+      selection.sharpAmericanOdds !== undefined &&
+      counterparts.every((other) => other.sharpAmericanOdds !== undefined);
+    const pSelf = americanToProbability(
+      anchored ? selection.sharpAmericanOdds : selection.americanOdds,
+    );
     const pOthers = counterparts.reduce(
-      (total, other) => total + americanToProbability(other.americanOdds),
+      (total, other) =>
+        total +
+        americanToProbability(
+          anchored ? other.sharpAmericanOdds! : other.americanOdds,
+        ),
       0,
     );
     const fairProbability = pSelf / (pSelf + pOthers);

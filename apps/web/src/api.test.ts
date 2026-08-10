@@ -843,6 +843,53 @@ describe("games client", () => {
     ).rejects.toMatchObject({ code: "invalid-response" });
   });
 
+  it("preserves the sharp anchor price and fails closed on a corrupt one", async () => {
+    const anchored = structuredClone(payload);
+    const selections = anchored.items[0]!.odds.selections as {
+      sharpAmericanOdds?: unknown;
+    }[];
+    selections[0]!.sharpAmericanOdds = 112;
+    selections[1]!.sharpAmericanOdds = -124;
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(anchored))),
+    );
+    if (!client.ok) throw client.error;
+    const page = await client.value.list(
+      { sport: "mlb", day: "2026-08-01", status: "all" },
+      new AbortController().signal,
+    );
+    expect(page.items[0]?.odds).toMatchObject({
+      state: "available",
+      selections: [
+        { americanOdds: 120, sharpAmericanOdds: 112 },
+        { americanOdds: -135, sharpAmericanOdds: -124 },
+      ],
+    });
+
+    for (const corrupt of [5, "112", 112.5] as const) {
+      const invalid = structuredClone(anchored);
+      (invalid.items[0]!.odds.selections[0] as Record<string, unknown>)[
+        "sharpAmericanOdds"
+      ] = corrupt;
+      const failing = createGamesClient(
+        { ok: true, value: bootstrap() },
+        vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(new Response(JSON.stringify(invalid))),
+      );
+      if (!failing.ok) throw failing.error;
+      await expect(
+        failing.value.list(
+          { sport: "mlb", day: "2026-08-01", status: "all" },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: "invalid-response" });
+    }
+  });
+
   it("bounds a never-settling games request as retryable", async () => {
     vi.useFakeTimers();
     try {

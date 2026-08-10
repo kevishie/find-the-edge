@@ -451,6 +451,9 @@ export interface GameOddsSelectionDto {
   readonly sportsbookLabel?: string;
   readonly point?: number;
   readonly americanOdds: number;
+  /** Pinnacle's price for the same selection, when collected — the sharp
+   * anchor no-vig fair lines derive from. */
+  readonly sharpAmericanOdds?: number;
   readonly observedAt: string;
   readonly retrievedAt: string;
 }

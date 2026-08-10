@@ -177,6 +177,9 @@ const blockingCellState = (
       ? "suspended"
       : "unavailable";
 
+/** The book whose prices anchor no-vig fair lines on the served board. */
+const SHARP_ANCHOR_SPORTSBOOK_ID = "pinnacle";
+
 const pointRequired = (marketKey: string) =>
   marketKey === "spread" || marketKey === "total" || marketKey === "team_total";
 
@@ -725,6 +728,9 @@ export class JoinedGamesRepository implements GamesRepository {
       }
       byKey.set(row.pk, row);
     }
+    const sharpAnchorIndex = this.sportsbookIds.indexOf(
+      SHARP_ANCHOR_SPORTSBOOK_ID,
+    );
     const joined = page.items.map((event, index) => {
       const candidates = requestedByEvent[index]!.map((groups) => {
         const selections: GameOddsSelectionDto[] = [];
@@ -791,12 +797,33 @@ export class JoinedGamesRepository implements GamesRepository {
         (candidate): candidate is GameOddsSelectionDto[] =>
           candidate !== null && candidate.length > 0,
       );
+      // The sharp book's candidate is already merged and validated above;
+      // anchor each served selection to its price so fair lines derive from
+      // the sharpest market instead of the displayed book's own vig. A
+      // point-mismatched spread or total is a different proposition, so only
+      // identical lines anchor.
+      const sharpCandidate =
+        sharpAnchorIndex >= 0 ? candidates[sharpAnchorIndex] : null;
+      const anchors = new Map(
+        (sharpCandidate ?? []).map((row) => [
+          `${row.marketKey} ${row.selectionKey}`,
+          row,
+        ]),
+      );
+      const anchored = selected?.map((selection) => {
+        const anchor = anchors.get(
+          `${selection.marketKey} ${selection.selectionKey}`,
+        );
+        return anchor && anchor.point === selection.point
+          ? { ...selection, sharpAmericanOdds: anchor.americanOdds }
+          : selection;
+      });
       return {
         ...event,
-        odds: selected
+        odds: anchored
           ? {
               state: "available" as const,
-              selections: selected,
+              selections: anchored,
             }
           : { state: "unavailable" as const },
       };
