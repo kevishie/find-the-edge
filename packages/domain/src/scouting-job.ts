@@ -125,6 +125,97 @@ const exactIso = (value: string): string => {
 
 export const assertScoutingTimestamp = exactIso;
 
+export const SCOUTING_JOB_SCHEMA_VERSION_V2 = 2 as const;
+
+/**
+ * Minimal report pointer embedded in schema-v2 completed jobs/attempts. The
+ * richer completion pointer contract (job/attempt/draft-hash binding) lives in
+ * scouting-report-version.ts; this binding is deliberately storage-neutral.
+ */
+export interface ScoutingReportBinding {
+  readonly reportId: string;
+  readonly reportVersionId: string;
+  readonly reportVersionNumber: number;
+}
+
+interface ScoutingJobV2Fields {
+  readonly schemaVersion: typeof SCOUTING_JOB_SCHEMA_VERSION_V2;
+  readonly jobId: string;
+  readonly requesterId: string;
+  readonly eventId: string;
+  readonly eventVersion: number;
+  readonly workflowIntent: typeof SCOUTING_WORKFLOW_INTENT;
+  readonly commandDigest: string;
+  readonly semanticDigest: string;
+  readonly stateVersion: number;
+  readonly currentAttemptId: string;
+  readonly attemptCount: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/** Schema-v2 job: `completed` is unrepresentable without a report pointer. */
+export type ScoutingJobV2 =
+  | (ScoutingJobV2Fields & {
+      readonly status: Exclude<ScoutingJobStatus, "completed">;
+      readonly failureCode?: ScoutingFailureCode;
+      readonly reportPointer?: never;
+    })
+  | (ScoutingJobV2Fields & {
+      readonly status: "completed";
+      readonly reportPointer: ScoutingReportBinding;
+      readonly failureCode?: never;
+    });
+
+interface ScoutingAttemptV2Fields {
+  readonly schemaVersion: typeof SCOUTING_JOB_SCHEMA_VERSION_V2;
+  readonly attemptId: string;
+  readonly jobId: string;
+  readonly attemptNumber: number;
+  readonly previousAttemptId: string | null;
+  readonly stateVersion: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/** Schema-v2 attempt: `completed` is unrepresentable without a report pointer. */
+export type ScoutingAttemptV2 =
+  | (ScoutingAttemptV2Fields & {
+      readonly status: Exclude<ScoutingJobStatus, "completed">;
+      readonly startedAt?: string;
+      readonly finishedAt?: string;
+      readonly failureCode?: ScoutingFailureCode;
+      readonly reportPointer?: never;
+    })
+  | (ScoutingAttemptV2Fields & {
+      readonly status: "completed";
+      readonly startedAt: string;
+      readonly finishedAt: string;
+      readonly reportPointer: ScoutingReportBinding;
+      readonly failureCode?: never;
+    });
+
+/**
+ * Discriminated read state: schema-v1 rows stay readable forever. A completed
+ * schema-v1 row is an explicit legacy reportless completion — never silently
+ * migrated and never given a fabricated pointer.
+ */
+export type ScoutingJobRecordRead =
+  | { readonly kind: "current"; readonly job: ScoutingJobV2 }
+  | { readonly kind: "legacy"; readonly job: ScoutingJob }
+  | {
+      readonly kind: "legacy-reportless-completion";
+      readonly job: ScoutingJob;
+    };
+
+export type ScoutingAttemptRecordRead =
+  | { readonly kind: "current"; readonly attempt: ScoutingAttemptV2 }
+  | { readonly kind: "legacy"; readonly attempt: ScoutingAttempt }
+  | {
+      readonly kind: "legacy-reportless-completion";
+      readonly attempt: ScoutingAttempt;
+    };
+
 const safeIdentity = (value: string, code: string): string => {
   if (!/^[A-Za-z0-9._:@/-]{1,256}$/.test(value)) throw new Error(code);
   return value;
@@ -153,6 +244,12 @@ const canonicalEventId = (value: string): string => {
   }
   return value;
 };
+
+export const assertScoutingEventId = (value: string): string =>
+  canonicalEventId(value);
+
+export const assertScoutingRequesterId = (value: string): string =>
+  safeIdentity(value, "scouting-requester-invalid");
 
 export function normalizeScoutingJobCommand(
   value: ScoutingJobCommand,
@@ -650,7 +747,227 @@ export function createQueuedScoutingRecords(
   };
 }
 
-export function toPublicScoutingJob(job: ScoutingJob): PublicScoutingJob {
+const validReportId = (value: unknown): value is string =>
+  typeof value === "string" && /^scout-report:[a-f0-9]{64}$/.test(value);
+const validReportVersionId = (value: unknown): value is string =>
+  typeof value === "string" &&
+  /^scout-report-version:[a-f0-9]{64}$/.test(value);
+
+export function validateScoutingReportBinding(
+  input: unknown,
+): ScoutingReportBinding {
+  const value = objectRecord(input);
+  if (
+    !exactKeys(value, ["reportId", "reportVersionId", "reportVersionNumber"]) ||
+    !validReportId(value["reportId"]) ||
+    !validReportVersionId(value["reportVersionId"]) ||
+    !Number.isSafeInteger(value["reportVersionNumber"]) ||
+    Number(value["reportVersionNumber"]) < 1
+  )
+    throw new Error("scouting-report-binding-invalid");
+  return Object.freeze({
+    reportId: value["reportId"],
+    reportVersionId: value["reportVersionId"],
+    reportVersionNumber: Number(value["reportVersionNumber"]),
+  });
+}
+
+export function validateScoutingJobV2(input: unknown): ScoutingJobV2 {
+  const value = objectRecord(input);
+  if (value["schemaVersion"] !== SCOUTING_JOB_SCHEMA_VERSION_V2)
+    throw new Error("scouting-job-invalid");
+  const { reportPointer: rawPointer, ...rest } = value;
+  const base = validateScoutingJob({
+    ...rest,
+    schemaVersion: SCOUTING_JOB_SCHEMA_VERSION,
+  });
+  const fields: ScoutingJobV2Fields = {
+    schemaVersion: SCOUTING_JOB_SCHEMA_VERSION_V2,
+    jobId: base.jobId,
+    requesterId: base.requesterId,
+    eventId: base.eventId,
+    eventVersion: base.eventVersion,
+    workflowIntent: base.workflowIntent,
+    commandDigest: base.commandDigest,
+    semanticDigest: base.semanticDigest,
+    stateVersion: base.stateVersion,
+    currentAttemptId: base.currentAttemptId,
+    attemptCount: base.attemptCount,
+    createdAt: base.createdAt,
+    updatedAt: base.updatedAt,
+  };
+  if (base.status === "completed") {
+    if (rawPointer === undefined)
+      throw new Error("scouting-job-report-pointer-missing");
+    return Object.freeze({
+      ...fields,
+      status: base.status,
+      reportPointer: validateScoutingReportBinding(rawPointer),
+    });
+  }
+  if (rawPointer !== undefined) throw new Error("scouting-job-invalid");
+  return Object.freeze({
+    ...fields,
+    status: base.status,
+    ...(base.failureCode !== undefined
+      ? { failureCode: base.failureCode }
+      : {}),
+  });
+}
+
+export function validateScoutingAttemptV2(input: unknown): ScoutingAttemptV2 {
+  const value = objectRecord(input);
+  if (value["schemaVersion"] !== SCOUTING_JOB_SCHEMA_VERSION_V2)
+    throw new Error("scouting-attempt-invalid");
+  const { reportPointer: rawPointer, ...rest } = value;
+  const base = validateScoutingAttempt({
+    ...rest,
+    schemaVersion: SCOUTING_JOB_SCHEMA_VERSION,
+  });
+  const fields: ScoutingAttemptV2Fields = {
+    schemaVersion: SCOUTING_JOB_SCHEMA_VERSION_V2,
+    attemptId: base.attemptId,
+    jobId: base.jobId,
+    attemptNumber: base.attemptNumber,
+    previousAttemptId: base.previousAttemptId,
+    stateVersion: base.stateVersion,
+    createdAt: base.createdAt,
+    updatedAt: base.updatedAt,
+  };
+  if (base.status === "completed") {
+    if (rawPointer === undefined)
+      throw new Error("scouting-attempt-report-pointer-missing");
+    if (base.startedAt === undefined || base.finishedAt === undefined)
+      throw new Error("scouting-attempt-invalid");
+    return Object.freeze({
+      ...fields,
+      status: base.status,
+      startedAt: base.startedAt,
+      finishedAt: base.finishedAt,
+      reportPointer: validateScoutingReportBinding(rawPointer),
+    });
+  }
+  if (rawPointer !== undefined) throw new Error("scouting-attempt-invalid");
+  return Object.freeze({
+    ...fields,
+    status: base.status,
+    ...(base.startedAt !== undefined ? { startedAt: base.startedAt } : {}),
+    ...(base.finishedAt !== undefined ? { finishedAt: base.finishedAt } : {}),
+    ...(base.failureCode !== undefined
+      ? { failureCode: base.failureCode }
+      : {}),
+  });
+}
+
+export function readScoutingJobRecord(input: unknown): ScoutingJobRecordRead {
+  const value = objectRecord(input);
+  if (value["schemaVersion"] === SCOUTING_JOB_SCHEMA_VERSION_V2)
+    return Object.freeze({
+      kind: "current",
+      job: validateScoutingJobV2(value),
+    });
+  if (value["schemaVersion"] === SCOUTING_JOB_SCHEMA_VERSION) {
+    const job = validateScoutingJob(value);
+    return Object.freeze(
+      job.status === "completed"
+        ? { kind: "legacy-reportless-completion", job }
+        : { kind: "legacy", job },
+    );
+  }
+  throw new Error("scouting-job-invalid");
+}
+
+export function readScoutingAttemptRecord(
+  input: unknown,
+): ScoutingAttemptRecordRead {
+  const value = objectRecord(input);
+  if (value["schemaVersion"] === SCOUTING_JOB_SCHEMA_VERSION_V2)
+    return Object.freeze({
+      kind: "current",
+      attempt: validateScoutingAttemptV2(value),
+    });
+  if (value["schemaVersion"] === SCOUTING_JOB_SCHEMA_VERSION) {
+    const attempt = validateScoutingAttempt(value);
+    return Object.freeze(
+      attempt.status === "completed"
+        ? { kind: "legacy-reportless-completion", attempt }
+        : { kind: "legacy", attempt },
+    );
+  }
+  throw new Error("scouting-attempt-invalid");
+}
+
+/**
+ * The only schema-v2 write path to a completed job. There is deliberately no
+ * counterpart that reaches `completed` without a report pointer.
+ */
+export function completeScoutingJobWithReport(
+  job: ScoutingJob | ScoutingJobV2,
+  reportPointer: ScoutingReportBinding,
+  completedAt: string,
+): ScoutingJobV2 {
+  const base =
+    job.schemaVersion === SCOUTING_JOB_SCHEMA_VERSION_V2
+      ? validateScoutingJobV2(job)
+      : validateScoutingJob(job);
+  assertScoutingJobTransition(base.status, "completed");
+  exactIso(completedAt);
+  if (completedAt < base.updatedAt) throw new Error("scouting-time-invalid");
+  return validateScoutingJobV2({
+    schemaVersion: SCOUTING_JOB_SCHEMA_VERSION_V2,
+    jobId: base.jobId,
+    requesterId: base.requesterId,
+    eventId: base.eventId,
+    eventVersion: base.eventVersion,
+    workflowIntent: base.workflowIntent,
+    commandDigest: base.commandDigest,
+    semanticDigest: base.semanticDigest,
+    status: "completed",
+    stateVersion: base.stateVersion + 1,
+    currentAttemptId: base.currentAttemptId,
+    attemptCount: base.attemptCount,
+    createdAt: base.createdAt,
+    updatedAt: completedAt,
+    reportPointer: validateScoutingReportBinding(reportPointer),
+  });
+}
+
+/**
+ * The only schema-v2 write path to a completed attempt; requires the claimed
+ * in-progress attempt and binds it to the persisted report version.
+ */
+export function completeScoutingAttemptWithReport(
+  attempt: ScoutingAttempt | ScoutingAttemptV2,
+  reportPointer: ScoutingReportBinding,
+  finishedAt: string,
+): ScoutingAttemptV2 {
+  const base =
+    attempt.schemaVersion === SCOUTING_JOB_SCHEMA_VERSION_V2
+      ? validateScoutingAttemptV2(attempt)
+      : validateScoutingAttempt(attempt);
+  assertScoutingJobTransition(base.status, "completed");
+  exactIso(finishedAt);
+  if (base.startedAt === undefined || finishedAt < base.updatedAt)
+    throw new Error("scouting-time-invalid");
+  return validateScoutingAttemptV2({
+    schemaVersion: SCOUTING_JOB_SCHEMA_VERSION_V2,
+    attemptId: base.attemptId,
+    jobId: base.jobId,
+    attemptNumber: base.attemptNumber,
+    previousAttemptId: base.previousAttemptId,
+    status: "completed",
+    stateVersion: base.stateVersion + 1,
+    createdAt: base.createdAt,
+    updatedAt: finishedAt,
+    startedAt: base.startedAt,
+    finishedAt,
+    reportPointer: validateScoutingReportBinding(reportPointer),
+  });
+}
+
+export function toPublicScoutingJob(
+  job: ScoutingJob | ScoutingJobV2,
+): PublicScoutingJob {
   return {
     schemaVersion: 1,
     jobId: job.jobId,

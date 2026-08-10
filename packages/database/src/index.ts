@@ -59,4 +59,6 @@ export * from "./odds-history-repository";
 export * from "./dynamodb-odds-history-repository";
 export * from "./scouting-job-repository";
 export * from "./dynamodb-scouting-job-repository";
+export * from "./scouting-report-repository";
+export * from "./dynamodb-scouting-report-repository";
 export * from "./board-projection";

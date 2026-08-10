@@ -1026,9 +1026,18 @@ export class FoundationStack extends Stack {
         bundling: { minify: true, sourceMap: true },
       },
     );
+    // FTE-042: DynamoDB transactions authorize PER-ITEM actions, so the
+    // report completion TransactWriteItems needs ConditionCheckItem for the
+    // canonical event fence and PutItem for the version/head/binding/job/
+    // attempt/lock writes, scoped to the exact scouting key families.
     scoutingWorkflowWorker.addToRolePolicy(
       new PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:TransactWriteItems"],
+        actions: [
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:TransactWriteItems",
+        ],
         resources: [table.tableArn],
         conditions: {
           "ForAllValues:StringLike": {
@@ -1037,6 +1046,8 @@ export class FoundationStack extends Stack {
               "SCOUT_JOB#*",
               "SCOUT_ATTEMPT#*",
               "SCOUT_ACTIVE#*",
+              "SCOUT_REPORT#*",
+              "SCOUT_REPORT_JOB#*",
             ],
           },
         },

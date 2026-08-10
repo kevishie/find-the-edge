@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-042
+nextReadyStory: FTE-044
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -730,7 +730,7 @@ stories:
   - id: FTE-042
     title: Report Persistence, Versioning, and Source Provenance
     epic: Manual scouting workflow
-    status: in-progress
+    status: done
     dependencies: [FTE-041]
     risk: High
     approvalRequiredBeforeMerge: false

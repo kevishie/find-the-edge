@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
   SCOUTING_WORKFLOW_INTENT,
+  completeScoutingAttemptWithReport,
+  completeScoutingJobWithReport,
   createQueuedScoutingRecords,
   validateScoutingAttempt,
   validateScoutingDispatchOutbox,
@@ -595,5 +597,85 @@ describe("Dynamo scouting job repository", () => {
         createdAt: now,
       }),
     ).rejects.toMatchObject({ code: "scouting-record-corrupt" });
+  });
+
+  it("reads schema-v2 completed rows and refuses reportless completion", async () => {
+    const queued = createQueuedScoutingRecords(command, now);
+    const claimedJob = validateScoutingJob({
+      ...queued.job,
+      status: "in_progress",
+      stateVersion: 2,
+      updatedAt: "2026-08-07T12:01:00.000Z",
+    });
+    const claimedAttempt = validateScoutingAttempt({
+      ...queued.attempt,
+      status: "in_progress",
+      stateVersion: 2,
+      updatedAt: "2026-08-07T12:01:00.000Z",
+      startedAt: "2026-08-07T12:01:00.000Z",
+    });
+    const binding = {
+      reportId: `scout-report:${"a".repeat(64)}`,
+      reportVersionId: `scout-report-version:${"b".repeat(64)}`,
+      reportVersionNumber: 1,
+    };
+    const completedJob = completeScoutingJobWithReport(
+      claimedJob,
+      binding,
+      "2026-08-07T12:02:00.000Z",
+    );
+    const completedAttempt = completeScoutingAttemptWithReport(
+      claimedAttempt,
+      binding,
+      "2026-08-07T12:02:00.000Z",
+    );
+    const client = {
+      send(raw: unknown) {
+        const value = raw as CommandLike;
+        if (value.constructor.name !== "GetCommand")
+          return Promise.reject(new Error("unexpected-write"));
+        const key = value.input["Key"] as { pk: string };
+        if (key.pk.startsWith("SCOUT_JOB#"))
+          return Promise.resolve({
+            Item: { entityType: "scouting-job", value: completedJob },
+          });
+        if (key.pk.startsWith("SCOUT_ATTEMPT#"))
+          return Promise.resolve({
+            Item: { entityType: "scouting-attempt", value: completedAttempt },
+          });
+        return Promise.resolve({});
+      },
+    } as unknown as DynamoDBDocumentClient;
+    const repo = new DynamoScoutingJobRepository(client, "table");
+
+    // Schema-v2 rows written by the report completion transaction read back
+    // with their report pointer intact.
+    await expect(repo.getJob(completedJob.jobId)).resolves.toMatchObject({
+      schemaVersion: 2,
+      status: "completed",
+      reportPointer: binding,
+    });
+    // A redelivered failure finalizer is acknowledged as stale, not corrupt.
+    await expect(
+      repo.finishAttempt({
+        jobId: completedJob.jobId,
+        attemptId: completedAttempt.attemptId,
+        status: "failed_retryable",
+        failureCode: "workflow-temporarily-unavailable",
+        finishedAt: "2026-08-07T12:03:00.000Z",
+      }),
+    ).resolves.toMatchObject({ outcome: "stale" });
+    // The runtime fence rejects untyped reportless completion before any IO.
+    const failingClient = {
+      send: () => Promise.reject(new Error("must-not-touch-storage")),
+    } as unknown as DynamoDBDocumentClient;
+    await expect(
+      new DynamoScoutingJobRepository(failingClient, "table").finishAttempt({
+        jobId: completedJob.jobId,
+        attemptId: completedAttempt.attemptId,
+        status: "completed",
+        finishedAt: "2026-08-07T12:03:00.000Z",
+      } as never),
+    ).rejects.toThrow("report-pointer-required");
   });
 });

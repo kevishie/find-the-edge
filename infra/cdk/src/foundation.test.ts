@@ -914,13 +914,15 @@ describe("foundation CDK app", () => {
         resource.Type === "AWS::IAM::Policy",
     );
     expect(JSON.stringify(workflowWorkerPolicy?.[1])).toContain(
-      '"Action":["dynamodb:GetItem","dynamodb:TransactWriteItems"]',
+      '"Action":["dynamodb:ConditionCheckItem","dynamodb:GetItem","dynamodb:PutItem","dynamodb:TransactWriteItems"]',
     );
     for (const leadingKey of [
       "EVENT_DETAIL#*",
       "SCOUT_JOB#*",
       "SCOUT_ATTEMPT#*",
       "SCOUT_ACTIVE#*",
+      "SCOUT_REPORT#*",
+      "SCOUT_REPORT_JOB#*",
     ])
       expect(JSON.stringify(workflowWorkerPolicy?.[1])).toContain(leadingKey);
     expect(rendered).not.toContain("dynamodb:Scan");

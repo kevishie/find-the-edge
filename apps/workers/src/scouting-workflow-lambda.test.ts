@@ -1,4 +1,7 @@
-import { MemoryScoutingJobRepository } from "@find-the-edge/database";
+import {
+  MemoryScoutingJobRepository,
+  MemoryScoutingReportRepository,
+} from "@find-the-edge/database";
 import { describe, expect, it, vi } from "vitest";
 
 import { createScoutingWorkflowHandler } from "./scouting-workflow-lambda";
@@ -32,6 +35,7 @@ describe("scouting workflow Lambda boundary", () => {
       const emit = vi.fn();
       const handler = createScoutingWorkflowHandler(
         repository,
+        new MemoryScoutingReportRepository(),
         undefined,
         () => "2026-08-07T12:01:00.000Z",
         { emit },
@@ -58,7 +62,10 @@ describe("scouting workflow Lambda boundary", () => {
 
   it("rejects expanded or non-allowlisted internal finalizers", async () => {
     const { repository, records } = await setup();
-    const handler = createScoutingWorkflowHandler(repository);
+    const handler = createScoutingWorkflowHandler(
+      repository,
+      new MemoryScoutingReportRepository(),
+    );
 
     await expect(
       invoke(handler, {

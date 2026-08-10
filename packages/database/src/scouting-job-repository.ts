@@ -15,15 +15,55 @@ import {
   validateScoutingDispatchOutbox,
   validateScoutingJob,
   type ScoutingAttempt,
+  type ScoutingAttemptV2,
   type ScoutingDispatchOutbox,
   type ScoutingFailureCode,
   type ScoutingJob,
   type ScoutingJobCommand,
+  type ScoutingJobV2,
 } from "@find-the-edge/domain";
 
+/**
+ * FTE-042: stored rows are either schema-v1 (legacy, including explicit
+ * reportless completions) or schema-v2 (whose `completed` state is
+ * unrepresentable without a report pointer). Reads surface both.
+ */
+export type StoredScoutingJob = ScoutingJob | ScoutingJobV2;
+export type StoredScoutingAttempt = ScoutingAttempt | ScoutingAttemptV2;
+
+/**
+ * The only statuses `finishAttempt` accepts. `completed` is unrepresentable:
+ * completion flows exclusively through the report repository transaction that
+ * binds the report pointer atomically with the lifecycle write.
+ */
+export const SCOUTING_FINISHABLE_STATUSES = [
+  "failed_retryable",
+  "failed_terminal",
+  "cancelled",
+] as const;
+export type ScoutingFinishableStatus =
+  (typeof SCOUTING_FINISHABLE_STATUSES)[number];
+
+const finishableStatuses: ReadonlySet<string> = new Set(
+  SCOUTING_FINISHABLE_STATUSES,
+);
+
+export const isScoutingFinishableStatus = (
+  value: string,
+): value is ScoutingFinishableStatus => finishableStatuses.has(value);
+
+/** Runtime fence behind the compile-time removal of `completed`. */
+export const assertScoutingFinishableStatus = (
+  value: string,
+): ScoutingFinishableStatus => {
+  if (!isScoutingFinishableStatus(value))
+    throw new Error("report-pointer-required");
+  return value;
+};
+
 export interface ScoutingJobRecords {
-  readonly job: ScoutingJob;
-  readonly attempt: ScoutingAttempt;
+  readonly job: StoredScoutingJob;
+  readonly attempt: StoredScoutingAttempt;
   readonly outbox: ScoutingDispatchOutbox;
 }
 
@@ -36,23 +76,33 @@ export interface ScoutingCreateResult extends ScoutingJobRecords {
 
 export interface ScoutingEventInvalidClaimResult {
   readonly outcome: "event-invalid";
-  readonly job: ScoutingJob;
-  readonly attempt: ScoutingAttempt;
+  readonly job: StoredScoutingJob;
+  readonly attempt: StoredScoutingAttempt;
   readonly failureCode: "event-version-changed" | "event-no-longer-scheduled";
 }
 
 export type ScoutingClaimResult =
   | {
-      readonly outcome: "claimed" | "duplicate" | "stale";
-      readonly job: ScoutingJob | null;
-      readonly attempt: ScoutingAttempt | null;
+      readonly outcome: "claimed";
+      readonly job: StoredScoutingJob;
+      readonly attempt: StoredScoutingAttempt;
+    }
+  | {
+      readonly outcome: "duplicate";
+      readonly job: StoredScoutingJob | null;
+      readonly attempt: StoredScoutingAttempt | null;
+    }
+  | {
+      readonly outcome: "stale";
+      readonly job: StoredScoutingJob | null;
+      readonly attempt: StoredScoutingAttempt | null;
     }
   | ScoutingEventInvalidClaimResult;
 
 export interface ScoutingFinishResult {
   readonly outcome: "finished" | "duplicate" | "stale";
-  readonly job: ScoutingJob | null;
-  readonly attempt: ScoutingAttempt | null;
+  readonly job: StoredScoutingJob | null;
+  readonly attempt: StoredScoutingAttempt | null;
 }
 
 export interface ScoutingRetryResult extends ScoutingJobRecords {
@@ -64,17 +114,17 @@ export interface ScoutingJobRepository {
     readonly command: ScoutingJobCommand;
     readonly createdAt: string;
   }): Promise<ScoutingCreateResult>;
-  getJob(jobId: string): Promise<ScoutingJob | null>;
+  getJob(jobId: string): Promise<StoredScoutingJob | null>;
   getJobForRequester(
     jobId: string,
     requesterId: string,
-  ): Promise<ScoutingJob | null>;
+  ): Promise<StoredScoutingJob | null>;
   getCreateReplay(input: {
     readonly requesterId: string;
     readonly idempotencyKey: string;
     readonly eventId: string;
-  }): Promise<ScoutingJob | null>;
-  getAttempt(attemptId: string): Promise<ScoutingAttempt | null>;
+  }): Promise<StoredScoutingJob | null>;
+  getAttempt(attemptId: string): Promise<StoredScoutingAttempt | null>;
   getOutbox(outboxId: string): Promise<ScoutingDispatchOutbox | null>;
   claimAttempt(input: {
     readonly jobId: string;
@@ -83,11 +133,17 @@ export interface ScoutingJobRepository {
     readonly eventVersion: number;
     readonly claimedAt: string;
   }): Promise<ScoutingClaimResult>;
+  /**
+   * FTE-042: `completed` is deliberately absent. A completed job or attempt
+   * carries a report pointer and can only be written by the report
+   * repository's atomic `completeWithReport` transaction; plain reportless
+   * completion is impossible (compile-time here, `report-pointer-required` at
+   * runtime for untyped callers).
+   */
   finishAttempt(input: {
     readonly jobId: string;
     readonly attemptId: string;
-    readonly status:
-      "completed" | "failed_retryable" | "failed_terminal" | "cancelled";
+    readonly status: ScoutingFinishableStatus;
     readonly failureCode?: ScoutingFailureCode;
     readonly finishedAt: string;
   }): Promise<ScoutingFinishResult>;
@@ -404,6 +460,7 @@ export class MemoryScoutingJobRepository implements ScoutingJobRepository {
     input: Parameters<ScoutingJobRepository["finishAttempt"]>[0],
   ) {
     return this.locked((): ScoutingFinishResult => {
+      assertScoutingFinishableStatus(input.status);
       assertScoutingTimestamp(input.finishedAt);
       const job = this.jobs.get(input.jobId);
       const attempt = this.attempts.get(input.attemptId);
@@ -425,17 +482,14 @@ export class MemoryScoutingJobRepository implements ScoutingJobRepository {
           attempt: clone(attempt),
         };
       const matchingSource = job.status === attempt.status;
-      const canFinish =
-        job.status === "in_progress" ||
-        (job.status === "queued" && input.status !== "completed");
+      const canFinish = job.status === "in_progress" || job.status === "queued";
       if (!matchingSource || !canFinish)
         return { outcome: "stale", job: clone(job), attempt: clone(attempt) };
       if (this.active.get(job.semanticDigest) !== job.jobId)
         throw new ScoutingRepositoryError("scouting-record-corrupt");
       const failureCode = input.failureCode;
       if (
-        (input.status === "completed" || input.status === "cancelled") !==
-          (failureCode === undefined) ||
+        (input.status === "cancelled") !== (failureCode === undefined) ||
         (input.status === "failed_retryable" &&
           (!failureCode || !isRetryableScoutingFailure(failureCode))) ||
         (input.status === "failed_terminal" &&

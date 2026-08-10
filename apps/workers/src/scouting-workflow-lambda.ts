@@ -2,6 +2,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
   DynamoScoutingJobRepository,
+  DynamoScoutingReportRepository,
   type ScoutingJobRepository,
 } from "@find-the-edge/database";
 import type { Handler } from "aws-lambda";
@@ -13,16 +14,24 @@ import {
   scoutingWorkflowMetrics,
   type ScoutingFixtureWorkflow,
   type ScoutingWorkflowMetricSink,
+  type ScoutingWorkflowReportStore,
   type ScoutingWorkflowResult,
 } from "./scouting-workflow";
 
 export const createScoutingWorkflowHandler = (
   repository: Pick<ScoutingJobRepository, "claimAttempt" | "finishAttempt">,
+  reports: ScoutingWorkflowReportStore,
   fixture?: ScoutingFixtureWorkflow,
   now?: () => string,
   metricSink: ScoutingWorkflowMetricSink = scoutingWorkflowMetrics,
 ): Handler<unknown, ScoutingWorkflowResult> => {
-  const run = createScoutingWorkflow(repository, fixture, now, metricSink);
+  const run = createScoutingWorkflow(
+    repository,
+    reports,
+    fixture,
+    now,
+    metricSink,
+  );
   return async (event) => {
     const failure = parseFailureFinalizer(event);
     if (!failure) return run(event);
@@ -98,11 +107,10 @@ export const handler: Handler<unknown, ScoutingWorkflowResult> = (
   if (!runtime) {
     const tableName = process.env["FTE_EVENT_TABLE"] ?? "";
     if (!tableName) throw new Error("scouting-workflow-configuration-invalid");
+    const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
     runtime = createScoutingWorkflowHandler(
-      new DynamoScoutingJobRepository(
-        DynamoDBDocumentClient.from(new DynamoDBClient({})),
-        tableName,
-      ),
+      new DynamoScoutingJobRepository(client, tableName),
+      new DynamoScoutingReportRepository(client, tableName),
     );
   }
   return runtime(event, context, callback);

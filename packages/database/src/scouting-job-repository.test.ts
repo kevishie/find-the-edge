@@ -335,4 +335,34 @@ describe("memory scouting job repository", () => {
       }),
     ).resolves.toMatchObject({ outcome: "stale" });
   });
+
+  it("makes plain reportless completion impossible even for untyped callers", async () => {
+    const repo = new MemoryScoutingJobRepository();
+    const created = await repo.createJob({ command, createdAt: now });
+    await repo.claimAttempt({
+      jobId: created.job.jobId,
+      attemptId: created.attempt.attemptId,
+      eventId: command.eventId,
+      eventVersion: command.eventVersion,
+      claimedAt: "2026-08-07T12:01:00.000Z",
+    });
+    // The contract removed "completed" at compile time; an untyped caller
+    // smuggling it back in must hit the runtime fence with no mutation.
+    const untypedFinish = {
+      jobId: created.job.jobId,
+      attemptId: created.attempt.attemptId,
+      status: "completed",
+      finishedAt: "2026-08-07T12:02:00.000Z",
+    } as never;
+
+    await expect(repo.finishAttempt(untypedFinish)).rejects.toThrow(
+      "report-pointer-required",
+    );
+    await expect(repo.getJob(created.job.jobId)).resolves.toMatchObject({
+      status: "in_progress",
+    });
+    await expect(
+      repo.getAttempt(created.attempt.attemptId),
+    ).resolves.toMatchObject({ status: "in_progress" });
+  });
 });

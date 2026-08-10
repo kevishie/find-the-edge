@@ -16,6 +16,8 @@ import {
   createScoutingRequestReceiptId,
   isRetryableScoutingFailure,
   normalizeScoutingJobCommand,
+  readScoutingAttemptRecord,
+  readScoutingJobRecord,
   sha256Hex,
   validateScoutingAttempt,
   validateScoutingDispatchOutbox,
@@ -26,13 +28,15 @@ import {
 } from "@find-the-edge/domain";
 import {
   ScoutingRepositoryError,
+  assertScoutingFinishableStatus,
   type ScoutingClaimResult,
   type ScoutingCreateOutcome,
   type ScoutingCreateResult,
   type ScoutingFinishResult,
   type ScoutingJobRepository,
-  type ScoutingJobRecords,
   type ScoutingRetryResult,
+  type StoredScoutingAttempt,
+  type StoredScoutingJob,
 } from "./scouting-job-repository";
 
 type StoredReceipt = {
@@ -87,6 +91,16 @@ const eventKey = (eventId: string) => ({
   pk: `EVENT_DETAIL#${eventId}`,
   sk: "CURRENT",
 });
+
+/**
+ * Exact-key builders shared with the FTE-042 report repository so its atomic
+ * completion transaction can cover the same job, attempt, active-lock, and
+ * canonical event items. Additive exports only; behavior is unchanged.
+ */
+export const scoutingJobItemKey = jobKey;
+export const scoutingAttemptItemKey = attemptKey;
+export const scoutingActiveLockItemKey = activeKey;
+export const scoutingEventDetailItemKey = eventKey;
 
 const conditional = (error: unknown): boolean =>
   error instanceof Error &&
@@ -154,7 +168,7 @@ const eventFence = (tableName: string, pointer: StoredEventPointer) => ({
 });
 
 const convergedRetry = (
-  job: ScoutingJob,
+  job: StoredScoutingJob,
   expectedStateVersion: number,
 ): boolean =>
   job.attemptCount > 1 &&
@@ -277,29 +291,38 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
     return { ...(value as StoredActiveLock), kind };
   }
 
-  async getJob(jobId: string): Promise<ScoutingJob | null> {
+  /**
+   * Reads schema-v2 rows (completed with a report pointer) and schema-v1 rows
+   * alike; a completed schema-v1 row stays an explicit legacy reportless
+   * completion — never corrupt, never silently migrated.
+   */
+  async getJob(jobId: string): Promise<StoredScoutingJob | null> {
     if (!/^scout-job:[a-f0-9]{64}$/.test(jobId)) return null;
     const item = await this.rawGet(jobKey(jobId));
     if (!item) return null;
     if (item["entityType"] !== "scouting-job")
       throw new ScoutingRepositoryError("scouting-record-corrupt");
     try {
-      const job = validateScoutingJob(item["value"]);
-      if (job.jobId !== jobId) throw new Error("scouting-job-key-mismatch");
-      return job;
+      const read = readScoutingJobRecord(item["value"]);
+      if (read.job.jobId !== jobId)
+        throw new Error("scouting-job-key-mismatch");
+      return read.job;
     } catch {
       throw new ScoutingRepositoryError("scouting-record-corrupt");
     }
   }
 
-  async getJobForRequester(jobId: string, requesterId: string) {
+  async getJobForRequester(
+    jobId: string,
+    requesterId: string,
+  ): Promise<StoredScoutingJob | null> {
     const job = await this.getJob(jobId);
     return job?.requesterId === requesterId ? job : null;
   }
 
   async getCreateReplay(
     input: Parameters<ScoutingJobRepository["getCreateReplay"]>[0],
-  ): Promise<ScoutingJob | null> {
+  ): Promise<StoredScoutingJob | null> {
     const probe = normalizeScoutingJobCommand({
       schemaVersion: 1,
       requesterId: input.requesterId,
@@ -337,17 +360,17 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
     return job;
   }
 
-  async getAttempt(attemptId: string): Promise<ScoutingAttempt | null> {
+  async getAttempt(attemptId: string): Promise<StoredScoutingAttempt | null> {
     if (!/^scout-attempt:[a-f0-9]{64}$/.test(attemptId)) return null;
     const item = await this.rawGet(attemptKey(attemptId));
     if (!item) return null;
     if (item["entityType"] !== "scouting-attempt")
       throw new ScoutingRepositoryError("scouting-record-corrupt");
     try {
-      const attempt = validateScoutingAttempt(item["value"]);
-      if (attempt.attemptId !== attemptId)
+      const read = readScoutingAttemptRecord(item["value"]);
+      if (read.attempt.attemptId !== attemptId)
         throw new Error("scouting-attempt-key-mismatch");
-      return attempt;
+      return read.attempt;
     } catch {
       throw new ScoutingRepositoryError("scouting-record-corrupt");
     }
@@ -685,7 +708,7 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
     }
   }
 
-  private fencedJobPut(previous: ScoutingJob, next: ScoutingJob) {
+  private fencedJobPut(previous: StoredScoutingJob, next: ScoutingJob) {
     return {
       Put: {
         TableName: this.tableName,
@@ -707,7 +730,10 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
     };
   }
 
-  private fencedAttemptPut(previous: ScoutingAttempt, next: ScoutingAttempt) {
+  private fencedAttemptPut(
+    previous: StoredScoutingAttempt,
+    next: ScoutingAttempt,
+  ) {
     return {
       Put: {
         TableName: this.tableName,
@@ -732,6 +758,7 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
   async finishAttempt(
     input: Parameters<ScoutingJobRepository["finishAttempt"]>[0],
   ): Promise<ScoutingFinishResult> {
+    assertScoutingFinishableStatus(input.status);
     assertScoutingTimestamp(input.finishedAt);
     const [job, attempt] = await Promise.all([
       this.getJob(input.jobId),
@@ -747,9 +774,7 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
     )
       return { outcome: "duplicate", job, attempt };
     const matchingSource = job.status === attempt.status;
-    const canFinish =
-      job.status === "in_progress" ||
-      (job.status === "queued" && input.status !== "completed");
+    const canFinish = job.status === "in_progress" || job.status === "queued";
     if (!matchingSource || !canFinish)
       return { outcome: "stale", job, attempt };
     const active = await this.semanticMarker(job.semanticDigest);
@@ -762,8 +787,7 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
       throw new ScoutingRepositoryError("scouting-record-corrupt");
     const failureCode = input.failureCode;
     if (
-      (input.status === "completed" || input.status === "cancelled") !==
-        (failureCode === undefined) ||
+      (input.status === "cancelled") !== (failureCode === undefined) ||
       (input.status === "failed_retryable" &&
         (!failureCode || !isRetryableScoutingFailure(failureCode))) ||
       (input.status === "failed_terminal" &&
@@ -861,9 +885,13 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
   }
 
   private makeRetryRecords(
-    job: ScoutingJob,
+    job: StoredScoutingJob,
     requestedAt: string,
-  ): ScoutingJobRecords {
+  ): {
+    readonly job: ScoutingJob;
+    readonly attempt: ScoutingAttempt;
+    readonly outbox: ScoutingDispatchOutbox;
+  } {
     const attemptNumber = job.attemptCount + 1;
     const attemptId = createScoutingAttemptId(job.jobId, attemptNumber);
     const attempt = validateScoutingAttempt({
@@ -1063,7 +1091,7 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
   private async persistConvergedRetryReceipt(
     receiptId: string,
     receipt: StoredReceipt,
-    job: ScoutingJob,
+    job: StoredScoutingJob,
   ): Promise<ScoutingRetryResult> {
     const attempt = await this.getAttempt(job.currentAttemptId);
     const outbox = attempt
