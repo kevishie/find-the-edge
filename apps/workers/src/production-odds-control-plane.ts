@@ -2163,35 +2163,39 @@ export async function runProductionOddsControlPlane(input: {
               });
               const cursor = pageToken === "start" ? undefined : pageToken;
               const fetchPage = () =>
-                input.fetchSharpOdds
+                (input.fetchSharpOdds
                   ? input.fetchSharpOdds(sharpLeague, input.sharpApiKey, cursor)
                   : (input.fetchSharpFeatured ?? fetchSharpApiFeaturedOdds)(
                       sharpLeague,
                       input.sharpApiKey,
                       cursor,
-                    )
-                      .then(({ page }) => page)
-                      .catch((error) => {
-                        // The provider withdrew featured coverage for some
-                        // leagues in its 2026-08 feed migration; the standard
-                        // odds endpoint still serves them. A featured 4xx
-                        // must degrade to that endpoint, not fail the league.
-                        if (
-                          error instanceof SharpApiError &&
-                          error.code === "provider-rejected"
-                        ) {
-                          input.metrics?.emit("OddsFeaturedFallback", 1, {
-                            provider: SHARP_API_PROVIDER_ID,
-                            league: policy.leagueKey,
-                          });
-                          return fetchSharpApiOddsPage(
-                            sharpLeague,
-                            input.sharpApiKey,
-                            cursor,
-                          );
-                        }
-                        throw error;
-                      });
+                    ).then(({ page }) => page)
+                ).catch((error): SharpApiOddsPage => {
+                  // The odds feed refreshes roughly every fifteen seconds
+                  // and its cursors encode positions in that moving sort; a
+                  // multi-page run can outlive its cursor, which the
+                  // provider rejects with a 4xx. That is the feed moving,
+                  // not a provider fault: the pages already committed stand
+                  // and the next cadence pass refetches from the top.
+                  // Failing the run instead poisoned the continuation with
+                  // the dead cursor and cooled the league down for minutes.
+                  if (
+                    cursor !== undefined &&
+                    error instanceof SharpApiError &&
+                    error.code === "provider-rejected"
+                  ) {
+                    input.metrics?.emit("OddsCursorExpired", 1, {
+                      provider: SHARP_API_PROVIDER_ID,
+                      league: policy.leagueKey,
+                    });
+                    return {
+                      events: [],
+                      hasMore: false,
+                      retrievedAt: liveNow().toISOString() as IsoTimestamp,
+                    };
+                  }
+                  throw error;
+                });
               const fetched = await fetchSharpOddsPageWithRetry(fetchPage, () =>
                 input.metrics?.emit("OddsProviderInvalidResponseRetry", 1, {
                   provider: SHARP_API_PROVIDER_ID,

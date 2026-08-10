@@ -1238,6 +1238,54 @@ describe("production odds control-plane composition", () => {
       }),
     ]);
   });
+  it("completes a run whose cursor expires mid-pagination", async () => {
+    // The odds feed refreshes ~15s and rejects outlived cursors with a 4xx.
+    // Committed pages stand and the run completes; failing it poisoned the
+    // continuation with the dead cursor and cooled the league for minutes.
+    const events = new MemoryEventIngestionStore();
+    const control = new MemoryOddsControlPlaneStore();
+    const fetchSharpOdds = vi.fn(
+      (league: SharpApiLeague, _key: string, cursor?: string) =>
+        cursor === undefined
+          ? Promise.resolve({
+              events: [],
+              hasMore: true,
+              nextCursor: "moving-cursor",
+              retrievedAt: at,
+            })
+          : Promise.reject(new SharpApiError("provider-rejected", false)),
+    );
+    const results = await runProductionOddsControlPlane({
+      events,
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      control,
+      metrics: { emit: vi.fn() },
+      sharpApiKey: "sharp-key",
+      now,
+      fetchSharpSchedule: vi.fn().mockResolvedValue({
+        events: [],
+        hasMore: false,
+        retrievedAt: at,
+      }),
+      fetchSharpOdds,
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 15,
+        streamingEnabled: false,
+      }),
+    });
+    for (const result of results)
+      expect(result).toMatchObject({ status: "completed" });
+  });
+
   it("uses durable scheduled starts for near-start cadence while discovery is skipped", async () => {
     const events = new MemoryEventIngestionStore();
     const control = new MemoryOddsControlPlaneStore();
