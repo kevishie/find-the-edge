@@ -157,7 +157,13 @@ export async function runOpportunityGeneration(
   for (const target of targets) {
     const events: OpportunityGenerationEvent[] = [];
     let outcome: "success" | "failure" = "success";
-    let result: OpportunityGenerationResult | null = null;
+    const totals = {
+      qualifiedCount: 0,
+      disqualifiedCount: 0,
+      createdCount: 0,
+      duplicateCount: 0,
+      failedEvents: 0,
+    };
     try {
       for (const day of days) {
         const page = await dependencies.games.list(
@@ -190,14 +196,43 @@ export async function runOpportunityGeneration(
           });
         }
       }
-      if (events.length > 0)
-        result = await dependencies.service.generate({
-          evaluatedAt: asOf,
-          events,
-        });
+      // One event per generate call: the evidence layer fails closed on
+      // torn reads while ingestion writes concurrently, and that guard must
+      // skip one game for one tick, never discard the whole league pass.
+      for (const event of events) {
+        let result: OpportunityGenerationResult;
+        try {
+          result = await dependencies.service.generate({
+            evaluatedAt: asOf,
+            events: [event],
+          });
+        } catch (error) {
+          totals.failedEvents += 1;
+          console.log(
+            JSON.stringify({
+              event: "opportunity-generation-event-failed",
+              sportKey: target.sportKey,
+              leagueKey: target.leagueKey,
+              eventId: event.eventId,
+              errorName: error instanceof Error ? error.name : "unknown",
+              errorMessage:
+                error instanceof Error
+                  ? error.message.slice(0, 500)
+                  : "unknown",
+            }),
+          );
+          continue;
+        }
+        totals.qualifiedCount += result.qualifiedCount;
+        totals.disqualifiedCount += result.disqualifiedCount;
+        totals.createdCount += result.createdCount;
+        totals.duplicateCount += result.duplicateCount;
+      }
+      if (events.length > 0 && totals.failedEvents === events.length)
+        throw new Error("opportunity-generation-target-exhausted");
       evaluatedTargets += 1;
       eventCount += events.length;
-      qualifiedCount += result?.qualifiedCount ?? 0;
+      qualifiedCount += totals.qualifiedCount;
     } catch (error) {
       outcome = "failure";
       failedTargets += 1;
@@ -218,11 +253,11 @@ export async function runOpportunityGeneration(
         sportKey: target.sportKey,
         leagueKey: target.leagueKey,
         eventCount: events.length,
-        qualifiedCount: result?.qualifiedCount ?? 0,
-        disqualifiedCount: result?.disqualifiedCount ?? 0,
-        createdCount: result?.createdCount ?? 0,
-        duplicateCount: result?.duplicateCount ?? 0,
-        failureCount: outcome === "failure" ? 1 : 0,
+        qualifiedCount: totals.qualifiedCount,
+        disqualifiedCount: totals.disqualifiedCount,
+        createdCount: totals.createdCount,
+        duplicateCount: totals.duplicateCount,
+        failureCount: outcome === "failure" ? 1 : totals.failedEvents,
       });
     } catch {
       // Metrics never change the generation result.

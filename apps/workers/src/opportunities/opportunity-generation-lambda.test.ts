@@ -194,6 +194,47 @@ describe("generation run", () => {
     });
   });
 
+  it("skips a torn event without discarding the rest of the league pass", async () => {
+    const generate = vi
+      .fn<
+        (
+          command: OpportunityGenerationCommand,
+        ) => Promise<OpportunityGenerationResult>
+      >()
+      .mockRejectedValueOnce(new Error("opportunity-evidence-time-invalid"))
+      .mockResolvedValue(result);
+    const telemetry: unknown[] = [];
+    const summary = await runOpportunityGeneration(
+      {
+        games: {
+          list: (filter) =>
+            page(
+              filter.day === "2026-08-10"
+                ? [game(), game({ id: "event-2" })]
+                : [],
+            ),
+        },
+        service: { generate },
+        telemetry: { emit: (event) => telemetry.push(event) },
+        targets: [{ sportKey: "mlb", leagueKey: "mlb" }],
+      },
+      asOf,
+    );
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate.mock.calls[0]?.[0]?.events).toHaveLength(1);
+    expect(summary).toEqual({
+      evaluatedTargets: 1,
+      failedTargets: 0,
+      eventCount: 2,
+      qualifiedCount: 1,
+    });
+    expect(telemetry[0]).toMatchObject({
+      outcome: "success",
+      failureCount: 1,
+      qualifiedCount: 1,
+    });
+  });
+
   it("isolates a failing target so the other leagues still evaluate", async () => {
     const generate = vi
       .fn<

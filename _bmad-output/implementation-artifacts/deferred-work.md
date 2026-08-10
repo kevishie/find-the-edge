@@ -207,6 +207,17 @@ second-precision, return normalized instant). Follow-ups: route alarm
 states somewhere visible (FTE-055), and add a matching failures alarm for
 the generation worker.
 
+## Observed: "mls+_" simulated-soccer listings pollute the mls schedule (2026-08-10)
+
+The provider's schedule feed lists eSoccer/simulated fixtures under league
+mls with "mls+_" id bases (chivas_memphis, hartford_loudoun, ~10-minute
+cadence, 09:40:01Z-style start instants). They ingest as unpriced scheduled
+events; the lines-only rule hides them from every surface and the phantom
+filter retires them two hours after their claimed start, so user impact is
+nil. No heuristic filter added — the provider has renamed real league keys
+before (mls → usa_-_major_league_soccer → mls+_ inputs), so name-based
+rejection risks dropping real games. Revisit if they ever arrive priced.
+
 ## Pinnacle-anchored fair lines — shipped to the list path (2026-08-09)
 
 `sharpAmericanOdds?` on GameOddsSelectionDto; JoinedGamesRepository.list
