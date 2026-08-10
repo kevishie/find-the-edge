@@ -20,6 +20,14 @@ describe("opportunity expiration lambda", () => {
         Date.parse(time),
       ),
     ).toBe(time);
+    // Live EventBridge stamps schedules at second precision; the validator
+    // must accept that shape and return the normalized millisecond instant.
+    expect(
+      validateOpportunityExpirationInvocation(
+        scheduled("2026-08-06T12:00:00Z"),
+        () => Date.parse(time),
+      ),
+    ).toBe(time);
     expect(() =>
       validateOpportunityExpirationInvocation(
         { ...scheduled(time), source: "custom" },

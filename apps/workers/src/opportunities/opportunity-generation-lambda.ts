@@ -45,18 +45,23 @@ export function validateOpportunityGenerationInvocation(
   const time = value["time"];
   const scheduledAt = typeof time === "string" ? Date.parse(time) : NaN;
   const currentTime = now();
+  // EventBridge stamps scheduled events at second precision; the normalized
+  // millisecond instant is what downstream evaluation contracts require.
+  const normalized = Number.isFinite(scheduledAt)
+    ? new Date(scheduledAt).toISOString()
+    : "";
   if (
     value["source"] !== "aws.events" ||
     value["detail-type"] !== "Scheduled Event" ||
     typeof time !== "string" ||
-    !Number.isFinite(scheduledAt) ||
+    !normalized ||
     !Number.isFinite(currentTime) ||
-    new Date(scheduledAt).toISOString() !== time ||
+    (time !== normalized && time !== normalized.replace(".000Z", "Z")) ||
     scheduledAt > currentTime ||
     currentTime - scheduledAt > 5 * 60_000
   )
     throw new Error("opportunity-generation-invocation-invalid");
-  return time;
+  return normalized;
 }
 
 const easternDayFormat = new Intl.DateTimeFormat("en-CA", {

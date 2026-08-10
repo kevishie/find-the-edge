@@ -259,6 +259,20 @@ describe("invocation validation", () => {
       ),
     ).toBe(asOf);
   });
+  it("normalizes EventBridge's second-precision timestamp", () => {
+    // Live EventBridge sends "2026-08-10T12:00:00Z"; downstream evaluation
+    // contracts require the exact millisecond ISO instant.
+    expect(
+      validateOpportunityGenerationInvocation(
+        {
+          source: "aws.events",
+          "detail-type": "Scheduled Event",
+          time: "2026-08-10T12:00:00Z",
+        },
+        now,
+      ),
+    ).toBe(asOf);
+  });
   it("rejects foreign sources, malformed times, and stale events", () => {
     for (const input of [
       null,
