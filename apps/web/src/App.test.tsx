@@ -1179,6 +1179,10 @@ describe("Shell navigation", () => {
     expect(screen.getAllByText("+EV SCANNER")[0]).toBeVisible();
     expect(screen.getByText("One plan. Every tool.")).toBeVisible();
     expect(screen.getByText(/Call 1-800-GAMBLER/)).toBeVisible();
+    expect(screen.getByRole("link", { name: "Contact" })).toHaveAttribute(
+      "href",
+      "https://x.com/kevishie",
+    );
     expect(
       screen.queryByRole("navigation", { name: "Primary navigation" }),
     ).not.toBeInTheDocument();
@@ -1248,18 +1252,29 @@ describe("Shell navigation", () => {
   });
 
   it.each([
-    ["/terms", "Terms of Use"],
-    ["/privacy", "Privacy Notice"],
-  ])("renders %s as a public draft legal route", async (path, heading) => {
-    render(<App initialPath={path} />);
-    expect(await screen.findByRole("heading", { name: heading })).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "NOT APPROVED FOR LAUNCH",
-    );
-    expect(
-      screen.queryByRole("navigation", { name: "Primary navigation" }),
-    ).not.toBeInTheDocument();
-  });
+    [
+      "/terms",
+      "Terms of Use",
+      "15. Dispute resolution and individual arbitration",
+    ],
+    ["/privacy", "Privacy Policy", "11. U.S. state privacy rights"],
+  ])(
+    "renders %s as a production public legal route",
+    async (path, heading, section) => {
+      render(<App initialPath={path} />);
+      expect(
+        await screen.findByRole("heading", { name: heading }),
+      ).toBeVisible();
+      expect(screen.getByRole("heading", { name: section })).toBeVisible();
+      expect(screen.getAllByText("Effective August 9, 2026")).toHaveLength(2);
+      expect(
+        screen.getAllByRole("link", { name: "x.com/kevishie" })[0],
+      ).toHaveAttribute("href", "https://x.com/kevishie");
+      expect(
+        screen.queryByRole("navigation", { name: "Primary navigation" }),
+      ).not.toBeInTheDocument();
+    },
+  );
 });
 
 describe("Dashboard", () => {

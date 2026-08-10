@@ -430,7 +430,9 @@ export function LandingPage() {
           <nav>
             <a href="/terms">Terms</a>
             <a href="/privacy">Privacy</a>
-            <a href="mailto:support@findtheedge.com">Contact</a>
+            <a href="https://x.com/kevishie" target="_blank" rel="noreferrer">
+              Contact
+            </a>
           </nav>
           <p>
             Must be 21+. Analytics and research only — Find The Edge does not
