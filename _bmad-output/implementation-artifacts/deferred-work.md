@@ -78,6 +78,23 @@ Hardening candidates:
 - The `_b0` ghost rows still on boards are the churn-identity story
   (see the churn-split entry above) — now the top follow-up.
 
+## Incident 2026-08-10: poisoned splits continuation blanked the splits board (resolved)
+
+One splits run failed at 2026-08-09T18:25Z; its continuation survived with
+its runId, and the runId encodes the 30-minute split-history window — so
+every tick for ~20 hours resumed the dead window, failed
+splits-history:event-timestamp validation, and ratcheted quotaCost to 201
+while the splits board served zero observations. Same self-poisoning class
+as the odds cursor incident. Provider data was healthy throughout.
+
+Recovery: deleted ODDS_CONTROL#CONTINUATION#splits:mlb and
+ODDS_CONTROL#HEALTH#sharpapi:mlb:splits; the next pass succeeded
+immediately (10/10 games, 60 observations, verified on the rendered page).
+Fix: splits runIds aged past 45 minutes are abandoned for a fresh run with
+a reset quota (splits runs are offset-paginated and restartable);
+regression test pins the poisoning scenario. Alarm email routing shipped
+in the same change — twenty hours of OddsSplitFailure will page next time.
+
 ## SharpAPI Sharp-plan capability audit (2026-08-09, docs.sharpapi.io)
 
 Paying for Sharp ($399/mo, 1000 rpm, all endpoints); currently consuming only
