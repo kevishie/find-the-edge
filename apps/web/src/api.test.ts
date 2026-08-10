@@ -828,6 +828,95 @@ const requestHref = (input: RequestInfo | URL) =>
       ? input.href
       : input.url;
 
+describe("arbitrage client", () => {
+  const finding = {
+    findingId: `arb:${"a".repeat(64)}`,
+    classification: "arbitrage",
+    holdPercentage: -2.07,
+    sumInverseDecimal: 0.9793,
+    marketKey: "moneyline",
+    canonicalEventId: "event-1",
+    startsAt: "2026-08-10T22:00:00.000Z",
+    evaluatedAt: "2026-08-10T12:00:00.000Z",
+    expiresAt: "2026-08-10T12:15:00.000Z",
+    legs: [
+      {
+        selectionKey: "participant:away",
+        point: null,
+        best: {
+          sportsbookId: "novig",
+          americanOdds: 125,
+          observedAt: "2026-08-10T11:59:00.000Z",
+        },
+        // Server evidence fields beyond the display projection pass through.
+        competing: [{ sportsbookId: "hardrock", americanOdds: 110 }],
+      },
+      {
+        selectionKey: "participant:home",
+        point: null,
+        best: {
+          sportsbookId: "prophetx",
+          americanOdds: -115,
+          observedAt: "2026-08-10T11:59:00.000Z",
+        },
+      },
+    ],
+    excludedBooks: [],
+  };
+  const arbitragePage = {
+    schemaVersion: "arbitrage-page-v1",
+    snapshotAt: "2026-08-10T12:00:00.000Z",
+    totalCount: 1,
+    items: [finding],
+  };
+
+  it("parses the display projection and fails closed on contradictions", async () => {
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(arbitragePage))),
+    );
+    if (!client.ok) throw client.error;
+    const page = await client.value.listArbitrage!(
+      "mlb",
+      new AbortController().signal,
+    );
+    expect(page.totalCount).toBe(1);
+    expect(page.items[0]).toMatchObject({
+      classification: "arbitrage",
+      legs: [
+        { best: { sportsbookId: "novig", americanOdds: 125 } },
+        { best: { sportsbookId: "prophetx", americanOdds: -115 } },
+      ],
+    });
+
+    for (const corrupt of [
+      { ...arbitragePage, schemaVersion: "arbitrage-page-v2" },
+      {
+        ...arbitragePage,
+        // An "arbitrage" whose sum is not below one contradicts itself.
+        items: [{ ...finding, sumInverseDecimal: 1.002 }],
+      },
+      {
+        ...arbitragePage,
+        items: [{ ...finding, legs: finding.legs.slice(0, 1) }],
+      },
+    ]) {
+      const failing = createGamesClient(
+        { ok: true, value: bootstrap() },
+        vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(new Response(JSON.stringify(corrupt))),
+      );
+      if (!failing.ok) throw failing.error;
+      await expect(
+        failing.value.listArbitrage!("mlb", new AbortController().signal),
+      ).rejects.toMatchObject({ code: "invalid-response" });
+    }
+  });
+});
+
 describe("games client", () => {
   it("fails closed when the merged lifecycle response is invalid", async () => {
     const fetcher = vi

@@ -8,14 +8,22 @@ import {
 } from "@find-the-edge/domain";
 import { displayAmericanOdds, displayPercentage } from "@find-the-edge/odds";
 
-import type { GamesClient, GamesSport, RankedOpportunityPageDto } from "./api";
+import type {
+  ArbitrageFindingDto,
+  GamesClient,
+  GamesSport,
+  RankedOpportunityPageDto,
+} from "./api";
 import { SportsbookLogo, sportsbookMetadata } from "./sportsbooks";
 import { ProviderStatusSummary } from "./provider-status";
 
 export type DashboardClientResult =
   | {
       readonly ok: true;
-      readonly value: Pick<GamesClient, "listOpportunities" | "providerStatus">;
+      readonly value: Pick<
+        GamesClient,
+        "listOpportunities" | "listArbitrage" | "providerStatus"
+      >;
     }
   | { readonly ok: false; readonly error: { readonly message: string } };
 
@@ -272,6 +280,123 @@ function DashboardSkeleton() {
   );
 }
 
+function ArbitrageCard({ item }: { readonly item: ArbitrageFindingDto }) {
+  const isArb = item.classification === "arbitrage";
+  const profitPerUnit = isArb ? (1 / item.sumInverseDecimal - 1) * 100 : null;
+  return (
+    <li className="arbitrage-card" data-finding-id={item.findingId}>
+      <header>
+        <span className={`arbitrage-badge ${isArb ? "arbitrage" : "low-hold"}`}>
+          {isArb ? "Arbitrage" : "Low hold"}
+        </span>
+        <b>
+          {item.holdPercentage >= 0 ? "+" : ""}
+          {item.holdPercentage.toFixed(2)}% hold
+        </b>
+        <span className="arbitrage-market">
+          {identifierLabel(item.marketKey)} · {easternTime(item.startsAt)}{" "}
+          Eastern
+        </span>
+      </header>
+      <ul className="arbitrage-legs">
+        {item.legs.map((leg) => (
+          <li key={leg.selectionKey}>
+            <SportsbookLogo scope={leg.best.sportsbookId} />
+            <span className="arbitrage-selection">
+              {identifierLabel(
+                leg.selectionKey.replace(/^participant:/, "").slice(0, 40),
+              )}
+              {leg.point !== null ? ` ${String(leg.point)}` : ""}
+            </span>
+            <b>{displayAmericanOdds(leg.best.americanOdds).text}</b>
+          </li>
+        ))}
+      </ul>
+      <footer>
+        {profitPerUnit !== null ? (
+          <span>
+            Guaranteed {profitPerUnit.toFixed(2)}% per unit when every leg fills
+            at its quoted price.
+          </span>
+        ) : (
+          <span>
+            Near-zero hold: useful for promo conversion, not guaranteed profit.
+          </span>
+        )}
+        <small>
+          Quoted {easternTime(item.evaluatedAt)} · expires{" "}
+          {easternTime(item.expiresAt)}
+        </small>
+      </footer>
+    </li>
+  );
+}
+
+function ArbitrageSection({
+  client,
+  sport,
+}: {
+  readonly client: DashboardClientResult;
+  readonly sport: GamesSport;
+}) {
+  const available =
+    client.ok && typeof client.value.listArbitrage === "function";
+  const query = useQuery({
+    queryKey: ["arbitrage", sport],
+    enabled: available,
+    retry: false,
+    refetchInterval: POLL_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    queryFn: ({ signal }) =>
+      client.ok && client.value.listArbitrage
+        ? client.value.listArbitrage(sport, signal)
+        : Promise.reject(new Error("Arbitrage client unavailable")),
+  });
+  if (!available) return null;
+  // Expiry is judged against the fetch instant, which stays pure per render;
+  // the 15-second poll keeps that instant fresh.
+  const visible =
+    query.data?.items.filter(
+      (item) => Date.parse(item.expiresAt) > query.dataUpdatedAt,
+    ) ?? [];
+  return (
+    <section className="dashboard-arbitrage" aria-label="Arbitrage findings">
+      <div className="dashboard-section-heading">
+        <div>
+          <p className="eyebrow">CROSS-BOOK PRICE SETS</p>
+          <h2>Arbitrage &amp; low hold</h2>
+        </div>
+        {query.data?.snapshotAt ? (
+          <p>
+            Scanned{" "}
+            <time dateTime={query.data.snapshotAt}>
+              {easternTime(query.data.snapshotAt)} Eastern
+            </time>
+          </p>
+        ) : null}
+      </div>
+      {query.isPending ? (
+        <p className="dashboard-arbitrage-empty">Scanning current prices…</p>
+      ) : query.isError ? (
+        <p className="dashboard-arbitrage-empty" role="status">
+          Arbitrage findings are temporarily unavailable.
+        </p>
+      ) : visible.length === 0 ? (
+        <p className="dashboard-arbitrage-empty" role="status">
+          No {sportLabels[sport]} market currently prices below the low-hold
+          threshold across collected books. Absence is measured, not assumed.
+        </p>
+      ) : (
+        <ol className="arbitrage-list">
+          {visible.map((item) => (
+            <ArbitrageCard key={item.findingId} item={item} />
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 export function Dashboard({
   client,
 }: {
@@ -482,6 +607,8 @@ export function Dashboard({
           )}
         </>
       ) : null}
+
+      <ArbitrageSection client={client} sport={sport} />
 
       <ProviderStatusSummary client={client} />
 

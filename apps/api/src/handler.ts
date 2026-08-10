@@ -14,6 +14,7 @@ import {
   type OddsHistoryRepository,
   OddsHistoryInputError,
   RankedOpportunityUnavailableError,
+  type ArbitrageBoardRepository,
   type RankedOpportunityRepository,
   attachSplits,
   boardCounts,
@@ -60,6 +61,7 @@ export interface ApiRequest {
     | "experiment-rollback"
     | "opportunity-list"
     | "opportunity-detail"
+    | "arbitrage-list"
     | "provider-status"
     | "scout-create"
     | "scout-status"
@@ -190,6 +192,7 @@ export const createEventHandler =
       request: ScoutingHttpRequest,
     ) => Promise<ScoutingHttpResponse>,
     loadStoredBoard?: (key: BoardKey) => Promise<StoredBoard | null>,
+    arbitrageBoardRepository?: ArbitrageBoardRepository,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -239,6 +242,50 @@ export const createEventHandler =
         if (Object.keys(request.query ?? {}).length > 0)
           throw new EventInputError("provider-status-query-invalid");
         return response(200, await providerStatus());
+      }
+      if (request.route === "arbitrage-list") {
+        if (!arbitrageBoardRepository)
+          throw new Error("arbitrage-board-repository-not-configured");
+        const sportKey = request.sportKey ?? "";
+        if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(sportKey))
+          throw new EventInputError("arbitrage-sport-invalid");
+        const query = request.query ?? {};
+        const classification = query["classification"];
+        const limitText = query["limit"];
+        const limit =
+          limitText === undefined
+            ? 20
+            : /^[1-9]\d?$/.test(limitText)
+              ? Number(limitText)
+              : Number.NaN;
+        if (
+          Object.keys(query).some(
+            (key) => !["classification", "limit"].includes(key),
+          ) ||
+          (classification !== undefined &&
+            classification !== "arbitrage" &&
+            classification !== "low-hold") ||
+          !Number.isSafeInteger(limit) ||
+          limit < 1 ||
+          limit > 50
+        )
+          throw new EventInputError("arbitrage-query-invalid");
+        const asOf = new Date().toISOString();
+        const board = await arbitrageBoardRepository.listCurrent(
+          sportKey,
+          asOf,
+        );
+        const findings = (board?.findings ?? []).filter(
+          (finding) =>
+            classification === undefined ||
+            finding.classification === classification,
+        );
+        return response(200, {
+          schemaVersion: "arbitrage-page-v1",
+          snapshotAt: board?.scannedAt ?? null,
+          totalCount: board?.totalCount ?? 0,
+          items: findings.slice(0, limit),
+        });
       }
       if (request.route.startsWith("opportunity-")) {
         if (!rankedOpportunityRepository)

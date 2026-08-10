@@ -37,6 +37,7 @@ export * from "./evaluation-candidate-repository";
 export * from "./opportunity-evidence-repository";
 export * from "./opportunity-candidate-repository";
 export * from "./dynamodb-opportunity-candidate-repository";
+export * from "./opportunities/arbitrage-board-repository";
 export * from "./opportunities/opportunity-lifecycle-repository";
 export * from "./opportunities/dynamodb-opportunity-lifecycle-repository";
 export * from "./opportunities/opportunity-lifecycle-event-evidence";

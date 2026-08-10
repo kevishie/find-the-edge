@@ -1384,6 +1384,7 @@ export class FoundationStack extends Stack {
     for (const path of [
       "/sports/{sportKey}/opportunities",
       "/sports/{sportKey}/opportunities/{opportunityId}",
+      "/sports/{sportKey}/arbitrage",
     ])
       api.addRoutes({
         path,

@@ -128,7 +128,7 @@ function availabilityRef(value: FixtureOddsAvailabilityEvidence | null) {
     : null;
 }
 
-function snapshotEvidence(
+export function snapshotEvidence(
   snapshot: NormalizedFixtureOddsSnapshot,
   book: OpportunityExactEvidenceBook,
 ): OpportunitySnapshotEvidence {

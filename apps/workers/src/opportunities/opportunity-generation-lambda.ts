@@ -4,6 +4,7 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
   AwsDynamoGateway,
   AwsFixtureOddsGateway,
+  DynamoArbitrageBoardRepository,
   DynamoEventRepository,
   DynamoGamesRepository,
   DynamoOddsControlPlaneStore,
@@ -23,6 +24,7 @@ import {
   type OpportunityGenerationResult,
   type OpportunityMarketVector,
 } from "../opportunity-candidate-service";
+import { ArbitrageScanService } from "./arbitrage-scan-service";
 import { OpportunityLifecycleService } from "./opportunity-lifecycle-service";
 
 /** Sport/league pairs the odds control plane ingests; generation follows the
@@ -123,6 +125,8 @@ export interface OpportunityGenerationRunTelemetry {
     readonly createdCount: number;
     readonly duplicateCount: number;
     readonly failureCount: number;
+    readonly arbitrageCount: number;
+    readonly lowHoldCount: number;
   }): void;
 }
 
@@ -140,6 +144,7 @@ export async function runOpportunityGeneration(
   dependencies: {
     readonly games: GamesRepository;
     readonly service: Pick<OpportunityCandidateService, "generate">;
+    readonly arbitrage?: Pick<ArbitrageScanService, "scanEvents">;
     readonly telemetry?: OpportunityGenerationRunTelemetry;
     readonly targets?: readonly {
       readonly sportKey: string;
@@ -163,6 +168,8 @@ export async function runOpportunityGeneration(
       createdCount: 0,
       duplicateCount: 0,
       failedEvents: 0,
+      arbitrageCount: 0,
+      lowHoldCount: 0,
     };
     try {
       for (const day of days) {
@@ -230,6 +237,27 @@ export async function runOpportunityGeneration(
       }
       if (events.length > 0 && totals.failedEvents === events.length)
         throw new Error("opportunity-generation-target-exhausted");
+      // The arbitrage scan is best-effort alongside candidate generation; a
+      // scan failure never fails the +EV pass.
+      if (dependencies.arbitrage && events.length > 0)
+        try {
+          const scan = await dependencies.arbitrage.scanEvents(events, asOf);
+          totals.arbitrageCount += scan.arbitrageCount;
+          totals.lowHoldCount += scan.lowHoldCount;
+        } catch (error) {
+          console.log(
+            JSON.stringify({
+              event: "arbitrage-scan-failed",
+              sportKey: target.sportKey,
+              leagueKey: target.leagueKey,
+              errorName: error instanceof Error ? error.name : "unknown",
+              errorMessage:
+                error instanceof Error
+                  ? error.message.slice(0, 300)
+                  : "unknown",
+            }),
+          );
+        }
       evaluatedTargets += 1;
       eventCount += events.length;
       qualifiedCount += totals.qualifiedCount;
@@ -258,6 +286,8 @@ export async function runOpportunityGeneration(
         createdCount: totals.createdCount,
         duplicateCount: totals.duplicateCount,
         failureCount: outcome === "failure" ? 1 : totals.failedEvents,
+        arbitrageCount: totals.arbitrageCount,
+        lowHoldCount: totals.lowHoldCount,
       });
     } catch {
       // Metrics never change the generation result.
@@ -283,6 +313,8 @@ const telemetry: OpportunityGenerationRunTelemetry = {
                 { Name: "CreatedCount", Unit: "Count" },
                 { Name: "DuplicateCount", Unit: "Count" },
                 { Name: "FailureCount", Unit: "Count" },
+                { Name: "ArbFindingCount", Unit: "Count" },
+                { Name: "LowHoldFindingCount", Unit: "Count" },
               ],
             },
           ],
@@ -295,6 +327,8 @@ const telemetry: OpportunityGenerationRunTelemetry = {
         CreatedCount: event.createdCount,
         DuplicateCount: event.duplicateCount,
         FailureCount: event.failureCount,
+        ArbFindingCount: event.arbitrageCount,
+        LowHoldFindingCount: event.lowHoldCount,
       }),
     );
   },
@@ -332,11 +366,12 @@ export const handler = (input: unknown) => {
       client,
       tableName,
     );
+    const evidence = new DynamoOpportunityEvidenceRepository(
+      new AwsFixtureOddsGateway(client, tableName),
+    );
     const service = new OpportunityCandidateService({
       eligibleEvents: new EventEvaluationCandidateRepository(eventRepository),
-      evidence: new DynamoOpportunityEvidenceRepository(
-        new AwsFixtureOddsGateway(client, tableName),
-      ),
+      evidence,
       candidates,
       providerHealth: new ControlPlaneOpportunityProviderHealthSource(
         new DynamoOddsControlPlaneStore(client, tableName),
@@ -349,12 +384,16 @@ export const handler = (input: unknown) => {
       }),
     });
     const games = new DynamoGamesRepository(eventRepository, gateway);
+    const arbitrage = new ArbitrageScanService({
+      evidence,
+      board: new DynamoArbitrageBoardRepository(client, tableName),
+    });
     runtime = async (event: unknown) => {
       validateOpportunityGenerationInvocation(event);
       // The schedule tick can lag minutes behind delivery; evidence ages are
       // measured from the actual evaluation instant, not the tick.
       return runOpportunityGeneration(
-        { games, service, telemetry },
+        { games, service, arbitrage, telemetry },
         new Date().toISOString(),
       );
     };

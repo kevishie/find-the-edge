@@ -75,6 +75,17 @@ test("renders the ranked evidence dashboard without horizontal overflow", async 
       body: "window.__FTE_RUNTIME_CONFIG__ = Object.freeze({ schemaVersion: 1, apiBase: 'https://api.example.test' });",
     }),
   );
+  await page.route("**/sports/mlb/arbitrage?limit=20", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: "arbitrage-page-v1",
+        snapshotAt: "2099-08-07T12:00:00.000Z",
+        totalCount: 0,
+        items: [],
+      }),
+    }),
+  );
   await page.route("**/sports/mlb/opportunities?limit=20", (route) =>
     route.fulfill({
       contentType: "application/json",

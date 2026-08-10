@@ -659,6 +659,7 @@ export function validateTemplate(template, config) {
     "GET /providers/status",
     "GET /sports/{sportKey}/opportunities",
     "GET /sports/{sportKey}/opportunities/{opportunityId}",
+    "GET /sports/{sportKey}/arbitrage",
     "GET /performance/cohorts",
     "GET /performance/cohorts/{eventId}",
     "GET /performance/reports",

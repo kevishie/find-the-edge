@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assessEventMetadata,
+  createArbitrageFinding,
+  fixtureOddsGroupAvailabilityIdentity,
+  normalizeFixtureOddsObservation,
   type GameOddsCellDto,
   type GameOddsComparisonDto,
 } from "@find-the-edge/domain";
@@ -8,6 +11,7 @@ import { impliedProbability } from "@find-the-edge/odds";
 import {
   EventStorageError,
   EventCursorCodec,
+  MemoryArbitrageBoardRepository,
   MemoryCohortRepository,
   MemoryOddsHistoryRepository,
   RankedOpportunityUnavailableError,
@@ -106,6 +110,126 @@ it("serves the public provider-status contract without query parameters", async 
   expect(
     await handler({ route: "provider-status", query: { leaked: "1" } }),
   ).toMatchObject({ statusCode: 400 });
+});
+
+it("serves the arbitrage board and fails closed on bad queries", async () => {
+  const observedAt = new Date(Date.now() - 120_000).toISOString();
+  const retrievedAt = new Date(Date.now() - 119_000).toISOString();
+  const arbQuote = (
+    sportsbookId: string,
+    selectionKey: string,
+    odds: number,
+  ) => {
+    const normalized = normalizeFixtureOddsObservation({
+      canonicalEventId: "event-1",
+      canonicalEventVersion: 1,
+      sportKey: "mlb",
+      marketKey: "moneyline",
+      selectionKey,
+      sportsbookId,
+      americanOdds: odds,
+      observedAt,
+      retrievedAt,
+    });
+    return {
+      ...normalized,
+      point: null,
+      selectionAvailability: {
+        identity: normalized.partitionKey,
+        evidenceId: `availability-${sportsbookId}-${selectionKey}`,
+        state: "active" as const,
+        observedAt: retrievedAt,
+      },
+      groupAvailability: {
+        identity: fixtureOddsGroupAvailabilityIdentity(normalized),
+        evidenceId: `group-availability-${sportsbookId}`,
+        state: "active" as const,
+        observedAt: retrievedAt,
+      },
+    };
+  };
+  const scannedAt = new Date(Date.now() - 60_000).toISOString();
+  const finding = createArbitrageFinding({
+    canonicalEventId: "event-1",
+    canonicalEventVersion: 1,
+    sportKey: "mlb",
+    leagueKey: "mlb",
+    marketKey: "moneyline",
+    startsAt: new Date(Date.now() + 3_600_000).toISOString(),
+    evaluatedAt: scannedAt,
+    legs: [
+      {
+        selectionKey: "team-a",
+        point: null,
+        best: arbQuote("novig", "team-a", 125),
+        competing: [],
+      },
+      {
+        selectionKey: "team-b",
+        point: null,
+        best: arbQuote("prophetx", "team-b", -115),
+        competing: [],
+      },
+    ],
+    excludedBooks: [],
+    policy: {
+      id: "find-the-edge-arbitrage",
+      version: "1.0.0",
+      lowHoldThreshold: 1.01,
+      maximumPriceAgeMinutes: 15,
+    },
+  });
+  const board = new MemoryArbitrageBoardRepository();
+  await board.putBoard("mlb", [finding], scannedAt);
+  const handler = createEventHandler(
+    repository,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    board,
+  );
+  const ok = await handler({
+    route: "arbitrage-list",
+    sportKey: "mlb",
+    method: "GET",
+  });
+  expect(ok.statusCode).toBe(200);
+  const page = JSON.parse(ok.body) as {
+    schemaVersion: string;
+    items: { classification: string }[];
+    totalCount: number;
+  };
+  expect(page.schemaVersion).toBe("arbitrage-page-v1");
+  expect(page.totalCount).toBe(1);
+  expect(page.items.map(({ classification }) => classification)).toEqual([
+    "arbitrage",
+  ]);
+  const filtered = await handler({
+    route: "arbitrage-list",
+    sportKey: "mlb",
+    method: "GET",
+    query: { classification: "low-hold" },
+  });
+  expect(
+    (JSON.parse(filtered.body) as { items: unknown[] }).items,
+  ).toHaveLength(0);
+  for (const bad of [
+    { sportKey: "MLB!" },
+    { sportKey: "mlb", query: { bogus: "1" } },
+    { sportKey: "mlb", query: { limit: "0" } },
+    { sportKey: "mlb", query: { classification: "sure-thing" } },
+  ])
+    expect(
+      await handler({ route: "arbitrage-list", method: "GET", ...bad }),
+    ).toMatchObject({ statusCode: 400 });
 });
 
 it("redacts unexpected scouting failures from structured logs", async () => {

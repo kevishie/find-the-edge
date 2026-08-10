@@ -3430,6 +3430,97 @@ footer {
   counter-reset: opportunity-rank;
 }
 
+.dashboard-arbitrage {
+  margin-top: 28px;
+}
+
+.dashboard-arbitrage-empty {
+  border: 1px dashed #332b40;
+  border-radius: 12px;
+  padding: 18px;
+  color: #a79fb3;
+  font-size: 14px;
+}
+
+.arbitrage-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.arbitrage-card {
+  min-width: 0;
+  border: 1px solid #332b40;
+  border-radius: 14px;
+  padding: 16px 18px;
+  background:
+    linear-gradient(110deg, rgba(52, 211, 153, 0.07), transparent 34%), #0f0d14;
+}
+
+.arbitrage-card > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+}
+
+.arbitrage-badge {
+  border-radius: 6px;
+  padding: 3px 8px;
+  font: 700 11px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.arbitrage-badge.arbitrage {
+  color: #0b1512;
+  background: #34d399;
+}
+
+.arbitrage-badge.low-hold {
+  border: 1px solid #8b5cf6;
+  color: #d8ccff;
+}
+
+.arbitrage-market {
+  color: #a79fb3;
+  font-size: 12px;
+}
+
+.arbitrage-legs {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.arbitrage-legs > li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.arbitrage-selection {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.arbitrage-card > footer {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  color: #a79fb3;
+  font-size: 12px;
+}
+
 .opportunity-card {
   position: relative;
   min-width: 0;

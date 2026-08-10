@@ -151,12 +151,45 @@ export interface OddsHistoryDto {
   readonly nextCursor: string | null;
 }
 
+export interface ArbitrageLegDto {
+  readonly selectionKey: string;
+  readonly point: number | null;
+  readonly best: {
+    readonly sportsbookId: string;
+    readonly americanOdds: number;
+    readonly observedAt: string;
+  };
+}
+
+export interface ArbitrageFindingDto {
+  readonly findingId: string;
+  readonly classification: "arbitrage" | "low-hold";
+  readonly holdPercentage: number;
+  readonly sumInverseDecimal: number;
+  readonly marketKey: string;
+  readonly canonicalEventId: string;
+  readonly startsAt: string;
+  readonly evaluatedAt: string;
+  readonly expiresAt: string;
+  readonly legs: readonly ArbitrageLegDto[];
+}
+
+export interface ArbitragePageDto {
+  readonly snapshotAt: string | null;
+  readonly totalCount: number;
+  readonly items: readonly ArbitrageFindingDto[];
+}
+
 export interface GamesClient {
   providerStatus?(signal: AbortSignal): Promise<ProviderStatusPageDto>;
   listOpportunities?(
     sportKey: GamesSport,
     signal: AbortSignal,
   ): Promise<RankedOpportunityPageDto>;
+  listArbitrage?(
+    sportKey: GamesSport,
+    signal: AbortSignal,
+  ): Promise<ArbitragePageDto>;
   listExperiments?(signal: AbortSignal): Promise<
     readonly {
       readonly experimentId: string;
@@ -996,6 +1029,101 @@ const opportunityEasternDay = (value: string): string => {
   const part = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((candidate) => candidate.type === type)?.value ?? "";
   return `${part("year")}-${part("month")}-${part("day")}`;
+};
+
+const invalidArbitragePage = () =>
+  new GamesClientError(
+    "invalid-response",
+    "The arbitrage response was invalid.",
+  );
+
+/** Validates the display projection of a finding; the server stores far
+ * richer evidence, so extra fields pass through unrendered. */
+const parseArbitragePage = (value: unknown): ArbitragePageDto => {
+  if (
+    !plain(value) ||
+    value["schemaVersion"] !== "arbitrage-page-v1" ||
+    !Array.isArray(value["items"]) ||
+    !Number.isSafeInteger(value["totalCount"]) ||
+    (value["totalCount"] as number) < 0 ||
+    (value["snapshotAt"] !== null && !iso(value["snapshotAt"]))
+  )
+    throw invalidArbitragePage();
+  const seen = new Set<string>();
+  const items = (value["items"] as unknown[]).map((item) => {
+    if (!plain(item)) throw invalidArbitragePage();
+    const isClassification = (
+      candidate: unknown,
+    ): candidate is "arbitrage" | "low-hold" =>
+      candidate === "arbitrage" || candidate === "low-hold";
+    const classification = item["classification"];
+    if (!isClassification(classification)) throw invalidArbitragePage();
+    if (
+      !boundedString(item["findingId"], 128) ||
+      seen.has(item["findingId"]) ||
+      typeof item["holdPercentage"] !== "number" ||
+      !Number.isFinite(item["holdPercentage"]) ||
+      typeof item["sumInverseDecimal"] !== "number" ||
+      !Number.isFinite(item["sumInverseDecimal"]) ||
+      (classification === "arbitrage") !== item["sumInverseDecimal"] < 1 ||
+      !boundedString(item["marketKey"], 64) ||
+      !boundedString(item["canonicalEventId"], 256) ||
+      !iso(item["startsAt"]) ||
+      !iso(item["evaluatedAt"]) ||
+      !iso(item["expiresAt"]) ||
+      !Array.isArray(item["legs"]) ||
+      (item["legs"] as unknown[]).length < 2 ||
+      (item["legs"] as unknown[]).length > 3
+    )
+      throw invalidArbitragePage();
+    seen.add(item["findingId"]);
+    const legs = (item["legs"] as unknown[]).map((leg) => {
+      if (
+        !plain(leg) ||
+        !boundedString(leg["selectionKey"], 64) ||
+        (leg["point"] !== null &&
+          (typeof leg["point"] !== "number" ||
+            !Number.isFinite(leg["point"]))) ||
+        !plain(leg["best"])
+      )
+        throw invalidArbitragePage();
+      const best = leg["best"];
+      if (
+        !boundedString(best["sportsbookId"], 128) ||
+        !Number.isInteger(best["americanOdds"]) ||
+        Math.abs(best["americanOdds"] as number) < 100 ||
+        Math.abs(best["americanOdds"] as number) > 100_000 ||
+        !iso(best["observedAt"])
+      )
+        throw invalidArbitragePage();
+      return {
+        selectionKey: leg["selectionKey"],
+        point: leg["point"],
+        best: {
+          sportsbookId: best["sportsbookId"],
+          americanOdds: best["americanOdds"] as number,
+          observedAt: best["observedAt"],
+        },
+      };
+    });
+    return {
+      findingId: item["findingId"],
+      classification,
+      holdPercentage: item["holdPercentage"],
+      sumInverseDecimal: item["sumInverseDecimal"],
+      marketKey: item["marketKey"],
+      canonicalEventId: item["canonicalEventId"],
+      startsAt: item["startsAt"],
+      evaluatedAt: item["evaluatedAt"],
+      expiresAt: item["expiresAt"],
+      legs,
+    };
+  });
+  return {
+    snapshotAt: value["snapshotAt"],
+    totalCount: value["totalCount"] as number,
+    items,
+  };
 };
 
 const parseRankedOpportunityPage = (
@@ -2728,6 +2856,35 @@ export function createGamesClient(
             );
           const body: unknown = await response.json().catch(() => null);
           return parseRankedOpportunityPage(body, sportKey);
+        });
+      },
+      async listArbitrage(sportKey, signal) {
+        if (sportKey !== "mlb" && sportKey !== "soccer")
+          throw new GamesClientError(
+            "invalid-response",
+            "The arbitrage sport was invalid.",
+          );
+        return boundedOpportunityRequest(signal, async (boundedSignal) => {
+          let response: Response;
+          try {
+            response = await fetcher(
+              `${bootstrap.value.config.apiBase}/sports/${encodeURIComponent(sportKey)}/arbitrage?limit=20`,
+              { signal: boundedSignal },
+            );
+          } catch (error) {
+            if (boundedSignal.aborted) throw error;
+            throw new GamesClientError(
+              "request-failed",
+              "Arbitrage findings are temporarily unavailable.",
+            );
+          }
+          if (!response.ok)
+            throw new GamesClientError(
+              "request-failed",
+              "Arbitrage findings are temporarily unavailable.",
+            );
+          const body: unknown = await response.json().catch(() => null);
+          return parseArbitragePage(body);
         });
       },
       async listExperiments(signal: AbortSignal) {

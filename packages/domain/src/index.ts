@@ -9,6 +9,7 @@ export * from "./strategy-experiment.js";
 export * from "./paper-pick-run.js";
 export * from "./evaluation-attempt.js";
 export * from "./opportunity-candidate.js";
+export * from "./opportunities/arbitrage-finding.js";
 export * from "./opportunities/opportunity-lifecycle.js";
 export * from "./opportunities/ranked-opportunity.js";
 export * from "./provider-status.js";

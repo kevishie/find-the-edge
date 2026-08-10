@@ -1,4 +1,5 @@
 export * from "./feed-coverage";
+export * from "./arbitrage-policy";
 export * from "./evaluation-policy";
 export * from "./paper-pick-schedule";
 export * from "./performance-policy";
