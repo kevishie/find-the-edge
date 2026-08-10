@@ -868,6 +868,7 @@ const scheduleEvent = (
   league: { readonly sportKey: string; readonly leagueKey: string },
   raw: {
     readonly providerEventId: string;
+    readonly providerEventUuid?: string;
     readonly awayTeam: string;
     readonly homeTeam: string;
     readonly awayClubKey?: string;
@@ -877,6 +878,9 @@ const scheduleEvent = (
   observedAt: IsoTimestamp,
 ) => ({
   providerEventId: raw.providerEventId,
+  ...(raw.providerEventUuid
+    ? { providerEventUuid: raw.providerEventUuid }
+    : {}),
   sportKey: league.sportKey as never,
   leagueKey: league.leagueKey,
   participantLabels: [raw.awayTeam, raw.homeTeam] as [string, string],

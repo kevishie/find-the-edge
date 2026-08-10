@@ -5041,3 +5041,9 @@ footer {
 .ref-footer nav { margin-left: auto; display: flex; gap: 22px; }
 .ref-footer nav a { color: #6b6678; font-size: 12.5px; }
 .ref-footer p { width: 100%; margin: 0; padding-top: 18px; border-top: 1px solid #141319; color: #4a4653; font-size: 12px; line-height: 1.6; }
+
+.evx-toggle.selected {
+  border-color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.16);
+  color: #fff;
+}

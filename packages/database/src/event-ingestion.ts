@@ -98,6 +98,8 @@ export const participantIdentityMatches = (
 export interface ScheduledEventReconciliationInput {
   readonly event: EventIngestionInput;
   readonly bootstrap: CanonicalEventBootstrap;
+  /** SharpAPI atlas uuid — the feed-stable identity across id churn. */
+  readonly providerEventUuid?: string;
 }
 export interface EventIngestionStore {
   resolveExactCanonicalBinding(
@@ -243,6 +245,28 @@ export async function reconcileScheduledEventUnderLease(
   reconciliationFence?: ReconciliationFence,
 ): Promise<EventIngestionOutcome> {
   const { event, bootstrap } = input;
+  // The provider renders event ids from league/team/time inputs it
+  // renormalizes at will; the atlas uuid is the stable identity. Every
+  // successful binding also claims a uuid-namespaced alias so churned ids
+  // re-attach to the same canonical event deterministically.
+  const uuidProbe = input.providerEventUuid
+    ? { ...event, providerEventId: `uuid:${input.providerEventUuid}` }
+    : null;
+  const recordUuidAlias = async () => {
+    if (!uuidProbe) return;
+    if (await store.getExactMapping(uuidProbe)) return;
+    const bound = await store.resolveExactCanonicalBinding(event);
+    if (!bound?.participantLabels) return;
+    await store.ingestEvent({
+      ...uuidProbe,
+      startsAt: bound.startsAt,
+      status: bound.status,
+      participantLabels: bound.participantLabels,
+      normalizedIdentity: bound.candidateIdentity,
+      mappingKind: "alias",
+      ...(reconciliationFence ? { reconciliationFence } : {}),
+    });
+  };
   if (
     event.status !== "scheduled" ||
     bootstrap.status !== "scheduled" ||
@@ -262,15 +286,18 @@ export async function reconcileScheduledEventUnderLease(
   if (exactMapping && exact) {
     // The canonical source may legitimately correct its own schedule. A raw
     // alias may not move the winning canonical schedule on replay.
-    if (exactMapping.bindingKind === "source")
-      return store.ingestEvent({
+    if (exactMapping.bindingKind === "source") {
+      const outcome = await store.ingestEvent({
         ...event,
         mappingKind: "source",
         ...(reconciliationFence ? { reconciliationFence } : {}),
       });
+      await recordUuidAlias();
+      return outcome;
+    }
     if (!exact.participantLabels)
       throw new Error("mapped-canonical-participants-missing");
-    return store.ingestEvent({
+    const outcome = await store.ingestEvent({
       ...event,
       startsAt: exact.startsAt,
       status: exact.status,
@@ -279,6 +306,8 @@ export async function reconcileScheduledEventUnderLease(
       mappingKind: "alias",
       ...(reconciliationFence ? { reconciliationFence } : {}),
     });
+    await recordUuidAlias();
+    return outcome;
   }
 
   const exactIdentity = await store.ingestEvent({
@@ -289,8 +318,31 @@ export async function reconcileScheduledEventUnderLease(
   if (
     exactIdentity.kind !== "unresolved" ||
     exactIdentity.reason !== "no-candidate"
-  )
+  ) {
+    await recordUuidAlias();
     return exactIdentity;
+  }
+
+  if (uuidProbe) {
+    const uuidMapping = await store.getExactMapping(uuidProbe);
+    const uuidBound = uuidMapping
+      ? await store.resolveExactCanonicalBinding(uuidProbe)
+      : null;
+    if (uuidMapping && uuidBound) {
+      if (!uuidBound.participantLabels)
+        throw new Error("uuid-canonical-participants-missing");
+      // A churned provider id re-attaches to the uuid's canonical event.
+      return store.ingestEvent({
+        ...event,
+        startsAt: uuidBound.startsAt,
+        status: uuidBound.status,
+        participantLabels: uuidBound.participantLabels,
+        normalizedIdentity: uuidBound.candidateIdentity,
+        mappingKind: "alias",
+        ...(reconciliationFence ? { reconciliationFence } : {}),
+      });
+    }
+  }
 
   const candidates = await store.findNearCanonicalCandidates(event);
   if (candidates.length > 1) {
@@ -325,7 +377,7 @@ export async function reconcileScheduledEventUnderLease(
     }
     if (!candidate.participantLabels)
       throw new Error("near-canonical-participants-missing");
-    return store.ingestEvent({
+    const outcome = await store.ingestEvent({
       ...event,
       startsAt: candidate.startsAt,
       status: candidate.status,
@@ -334,6 +386,8 @@ export async function reconcileScheduledEventUnderLease(
       mappingKind: "alias",
       ...(reconciliationFence ? { reconciliationFence } : {}),
     });
+    await recordUuidAlias();
+    return outcome;
   }
 
   await store.bootstrapCanonicalEvent(
@@ -341,11 +395,13 @@ export async function reconcileScheduledEventUnderLease(
     event.observedAt,
     reconciliationFence,
   );
-  return store.ingestEvent({
+  const outcome = await store.ingestEvent({
     ...event,
     mappingKind: "source",
     ...(reconciliationFence ? { reconciliationFence } : {}),
   });
+  await recordUuidAlias();
+  return outcome;
 }
 
 export const reconciliationScope = (input: NearCanonicalLookup) => {

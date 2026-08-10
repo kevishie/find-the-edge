@@ -231,6 +231,7 @@ export interface SharpApiNormalizationRejection {
 
 export interface SharpApiScheduleEvent {
   readonly providerEventId: string;
+  readonly providerEventUuid?: string;
   readonly awayTeam: string;
   readonly homeTeam: string;
   readonly awayClubKey?: string;
@@ -1226,6 +1227,12 @@ export function parseSharpApiSchedulePage(
       continue;
     events.push({
       providerEventId: value["id"],
+      // The atlas uuid is SharpAPI's feed-stable identity; ids are
+      // deterministic renderings of league/team/time inputs the provider
+      // renormalizes at will.
+      ...(canonical(value["uuid"], 64)
+        ? { providerEventUuid: value["uuid"] }
+        : {}),
       awayTeam: participants.awayTeam,
       homeTeam: participants.homeTeam,
       ...(participants.awayClubKey
