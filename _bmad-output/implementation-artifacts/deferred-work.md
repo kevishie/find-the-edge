@@ -178,7 +178,16 @@ served board for today+tomorrow ET per ingested league, converts priced
 scheduled games into market vectors, and feeds OpportunityCandidateService —
 every number remains reproducible from our own stored snapshot evidence
 (policy: target hardrock, comparisons DK/FD/MGM/Caesars, min EV 2%).
-Dashboard is now linked in both navs as "Scanner" (/dashboard). Follow-ups:
+Dashboard is now linked in both navs as "Scanner" (/dashboard). VERIFIED
+LIVE 2026-08-10T03:0xZ: all five leagues pass on schedule (mlb: 10 events,
+54 candidates created, 0 qualified at current prices — honest outcome),
+opportunities API complete with zero join failures, page renders on
+staging desktop+mobile. Shipping it surfaced and fixed three latent
+platform bugs: EventBridge second-precision timestamps rejected by strict
+ISO round-trip validators (both opportunity workers), missing per-item
+transactional IAM actions (ConditionCheckItem/DeleteItem — DynamoDB never
+checks a "TransactWriteItems" action), and /dashboard missing from the
+CloudFront SPA whitelist. Follow-ups:
 consider SharpAPI /opportunities/ev as a cross-reference lens (provider-
 asserted EV cannot enter the candidate evidence contract by design), and add
 Pinnacle to the comparison roster or as a dedicated anchor book in the
