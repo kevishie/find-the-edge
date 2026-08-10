@@ -78,6 +78,24 @@ Hardening candidates:
 - The `_b0` ghost rows still on boards are the churn-identity story
   (see the churn-split entry above) — now the top follow-up.
 
+## Closing lines + CLV shipped (2026-08-10) — approved queue complete
+
+Closing-line capture: each just-started priced game's served board
+selections are written once as an immutable CLOSING_LINES record (first
+post-start snapshot wins forever; the provider drops started games, so
+that snapshot IS the close). CLV: qualified opportunities leave compact
+CLV_ENTRY breadcrumbs; at capture, each entry is scored against the
+closing fair (Pinnacle-anchored no-vig when the market carries the
+anchor, display-book otherwise; moved lines skip, never fabricate) into
+a rolling per-sport CLV_BOARD served at /sports/{sportKey}/clv and the
+dashboard's Recent CLV tile. First live numbers require qualified
+entries meeting their closes — the tile states its empty case honestly.
+This closes the 2026-08-09 approved queue: soccer self-healing, Pinnacle
+fair lines, +EV scanner, arbitrage/low-hold, CLV, plus alarm routing and
+the board-freshness alarm. Next: prod cutover (FTE-059, approval-gated),
+bet tracker (makes CLV personal), persist-path version re-resolution,
+middles, backlog FTE-044..058.
+
 ## Incident 2026-08-10: poisoned splits continuation blanked the splits board (resolved)
 
 One splits run failed at 2026-08-09T18:25Z; its continuation survived with
