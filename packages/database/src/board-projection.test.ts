@@ -116,7 +116,11 @@ describe("materialization", () => {
       now: NOW,
     });
 
-    expect(result).toEqual({ stored: 10, skipped: 0 });
+    expect(result).toEqual({
+      stored: 10,
+      skipped: 0,
+      scheduledOddsAgeSeconds: null,
+    });
     const splitBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#splits#"));
     const gameBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#games#"));
     expect(splitBoards).toHaveLength(2);
@@ -130,6 +134,33 @@ describe("materialization", () => {
     }
     for (const board of gameBoards)
       expect(board.value.body).not.toContain('"splits"');
+  });
+
+  it("reports the worst priced-scheduled odds age across boards", async () => {
+    const retrievedAt = new Date(NOW.getTime() - 600_000).toISOString();
+    const pricedPage = {
+      ...page("2026-08-08"),
+      items: [
+        {
+          ...page("2026-08-08").items[0]!,
+          status: "scheduled",
+          startsAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+          odds: {
+            state: "available",
+            selections: [{ retrievedAt }, { retrievedAt }],
+          },
+        },
+      ],
+    };
+    const result = await materializeBoards({
+      games: { list: () => Promise.resolve(pricedPage as never) },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: () => Promise.resolve(),
+      now: NOW,
+    });
+    expect(result.scheduledOddsAgeSeconds).toBe(600);
   });
 
   it("skips a board whose page would need a cursor", async () => {
@@ -146,7 +177,11 @@ describe("materialization", () => {
       },
       now: NOW,
     });
-    expect(result).toEqual({ stored: 0, skipped: 10 });
+    expect(result).toEqual({
+      stored: 0,
+      skipped: 10,
+      scheduledOddsAgeSeconds: null,
+    });
     expect(puts).toHaveLength(0);
   });
 });

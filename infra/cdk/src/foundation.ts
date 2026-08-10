@@ -14,7 +14,12 @@ import {
   StreamViewType,
   Table,
 } from "aws-cdk-lib/aws-dynamodb";
-import { Alarm, ComparisonOperator, Metric } from "aws-cdk-lib/aws-cloudwatch";
+import {
+  Alarm,
+  ComparisonOperator,
+  Metric,
+  TreatMissingData,
+} from "aws-cdk-lib/aws-cloudwatch";
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
 import {
   EventField,
@@ -1756,6 +1761,22 @@ export class FoundationStack extends Stack {
         evaluationPeriods: 1,
         comparisonOperator:
           ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ScheduledBoardOddsFreshnessAlarm", {
+        // Measures the served boards, not provider health: age of the newest
+        // priced evidence across scheduled boards with upcoming games. An
+        // empty slate emits nothing, so missing data stays healthy.
+        metric: new Metric({
+          namespace: "FindTheEdge/Boards",
+          metricName: "ScheduledBoardOddsAgeSeconds",
+          statistic: "Maximum",
+          period: Duration.minutes(15),
+        }),
+        threshold: 1_800,
+        evaluationPeriods: 2,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
       }),
       new Alarm(this, "OddsControlPlaneCadenceLagAlarm", {
         metric: new Metric({

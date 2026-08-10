@@ -604,6 +604,30 @@ const runLiveOddsHandler = async (event?: unknown) => {
       process.stdout.write(
         `${JSON.stringify({ event: "board-materialization", ...boards })}\n`,
       );
+      // Provider health alone has twice proven blind to frozen persistence;
+      // this measures the served data itself. An empty slate emits nothing,
+      // so the alarm treats missing data as healthy.
+      if (boards.scheduledOddsAgeSeconds !== null)
+        process.stdout.write(
+          `${JSON.stringify({
+            _aws: {
+              Timestamp: Date.now(),
+              CloudWatchMetrics: [
+                {
+                  Namespace: "FindTheEdge/Boards",
+                  Dimensions: [[]],
+                  Metrics: [
+                    {
+                      Name: "ScheduledBoardOddsAgeSeconds",
+                      Unit: "Seconds",
+                    },
+                  ],
+                },
+              ],
+            },
+            ScheduledBoardOddsAgeSeconds: boards.scheduledOddsAgeSeconds,
+          })}\n`,
+        );
     } catch (error) {
       process.stdout.write(
         `${JSON.stringify({

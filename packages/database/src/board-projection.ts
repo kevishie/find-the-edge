@@ -344,6 +344,11 @@ export const materializationTargets = (now: Date): readonly BoardKey[] => {
 export interface BoardMaterializationResult {
   readonly stored: number;
   readonly skipped: number;
+  /** Age of the newest priced evidence across every scheduled board that has
+   * priced upcoming games, worst league first; null when no such board
+   * exists (an empty slate is not staleness). Provider health alone has
+   * twice proven blind to frozen persistence — this measures the data. */
+  readonly scheduledOddsAgeSeconds: number | null;
 }
 
 export const materializeBoards = async (input: {
@@ -362,6 +367,7 @@ export const materializeBoards = async (input: {
 }): Promise<BoardMaterializationResult> => {
   let stored = 0;
   let skipped = 0;
+  let scheduledOddsAgeSeconds: number | null = null;
   const scheduleCache = new Map<string, readonly ScheduleListing[] | null>();
   const scheduleFor = async (sportKey: "mlb" | "soccer") => {
     if (!input.scheduleListings) return null;
@@ -406,6 +412,31 @@ export const materializeBoards = async (input: {
       skipped += 1;
       continue;
     }
+    if (key.route === "games" && key.status === "scheduled") {
+      const newestRetrieved = Math.max(
+        ...page.items
+          .filter(
+            (game) =>
+              game.status === "scheduled" &&
+              Date.parse(game.startsAt) > input.now.getTime() &&
+              game.odds.state === "available",
+          )
+          .flatMap((game) =>
+            game.odds.state === "available"
+              ? game.odds.selections.map(({ retrievedAt }) =>
+                  Date.parse(retrievedAt),
+                )
+              : [],
+          ),
+      );
+      if (Number.isFinite(newestRetrieved)) {
+        const age = Math.max(
+          0,
+          (input.now.getTime() - newestRetrieved) / 1_000,
+        );
+        scheduledOddsAgeSeconds = Math.max(scheduledOddsAgeSeconds ?? 0, age);
+      }
+    }
     const body = JSON.stringify(
       key.route === "splits" ? await attachSplits(page, input.splits) : page,
     );
@@ -425,5 +456,5 @@ export const materializeBoards = async (input: {
     });
     stored += 1;
   }
-  return { stored, skipped };
+  return { stored, skipped, scheduledOddsAgeSeconds };
 };
