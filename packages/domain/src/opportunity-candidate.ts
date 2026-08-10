@@ -16,6 +16,10 @@ export const OPPORTUNITY_QUALIFICATION_ALGORITHM_ID =
   "opportunity-qualification" as const;
 export const OPPORTUNITY_QUALIFICATION_VERSION =
   "opportunity-qualification-v1" as const;
+/** How far a provider-health observation may lead the evaluation instant.
+ * Health rows are rewritten continuously by the ingestion control plane, so
+ * an observation moments ahead of evaluatedAt is concurrency, not skew. */
+export const PROVIDER_HEALTH_SKEW_TOLERANCE_MS = 5 * 60_000;
 
 export const opportunityBlockingReasonCodes = [
   "calculation-provenance-unavailable",
@@ -559,7 +563,11 @@ export function createOpportunityCandidate(
           status,
         ) ||
         healthy !== (status === "healthy") ||
-        Date.parse(checkedAt) > Date.parse(evaluatedAt),
+        // The control plane rewrites health rows continuously, so a row
+        // observed moments after the evaluation instant is the same evidence
+        // source, not future-dated data; only unbounded skew is rejected.
+        Date.parse(checkedAt) >
+          Date.parse(evaluatedAt) + PROVIDER_HEALTH_SKEW_TOLERANCE_MS,
     ) ||
     new Set(
       providerHealth.map(

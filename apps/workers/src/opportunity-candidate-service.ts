@@ -11,11 +11,12 @@ import {
   type OpportunityExactEvidenceBook,
   type OddsControlPlaneStore,
 } from "@find-the-edge/database";
-import type {
-  FixtureOddsAvailabilityEvidence,
-  NormalizedFixtureOddsSnapshot,
-  OpportunityCandidate,
-  OpportunitySnapshotEvidence,
+import {
+  PROVIDER_HEALTH_SKEW_TOLERANCE_MS,
+  type FixtureOddsAvailabilityEvidence,
+  type NormalizedFixtureOddsSnapshot,
+  type OpportunityCandidate,
+  type OpportunitySnapshotEvidence,
 } from "@find-the-edge/domain";
 import {
   OPPORTUNITY_QUALIFICATION_VERSION,
@@ -311,7 +312,12 @@ export class OpportunityCandidateService {
               item.recordVersion < 0 ||
               item.healthy !== (item.status === "healthy") ||
               new Date(item.checkedAt).toISOString() !== item.checkedAt ||
-              item.checkedAt > command.evaluatedAt,
+              // Health rows are rewritten continuously by ingestion; an
+              // observation moments ahead of the evaluation instant is
+              // concurrency, not future-dated evidence.
+              Date.parse(item.checkedAt) >
+                Date.parse(command.evaluatedAt) +
+                  PROVIDER_HEALTH_SKEW_TOLERANCE_MS,
           )
         )
           throw new Error("opportunity-provider-health-invalid");

@@ -357,6 +357,56 @@ describe("opportunity candidate service", () => {
     ).rejects.toThrow("opportunity-provider-health-inconsistent");
   });
 
+  it("tolerates health observed moments after the evaluation instant", async () => {
+    // The ingestion control plane rewrites health rows continuously, so an
+    // observation seconds ahead of evaluatedAt is concurrency, not skew.
+    const justAfter = new Date(Date.parse(evaluatedAt) + 30_000).toISOString();
+    const providerHealth: OpportunityProviderHealthSource = {
+      read(input) {
+        return Promise.resolve({
+          providerId: "sharpapi",
+          sportsbookId: input.sportsbookId,
+          healthy: true,
+          checkedAt: justAfter,
+          healthKey: "sharpapi:mlb:odds",
+          evidenceId: `sharpapi:mlb:odds@9@${justAfter}`,
+          leagueKey: input.leagueKey,
+          capability: "odds",
+          recordVersion: 9,
+          status: "healthy",
+        });
+      },
+    };
+    const generated = await service({ providerHealth }).value.generate({
+      evaluatedAt,
+      events: [event],
+    });
+    expect(generated.candidates.length).toBeGreaterThan(0);
+    const beyondTolerance = new Date(
+      Date.parse(evaluatedAt) + 5 * 60_000 + 1_000,
+    ).toISOString();
+    await expect(
+      service({
+        providerHealth: {
+          read(input) {
+            return Promise.resolve({
+              providerId: "sharpapi",
+              sportsbookId: input.sportsbookId,
+              healthy: true,
+              checkedAt: beyondTolerance,
+              healthKey: "sharpapi:mlb:odds",
+              evidenceId: `sharpapi:mlb:odds@9@${beyondTolerance}`,
+              leagueKey: input.leagueKey,
+              capability: "odds",
+              recordVersion: 9,
+              status: "healthy",
+            });
+          },
+        },
+      }).value.generate({ evaluatedAt, events: [event] }),
+    ).rejects.toThrow("opportunity-provider-health-invalid");
+  });
+
   it("fails closed when provider-health evidence exceeds the price window", async () => {
     const providerHealth: OpportunityProviderHealthSource = {
       read(input) {

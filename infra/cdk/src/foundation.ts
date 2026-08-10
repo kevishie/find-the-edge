@@ -1808,6 +1808,13 @@ export class FoundationStack extends Stack {
         comparisonOperator:
           ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       }),
+      new Alarm(this, "OpportunityGenerationFailuresAlarm", {
+        metric: opportunityGeneration.metricErrors(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
       new Alarm(this, "OpportunityStaleActiveAlarm", {
         metric: new Metric({
           namespace: "FindTheEdge/OpportunityLifecycle",

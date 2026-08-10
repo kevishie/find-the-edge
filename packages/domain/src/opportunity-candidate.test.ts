@@ -191,6 +191,29 @@ describe("opportunity candidate", () => {
     ).toThrow("stored-opportunity-candidate-invalid");
   });
 
+  it("bounds provider-health skew ahead of the evaluation instant", () => {
+    const value = input();
+    const shifted = (offsetMs: number) =>
+      value.providerHealth.map((item) => ({
+        ...item,
+        checkedAt: new Date(
+          Date.parse(value.evaluatedAt) + offsetMs,
+        ).toISOString(),
+      }));
+    // Continuously rewritten health rows may be observed moments after the
+    // evaluation instant; that is concurrency, not future-dated evidence.
+    expect(
+      createOpportunityCandidate({ ...value, providerHealth: shifted(30_000) })
+        .providerHealth[0]?.checkedAt,
+    ).toBe(new Date(Date.parse(value.evaluatedAt) + 30_000).toISOString());
+    expect(() =>
+      createOpportunityCandidate({
+        ...value,
+        providerHealth: shifted(5 * 60_000 + 1_000),
+      }),
+    ).toThrow("opportunity-provider-health-invalid");
+  });
+
   it("rejects decision reasons and values contradicted by exact evidence", () => {
     const value = input();
     expect(() =>

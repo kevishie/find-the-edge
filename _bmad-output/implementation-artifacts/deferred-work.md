@@ -184,6 +184,20 @@ asserted EV cannot enter the candidate evidence contract by design), and add
 Pinnacle to the comparison roster or as a dedicated anchor book in the
 evaluation policy.
 
+## Latent: every EventBridge-scheduled opportunity invocation failed (found 2026-08-10)
+
+The expiration worker's invocation validator required millisecond-ISO
+round-trip equality on the event `time`, but live EventBridge stamps
+schedules at second precision ("2026-08-10T01:55:00Z"), so EVERY invocation
+since the worker shipped threw opportunity-expiration-invocation-invalid.
+The new generation worker inherited the same check and failed its first
+runs, which is how it surfaced. OpportunityExpirationFailuresAlarm (on
+Lambda Errors) has presumably sat in ALARM the whole time — no alarm has a
+notification action, so nobody saw it. Fixed both validators (accept
+second-precision, return normalized instant). Follow-ups: route alarm
+states somewhere visible (FTE-055), and add a matching failures alarm for
+the generation worker.
+
 ## Pinnacle-anchored fair lines — shipped to the list path (2026-08-09)
 
 `sharpAmericanOdds?` on GameOddsSelectionDto; JoinedGamesRepository.list

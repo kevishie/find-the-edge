@@ -198,9 +198,19 @@ export async function runOpportunityGeneration(
       evaluatedTargets += 1;
       eventCount += events.length;
       qualifiedCount += result?.qualifiedCount ?? 0;
-    } catch {
+    } catch (error) {
       outcome = "failure";
       failedTargets += 1;
+      console.log(
+        JSON.stringify({
+          event: "opportunity-generation-target-failed",
+          sportKey: target.sportKey,
+          leagueKey: target.leagueKey,
+          errorName: error instanceof Error ? error.name : "unknown",
+          errorMessage:
+            error instanceof Error ? error.message.slice(0, 200) : "unknown",
+        }),
+      );
     }
     try {
       dependencies.telemetry?.emit({
@@ -304,11 +314,15 @@ export const handler = (input: unknown) => {
       }),
     });
     const games = new DynamoGamesRepository(eventRepository, gateway);
-    runtime = async (event: unknown) =>
-      runOpportunityGeneration(
+    runtime = async (event: unknown) => {
+      validateOpportunityGenerationInvocation(event);
+      // The schedule tick can lag minutes behind delivery; evidence ages are
+      // measured from the actual evaluation instant, not the tick.
+      return runOpportunityGeneration(
         { games, service, telemetry },
-        validateOpportunityGenerationInvocation(event),
+        new Date().toISOString(),
       );
+    };
   }
   return runtime(input);
 };
