@@ -532,9 +532,52 @@ export function fixtureOddsPartition(
   });
 }
 
-function snapshotContent(
-  snapshot: Omit<NormalizedFixtureOddsSnapshot, "snapshotId" | "sortKey">,
-): string {
+type SnapshotBase = Omit<
+  NormalizedFixtureOddsSnapshot,
+  "snapshotId" | "sortKey"
+>;
+
+/**
+ * Snapshot identity (v2) is the OBSERVED MARKET STATE only. `retrievedAt` — our
+ * fetch clock — is deliberately excluded: re-observing an unchanged price must
+ * re-derive the same identity so it is a replay, not new evidence. `retrievedAt`
+ * remains a stored attribute (real evidence of when we first saw that price).
+ */
+function snapshotContent(snapshot: SnapshotBase): string {
+  const values: (string | number | null)[] = [
+    snapshot.canonicalEventId,
+    snapshot.canonicalEventVersion,
+    snapshot.sportKey,
+    snapshot.marketKey,
+    snapshot.selectionKey,
+    snapshot.selectionLabel ?? null,
+    snapshot.sportsbookId,
+    snapshot.sportsbookLabel ?? null,
+    snapshot.americanOdds,
+    snapshot.observedAt,
+  ];
+  if (snapshot.point !== undefined) values.push(snapshot.point);
+  if (snapshot.provenance !== undefined)
+    values.push(
+      snapshot.provenance.providerId,
+      snapshot.provenance.policyVersion,
+      snapshot.provenance.bookRole,
+      snapshot.provenance.sourceState,
+    );
+  return encodeComposite(values);
+}
+
+/**
+ * Frozen legacy (v1) identity computation. Rows committed before the v2 change
+ * hashed `retrievedAt` into their identity, so the read path must be able to
+ * reproduce it to authenticate them. VERIFICATION ONLY — never write v1 again.
+ *
+ * v1 and v2 encodings can never collide: v1 always carries `retrievedAt` (a
+ * JSON string) at index 10, while v2 index 10 is absent, a number (`point`), or
+ * `providerId`, and the two length sets only overlap where index 10 differs in
+ * JSON type or value shape.
+ */
+function legacySnapshotContentV1(snapshot: SnapshotBase): string {
   const values: (string | number | null)[] = [
     snapshot.canonicalEventId,
     snapshot.canonicalEventVersion,
@@ -559,9 +602,76 @@ function snapshotContent(
   return encodeComposite(values);
 }
 
-export function normalizeFixtureOddsObservation(
+function deriveIdentity(
+  base: SnapshotBase,
+  content: string,
+): { readonly snapshotId: string; readonly sortKey: string } {
+  if (utf8Length(content) > MAX_NORMALIZED_BYTES) {
+    throw new FixtureOddsInputError(
+      "normalized snapshot exceeds the item-size safety limit",
+    );
+  }
+  const snapshotId = sha256Hex(content);
+  const sortKey = `SNAPSHOT#${base.observedAt}#${snapshotId}`;
+  if (utf8Length(sortKey) > MAX_SORT_KEY_BYTES) {
+    throw new FixtureOddsInputError(
+      "snapshot sort key exceeds the DynamoDB key limit",
+    );
+  }
+  return { snapshotId, sortKey };
+}
+
+export type FixtureOddsSnapshotIdentityVersion = "current" | "legacy";
+
+export interface FixtureOddsSnapshotRecordRead {
+  readonly kind: FixtureOddsSnapshotIdentityVersion;
+  readonly snapshot: NormalizedFixtureOddsSnapshot;
+}
+
+/**
+ * Authenticate a stored snapshot record against the identity it claims.
+ *
+ * Recomputes the current (v2) identity first; a stored row whose identity was
+ * produced by the legacy (v1) hash is accepted only when the frozen v1
+ * computation reproduces BOTH the stored `snapshotId` and `sortKey` exactly.
+ * Returns `null` when neither derivation reproduces the claimed identity, which
+ * the caller must treat as forgery. Throws the usual input errors when the
+ * observation itself is not normalizable.
+ */
+export function readFixtureOddsSnapshotRecord(
   observation: FixtureOddsObservation,
-): NormalizedFixtureOddsSnapshot {
+  claimed: { readonly snapshotId: unknown; readonly sortKey: unknown },
+): FixtureOddsSnapshotRecordRead | null {
+  const base = normalizeFixtureOddsObservationBase(observation);
+  const current = deriveIdentity(base, snapshotContent(base));
+  if (
+    claimed.snapshotId === current.snapshotId &&
+    claimed.sortKey === current.sortKey
+  )
+    return deepFreeze({
+      kind: "current" as const,
+      snapshot: { ...base, ...current },
+    });
+  let legacy: { readonly snapshotId: string; readonly sortKey: string };
+  try {
+    legacy = deriveIdentity(base, legacySnapshotContentV1(base));
+  } catch {
+    return null;
+  }
+  if (
+    claimed.snapshotId === legacy.snapshotId &&
+    claimed.sortKey === legacy.sortKey
+  )
+    return deepFreeze({
+      kind: "legacy" as const,
+      snapshot: { ...base, ...legacy },
+    });
+  return null;
+}
+
+function normalizeFixtureOddsObservationBase(
+  observation: FixtureOddsObservation,
+): SnapshotBase {
   const captured = captureObservation(observation);
   const partition = fixtureOddsPartition(captured);
   if (
@@ -646,20 +756,17 @@ export function normalizeFixtureOddsObservation(
     ...(provenance === undefined ? {} : { provenance }),
     partitionKey: partition.key,
   };
-  const content = snapshotContent(base);
-  if (utf8Length(content) > MAX_NORMALIZED_BYTES) {
-    throw new FixtureOddsInputError(
-      "normalized snapshot exceeds the item-size safety limit",
-    );
-  }
-  const snapshotId = sha256Hex(content);
-  const sortKey = `SNAPSHOT#${base.observedAt}#${snapshotId}`;
-  if (utf8Length(sortKey) > MAX_SORT_KEY_BYTES) {
-    throw new FixtureOddsInputError(
-      "snapshot sort key exceeds the DynamoDB key limit",
-    );
-  }
-  return deepFreeze({ ...base, snapshotId, sortKey });
+  return base;
+}
+
+export function normalizeFixtureOddsObservation(
+  observation: FixtureOddsObservation,
+): NormalizedFixtureOddsSnapshot {
+  const base = normalizeFixtureOddsObservationBase(observation);
+  return deepFreeze({
+    ...base,
+    ...deriveIdentity(base, snapshotContent(base)),
+  });
 }
 
 function deepFreeze<T>(value: T): T {
@@ -768,7 +875,7 @@ function validatePriorState(state: FixtureOddsState): FixtureOddsState {
       `state.snapshots.${key}`,
       true,
     ) as unknown as NormalizedFixtureOddsSnapshot;
-    let normalized: NormalizedFixtureOddsSnapshot;
+    let authenticated: FixtureOddsSnapshotRecordRead | null;
     try {
       const observation = Object.create(null) as Record<string, unknown>;
       for (const field of OBSERVATION_REQUIRED_KEYS) {
@@ -778,18 +885,21 @@ function validatePriorState(state: FixtureOddsState): FixtureOddsState {
         if (Object.hasOwn(candidate, field))
           observation[field] = candidate[field];
       }
-      normalized = normalizeFixtureOddsObservation(
+      // Accepts either the current identity or a legitimate legacy (v1) row;
+      // both must reproduce the claimed snapshotId AND sortKey exactly.
+      authenticated = readFixtureOddsSnapshotRecord(
         observation as unknown as FixtureOddsObservation,
+        { snapshotId: candidate.snapshotId, sortKey: candidate.sortKey },
       );
     } catch (error) {
       throw new FixtureOddsStateCorruptionError(
         `snapshot record is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
       );
     }
+    const normalized = authenticated?.snapshot;
     if (
+      normalized === undefined ||
       key !== candidate.snapshotId ||
-      normalized.snapshotId !== candidate.snapshotId ||
-      normalized.sortKey !== candidate.sortKey ||
       normalized.partitionKey !== candidate.partitionKey ||
       normalized.partitionKey !== capturedPartition.key
     ) {

@@ -2,7 +2,7 @@ import {
   calculationInputHash,
   canonicalCalculationJson,
   normalizeCalculationProvenance,
-  normalizeFixtureOddsObservation,
+  readFixtureOddsSnapshotRecord,
   type CalculationProvenance,
   type NormalizedFixtureOddsSnapshot,
 } from "@find-the-edge/domain";
@@ -1272,24 +1272,24 @@ function normalizedSnapshotIdentity(
       .filter((key) => Object.hasOwn(captured, key))
       .map((key) => [key, captured[key]]),
   );
-  let authenticated: NormalizedFixtureOddsSnapshot;
+  let read: ReturnType<typeof readFixtureOddsSnapshotRecord>;
   try {
-    authenticated = normalizeFixtureOddsObservation(
+    // Accepts the current identity and, for verification only, rows committed
+    // under the frozen legacy hash that included `retrievedAt`. Both must
+    // reproduce the claimed snapshotId AND sortKey exactly.
+    read = readFixtureOddsSnapshotRecord(
       observation as unknown as Parameters<
-        typeof normalizeFixtureOddsObservation
+        typeof readFixtureOddsSnapshotRecord
       >[0],
+      { snapshotId: captured["snapshotId"], sortKey: captured["sortKey"] },
     );
   } catch {
     return fail("report-calculation-snapshot-invalid");
   }
-  if (
-    captured["snapshotId"] !== authenticated.snapshotId ||
-    captured["sortKey"] !== authenticated.sortKey ||
-    captured["partitionKey"] !== authenticated.partitionKey
-  ) {
-    fail("report-calculation-snapshot-forged");
+  if (!read || captured["partitionKey"] !== read.snapshot.partitionKey) {
+    return fail("report-calculation-snapshot-forged");
   }
-  return authenticated;
+  return read.snapshot;
 }
 
 function validateEvidenceAttachments(

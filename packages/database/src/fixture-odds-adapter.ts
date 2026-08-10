@@ -2,6 +2,7 @@ import type {
   FixtureOddsAvailabilityEvidence,
   FixtureOddsObservation,
   FixtureOddsSnapshotDecision,
+  FixtureOddsSnapshotRecordRead,
   NormalizedFixtureOddsSnapshot,
 } from "@find-the-edge/domain";
 import {
@@ -15,6 +16,7 @@ import {
   fixtureOddsGroupAvailabilityIdentity,
   isFixtureOddsSnapshotActionable,
   normalizeFixtureOddsObservation,
+  readFixtureOddsSnapshotRecord,
   transitionFixtureOdds,
   transitionFixtureOddsAvailability,
 } from "@find-the-edge/domain";
@@ -275,12 +277,41 @@ export interface FixtureOddsPersistResult {
   readonly value: NormalizedFixtureOddsSnapshot;
 }
 
+/** Byte-for-byte equality, including `retrievedAt`. Used where both sides are
+ * expected to be the same committed row round-tripped through normalization. */
 const sameSnapshot = (
   left: NormalizedFixtureOddsSnapshot,
   right: NormalizedFixtureOddsSnapshot,
 ) =>
   JSON.stringify(snapshotObservation(left)) ===
     JSON.stringify(snapshotObservation(right)) &&
+  left.partitionKey === right.partitionKey &&
+  left.snapshotId === right.snapshotId &&
+  left.sortKey === right.sortKey;
+
+const withoutRetrievedAt = (observation: FixtureOddsObservation) => {
+  const { retrievedAt, ...observedState } = observation;
+  void retrievedAt;
+  return observedState;
+};
+
+/**
+ * Compares two independently derived snapshots by the OBSERVED MARKET STATE and
+ * the derived keys, tolerating a differing `retrievedAt`.
+ *
+ * `retrievedAt` is our fetch clock and is deliberately excluded from snapshot
+ * identity, so re-observing an unchanged price legitimately produces the same
+ * snapshotId/sortKey with a later `retrievedAt`. Everything that DOES define the
+ * observation — price, point, labels, provider observedAt, provenance — plus the
+ * partition key, snapshot id, and sort key must still match exactly, so a
+ * genuine content mismatch under one identity is still detected.
+ */
+const sameSnapshotIdentity = (
+  left: NormalizedFixtureOddsSnapshot,
+  right: NormalizedFixtureOddsSnapshot,
+) =>
+  JSON.stringify(withoutRetrievedAt(snapshotObservation(left))) ===
+    JSON.stringify(withoutRetrievedAt(snapshotObservation(right))) &&
   left.partitionKey === right.partitionKey &&
   left.snapshotId === right.snapshotId &&
   left.sortKey === right.sortKey;
@@ -379,20 +410,24 @@ function validateStoredSnapshot(
     "stored odds value",
     ["selectionLabel", "sportsbookLabel", "point", "provenance"],
   );
-  let normalized: NormalizedFixtureOddsSnapshot;
+  const stored = storedRecord as unknown as NormalizedFixtureOddsSnapshot;
+  let authenticated: FixtureOddsSnapshotRecordRead | null;
   try {
-    normalized = normalizeFixtureOddsObservation(
-      snapshotObservation(
-        storedRecord as unknown as NormalizedFixtureOddsSnapshot,
-      ),
-    );
+    // Accepts the current identity, and — for verification only — rows committed
+    // under the frozen legacy hash that included `retrievedAt`. Both must
+    // reproduce the claimed snapshotId AND sortKey; nothing else is accepted.
+    authenticated = readFixtureOddsSnapshotRecord(snapshotObservation(stored), {
+      snapshotId: storedRecord["snapshotId"],
+      sortKey: storedRecord["sortKey"],
+    });
   } catch (error) {
     throw new FixtureOddsStateCorruptionError(
       `stored odds row is invalid: ${error instanceof Error ? error.message : "unknown"}`,
     );
   }
-  const stored = storedRecord as unknown as NormalizedFixtureOddsSnapshot;
+  const normalized = authenticated?.snapshot;
   if (
+    normalized === undefined ||
     normalized.partitionKey !== expectedPk ||
     (expectedSk !== "CURRENT" && normalized.sortKey !== expectedSk) ||
     !sameSnapshot(normalized, stored)
@@ -496,6 +531,51 @@ export class DynamoFixtureOddsAdapter {
       throw new FixtureOddsBindingConflictError(
         "fixture odds observation is not fenced to a scheduled pregame event",
       );
+    // Cost + correctness short-circuit. Snapshot identity is the observed market
+    // state, so re-observing an unchanged price re-derives the same
+    // snapshotId/sortKey and every write below becomes a no-op — but a
+    // conditional Put that loses is still billed, and TransactWrite is billed at
+    // double write capacity, so the transaction must not be issued at all rather
+    // than relying on the conditional-loss recovery path to absorb it.
+    //
+    // The mapping and canonical-event ConditionChecks are deliberately not
+    // evaluated here. They exist to stop us WRITING evidence under a stale event
+    // binding; this path writes no evidence, and the row it returns was already
+    // fenced when it was first committed. They also cannot be evaluated outside
+    // a TransactWrite, which is precisely the cost being avoided. The local
+    // pregame fence above still runs on every call.
+    //
+    // Any failure to read or validate CURRENT falls through to the full, fully
+    // fenced write path — a persist must never fail because of an optimization.
+    let publishedCurrent: NormalizedFixtureOddsSnapshot | null = null;
+    try {
+      publishedCurrent = validateFixtureOddsCurrentItem(
+        await this.gateway.getExact(snapshot.partitionKey, "CURRENT"),
+        snapshot.partitionKey,
+      );
+    } catch {
+      publishedCurrent = null;
+    }
+    if (publishedCurrent?.snapshotId === snapshot.snapshotId) {
+      if (!sameSnapshotIdentity(publishedCurrent, snapshot))
+        throw new FixtureOddsStateCorruptionError(
+          "snapshot identity maps to different content",
+        );
+      // The exact-id and event-history mirrors are still reconciled. They are
+      // conditional, idempotent, and are the ONLY repair path for a persist that
+      // was interrupted after CURRENT advanced; skipping them here would make
+      // such a gap permanent until the price next moves. They are reconciled
+      // from the COMMITTED row so a mirror can never disagree with the primary.
+      await this.prepareExactSnapshot(publishedCurrent);
+      await this.commitExactSnapshotHistory(publishedCurrent);
+      // `retrievedAt` stays at the first observation of this price on purpose:
+      // that is when this price was actually first seen.
+      return {
+        snapshot: "existing",
+        current: "retained",
+        value: publishedCurrent,
+      };
+    }
     const mappingKey = mappingId({
       providerId: input.providerId,
       providerEventId: input.providerEventId,
@@ -503,6 +583,11 @@ export class DynamoFixtureOddsAdapter {
       leagueKey: input.leagueKey,
     });
     let snapshotDecision: FixtureOddsSnapshotDecision = "created";
+    // The row that actually holds this identity in the immutable log. On a lost
+    // create race we adopt the winner's row rather than our own in-memory copy,
+    // so CURRENT, the mirrors, and the returned value stay byte-identical to the
+    // committed evidence and `retrievedAt` always means "first seen".
+    let committed = snapshot;
     try {
       await this.gateway.transactSnapshot({
         mapping: {
@@ -569,34 +654,28 @@ export class DynamoFixtureOddsAdapter {
         throw new FixtureOddsBindingConflictError(
           "snapshot create lost but no committed snapshot is visible",
         );
-      if (!sameSnapshot(existing, snapshot))
+      // A concurrent writer may have committed this exact observation with its
+      // own fetch clock; that is a replay, not a collision. Content under the
+      // same identity must still match exactly.
+      if (!sameSnapshotIdentity(existing, snapshot))
         throw new FixtureOddsStateCorruptionError(
           "snapshot identity maps to different content",
         );
       snapshotDecision = "existing";
+      committed = existing;
     }
 
     // Establish the immutable snapshot-id identity before publication so an
     // identity conflict can never be discovered after CURRENT advances.
-    try {
-      if (this.exactSnapshotIndex?.prepare)
-        await this.exactSnapshotIndex.prepare(snapshot);
-      else await this.exactSnapshotIndex?.put(snapshot);
-    } catch (error) {
-      if (error instanceof FixtureOddsStateCorruptionError) throw error;
-      throw new FixtureOddsStorageError(
-        "exact-snapshot-index-write-failed",
-        error,
-      );
-    }
+    await this.prepareExactSnapshot(committed);
 
     let current: "advanced" | "retained" = "advanced";
     try {
       await this.gateway.putCurrent({
-        item: { pk: snapshot.partitionKey, sk: "CURRENT", value: snapshot },
+        item: { pk: committed.partitionKey, sk: "CURRENT", value: committed },
         advanceAfter: {
-          observedAt: snapshot.observedAt,
-          snapshotId: snapshot.snapshotId,
+          observedAt: committed.observedAt,
+          snapshotId: committed.snapshotId,
         },
       });
     } catch (error) {
@@ -637,6 +716,10 @@ export class DynamoFixtureOddsAdapter {
         retained.partitionKey,
         retained.sortKey,
       );
+      // Strict: every CURRENT writer publishes a byte-for-byte copy of the
+      // committed immutable row (see `committed` above), so CURRENT can never
+      // legitimately disagree with the row it references — not even on
+      // `retrievedAt`.
       if (!retainedSnapshot || !sameSnapshot(retainedSnapshot, retained))
         throw new FixtureOddsStateCorruptionError(
           "CURRENT does not reference its immutable snapshot",
@@ -655,7 +738,7 @@ export class DynamoFixtureOddsAdapter {
           snapshots: { [retained.snapshotId]: retained },
           currentSnapshotId: retained.snapshotId,
         },
-        snapshotObservation(snapshot),
+        snapshotObservation(committed),
       );
       if (decision.current === "advanced")
         throw new FixtureOddsStorageError(
@@ -665,16 +748,37 @@ export class DynamoFixtureOddsAdapter {
     }
     if (this.gateway.putAvailability) {
       await this.persistAvailability({
-        identity: snapshot.partitionKey,
+        identity: committed.partitionKey,
         state: "active",
-        observedAt: snapshot.observedAt,
-        evidenceId: snapshot.snapshotId,
+        observedAt: committed.observedAt,
+        evidenceId: committed.snapshotId,
         reason: "active-price",
       });
     }
     // The event-scoped history row is a repairable mirror. Advance the live
     // projection first so a history outage cannot hold CURRENT back; a retry
     // revalidates the primary identity and repairs this mirror idempotently.
+    await this.commitExactSnapshotHistory(committed);
+    return { snapshot: snapshotDecision, current, value: committed };
+  }
+
+  private async prepareExactSnapshot(snapshot: NormalizedFixtureOddsSnapshot) {
+    try {
+      if (this.exactSnapshotIndex?.prepare)
+        await this.exactSnapshotIndex.prepare(snapshot);
+      else await this.exactSnapshotIndex?.put(snapshot);
+    } catch (error) {
+      if (error instanceof FixtureOddsStateCorruptionError) throw error;
+      throw new FixtureOddsStorageError(
+        "exact-snapshot-index-write-failed",
+        error,
+      );
+    }
+  }
+
+  private async commitExactSnapshotHistory(
+    snapshot: NormalizedFixtureOddsSnapshot,
+  ) {
     try {
       await this.exactSnapshotIndex?.commitHistory?.(snapshot);
     } catch (error) {
@@ -684,7 +788,6 @@ export class DynamoFixtureOddsAdapter {
         error,
       );
     }
-    return { snapshot: snapshotDecision, current, value: snapshot };
   }
 
   async persistAvailability(value: FixtureOddsAvailabilityEvidence) {

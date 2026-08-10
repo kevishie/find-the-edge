@@ -48,6 +48,8 @@ class ConditionHarness implements FixtureOddsDynamoGateway {
   readonly transactions: FixtureOddsSnapshotTransaction[] = [];
   readonly currents: FixtureOddsCurrentWrite[] = [];
   readonly availability = new Map<string, FixtureOddsAvailabilityEvidence>();
+  /** Every capacity-consuming gateway call, in order. Reads are not logged. */
+  readonly writeLog: string[] = [];
   beforeSnapshot?: (request: FixtureOddsSnapshotTransaction) => void;
   beforeCurrent?: (request: FixtureOddsCurrentWrite) => void;
   snapshotFailure?: FixtureOddsTransactionCanceledError;
@@ -64,6 +66,7 @@ class ConditionHarness implements FixtureOddsDynamoGateway {
     return Promise.resolve(this.items.get(this.key(pk, sk)) ?? null);
   }
   transactSnapshot(request: FixtureOddsSnapshotTransaction) {
+    this.writeLog.push(`transactSnapshot:${request.snapshot.sk}`);
     this.transactions.push(request);
     this.beforeSnapshot?.(request);
     if (this.snapshotFailure) throw this.snapshotFailure;
@@ -104,6 +107,7 @@ class ConditionHarness implements FixtureOddsDynamoGateway {
     return Promise.resolve();
   }
   putCurrent(request: FixtureOddsCurrentWrite) {
+    this.writeLog.push(`putCurrent:${request.advanceAfter.snapshotId}`);
     this.currents.push(request);
     this.beforeCurrent?.(request);
     if (this.currentFailure) throw this.currentFailure;
@@ -127,6 +131,7 @@ class ConditionHarness implements FixtureOddsDynamoGateway {
     return Promise.resolve(this.availability.get(partitionKey) ?? null);
   }
   putAvailability(value: FixtureOddsAvailabilityEvidence) {
+    this.writeLog.push(`putAvailability:${value.identity}`);
     this.availability.set(value.identity, value);
     return Promise.resolve();
   }
@@ -198,6 +203,47 @@ describe("DynamoFixtureOddsAdapter", () => {
     expect(await gateway.getAvailability("selection")).toMatchObject({
       state: "suspended",
     });
+  });
+
+  it("writes nothing when an unchanged price is re-observed on a later poll", async () => {
+    // The provider republishes the same price every poll with a fresh fetch
+    // clock. Identity is the observed market state, so the re-observation is a
+    // replay: it must consume no write capacity at all. This is the whole cost
+    // fix — a conditional write that loses is still billed, so the transaction
+    // must never be issued.
+    const gateway = boundHarness();
+    const adapter = new DynamoFixtureOddsAdapter(gateway);
+    const first = await adapter.persist(input());
+    expect(first.snapshot).toBe("created");
+    expect(gateway.writeLog.length).toBeGreaterThan(0);
+    gateway.writeLog.length = 0;
+
+    const replay = await adapter.persist({
+      ...input(),
+      observation: {
+        ...input().observation,
+        // Same price, same provider observedAt; only OUR fetch clock moved.
+        retrievedAt: "2026-08-01T12:01:12.000Z",
+      },
+    });
+    expect(gateway.writeLog).toEqual([]);
+    expect(replay).toMatchObject({
+      snapshot: "existing",
+      current: "retained",
+    });
+    // retrievedAt stays at the first sighting: that is when this price appeared.
+    expect(replay.value.retrievedAt).toBe("2026-08-01T12:01:00.000Z");
+    expect(replay.value.snapshotId).toBe(first.value.snapshotId);
+
+    // A real price move still writes through the fully fenced path.
+    const moved = await adapter.persist(
+      input("2026-08-01T12:05:00.000Z", -105),
+    );
+    expect(moved.snapshot).toBe("created");
+    expect(
+      gateway.writeLog.some((entry) => entry.startsWith("transactSnapshot:")),
+    ).toBe(true);
+    expect(moved.value.americanOdds).toBe(-105);
   });
 
   it("keeps blocked prices historical and restores actionable current only with newer active evidence", async () => {

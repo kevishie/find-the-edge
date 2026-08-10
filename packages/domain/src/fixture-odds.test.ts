@@ -6,11 +6,13 @@ import {
   fixtureOddsGroupAvailabilityIdentity,
   normalizeFixtureOddsObservation,
   isFixtureOddsSnapshotActionable,
+  readFixtureOddsSnapshotRecord,
   sha256Hex,
   transitionFixtureOdds,
   transitionFixtureOddsAvailability,
   type FixtureOddsObservation,
   type FixtureOddsState,
+  type NormalizedFixtureOddsSnapshot,
 } from "./fixture-odds.js";
 
 const base = (
@@ -28,6 +30,220 @@ const base = (
   observedAt: "2026-08-01T12:00:00Z",
   retrievedAt: "2026-08-01T12:00:01Z",
   ...overrides,
+});
+
+/**
+ * Independent restatement of the frozen legacy (v1) identity: the pre-change
+ * encoding that hashed our fetch clock into snapshot identity. Kept literal so
+ * a regression in the production legacy path cannot hide behind a shared helper.
+ */
+const legacyIdentity = (observation: FixtureOddsObservation) => {
+  const iso = (value: string) => new Date(Date.parse(value)).toISOString();
+  const values: (string | number | null)[] = [
+    observation.canonicalEventId,
+    observation.canonicalEventVersion,
+    observation.sportKey,
+    observation.marketKey,
+    observation.selectionKey,
+    observation.selectionLabel ?? null,
+    observation.sportsbookId,
+    observation.sportsbookLabel ?? null,
+    observation.americanOdds,
+    iso(observation.observedAt),
+    iso(observation.retrievedAt),
+  ];
+  if (observation.point !== undefined) values.push(observation.point);
+  if (observation.provenance !== undefined)
+    values.push(
+      observation.provenance.providerId,
+      observation.provenance.policyVersion,
+      observation.provenance.bookRole,
+      observation.provenance.sourceState,
+    );
+  const snapshotId = sha256Hex(JSON.stringify(values));
+  return {
+    snapshotId,
+    sortKey: `SNAPSHOT#${iso(observation.observedAt)}#${snapshotId}`,
+  };
+};
+
+const legacyRow = (
+  observation: FixtureOddsObservation,
+): NormalizedFixtureOddsSnapshot => ({
+  ...normalizeFixtureOddsObservation(observation),
+  ...legacyIdentity(observation),
+});
+
+const stateOf = (
+  snapshot: NormalizedFixtureOddsSnapshot,
+): FixtureOddsState => ({
+  partition: {
+    canonicalEventId: snapshot.canonicalEventId,
+    canonicalEventVersion: snapshot.canonicalEventVersion,
+    sportKey: snapshot.sportKey,
+    marketKey: snapshot.marketKey,
+    selectionKey: snapshot.selectionKey,
+    sportsbookId: snapshot.sportsbookId,
+    key: snapshot.partitionKey,
+  },
+  snapshots: { [snapshot.snapshotId]: snapshot },
+  currentSnapshotId: snapshot.snapshotId,
+});
+
+describe("fixture odds snapshot identity", () => {
+  it("identifies the observed market state, not our fetch clock", () => {
+    const first = normalizeFixtureOddsObservation(
+      base({ retrievedAt: "2026-08-01T12:00:01Z" }),
+    );
+    const twelveSecondsLater = normalizeFixtureOddsObservation(
+      base({ retrievedAt: "2026-08-01T12:00:13Z" }),
+    );
+    expect(twelveSecondsLater.snapshotId).toBe(first.snapshotId);
+    expect(twelveSecondsLater.sortKey).toBe(first.sortKey);
+    expect(twelveSecondsLater.retrievedAt).toBe("2026-08-01T12:00:13.000Z");
+    expect(first.retrievedAt).toBe("2026-08-01T12:00:01.000Z");
+  });
+
+  const identityOverrides: readonly [
+    string,
+    Partial<FixtureOddsObservation>,
+  ][] = [
+    ["price", { americanOdds: -111 }],
+    ["point", { point: -1.5 }],
+    ["provider observed time", { observedAt: "2026-08-01T12:00:01Z" }],
+    ["selection label", { selectionLabel: "New York Mets" }],
+    ["sportsbook label", { sportsbookLabel: "Other Book" }],
+    ["canonical event", { canonicalEventId: "event:mlb:2" }],
+    ["canonical version", { canonicalEventVersion: 8 }],
+    ["sportsbook", { sportsbookId: "other-book" }],
+    [
+      "provenance",
+      {
+        provenance: {
+          providerId: "sharpapi",
+          policyVersion: "v1",
+          bookRole: "offered",
+          sourceState: "active",
+        },
+      },
+    ],
+  ];
+  it.each(identityOverrides)(
+    "changes identity when the %s changes",
+    (_label, override) => {
+      const baseline = normalizeFixtureOddsObservation(base());
+      const changed = normalizeFixtureOddsObservation(base(override));
+      expect(changed.snapshotId).not.toBe(baseline.snapshotId);
+    },
+  );
+
+  it("changes identity for every provenance field", () => {
+    const provenance = {
+      providerId: "sharpapi",
+      policyVersion: "v1",
+      bookRole: "offered",
+      sourceState: "active",
+    } as const;
+    const baseline = normalizeFixtureOddsObservation(base({ provenance }));
+    for (const override of [
+      { providerId: "the-odds-api" },
+      { policyVersion: "v2" },
+      { bookRole: "comparison" as const },
+      { sourceState: "stale" as const },
+    ])
+      expect(
+        normalizeFixtureOddsObservation(
+          base({ provenance: { ...provenance, ...override } }),
+        ).snapshotId,
+      ).not.toBe(baseline.snapshotId);
+  });
+
+  it("authenticates a current-identity row and reports it as current", () => {
+    const snapshot = normalizeFixtureOddsObservation(base());
+    expect(readFixtureOddsSnapshotRecord(base(), snapshot)).toEqual({
+      kind: "current",
+      snapshot,
+    });
+  });
+
+  it("still authenticates a legacy row hashed with retrievedAt", () => {
+    for (const observation of [
+      base(),
+      base({ point: 2.5 }),
+      base({
+        provenance: {
+          providerId: "sharpapi",
+          policyVersion: "v1",
+          bookRole: "offered",
+          sourceState: "active",
+        },
+      }),
+    ]) {
+      const legacy = legacyIdentity(observation);
+      expect(legacy.snapshotId).not.toBe(
+        normalizeFixtureOddsObservation(observation).snapshotId,
+      );
+      const read = readFixtureOddsSnapshotRecord(observation, legacy);
+      expect(read?.kind).toBe("legacy");
+      expect(read?.snapshot.snapshotId).toBe(legacy.snapshotId);
+      expect(read?.snapshot.sortKey).toBe(legacy.sortKey);
+    }
+  });
+
+  it("rejects forged, half-matching, and cross-version identity claims", () => {
+    const snapshot = normalizeFixtureOddsObservation(base());
+    const legacy = legacyIdentity(base());
+    const forgedContent = base({ americanOdds: -120 });
+    expect(readFixtureOddsSnapshotRecord(forgedContent, snapshot)).toBeNull();
+    expect(readFixtureOddsSnapshotRecord(forgedContent, legacy)).toBeNull();
+    expect(
+      readFixtureOddsSnapshotRecord(base(), {
+        snapshotId: snapshot.snapshotId,
+        sortKey: legacy.sortKey,
+      }),
+    ).toBeNull();
+    expect(
+      readFixtureOddsSnapshotRecord(base(), {
+        snapshotId: legacy.snapshotId,
+        sortKey: snapshot.sortKey,
+      }),
+    ).toBeNull();
+    expect(
+      readFixtureOddsSnapshotRecord(base(), {
+        snapshotId: sha256Hex("forged"),
+        sortKey: `SNAPSHOT#2026-08-01T12:00:00.000Z#${sha256Hex("forged")}`,
+      }),
+    ).toBeNull();
+  });
+
+  it("replays an unchanged re-observation without adding history", () => {
+    const state = transitionFixtureOdds(undefined, base()).state;
+    const replay = transitionFixtureOdds(
+      state,
+      base({ retrievedAt: "2026-08-01T12:00:13Z" }),
+    );
+    expect(replay.snapshot).toBe("existing");
+    expect(replay.current).toBe("retained");
+    expect(Object.keys(replay.state.snapshots)).toHaveLength(1);
+    expect(
+      replay.state.snapshots[replay.state.currentSnapshotId]!.retrievedAt,
+    ).toBe("2026-08-01T12:00:01.000Z");
+  });
+
+  it("accepts a legacy stored row as prior state and never rewrites it", () => {
+    const legacy = legacyRow(base());
+    const result = transitionFixtureOdds(stateOf(legacy), base());
+    expect(Object.keys(result.state.snapshots)).toHaveLength(2);
+    expect(result.state.snapshots[legacy.snapshotId]).toEqual(legacy);
+    expect(result.snapshot).toBe("created");
+  });
+
+  it("rejects a legacy row whose content no longer matches its identity", () => {
+    const tampered = { ...legacyRow(base()), americanOdds: -120 };
+    expect(() => transitionFixtureOdds(stateOf(tampered), base())).toThrow(
+      FixtureOddsStateCorruptionError,
+    );
+  });
 });
 
 describe("fixture odds normalization", () => {

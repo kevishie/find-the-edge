@@ -205,7 +205,7 @@ describe("pick evaluation service", () => {
     );
     if (first.terminal !== "evaluation") throw new Error("expected evaluation");
     const expectedInputHash =
-      "cfe7ec40bc1c66392960953e05df7f91c5bb568e836ecb61648cd57aa3fee5f2";
+      "3962d85067338a4cb1df22b52b212b9a3841f23686dc85fef2a8cddd1cc5a8ec";
     expect(first.pair.evaluation).toMatchObject({
       evaluationId: `evaluation:${expectedInputHash}`,
       inputHash: expectedInputHash,
