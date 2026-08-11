@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { seedSession } from "./session";
 
 import { startLocalGamesApi, type LocalGamesApi } from "./local-games-api";
 
@@ -13,6 +14,7 @@ test.afterAll(async () => {
 });
 
 test.beforeEach(async ({ page }) => {
+  await seedSession(page);
   await page.addInitScript((apiBase) => {
     Object.defineProperty(window, "__FTE_RUNTIME_CONFIG__", {
       value: { schemaVersion: 1, apiBase },
@@ -20,9 +22,7 @@ test.beforeEach(async ({ page }) => {
   }, api.apiBase);
 });
 
-test("shows unchanged seeded MLB and MLS identifiers without authentication", async ({
-  page,
-}) => {
+test("shows unchanged seeded MLB and MLS identifiers", async ({ page }) => {
   await page.goto("/games");
   await page.getByLabel("Eastern calendar day").fill("2026-08-01");
   await expect(

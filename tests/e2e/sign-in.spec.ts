@@ -103,18 +103,31 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("refuses a return address that is not ours", async ({ page }) => {
+  // The destination survives a round trip through the URL, so it is exactly
+  // the kind of parameter an attacker crafts. Anything off-origin, or any
+  // path this app does not serve, falls back to a default we control.
+  for (const crafted of [
+    "https://evil.example/steal",
+    "//evil.example/steal",
+    "/admin",
+  ]) {
+    await page.goto(`/login?returnUrl=${encodeURIComponent(crafted)}`);
+    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    await expect(page).toHaveURL(/returnUrl=%2Fevents/);
+  }
+});
+
 test("signs in on our own form, lands where it started, survives a reload, and signs out", async ({
   page,
 }) => {
+  // A product route is not reachable signed out. The reader is sent to our
+  // own form on this origin — never a hosted login — carrying where they were
+  // headed so signing in resumes the journey.
   await page.goto(explorer);
 
-  const signIn = page.getByRole("link", { name: "Sign in" });
-  await expect(signIn).toBeVisible();
-  // The affordance is a route on this origin, never a hosted login.
-  await expect(signIn).toHaveAttribute("href", /^\/sign-in\?/);
-  await signIn.click();
-
-  await expect(page).toHaveURL(/\/sign-in\?from=/);
+  await expect(page).toHaveURL(/\/login\?returnUrl=/);
+  expect(new URL(page.url()).host).toBe("127.0.0.1:4173");
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   await expect(page.locator("html")).toHaveJSProperty(
     "scrollWidth",
@@ -135,7 +148,7 @@ test("signs in on our own form, lands where it started, survives a reload, and s
   await code.fill("000000");
   await page.getByRole("button", { name: "Verify code" }).click();
   await expect(page.getByRole("alert")).toHaveText("That code did not work.");
-  await expect(page).toHaveURL(/\/sign-in\?from=/);
+  await expect(page).toHaveURL(/\/login\?returnUrl=/);
 
   await code.fill("123456");
   await page.getByRole("button", { name: "Verify code" }).click();

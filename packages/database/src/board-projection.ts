@@ -387,6 +387,17 @@ export interface BoardMaterializationResult {
    * which names the reason whenever the schedule was unavailable.
    */
   readonly withdrawnDropped: number;
+  /**
+   * Per sport, how many upcoming scheduled games carry a price and how many
+   * do not. A sport where every upcoming game is priceless is the shape both
+   * of the 2026-08-11 soccer faults took — a latched ambiguity marker and a
+   * feed published under a league we do not collect — and both ran for eleven
+   * hours behind green provider health. Board freshness could not see them:
+   * there was no price to be stale.
+   */
+  readonly pricedBySport: Readonly<
+    Record<string, { readonly upcoming: number; readonly priced: number }>
+  >;
 }
 
 export const materializeBoards = async (input: {
@@ -407,6 +418,8 @@ export const materializeBoards = async (input: {
   let skipped = 0;
   let scheduledOddsAgeSeconds: number | null = null;
   let withdrawnDropped = 0;
+  const pricedBySport: Record<string, { upcoming: number; priced: number }> =
+    {};
   const scheduleCache = new Map<string, readonly ScheduleListing[] | null>();
   const scheduleFor = async (sportKey: "mlb" | "soccer") => {
     if (!input.scheduleListings) return null;
@@ -476,6 +489,19 @@ export const materializeBoards = async (input: {
         );
         scheduledOddsAgeSeconds = Math.max(scheduledOddsAgeSeconds ?? 0, age);
       }
+      const upcoming = page.items.filter(
+        (game) =>
+          game.status === "scheduled" &&
+          Date.parse(game.startsAt) > input.now.getTime(),
+      );
+      const tally = (pricedBySport[key.sportKey] ??= {
+        upcoming: 0,
+        priced: 0,
+      });
+      tally.upcoming += upcoming.length;
+      tally.priced += upcoming.filter(
+        (game) => game.odds.state === "available",
+      ).length;
     }
     const body = JSON.stringify(
       key.route === "splits" ? await attachSplits(page, input.splits) : page,
@@ -496,5 +522,11 @@ export const materializeBoards = async (input: {
     });
     stored += 1;
   }
-  return { stored, skipped, scheduledOddsAgeSeconds, withdrawnDropped };
+  return {
+    stored,
+    skipped,
+    scheduledOddsAgeSeconds,
+    withdrawnDropped,
+    pricedBySport,
+  };
 };

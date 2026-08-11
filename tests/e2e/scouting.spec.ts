@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { seedSession } from "./session";
 
 import { startLocalGamesApi, type LocalGamesApi } from "./local-games-api";
 
@@ -116,6 +117,7 @@ test.afterAll(async () => {
 });
 
 test.beforeEach(async ({ page }) => {
+  await seedSession(page);
   await page.addInitScript(
     ({ apiBase, accessToken }) => {
       Object.defineProperty(window, "__FTE_RUNTIME_CONFIG__", {

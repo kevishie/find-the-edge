@@ -16,6 +16,7 @@ import {
 
 import { App } from "./App";
 import { detailMatchesRoute } from "./route-state";
+import { createSessionStore } from "./session";
 import { clearSplitsCache } from "./splits-cache";
 import {
   GamesClientError,
@@ -25,6 +26,33 @@ import {
   type SplitsPageDto,
   type RetrospectiveDto,
 } from "./api";
+
+// Every product route now requires a session (FTE-073's client half). These
+// cases exercise product screens, not the guard, so they arrive signed in;
+// the guard's own behaviour is asserted in sign-in.test.tsx.
+const signedIn = () =>
+  createSessionStore({
+    storage: null,
+    refresh: null,
+  });
+const withSession = (store: ReturnType<typeof signedIn>) => {
+  store.signIn({
+    token: `fte1.${"payload".padEnd(40, "x")}.${"a".repeat(64)}`,
+    expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+    accountId: `account:${"b".repeat(64)}`,
+  });
+  return store;
+};
+const activeSession = () => withSession(signedIn());
+
+it("sends a signed-in reader from the pitch to the product", async () => {
+  // Someone who already pays has no use for the landing page.
+  render(<App sessionStore={activeSession()} initialPath="/" />);
+  expect(
+    await screen.findByRole("navigation", { name: "Primary navigation" }),
+  ).toBeVisible();
+  expect(screen.queryByText("Start free trial")).toBeNull();
+});
 
 // The splits board cache is process-wide so it survives navigation; tests must
 // not inherit a board warmed by an earlier case.
@@ -115,7 +143,13 @@ it("renders retrospective evidence layers and honest read-only controls", async 
       getRetrospective: vi.fn(() => Promise.resolve(retrospective)),
     },
   };
-  render(<App initialPath="/retrospectives" gamesClient={client} />);
+  render(
+    <App
+      sessionStore={activeSession()}
+      initialPath="/retrospectives"
+      gamesClient={client}
+    />,
+  );
   expect(await screen.findByText("1 reviewed decision")).toBeVisible();
   fireEvent.click(screen.getByText("1 reviewed decision"));
   expect(await screen.findByText("What was knowable then")).toBeVisible();
@@ -151,6 +185,7 @@ it("requires an explicit confirmed reviewer action and refreshes the audit state
   };
   render(
     <App
+      sessionStore={activeSession()}
       initialPath={`/retrospectives/${retrospective.versionId}`}
       gamesClient={client}
     />,
@@ -182,7 +217,7 @@ it("requires an explicit confirmed reviewer action and refreshes the audit state
 });
 
 it("shows an honest empty performance state before a frozen report exists", async () => {
-  render(<App initialPath="/performance" />);
+  render(<App sessionStore={activeSession()} initialPath="/performance" />);
   expect(await screen.findByText("No frozen cohort report yet.")).toBeVisible();
   expect(
     screen.getByText(/Missing evidence is never shown as zero/),
@@ -372,7 +407,11 @@ it("renders independent accessible lifecycle and freshness badges on games and d
     value: { list: vi.fn(() => Promise.resolve(page())) },
   };
   const { unmount } = render(
-    <App initialPath="/events" gamesClient={client} />,
+    <App
+      sessionStore={activeSession()}
+      initialPath="/events"
+      gamesClient={client}
+    />,
   );
   expect(
     await screen.findByLabelText("Lifecycle: scheduled"),
@@ -456,6 +495,7 @@ it("renders independent accessible lifecycle and freshness badges on games and d
   );
   render(
     <App
+      sessionStore={activeSession()}
       initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: true,
@@ -550,6 +590,7 @@ it("renders exact opening/current markers for isolated sportsbook points", async
   );
   render(
     <App
+      sessionStore={activeSession()}
       initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: true,
@@ -668,6 +709,7 @@ it("provides a selectable step-line history view with exact details and table pa
   };
   render(
     <App
+      sessionStore={activeSession()}
       initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: true,
@@ -745,6 +787,7 @@ it("provides a selectable step-line history view with exact details and table pa
 it("keeps not-found detail distinct from retryable outages", async () => {
   render(
     <App
+      sessionStore={activeSession()}
       initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: true,
@@ -768,6 +811,7 @@ it("keeps not-found detail distinct from retryable outages", async () => {
 it("settles on a detail configuration error instead of reverting to loading", async () => {
   render(
     <App
+      sessionStore={activeSession()}
       initialPath={`/events/${encodeURIComponent(game.id)}?sport=mlb&day=2026-08-01`}
       gamesClient={{
         ok: false,
@@ -846,6 +890,7 @@ it.each([
     };
     const { unmount } = render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events"
         gamesClient={{
           ok: true,
@@ -878,6 +923,7 @@ it("explains an uninitialized game projection instead of claiming an empty sched
   };
   render(
     <App
+      sessionStore={activeSession()}
       initialPath="/events"
       gamesClient={{
         ok: true,
@@ -902,6 +948,7 @@ it("does not claim an empty schedule when the scheduled lifecycle failed", async
   } as const;
   render(
     <App
+      sessionStore={activeSession()}
       initialPath="/events?status=all"
       gamesClient={{
         ok: true,
@@ -1170,7 +1217,8 @@ const providerPage = (
 
 describe("Shell navigation", () => {
   it("renders the public landing page at the root without terminal chrome", async () => {
-    render(<App initialPath="/" />);
+    // A signed-out reader is the only one who sees the pitch.
+    render(<App sessionStore={signedIn()} initialPath="/" />);
 
     expect(
       await screen.findByRole("heading", { name: /stop shopping lines/i }),
@@ -1190,7 +1238,8 @@ describe("Shell navigation", () => {
   });
 
   it("opens and closes the accessible mobile landing menu", async () => {
-    render(<App initialPath="/" />);
+    // A signed-out reader is the only one who sees the pitch.
+    render(<App sessionStore={signedIn()} initialPath="/" />);
 
     const trigger = await screen.findByRole("button", { name: "Open menu" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -1221,6 +1270,7 @@ describe("Shell navigation", () => {
   it("keeps the terminal shell on a direct product route", async () => {
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{
           ok: true,
@@ -1261,7 +1311,7 @@ describe("Shell navigation", () => {
   ])(
     "renders %s as a production public legal route",
     async (path, heading, section) => {
-      render(<App initialPath={path} />);
+      render(<App sessionStore={activeSession()} initialPath={path} />);
       expect(
         await screen.findByRole("heading", { name: heading }),
       ).toBeVisible();
@@ -1281,6 +1331,7 @@ describe("Dashboard", () => {
   it("keeps ranked cards when the independent status request fails", async () => {
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/dashboard"
         gamesClient={{
           ok: true,
@@ -1311,6 +1362,7 @@ describe("Dashboard", () => {
     );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/dashboard"
         gamesClient={{
           ok: true,
@@ -1335,6 +1387,7 @@ describe("Dashboard", () => {
     );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/dashboard"
         gamesClient={{
           ok: true,
@@ -1382,6 +1435,7 @@ describe("Dashboard", () => {
       );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/dashboard"
         gamesClient={{
           ok: true,
@@ -1403,6 +1457,7 @@ describe("Dashboard", () => {
   it("does not turn an empty partial evaluation into a no-edge claim", async () => {
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/dashboard"
         gamesClient={{
           ok: true,
@@ -1449,6 +1504,7 @@ describe("Dashboard", () => {
       );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/dashboard"
         gamesClient={{
           ok: true,
@@ -1482,6 +1538,7 @@ describe("Dashboard", () => {
       .mockResolvedValueOnce(dashboardPage([]));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/dashboard"
         gamesClient={{
           ok: true,
@@ -1516,6 +1573,7 @@ describe("Dashboard", () => {
     });
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/dashboard"
         gamesClient={{
           ok: true,
@@ -1552,6 +1610,7 @@ describe("Dashboard", () => {
     });
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/dashboard"
         gamesClient={{
           ok: true,
@@ -1592,6 +1651,7 @@ describe("Data Sources", () => {
     });
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/data-sources"
         gamesClient={{
           ok: true,
@@ -1647,6 +1707,7 @@ describe("Games", () => {
     const getScoutingJob = vi.fn(() => Promise.resolve(scoutingJob));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
@@ -1696,6 +1757,7 @@ describe("Games", () => {
     );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
@@ -1728,6 +1790,7 @@ describe("Games", () => {
     sessionStorage.setItem(resumeKey, "1");
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
@@ -1753,7 +1816,11 @@ describe("Games", () => {
         Promise.resolve(sport === "mlb" ? page() : page([])),
       );
     render(
-      <App initialPath="/events" gamesClient={{ ok: true, value: { list } }} />,
+      <App
+        sessionStore={activeSession()}
+        initialPath="/events"
+        gamesClient={{ ok: true, value: { list } }}
+      />,
     );
 
     expect(
@@ -1788,6 +1855,7 @@ describe("Games", () => {
     cleanup();
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events?sport=soccer"
         gamesClient={{ ok: true, value: { list } }}
       />,
@@ -1812,7 +1880,11 @@ describe("Games", () => {
       ]),
     );
     render(
-      <App initialPath="/events" gamesClient={{ ok: true, value: { list } }} />,
+      <App
+        sessionStore={activeSession()}
+        initialPath="/events"
+        gamesClient={{ ok: true, value: { list } }}
+      />,
     );
     expect(await screen.findByText("Aug 1 · 7:05 PM ET")).toBeInTheDocument();
     expect(screen.queryByText(/UNTRUSTED/)).not.toBeInTheDocument();
@@ -1824,6 +1896,7 @@ describe("Games", () => {
       .mockResolvedValue(page([soccerGame]));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events?sport=soccer"
         gamesClient={{ ok: true, value: { list } }}
       />,
@@ -1840,6 +1913,7 @@ describe("Games", () => {
   it("shows configuration failure without making a request", async () => {
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events"
         gamesClient={{
           ok: false,
@@ -1868,6 +1942,7 @@ describe("Games", () => {
       );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events?sport=soccer"
         gamesClient={{ ok: true, value: { list } }}
       />,
@@ -1920,6 +1995,7 @@ describe("Betting splits", () => {
         });
       render(
         <App
+          sessionStore={activeSession()}
           initialPath="/splits"
           gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
         />,
@@ -1960,6 +2036,7 @@ describe("Betting splits", () => {
         });
       render(
         <App
+          sessionStore={activeSession()}
           initialPath="/splits"
           gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
         />,
@@ -1999,6 +2076,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage());
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{
           ok: true,
@@ -2068,6 +2146,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage([pricedGame]));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2103,6 +2182,7 @@ describe("Betting splits", () => {
       );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2167,6 +2247,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage([endpointGame]));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2222,6 +2303,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage([{ ...splitGame, splits: [unusable] }]));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2246,6 +2328,7 @@ describe("Betting splits", () => {
       });
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2298,6 +2381,7 @@ describe("Betting splits", () => {
       );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2361,6 +2445,7 @@ describe("Betting splits", () => {
       );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2398,6 +2483,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage([splitGame, secondGame]));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2414,6 +2500,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage());
     const { unmount } = render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{
           ok: true,
@@ -2446,6 +2533,7 @@ describe("Betting splits", () => {
       });
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{
           ok: true,
@@ -2481,6 +2569,7 @@ describe("Betting splits", () => {
       );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2516,6 +2605,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage([covered, ...uncovered]));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2532,6 +2622,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage([{ ...splitGame, splits: [] }]));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2550,6 +2641,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage());
     const { unmount } = render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2585,6 +2677,7 @@ describe("Betting splits", () => {
     // A fresh mount keeps the stored choice as its default.
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2606,6 +2699,7 @@ describe("Betting splits", () => {
       .mockResolvedValue(splitsPage([{ ...splitGame, splits: betmgmSplits }]));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2640,6 +2734,7 @@ describe("Betting splits", () => {
       );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/splits"
         gamesClient={{ ok: true, value: { list: vi.fn(), listSplits } }}
       />,
@@ -2677,6 +2772,7 @@ describe("events explorer watch toggle", () => {
     const addToWatchlist = vi.fn(() => Promise.resolve(watchEntry));
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events"
         gamesClient={{
           ok: true,
@@ -2724,6 +2820,7 @@ describe("events explorer watch toggle", () => {
     );
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events"
         gamesClient={{
           ok: true,
@@ -2748,6 +2845,7 @@ describe("events explorer watch toggle", () => {
   it("offers sign-in rather than an error on the public explorer", async () => {
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events"
         gamesClient={{
           ok: true,
@@ -2776,6 +2874,7 @@ describe("events explorer watch toggle", () => {
   it("hides the control entirely when the deployment has no watchlist API", async () => {
     render(
       <App
+        sessionStore={activeSession()}
         initialPath="/events"
         gamesClient={{
           ok: true,

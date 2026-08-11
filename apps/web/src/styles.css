@@ -5572,6 +5572,24 @@ footer {
 }
 .ref-nav-cta {
   margin-left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+/* Sign-in sits beside the trial CTA as quiet text: a returning reader is
+   looking for it, while a first-time reader should meet the trial first. */
+.ref-login {
+  color: #a29daf;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ref-login:hover {
+  color: #fff;
+}
+.ref-mobile-menu .ref-login {
+  display: block;
+  padding: 10px 0;
 }
 .ref-nav-cta .ref-primary {
   padding: 9px 17px;

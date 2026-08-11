@@ -698,6 +698,33 @@ const runLiveOddsHandler = async (event?: unknown) => {
             ScheduledBoardOddsAgeSeconds: boards.scheduledOddsAgeSeconds,
           })}\n`,
         );
+      // The share of upcoming games in a sport that carry a price. Board
+      // freshness is blind to a sport with no prices at all — there is
+      // nothing to be stale — and that is exactly how soccer sat priceless
+      // for eleven hours behind green provider health. A sport with no
+      // upcoming games emits nothing, so an empty slate stays healthy.
+      for (const [sport, { upcoming, priced }] of Object.entries(
+        boards.pricedBySport,
+      ))
+        if (upcoming > 0)
+          process.stdout.write(
+            `${JSON.stringify({
+              _aws: {
+                Timestamp: Date.now(),
+                CloudWatchMetrics: [
+                  {
+                    Namespace: "FindTheEdge/Boards",
+                    Dimensions: [["sport"]],
+                    Metrics: [
+                      { Name: "UpcomingGamesPricedShare", Unit: "Percent" },
+                    ],
+                  },
+                ],
+              },
+              sport,
+              UpcomingGamesPricedShare: (priced / upcoming) * 100,
+            })}\n`,
+          );
     } catch (error) {
       process.stdout.write(
         `${JSON.stringify({

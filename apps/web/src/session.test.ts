@@ -3,6 +3,9 @@ import { expect, describe, it, vi } from "vitest";
 import { GamesClientError } from "./api";
 import {
   createSessionStore,
+  DEFAULT_RETURN_PATH,
+  LOGIN_PATH,
+  requiresSession,
   safeReturnPath,
   SESSION_STORAGE_KEY,
   type Session,
@@ -239,5 +242,51 @@ describe("return paths", () => {
     [`/events?q=${"x".repeat(600)}`, "/events"],
   ])("resolves %s to %s", (value, expected) => {
     expect(safeReturnPath(value)).toBe(expected);
+  });
+});
+
+describe("where a return address may point", () => {
+  it("refuses a path this app does not serve", () => {
+    // Same-origin is not enough. A path we do not route lands the reader on a
+    // 404 immediately after the most fragile step in the product.
+    for (const path of ["/admin", "/wp-login.php", "/dashboardx", "/events/"])
+      expect(safeReturnPath(path)).toBe(DEFAULT_RETURN_PATH);
+  });
+
+  it("keeps the routes we do serve, including parented ones", () => {
+    for (const path of [
+      "/splits",
+      "/dashboard",
+      "/watchlist",
+      "/events?sport=soccer",
+      "/events/event%3Amlb",
+      "/scout-jobs/job-1/report",
+    ])
+      expect(safeReturnPath(path)).toBe(path);
+  });
+
+  it("refuses anything that could leave this origin", () => {
+    for (const path of [
+      "https://evil.example/steal",
+      "//evil.example/steal",
+      "/\\evil.example",
+      "javascript:alert(1)",
+      "/splits\nSet-Cookie: x",
+      "",
+      null,
+    ])
+      expect(safeReturnPath(path)).toBe(DEFAULT_RETURN_PATH);
+  });
+
+  it("never returns to the form itself", () => {
+    // Otherwise signing in hands the reader straight back to signing in.
+    expect(safeReturnPath(LOGIN_PATH)).toBe(DEFAULT_RETURN_PATH);
+  });
+
+  it("knows which routes need a session", () => {
+    for (const path of ["/", "/terms", "/privacy", LOGIN_PATH])
+      expect(requiresSession(path)).toBe(false);
+    for (const path of ["/splits", "/dashboard", "/events", "/watchlist"])
+      expect(requiresSession(path)).toBe(true);
   });
 });

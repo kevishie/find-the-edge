@@ -31,6 +31,59 @@ export const SESSION_WATCH_INTERVAL_MS = 60_000;
 
 export const DEFAULT_RETURN_PATH = "/events";
 
+/** Where the reader lands once signed in, if they arrived without a target. */
+export const SIGNED_IN_HOME = "/dashboard";
+
+/** The sign-in form's own address. Returning to it would be a loop. */
+export const LOGIN_PATH = "/login";
+
+/**
+ * Every route this app actually serves, as literal segments and as parented
+ * prefixes for the ones that take an id. A return address is checked against
+ * this rather than merely against the origin: "same origin" still admits
+ * paths we do not have, which land the reader on a 404 they cannot explain
+ * after a step as fragile as signing in.
+ */
+const KNOWN_ROUTES: readonly string[] = [
+  "/",
+  "/terms",
+  "/privacy",
+  "/dashboard",
+  "/events",
+  "/games",
+  "/splits",
+  "/watchlist",
+  "/performance",
+  "/data-sources",
+  "/retrospectives",
+  "/experiments",
+];
+const KNOWN_PARENTS: readonly string[] = [
+  "/events/",
+  "/games/",
+  "/data-sources/",
+  "/retrospectives/",
+  "/experiments/",
+  "/scout-jobs/",
+];
+
+const isKnownRoute = (pathname: string) =>
+  KNOWN_ROUTES.includes(pathname) ||
+  KNOWN_PARENTS.some(
+    (parent) => pathname.startsWith(parent) && pathname.length > parent.length,
+  );
+
+/** Routes a signed-out reader may see. Everything else needs a session. */
+export const PUBLIC_ROUTES: readonly string[] = [
+  "/",
+  "/terms",
+  "/privacy",
+  LOGIN_PATH,
+];
+
+export const requiresSession = (pathname: string): boolean =>
+  !PUBLIC_ROUTES.includes(pathname);
+
 /**
  * Where sign-in is allowed to send the reader afterwards. Anything that is not
  * a single-slash path on this origin — a scheme, a protocol-relative host, a
@@ -58,11 +111,13 @@ export const safeReturnPath = (value: unknown): string => {
   } catch {
     return DEFAULT_RETURN_PATH;
   }
-  // Returning to the form itself would be a loop rather than a destination.
+  // Returning to the form itself would be a loop rather than a destination,
+  // and a path we do not serve is a 404 handed to someone who just signed in.
   if (
     resolved.origin !== base ||
     `${resolved.pathname}${resolved.search}${resolved.hash}` !== value ||
-    resolved.pathname === "/sign-in"
+    resolved.pathname === LOGIN_PATH ||
+    !isKnownRoute(resolved.pathname)
   )
     return DEFAULT_RETURN_PATH;
   return value;

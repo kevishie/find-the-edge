@@ -210,6 +210,9 @@ export function LandingPage() {
             <a href="#pricing">Pricing</a>
           </nav>
           <div className="ref-nav-cta">
+            <a className="ref-login" href={landingConfig.authPath}>
+              Log in
+            </a>
             <StartLink>Start free trial</StartLink>
           </div>
           <button
@@ -241,6 +244,13 @@ export function LandingPage() {
               Pricing
             </a>
           </nav>
+          <a
+            className="ref-login"
+            href={landingConfig.authPath}
+            onClick={closeMenu}
+          >
+            Log in
+          </a>
           <StartLink onClick={closeMenu}>Start free trial</StartLink>
         </div>
       </header>

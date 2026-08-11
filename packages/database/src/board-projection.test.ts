@@ -121,6 +121,7 @@ describe("materialization", () => {
       skipped: 0,
       scheduledOddsAgeSeconds: null,
       withdrawnDropped: 0,
+      pricedBySport: expect.any(Object) as Record<string, unknown>,
     });
     const splitBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#splits#"));
     const gameBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#games#"));
@@ -164,6 +165,40 @@ describe("materialization", () => {
     expect(result.scheduledOddsAgeSeconds).toBe(600);
   });
 
+  it("reports a sport whose upcoming games carry no price", async () => {
+    // Board freshness is blind to this: with no price on the board there is
+    // nothing to be stale. It is how soccer ran priceless for eleven hours.
+    const upcoming = (state: "available" | "unavailable") => ({
+      ...page("2026-08-08").items[0]!,
+      status: "scheduled",
+      startsAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+      odds:
+        state === "available"
+          ? { state, selections: [{ retrievedAt: NOW.toISOString() }] }
+          : { state },
+    });
+    const result = await materializeBoards({
+      games: {
+        list: (filter) =>
+          Promise.resolve({
+            ...page("2026-08-08"),
+            items:
+              filter.sportKey === "soccer"
+                ? [upcoming("unavailable"), upcoming("unavailable")]
+                : [upcoming("available"), upcoming("unavailable")],
+          } as never),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: () => Promise.resolve(),
+      now: NOW,
+    });
+    // Both Eastern days are materialized, so each sport counts twice over.
+    expect(result.pricedBySport["soccer"]).toEqual({ upcoming: 4, priced: 0 });
+    expect(result.pricedBySport["mlb"]).toEqual({ upcoming: 4, priced: 2 });
+  });
+
   it("skips a board whose page would need a cursor", async () => {
     const puts: unknown[] = [];
     const result = await materializeBoards({
@@ -183,6 +218,7 @@ describe("materialization", () => {
       skipped: 10,
       scheduledOddsAgeSeconds: null,
       withdrawnDropped: 0,
+      pricedBySport: expect.any(Object) as Record<string, unknown>,
     });
     expect(puts).toHaveLength(0);
   });

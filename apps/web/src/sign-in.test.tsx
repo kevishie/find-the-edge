@@ -340,7 +340,7 @@ describe("the shell indicator", () => {
     window.localStorage.clear();
   });
 
-  it("offers our own sign-in route, never a provider, when signed out", async () => {
+  it("sends a signed-out reader to our own form, carrying where they meant to go", async () => {
     window.localStorage.setItem(SESSION_STORAGE_KEY, "{ corrupt");
     const sessionStore = store();
     render(
@@ -351,9 +351,11 @@ describe("the shell indicator", () => {
       />,
     );
 
-    const link = await screen.findByRole("link", { name: "Sign in" });
-    expect(link).toHaveAttribute("href", expect.stringContaining("/sign-in"));
-    expect(link.getAttribute("href")).not.toMatch(/^https?:/);
+    // A product route is not reachable without a session: the reader lands on
+    // our own form, never a provider's.
+    expect(
+      await screen.findByRole("heading", { name: "Sign in" }),
+    ).toBeVisible();
     // The corrupt entry was discarded on load rather than surfaced.
     expect(window.localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
   });
@@ -371,7 +373,9 @@ describe("the shell indicator", () => {
       />,
     );
 
-    expect(await screen.findByRole("link", { name: "Sign in" })).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: "Sign in" }),
+    ).toBeVisible();
     expect(window.localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
   });
 

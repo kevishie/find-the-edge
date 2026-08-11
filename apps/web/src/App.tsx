@@ -17,7 +17,7 @@ import {
   Outlet,
   RouterProvider,
   createMemoryHistory,
-  createRootRoute,
+  createRootRouteWithContext,
   createRoute,
   createRouter,
   redirect,
@@ -59,11 +59,47 @@ import {
 import {
   accountHint,
   defaultSessionStore,
+  LOGIN_PATH,
+  PUBLIC_ROUTES,
+  requiresSession,
+  DEFAULT_RETURN_PATH,
   safeReturnPath,
   SessionContext,
+  SIGNED_IN_HOME,
   useSession,
   type SessionStore,
 } from "./session";
+
+/**
+ * Whether a usable session exists right now, read straight from the store
+ * rather than from React state: route guards run before any component does.
+ * An expired token counts as no session — the guard's job is to keep a reader
+ * off a screen that would only fail its first request.
+ */
+const hasLiveSession = (store: SessionStore): boolean => {
+  const session = store.getSnapshot();
+  return session !== null && Date.parse(session.expiresAt) > Date.now();
+};
+
+/**
+ * The guard on every product route. A signed-out reader is sent to the form
+ * carrying where they meant to go, so signing in resumes the journey instead
+ * of dumping them on a default screen. The destination is re-validated on the
+ * way back in, so this never becomes a redirect gadget.
+ */
+const requireSession = (
+  store: SessionStore,
+  pathname: string,
+  search: string,
+) => {
+  if (!requiresSession(pathname) || hasLiveSession(store)) return;
+  // eslint-disable-next-line @typescript-eslint/only-throw-error
+  throw redirect({
+    to: LOGIN_PATH,
+    search: { returnUrl: safeReturnPath(`${pathname}${search}`) },
+    replace: true,
+  });
+};
 // Off-nav screens load on demand so the landing path never parses them.
 const Dashboard = lazy(() =>
   import("./dashboard").then((module) => ({ default: module.Dashboard })),
@@ -832,8 +868,8 @@ function SessionBadge({ collapsed }: { readonly collapsed: boolean }) {
     return (
       <div className="shell-session">
         <Link
-          to="/sign-in"
-          search={{ from: safeReturnPath(here) }}
+          to={LOGIN_PATH}
+          search={{ returnUrl: safeReturnPath(here) }}
           className="shell-session-link"
           title="Sign in"
         >
@@ -2984,20 +3020,24 @@ function RootLayout() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
-  return ["/", "/terms", "/privacy", "/sign-in"].includes(pathname) ? (
-    <Outlet />
-  ) : (
-    <AppShell />
-  );
+  return PUBLIC_ROUTES.includes(pathname) ? <Outlet /> : <AppShell />;
 }
 
-const rootRoute = createRootRoute({
+const rootRoute = createRootRouteWithContext<{
+  readonly session: SessionStore;
+}>()({
   component: RootLayout,
   errorComponent: AppError,
 });
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  // A reader who already holds a live session has no use for the pitch.
+  beforeLoad: ({ context }) => {
+    if (hasLiveSession(context.session))
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: SIGNED_IN_HOME, replace: true });
+  },
   component: LandingPage,
 });
 const termsRoute = createRoute({
@@ -3011,14 +3051,14 @@ const privacyRoute = createRoute({
   component: () => <PublicLegalPage kind="privacy" />,
 });
 function SignInRoute() {
-  const { from } = useSearch({ from: "/sign-in" });
+  const { returnUrl } = useSearch({ from: "/login" });
   const router = useRouter();
   return (
     <Suspense fallback={<p role="status">Loading sign-in…</p>}>
       <SignInScreen
         client={useContext(GamesClientContext)}
         store={useContext(SessionContext)}
-        from={from}
+        from={returnUrl}
         // The form is replaced rather than pushed: going back from where the
         // reader landed must not return them to a spent code.
         onSignedIn={(path) => router.history.replace(path)}
@@ -3028,22 +3068,41 @@ function SignInRoute() {
 }
 const signInRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/sign-in",
+  path: LOGIN_PATH,
   // The return address is validated where it enters the app, so no component
-  // ever holds an off-origin destination.
+  // ever holds a destination that is off-origin or not a route we serve.
   validateSearch: (search: Record<string, unknown>) => ({
-    from: safeReturnPath(search["from"]),
+    returnUrl: safeReturnPath(search["returnUrl"]),
   }),
   component: SignInRoute,
+});
+// The old address, kept so a bookmarked or emailed link still lands somewhere
+// useful rather than on a 404.
+const legacySignInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sign-in",
+  beforeLoad: () => {
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw redirect({
+      to: LOGIN_PATH,
+      search: { returnUrl: DEFAULT_RETURN_PATH },
+      replace: true,
+    });
+  },
+  component: () => null,
 });
 const dashboardRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/dashboard",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: DashboardRoute,
 });
 const gamesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/events",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   validateSearch: (search: Record<string, unknown>) => ({
     sport:
       search["sport"] === "soccer" ? ("soccer" as const) : ("mlb" as const),
@@ -3088,6 +3147,8 @@ const gamesRoute = createRoute({
 const splitsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/splits",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: SplitsExplorer,
 });
 function WatchlistRoute() {
@@ -3100,41 +3161,57 @@ function WatchlistRoute() {
 const watchlistRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/watchlist",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: WatchlistRoute,
 });
 const performanceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/performance",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: suspended(PerformanceDashboard),
 });
 const dataSourcesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/data-sources",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: DataSourcesRoute,
 });
 const retrospectivesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/retrospectives",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: suspended(RetrospectivesList),
 });
 const experimentsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/experiments",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: suspended(ExperimentsList),
 });
 const experimentDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/experiments/$experimentId",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: suspended(ExperimentDetail),
 });
 const retrospectiveDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/retrospectives/$versionId",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: suspended(RetrospectiveDetail),
 });
 const gameDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/events/$gameId",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   validateSearch: (search: Record<string, unknown>) => ({
     sport:
       search["sport"] === "soccer" ? ("soccer" as const) : ("mlb" as const),
@@ -3193,6 +3270,8 @@ function ScoutingProgressRoute() {
 const scoutingProgressRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/scout-jobs/$jobId",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   component: ScoutingProgressRoute,
 });
 function ScoutReportRoute() {
@@ -3218,6 +3297,8 @@ function ScoutReportRoute() {
 const scoutReportRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/scout-jobs/$jobId/report",
+  beforeLoad: ({ context, location }) =>
+    requireSession(context.session, location.pathname, location.searchStr),
   validateSearch: (search: Record<string, unknown>) => ({
     version:
       Number.isSafeInteger(Number(search["version"])) &&
@@ -3253,6 +3334,7 @@ const legacyGameDetailRoute = createRoute({
 });
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  legacySignInRoute,
   termsRoute,
   privacyRoute,
   signInRoute,
@@ -3272,7 +3354,10 @@ const routeTree = rootRoute.addChildren([
   experimentsRoute,
   experimentDetailRoute,
 ]);
-const registeredRouter = createRouter({ routeTree });
+const registeredRouter = createRouter({
+  routeTree,
+  context: { session: defaultSessionStore },
+});
 void registeredRouter;
 
 declare module "@tanstack/react-router" {
@@ -3293,6 +3378,7 @@ export function App({
   const [router] = useState(() =>
     createRouter({
       routeTree,
+      context: { session: sessionStore },
       ...(initialPath
         ? {
             history: createMemoryHistory({
