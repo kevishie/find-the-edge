@@ -545,6 +545,26 @@ describe("foundation CDK app", () => {
       );
       expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
+    // The identity routes are how a caller obtains a token, so they carry no
+    // authorizer at all. FTE-074 retires the Cognito one; until then the two
+    // schemes coexist and this assertion keeps them apart.
+    for (const routeKey of [
+      "POST /auth/otp/request",
+      "POST /auth/otp/verify",
+      "POST /auth/session/refresh",
+    ]) {
+      const matches = Object.values(resources).filter(
+        (resource) =>
+          resource.Type === "AWS::ApiGatewayV2::Route" &&
+          resource.Properties?.["RouteKey"] === routeKey,
+      );
+      expect(matches).toHaveLength(1);
+      expect(matches[0]?.Properties).toEqual(
+        expect.objectContaining({ AuthorizationType: "NONE" }),
+      );
+      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
+      expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
+    }
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
@@ -560,6 +580,34 @@ describe("foundation CDK app", () => {
         ]),
       },
     });
+    // Identity is the only thing the request path updates in place, and SMS
+    // publish has no resource to name — the comment in the stack says so and
+    // this assertion pins both halves.
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "dynamodb:UpdateItem",
+            Effect: "Allow",
+            Condition: {
+              "ForAllValues:StringLike": {
+                "dynamodb:LeadingKeys": ["ACCOUNT#*", "OTP#*", "OTP_RATE#*"],
+              },
+            },
+          }),
+          Match.objectLike({
+            Action: "sns:Publish",
+            Effect: "Allow",
+            Resource: "*",
+          }),
+        ]),
+      },
+    });
+    // No SMS resource is provisioned: origination is account-level and
+    // already registered, so the stack must not create one.
+    template.resourceCountIs("AWS::Pinpoint::App", 0);
+    template.resourceCountIs("AWS::SNS::Topic", 0);
+    expect(rendered).toContain("find-the-edge/test/identity");
     expect(rendered).toContain(
       '\\"AllowMethods\\":[\\"GET\\",\\"POST\\",\\"DELETE\\",\\"OPTIONS\\"]',
     );

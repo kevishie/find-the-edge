@@ -1292,6 +1292,13 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "ScoutingWorkflowWorkerFunctionName", {
       value: scoutingWorkflowWorker.functionName,
     });
+    // Our own identity keys: the session signing ring plus the OTP and
+    // account peppers. Rotating the ring is a secret edit, not a deploy.
+    const identitySecret = Secret.fromSecretNameV2(
+      this,
+      "IdentitySecret",
+      `find-the-edge/${props.stageName}/identity`,
+    );
     const eventApi = new NodejsFunction(this, "EventApi", {
       entry: path.resolve(directory, "../../../apps/api/src/lambda.ts"),
       handler: "handler",
@@ -1306,6 +1313,7 @@ export class FoundationStack extends Stack {
       environment: {
         FTE_EVENT_TABLE_NAME: table.tableName,
         FTE_EVENT_CURSOR_SECRET_ARN: props.cursorSecretArn,
+        FTE_IDENTITY_SECRET_ID: identitySecret.secretName,
       },
       bundling: { minify: true, sourceMap: true },
     });
@@ -1341,10 +1349,38 @@ export class FoundationStack extends Stack {
         },
       }),
     );
+    // Identity is the only thing the request path updates in place: the
+    // account row, the live OTP challenge, and the rate-limit counters.
+    // Nothing else in the table can be reached by an UpdateItem call.
+    eventApi.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["dynamodb:UpdateItem"],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["ACCOUNT#*", "OTP#*", "OTP_RATE#*"],
+          },
+        },
+      }),
+    );
     eventApi.addToRolePolicy(
       new PolicyStatement({
         actions: ["secretsmanager:GetSecretValue"],
         resources: [props.cursorSecretArn],
+      }),
+    );
+    identitySecret.grantRead(eventApi);
+    // SMS sign-in codes go out over SNS direct publish. The account's SMS
+    // origination is already configured at account and region level, so this
+    // stack provisions no phone number, sender id, or pool. A direct-to-phone
+    // publish has no topic ARN to name, and IAM offers no condition key for
+    // the destination number, so this statement genuinely cannot be narrowed
+    // below the action itself: it is `sns:Publish` on `*`, and the practical
+    // bound on abuse is the rate limiting in the handler, not IAM.
+    eventApi.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["sns:Publish"],
+        resources: ["*"],
       }),
     );
     const api = new HttpApi(this, "EventsHttpApi", {
@@ -1375,6 +1411,20 @@ export class FoundationStack extends Stack {
         ],
       },
     );
+    // Our own identity endpoints, deliberately without an authorizer: these
+    // routes are how a caller obtains a token, so requiring one would be
+    // circular. They are protected by per-number and per-address rate limits
+    // and single-use codes in the handler, not by the gateway.
+    for (const path of [
+      "/auth/otp/request",
+      "/auth/otp/verify",
+      "/auth/session/refresh",
+    ])
+      api.addRoutes({
+        path,
+        methods: [HttpMethod.POST],
+        integration,
+      });
     api.addRoutes({
       path: "/events",
       methods: [HttpMethod.GET],

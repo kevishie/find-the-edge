@@ -399,7 +399,15 @@ function rotateRight(value: number, bits: number): number {
 
 /** Dependency-free SHA-256 over UTF-8, suitable for Node and browser builds. */
 export function sha256Hex(value: string): string {
-  const bytes = new TextEncoder().encode(value);
+  return sha256BytesHex(new TextEncoder().encode(value));
+}
+
+/**
+ * The same digest over raw bytes. Keyed constructions (HMAC) hash byte
+ * strings that are not valid UTF-8, so they cannot go through the string
+ * entry point without corruption.
+ */
+export function sha256BytesHex(bytes: Uint8Array): string {
   const bitLength = bytes.length * 8;
   const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
   const padded = new Uint8Array(paddedLength);

@@ -680,6 +680,26 @@ function validTemplate() {
       },
       ...Object.fromEntries(
         [
+          ["AuthOtpRequestRoute", "POST /auth/otp/request"],
+          ["AuthOtpVerifyRoute", "POST /auth/otp/verify"],
+          ["AuthSessionRefreshRoute", "POST /auth/session/refresh"],
+        ].map(([id, routeKey]) => [
+          id,
+          {
+            Type: "AWS::ApiGatewayV2::Route",
+            Properties: {
+              RouteKey: routeKey,
+              ApiId: { Ref: "Api" },
+              AuthorizationType: "NONE",
+              Target: {
+                "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
+              },
+            },
+          },
+        ]),
+      ),
+      ...Object.fromEntries(
+        [
           ["WatchlistListRoute", "GET /watchlist"],
           ["WatchlistAddRoute", "POST /watchlist"],
           ["WatchlistRemoveRoute", "DELETE /watchlist/{eventId}"],
@@ -782,6 +802,20 @@ function validTemplate() {
                 Condition: {
                   "ForAllValues:StringLike": {
                     "dynamodb:LeadingKeys": ["WATCHLIST#*"],
+                  },
+                },
+              },
+              {
+                Effect: "Allow",
+                Action: "dynamodb:UpdateItem",
+                Resource: { "Fn::GetAtt": ["Table", "Arn"] },
+                Condition: {
+                  "ForAllValues:StringLike": {
+                    "dynamodb:LeadingKeys": [
+                      "ACCOUNT#*",
+                      "OTP#*",
+                      "OTP_RATE#*",
+                    ],
                   },
                 },
               },
@@ -1256,6 +1290,43 @@ test("template validation structurally binds public reads, outputs, and scoped I
     () => validateTemplate(broadApiDelete, templateConfig),
     /limited to watchlist partition keys/,
   );
+  const broadApiUpdate = structuredClone(template);
+  delete broadApiUpdate.Resources.ApiPolicy.Properties.PolicyDocument
+    .Statement[2].Condition;
+  assert.throws(
+    () => validateTemplate(broadApiUpdate, templateConfig),
+    /limited to identity partition keys/,
+  );
+  // The identity routes are the front door: an authorizer on them would lock
+  // every new visitor out, so the pin refuses one.
+  for (const mutation of [
+    (route) => {
+      route.Properties.AuthorizationType = "JWT";
+      route.Properties.AuthorizerId = { Ref: "Auth" };
+    },
+    (route) => {
+      route.Properties.AuthorizationScopes = ["events/events:read"];
+    },
+  ]) {
+    const authorizedIdentity = structuredClone(template);
+    mutation(authorizedIdentity.Resources.AuthOtpVerifyRoute);
+    assert.throws(
+      () => validateTemplate(authorizedIdentity, templateConfig),
+      /Public reads must remain public/,
+    );
+  }
+  for (const routeId of [
+    "AuthOtpRequestRoute",
+    "AuthOtpVerifyRoute",
+    "AuthSessionRefreshRoute",
+  ]) {
+    const missingIdentityRoute = structuredClone(template);
+    delete missingIdentityRoute.Resources[routeId];
+    assert.throws(
+      () => validateTemplate(missingIdentityRoute, templateConfig),
+      /public|scoped/,
+    );
+  }
   for (const mutation of [
     (route) => {
       route.Properties.AuthorizationType = "NONE";

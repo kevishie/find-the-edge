@@ -3,6 +3,7 @@ export * from "./calculation-provenance.js";
 export * from "./closing-lines.js";
 export * from "./clv.js";
 export * from "./fixture-odds.js";
+export * from "./identity.js";
 export * from "./odds-history.js";
 export * from "./paper-evaluation.js";
 export * from "./cohort.js";

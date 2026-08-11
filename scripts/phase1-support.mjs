@@ -683,6 +683,9 @@ export function validateTemplate(template, config) {
     "GET /watchlist",
     "POST /watchlist",
     "DELETE /watchlist/{eventId}",
+    "POST /auth/otp/request",
+    "POST /auth/otp/verify",
+    "POST /auth/session/refresh",
   ];
   if (
     apiRoutes.length !== requiredRouteKeys.length ||
@@ -733,6 +736,21 @@ export function validateTemplate(template, config) {
         return (
           value.Properties?.AuthorizationType !== "JWT" ||
           !isRef(value.Properties?.AuthorizerId, authorizerId) ||
+          value.Properties?.AuthorizationScopes !== undefined
+        );
+      // The identity routes are how a caller obtains a token, so they must
+      // stay public: an authorizer here would lock everybody out, and a
+      // scope would be meaningless on an unauthenticated request.
+      if (
+        [
+          "POST /auth/otp/request",
+          "POST /auth/otp/verify",
+          "POST /auth/session/refresh",
+        ].includes(value.Properties?.RouteKey)
+      )
+        return (
+          value.Properties?.AuthorizationType !== "NONE" ||
+          value.Properties?.AuthorizerId !== undefined ||
           value.Properties?.AuthorizationScopes !== undefined
         );
       const scoutingScope = [
@@ -984,6 +1002,7 @@ export function validateTemplate(template, config) {
     "dynamodb:PutItem",
     "dynamodb:Query",
     "dynamodb:DeleteItem",
+    "dynamodb:UpdateItem",
     "dynamodb:TransactGetItems",
     "dynamodb:TransactWriteItems",
   ];
@@ -1040,6 +1059,32 @@ export function validateTemplate(template, config) {
   )
     throw new Error(
       "API DeleteItem IAM must be limited to watchlist partition keys",
+    );
+  // The request path may only update identity rows: the account record, the
+  // live OTP challenge, and the rate-limit counters.
+  const apiUpdateStatements = entriesOfType(template, "AWS::IAM::Policy")
+    .filter(([, policy]) =>
+      (policy.Properties?.Roles ?? []).some((role) => isRef(role, apiRoleId)),
+    )
+    .flatMap(([, policy]) => policy.Properties?.PolicyDocument?.Statement ?? [])
+    .filter((statement) => {
+      const actions = Array.isArray(statement.Action)
+        ? statement.Action
+        : [statement.Action];
+      return (
+        statement.Effect === "Allow" && actions.includes("dynamodb:UpdateItem")
+      );
+    });
+  if (
+    apiUpdateStatements.length !== 1 ||
+    JSON.stringify(
+      apiUpdateStatements[0].Condition?.["ForAllValues:StringLike"]?.[
+        "dynamodb:LeadingKeys"
+      ],
+    ) !== JSON.stringify(["ACCOUNT#*", "OTP#*", "OTP_RATE#*"])
+  )
+    throw new Error(
+      "API UpdateItem IAM must be limited to identity partition keys",
     );
   const liveDeleteStatements = deleteStatementsForRole(liveRoleId);
   if (

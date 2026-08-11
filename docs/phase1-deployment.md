@@ -15,6 +15,17 @@ this release.
 - Node 20.19 or newer and pnpm 10.28.2.
 - For local validation: no AWS login is required.
 - For deployment: an authenticated AWS profile/role in account `228246988391`, region `us-east-1`, the existing cursor-signing secret, and `find-the-edge/dev/sharpapi` in Secrets Manager. Store either the plain API key or `{ "apiKey": "..." }`; never put it in CDK context, Lambda environment variables, browser assets, or logs. SharpAPI is the sole production schedule and odds provider.
+- For phone sign-in (FTE-070): `find-the-edge/<stage>/identity` in Secrets Manager, holding
+  `{ "currentKeyId": "session-<yyyy-mm>", "currentSecret": "<32+ random chars>", "otpPepper": "<32+ random chars>", "accountPepper": "<32+ random chars>" }`,
+  optionally plus `previousKeyId` and `previousSecret` while a signing key is
+  rotating. Rotate `currentSecret` (keeping the old pair as `previous*` until
+  old tokens expire) and `otpPepper` freely; **never** rotate `accountPepper` —
+  every account id is derived from it, so changing it orphans every account.
+  The identity routes return `500` until this secret exists; every other route
+  is unaffected. SMS is sent with `sns:Publish` to the number, using the
+  account's existing SNS SMS origination — the stack provisions no messaging
+  resource, so no phone number, sender id, or pool is created or required by
+  this deploy.
 
 ## SharpAPI odds request modes
 

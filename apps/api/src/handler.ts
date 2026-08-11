@@ -19,6 +19,7 @@ import {
   type RankedOpportunityRepository,
   type ScoutingReportRepository,
   type WatchlistRepository,
+  type IdentityRepository,
   attachSplits,
   boardCounts,
   type BoardKey,
@@ -49,6 +50,11 @@ import type {
   ScoutingHttpRequest,
   ScoutingHttpResponse,
 } from "./scouting-handler";
+import {
+  createIdentityHttpHandler,
+  type IdentityObservation,
+  type IdentityRuntime,
+} from "./identity-handler";
 import { createSplitLookupCache } from "./splits-cache";
 export interface ApiRequest {
   readonly route:
@@ -83,7 +89,12 @@ export interface ApiRequest {
     | "scout-report-version"
     | "watchlist-list"
     | "watchlist-add"
-    | "watchlist-remove";
+    | "watchlist-remove"
+    // Public by design: these routes are how a caller obtains a token, so
+    // they cannot sit behind one.
+    | "auth-otp-request"
+    | "auth-otp-verify"
+    | "auth-session-refresh";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
@@ -108,6 +119,10 @@ export interface ApiRequest {
   readonly body?: string;
   readonly reviewerAuthorized?: boolean;
   readonly strategyPromoterAuthorized?: boolean;
+  /** Raw `Authorization` header, read only by the session-refresh route. */
+  readonly authorization?: string;
+  /** Gateway-observed source address, used only as a rate-limit subject. */
+  readonly sourceIp?: string;
 }
 
 const safeDecode = (value: string): string | null => {
@@ -282,6 +297,8 @@ export const createEventHandler =
     clvRepository?: ClvRepository,
     scoutingReportRepository?: ScoutingReportRepository,
     watchlistRepository?: WatchlistRepository,
+    identityRepository?: IdentityRepository,
+    identityRuntime?: IdentityRuntime,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -315,7 +332,52 @@ export const createEventHandler =
       joinFailure: number;
       cursorRejected: number;
     } | null = null;
+    let identityObservation: IdentityObservation | null = null;
     try {
+      if (
+        request.route === "auth-otp-request" ||
+        request.route === "auth-otp-verify" ||
+        request.route === "auth-session-refresh"
+      ) {
+        if (!identityRepository || !identityRuntime)
+          throw new Error("identity-service-not-configured");
+        const result = await createIdentityHttpHandler(
+          identityRepository,
+          identityRuntime,
+        )({
+          route: request.route,
+          ...(request.method ? { method: request.method } : {}),
+          ...(request.contentType ? { contentType: request.contentType } : {}),
+          ...(request.body === undefined ? {} : { body: request.body }),
+          ...(request.authorization
+            ? { authorization: request.authorization }
+            : {}),
+          ...(request.sourceIp ? { sourceIp: request.sourceIp } : {}),
+          ...(request.query ? { query: request.query } : {}),
+        });
+        identityObservation = result.observation;
+        // The only identity data in this line is a peppered digest of the
+        // number: never the number, never the code, never the token.
+        log({
+          event: "identity-request",
+          route: request.route,
+          outcome: result.observation.outcome,
+          ...(result.observation.delivery
+            ? { delivery: result.observation.delivery }
+            : {}),
+          ...(result.observation.failureClass
+            ? { failureClass: result.observation.failureClass }
+            : {}),
+          ...(result.observation.phoneDigest
+            ? { phoneDigest: result.observation.phoneDigest }
+            : {}),
+          ...(request.requestId
+            ? { requestId: request.requestId.slice(0, 128) }
+            : {}),
+        });
+        status = result.response.statusCode;
+        return result.response;
+      }
       if (request.route.startsWith("watchlist-")) {
         if (!watchlistRepository)
           throw new Error("watchlist-repository-not-configured");
@@ -1407,6 +1469,38 @@ export const createEventHandler =
       const experimentRoute = request.route.startsWith("experiment-");
       const reviewRoute = request.route === "retrospective-review";
       const opportunityRoute = request.route.startsWith("opportunity-");
+      // Identity counters carry no dimension beyond the route, so no metric
+      // can ever be sliced by number, address, or account.
+      const identityMetricNames = identityObservation
+        ? [
+            "AuthLatency",
+            ...(identityObservation.delivery === "delivered"
+              ? ["AuthOtpDelivered"]
+              : []),
+            ...(identityObservation.delivery === "failed" ||
+            identityObservation.delivery === "rejected"
+              ? ["AuthOtpDeliveryFailed"]
+              : []),
+            ...(identityObservation.delivery === "suppressed"
+              ? ["AuthOtpSuppressed"]
+              : []),
+            ...(identityObservation.outcome === "verified"
+              ? ["AuthOtpVerified"]
+              : []),
+            ...(identityObservation.outcome === "invalid-credentials"
+              ? ["AuthOtpRejected"]
+              : []),
+            ...(identityObservation.outcome === "rate-limited"
+              ? ["AuthRateLimited"]
+              : []),
+            ...(identityObservation.outcome === "refreshed"
+              ? ["AuthSessionRefreshed"]
+              : []),
+            ...(identityObservation.outcome === "unauthorized"
+              ? ["AuthUnauthorized"]
+              : []),
+          ]
+        : [];
       const metrics = [
         { Name: "Requests", Unit: "Count" },
         { Name: "Latency", Unit: "Milliseconds" },
@@ -1482,6 +1576,10 @@ export const createEventHandler =
               { Name: "OpportunityCursorRejected", Unit: "Count" },
             ]
           : []),
+        ...identityMetricNames.map((Name) => ({
+          Name,
+          Unit: Name === "AuthLatency" ? "Milliseconds" : "Count",
+        })),
       ];
       log({
         _aws: {
@@ -1565,6 +1663,12 @@ export const createEventHandler =
               OpportunityCursorRejected: opportunityCounts?.cursorRejected ?? 0,
             }
           : {}),
+        ...Object.fromEntries(
+          identityMetricNames.map((name) => [
+            name,
+            name === "AuthLatency" ? Date.now() - started : 1,
+          ]),
+        ),
       });
     }
   };
