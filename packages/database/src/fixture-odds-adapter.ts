@@ -585,13 +585,19 @@ export class DynamoFixtureOddsAdapter {
       // History keeps its meaning: a price that moves away and later returns
       // still writes a row each time, because each observation is compared
       // against what is published at that moment, not against all history.
-      // The exact-id and event-history mirrors are still reconciled. They are
-      // conditional, idempotent, and are the ONLY repair path for a persist that
-      // was interrupted after CURRENT advanced; skipping them here would make
-      // such a gap permanent until the price next moves. They are reconciled
-      // from the COMMITTED row so a mirror can never disagree with the primary.
-      await this.prepareExactSnapshot(publishedCurrent);
-      await this.commitExactSnapshotHistory(publishedCurrent);
+      // The mirrors are the only repair path for a persist interrupted after
+      // CURRENT advanced, so they are still reconciled — but their writes are
+      // conditional puts that FAIL (and are still billed, then pay a
+      // consistent read) once the row exists. Re-attempting them for every
+      // unchanged price on every poll is the dominant waste this
+      // short-circuit exists to remove, so a snapshot already reconciled by
+      // this instance is not attempted again. A cold start re-attempts once
+      // per snapshot, which is what makes the repair reachable at all.
+      if (!this.reconciledSnapshotIds.has(publishedCurrent.snapshotId)) {
+        await this.prepareExactSnapshot(publishedCurrent);
+        await this.commitExactSnapshotHistory(publishedCurrent);
+        this.rememberReconciled(publishedCurrent.snapshotId);
+      }
       // `retrievedAt` stays at the first observation of this price on purpose:
       // that is when this price was actually first seen.
       return {
@@ -783,6 +789,9 @@ export class DynamoFixtureOddsAdapter {
     // projection first so a history outage cannot hold CURRENT back; a retry
     // revalidates the primary identity and repairs this mirror idempotently.
     await this.commitExactSnapshotHistory(committed);
+    // Both mirrors are now durable for this snapshot, so a later poll that
+    // re-observes the same price must not pay to re-attempt them.
+    this.rememberReconciled(committed.snapshotId);
     return { snapshot: snapshotDecision, current, value: committed };
   }
 
@@ -812,6 +821,16 @@ export class DynamoFixtureOddsAdapter {
         error,
       );
     }
+  }
+
+  /** Snapshots whose mirrors this instance has already reconciled. Bounded so
+   * a long-lived lambda cannot grow it without limit; eviction only costs one
+   * repeated reconciliation. */
+  private readonly reconciledSnapshotIds = new Set<string>();
+  private rememberReconciled(snapshotId: string) {
+    if (this.reconciledSnapshotIds.size >= 20_000)
+      this.reconciledSnapshotIds.clear();
+    this.reconciledSnapshotIds.add(snapshotId);
   }
 
   async persistAvailability(value: FixtureOddsAvailabilityEvidence) {

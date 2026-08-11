@@ -2969,3 +2969,176 @@ describe("watchlist browser client", () => {
     expect("removeFromWatchlist" in result.value).toBe(false);
   });
 });
+
+describe("identity browser client", () => {
+  const token = `fte1.${"payload".padEnd(40, "x")}.${"a".repeat(64)}`;
+  const accountId = `account:${"b".repeat(64)}`;
+  const session = {
+    schemaVersion: "auth-session-v1",
+    token,
+    expiresAt: "2026-08-11T13:00:00.000Z",
+    accountId,
+  };
+  const client = (fetcher: typeof fetch) => {
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+    return result.value;
+  };
+  const json = (body: unknown, status: number, headers?: HeadersInit) =>
+    vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status,
+          ...(headers ? { headers } : {}),
+        }),
+      ),
+    );
+
+  it("asks for a code with the number in the body and nothing else", async () => {
+    const fetcher = json(
+      {
+        schemaVersion: "auth-otp-request-v1",
+        status: "accepted",
+        expiresInSeconds: 300,
+        resendAfterSeconds: 30,
+      },
+      202,
+    );
+    await expect(
+      client(fetcher).requestOtp?.(
+        "+15551234567",
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual({
+      schemaVersion: "auth-otp-request-v1",
+      status: "accepted",
+      expiresInSeconds: 300,
+      resendAfterSeconds: 30,
+    });
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/auth/otp/request",
+    );
+    const request = fetcher.mock.calls[0]?.[1];
+    expect(request).toMatchObject({
+      method: "POST",
+      credentials: "omit",
+      cache: "no-store",
+      body: JSON.stringify({ phone: "+15551234567" }),
+    });
+    // Identity calls carry no session of their own.
+    expect(new Headers(request?.headers).get("authorization")).toBeNull();
+  });
+
+  it("refuses a number that is not E.164 without asking the API", async () => {
+    const fetcher = json({}, 202);
+    await expect(
+      client(fetcher).requestOtp?.("5551234567", new AbortController().signal),
+    ).rejects.toMatchObject({ code: "invalid-request" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("carries the retry budget from a rate-limited refusal", async () => {
+    const fetcher = json(
+      { error: "rate-limited", retryAfterSeconds: 42 },
+      429,
+      {
+        "retry-after": "42",
+      },
+    );
+    await expect(
+      client(fetcher).requestOtp?.(
+        "+15551234567",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "rate-limited", retryAfterSeconds: 42 });
+  });
+
+  it("falls back to the retry-after header, then to a default", async () => {
+    await expect(
+      client(
+        json({ error: "rate-limited" }, 429, { "retry-after": "17" }),
+      ).verifyOtp?.("+15551234567", "123456", new AbortController().signal),
+    ).rejects.toMatchObject({ retryAfterSeconds: 17 });
+    await expect(
+      client(json({ error: "rate-limited" }, 429)).verifyOtp?.(
+        "+15551234567",
+        "123456",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ retryAfterSeconds: 30 });
+  });
+
+  it("verifies a code into a session and says one thing about every failure", async () => {
+    await expect(
+      client(json(session, 200)).verifyOtp?.(
+        "+15551234567",
+        "123456",
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual(session);
+    await expect(
+      client(json({ error: "invalid-credentials" }, 400)).verifyOtp?.(
+        "+15551234567",
+        "123456",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: "invalid-credentials",
+      message: "That code did not work.",
+    });
+  });
+
+  it("rejects a session response that does not match the published contract", async () => {
+    for (const body of [
+      { ...session, schemaVersion: "auth-session-v2" },
+      { ...session, token: `x.${"y".repeat(40)}.z` },
+      { ...session, accountId: "account:+15551234567" },
+      { ...session, expiresAt: "not-a-time" },
+      { ...session, scope: "admin" },
+    ])
+      await expect(
+        client(json(body, 200)).verifyOtp?.(
+          "+15551234567",
+          "123456",
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it("renews from a live token and treats a refusal as the end of the session", async () => {
+    const fetcher = json(session, 200);
+    await expect(
+      client(fetcher).refreshSession?.(token, new AbortController().signal),
+    ).resolves.toEqual(session);
+    expect(
+      new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("authorization"),
+    ).toBe(`Bearer ${token}`);
+    await expect(
+      client(json({ error: "unauthorized" }, 401)).refreshSession?.(
+        token,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    await expect(
+      client(json({}, 200)).refreshSession?.(
+        "not-our-token",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+  });
+
+  it("reports a service failure as temporary rather than as a bad code", async () => {
+    await expect(
+      client(
+        vi.fn<typeof fetch>(() => Promise.reject(new Error("offline"))),
+      ).verifyOtp?.("+15551234567", "123456", new AbortController().signal),
+    ).rejects.toMatchObject({ code: "request-failed" });
+    await expect(
+      client(json({}, 503)).verifyOtp?.(
+        "+15551234567",
+        "123456",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "request-failed" });
+  });
+});

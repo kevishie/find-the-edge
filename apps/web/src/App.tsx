@@ -23,6 +23,7 @@ import {
   redirect,
   useNavigate,
   useParams,
+  useRouter,
   useRouterState,
   useSearch,
 } from "@tanstack/react-router";
@@ -55,6 +56,14 @@ import {
   type RetrospectiveDto,
   type WatchlistEntryDto,
 } from "./api";
+import {
+  accountHint,
+  defaultSessionStore,
+  safeReturnPath,
+  SessionContext,
+  useSession,
+  type SessionStore,
+} from "./session";
 // Off-nav screens load on demand so the landing path never parses them.
 const Dashboard = lazy(() =>
   import("./dashboard").then((module) => ({ default: module.Dashboard })),
@@ -90,6 +99,9 @@ const ExperimentDetail = lazy(() =>
   import("./experiments").then((module) => ({
     default: module.ExperimentDetail,
   })),
+);
+const SignInScreen = lazy(() =>
+  import("./sign-in").then((module) => ({ default: module.SignIn })),
 );
 
 // Route components render inside the shell, so one small fallback fits all.
@@ -443,6 +455,9 @@ export interface UiGamesClient {
   removeFromWatchlist?: NonNullable<
     import("./api").GamesClient["removeFromWatchlist"]
   >;
+  requestOtp?: NonNullable<import("./api").GamesClient["requestOtp"]>;
+  verifyOtp?: NonNullable<import("./api").GamesClient["verifyOtp"]>;
+  refreshSession?: NonNullable<import("./api").GamesClient["refreshSession"]>;
 }
 export interface StrategyExperimentDto {
   readonly experimentId: string;
@@ -804,6 +819,48 @@ function GlassNav({
   );
 }
 
+/**
+ * Who is signed in, and the way out. It sits outside the primary nav so it
+ * survives the small-screen layout that hides the sidebar links, and it is the
+ * only sign-in affordance the shell offers: our own route, never a provider.
+ */
+function SessionBadge({ collapsed }: { readonly collapsed: boolean }) {
+  const store = useContext(SessionContext);
+  const session = useSession(store);
+  const here = useRouterState({ select: (state) => state.location.href });
+  if (session === null)
+    return (
+      <div className="shell-session">
+        <Link
+          to="/sign-in"
+          search={{ from: safeReturnPath(here) }}
+          className="shell-session-link"
+          title="Sign in"
+        >
+          <span aria-hidden="true">⇥</span>
+          <span className={collapsed ? "sr-only" : undefined}>Sign in</span>
+        </Link>
+      </div>
+    );
+  return (
+    <div className="shell-session">
+      <span className="shell-session-state">
+        <span aria-hidden="true">●</span>
+        <span className={collapsed ? "sr-only" : undefined}>
+          Signed in {accountHint(session.accountId)}
+        </span>
+      </span>
+      <button
+        type="button"
+        className="shell-session-out"
+        onClick={() => store.signOut()}
+      >
+        Sign out
+      </button>
+    </div>
+  );
+}
+
 function AppShell() {
   const [navCollapsed, setNavCollapsed] = useState(() => {
     try {
@@ -923,6 +980,7 @@ function AppShell() {
             </span>
           </Link>
         </nav>
+        <SessionBadge collapsed={navCollapsed} />
         <div className="nav-footer">
           <button
             type="button"
@@ -2926,7 +2984,7 @@ function RootLayout() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
-  return ["/", "/terms", "/privacy"].includes(pathname) ? (
+  return ["/", "/terms", "/privacy", "/sign-in"].includes(pathname) ? (
     <Outlet />
   ) : (
     <AppShell />
@@ -2951,6 +3009,32 @@ const privacyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/privacy",
   component: () => <PublicLegalPage kind="privacy" />,
+});
+function SignInRoute() {
+  const { from } = useSearch({ from: "/sign-in" });
+  const router = useRouter();
+  return (
+    <Suspense fallback={<p role="status">Loading sign-in…</p>}>
+      <SignInScreen
+        client={useContext(GamesClientContext)}
+        store={useContext(SessionContext)}
+        from={from}
+        // The form is replaced rather than pushed: going back from where the
+        // reader landed must not return them to a spent code.
+        onSignedIn={(path) => router.history.replace(path)}
+      />
+    </Suspense>
+  );
+}
+const signInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sign-in",
+  // The return address is validated where it enters the app, so no component
+  // ever holds an off-origin destination.
+  validateSearch: (search: Record<string, unknown>) => ({
+    from: safeReturnPath(search["from"]),
+  }),
+  component: SignInRoute,
 });
 const dashboardRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -3171,6 +3255,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   termsRoute,
   privacyRoute,
+  signInRoute,
   dashboardRoute,
   gamesRoute,
   gameDetailRoute,
@@ -3199,9 +3284,11 @@ declare module "@tanstack/react-router" {
 export function App({
   initialPath,
   gamesClient,
+  sessionStore = defaultSessionStore,
 }: {
   initialPath?: string;
   gamesClient?: GamesClientResult;
+  sessionStore?: SessionStore;
 }) {
   const [router] = useState(() =>
     createRouter({
@@ -3227,11 +3314,20 @@ export function App({
     // cache read rather than a cold round trip.
     if (client.ok) prefetchSplits(client.value, "mlb", currentEasternDay());
   }, [client]);
+  const refreshSession = client.ok ? client.value.refreshSession : undefined;
+  useEffect(() => {
+    // The store renews through whatever client this deployment has; without
+    // one it simply lets the token run out and signs the reader out.
+    sessionStore.setRefresher(refreshSession ?? null);
+    return () => sessionStore.setRefresher(null);
+  }, [refreshSession, sessionStore]);
   return (
     <QueryClientProvider client={queryClient}>
-      <GamesClientContext.Provider value={gamesClient ?? defaultGamesClient}>
-        <RouterProvider router={router} />
-      </GamesClientContext.Provider>
+      <SessionContext.Provider value={sessionStore}>
+        <GamesClientContext.Provider value={gamesClient ?? defaultGamesClient}>
+          <RouterProvider router={router} />
+        </GamesClientContext.Provider>
+      </SessionContext.Provider>
     </QueryClientProvider>
   );
 }

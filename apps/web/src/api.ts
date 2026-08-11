@@ -265,6 +265,26 @@ export interface WatchlistPageDto {
   readonly items: readonly WatchlistEntryDto[];
 }
 
+/**
+ * What the identity API says about a code it may or may not have sent. The
+ * body is deliberately the same for a known and an unknown number, so nothing
+ * here distinguishes the two and neither may the screen.
+ */
+export interface AuthOtpRequestDto {
+  readonly schemaVersion: "auth-otp-request-v1";
+  readonly status: "accepted";
+  readonly expiresInSeconds: number;
+  readonly resendAfterSeconds: number;
+}
+
+/** One live session: the bearer token, when it dies, and whose it is. */
+export interface AuthSessionDto {
+  readonly schemaVersion: "auth-session-v1";
+  readonly token: string;
+  readonly expiresAt: string;
+  readonly accountId: string;
+}
+
 export interface GamesClient {
   providerStatus?(signal: AbortSignal): Promise<ProviderStatusPageDto>;
   listOpportunities?(
@@ -369,6 +389,13 @@ export interface GamesClient {
     signal: AbortSignal,
   ): Promise<WatchlistEntryDto>;
   removeFromWatchlist?(eventId: string, signal: AbortSignal): Promise<void>;
+  requestOtp?(phone: string, signal: AbortSignal): Promise<AuthOtpRequestDto>;
+  verifyOtp?(
+    phone: string,
+    code: string,
+    signal: AbortSignal,
+  ): Promise<AuthSessionDto>;
+  refreshSession?(token: string, signal: AbortSignal): Promise<AuthSessionDto>;
 }
 export interface RetrospectiveDto {
   readonly retrospectiveId: string;
@@ -980,6 +1007,9 @@ export type GamesClientErrorCode =
   | "conflict"
   | "not-eligible"
   | "retry-limit"
+  | "invalid-request"
+  | "invalid-credentials"
+  | "rate-limited"
   | "invalid-response";
 
 export class GamesClientError extends Error {
@@ -991,6 +1021,23 @@ export class GamesClientError extends Error {
     super(message);
   }
 }
+
+/**
+ * A refusal that carries how long the caller must wait. It is its own class so
+ * a screen can render a countdown instead of a generic failure, without
+ * pattern-matching on message text.
+ */
+export class RateLimitedError extends GamesClientError {
+  constructor(
+    readonly retryAfterSeconds: number,
+    message: string,
+  ) {
+    super("rate-limited", message);
+  }
+}
+
+export const isRateLimited = (error: unknown): error is RateLimitedError =>
+  error instanceof RateLimitedError;
 
 const exact = (value: object, keys: readonly string[]) =>
   Reflect.ownKeys(value).every((key) => typeof key === "string") &&
@@ -1391,6 +1438,163 @@ export function parseWatchlistPage(value: unknown): WatchlistPageDto {
     items: Object.freeze(items),
   });
 }
+
+/**
+ * Our own session token grammar: a version marker, a base64url payload, and a
+ * signature. It is checked before anything is stored or sent so a corrupt
+ * entry — or a leftover token from another issuer — is discarded rather than
+ * presented as a session.
+ */
+const SESSION_TOKEN = /^fte1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+export const isSessionToken = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length >= 32 &&
+  value.length <= 1_024 &&
+  SESSION_TOKEN.test(value);
+
+/** The account id is a digest, never a phone number. */
+export const isAccountId = (value: unknown): value is string =>
+  typeof value === "string" && /^account:[a-f0-9]{64}$/.test(value);
+
+const invalidAuth = () =>
+  new GamesClientError("invalid-response", "The sign-in response was invalid.");
+
+export function parseAuthOtpRequest(value: unknown): AuthOtpRequestDto {
+  if (
+    !plain(value) ||
+    !exact(value, [
+      "schemaVersion",
+      "status",
+      "expiresInSeconds",
+      "resendAfterSeconds",
+    ]) ||
+    value["schemaVersion"] !== "auth-otp-request-v1" ||
+    value["status"] !== "accepted" ||
+    !Number.isSafeInteger(value["expiresInSeconds"]) ||
+    Number(value["expiresInSeconds"]) < 1 ||
+    Number(value["expiresInSeconds"]) > 3_600 ||
+    !Number.isSafeInteger(value["resendAfterSeconds"]) ||
+    Number(value["resendAfterSeconds"]) < 0 ||
+    Number(value["resendAfterSeconds"]) > Number(value["expiresInSeconds"])
+  )
+    throw invalidAuth();
+  return Object.freeze({
+    schemaVersion: "auth-otp-request-v1" as const,
+    status: "accepted" as const,
+    expiresInSeconds: Number(value["expiresInSeconds"]),
+    resendAfterSeconds: Number(value["resendAfterSeconds"]),
+  });
+}
+
+export function parseAuthSession(value: unknown): AuthSessionDto {
+  if (
+    !plain(value) ||
+    !exact(value, ["schemaVersion", "token", "expiresAt", "accountId"]) ||
+    value["schemaVersion"] !== "auth-session-v1" ||
+    !isSessionToken(value["token"]) ||
+    !iso(value["expiresAt"]) ||
+    !isAccountId(value["accountId"])
+  )
+    throw invalidAuth();
+  return Object.freeze({
+    schemaVersion: "auth-session-v1" as const,
+    token: value["token"],
+    expiresAt: value["expiresAt"],
+    accountId: value["accountId"],
+  });
+}
+
+const AUTH_REQUEST_TIMEOUT_MS = 10_000;
+/** Long enough for a real backoff, short enough that a hostile number cannot
+ * park the form forever. */
+const MAXIMUM_RETRY_AFTER_SECONDS = 3_600;
+
+const isE164 = (value: unknown): value is string =>
+  typeof value === "string" && /^\+[1-9]\d{7,14}$/.test(value);
+
+/**
+ * The wait is taken from the body, then the header, and only then from a
+ * default: a refusal with no readable budget still has to produce a countdown
+ * the reader can act on.
+ */
+const retryAfterFrom = (body: unknown, response: Response): number => {
+  const inBody = plain(body) ? body["retryAfterSeconds"] : undefined;
+  if (
+    Number.isSafeInteger(inBody) &&
+    Number(inBody) >= 1 &&
+    Number(inBody) <= MAXIMUM_RETRY_AFTER_SECONDS
+  )
+    return Number(inBody);
+  const header = Number(response.headers.get("retry-after"));
+  return Number.isSafeInteger(header) &&
+    header >= 1 &&
+    header <= MAXIMUM_RETRY_AFTER_SECONDS
+    ? header
+    : 30;
+};
+
+/**
+ * One identity round trip. Every failure that is not a rate limit collapses to
+ * the caller's single neutral message: the API refuses to say whether a number
+ * is known, and repeating that distinction here would undo it.
+ */
+const authRequest = async <T>({
+  apiBase,
+  fetcher,
+  path,
+  signal,
+  body,
+  token,
+  accepted,
+  parse,
+  rejected,
+  unavailable,
+}: {
+  readonly apiBase: string;
+  readonly fetcher: typeof fetch;
+  readonly path: string;
+  readonly signal: AbortSignal;
+  readonly body?: Readonly<Record<string, string>>;
+  readonly token?: string;
+  readonly accepted: number;
+  readonly parse: (value: unknown) => T;
+  readonly rejected: GamesClientError;
+  readonly unavailable: string;
+}): Promise<T> => {
+  const timeoutSignal = AbortSignal.timeout(AUTH_REQUEST_TIMEOUT_MS);
+  const requestSignal = AbortSignal.any([signal, timeoutSignal]);
+  let response: Response;
+  try {
+    response = await fetcher(`${apiBase}${path}`, {
+      method: "POST",
+      credentials: "omit",
+      cache: "no-store",
+      signal: requestSignal,
+      headers: {
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new GamesClientError("request-failed", unavailable);
+  }
+  const payload: unknown = await response.json().catch(() => null);
+  if (response.status === 429)
+    throw new RateLimitedError(
+      retryAfterFrom(payload, response),
+      "Too many attempts. Wait for the countdown and try again.",
+    );
+  if (response.status !== accepted) {
+    // A 4xx here is the documented refusal; anything else is the service
+    // being unwell, which is a different sentence for the reader.
+    if (response.status >= 400 && response.status < 500) throw rejected;
+    throw new GamesClientError("request-failed", unavailable);
+  }
+  return parse(payload);
+};
 
 const validAmericanOdds = (value: unknown): value is number =>
   Number.isSafeInteger(value) &&
@@ -3536,6 +3740,70 @@ export function createGamesClient(
             },
           }
         : {}),
+      // Identity is unauthenticated by construction: these are the calls that
+      // produce a session, so they never resolve one first.
+      async requestOtp(phone, signal) {
+        if (!isE164(phone))
+          throw new GamesClientError(
+            "invalid-request",
+            "Enter a mobile number that can receive a text message.",
+          );
+        return authRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          fetcher,
+          path: "/auth/otp/request",
+          signal,
+          body: { phone },
+          accepted: 202,
+          parse: parseAuthOtpRequest,
+          rejected: new GamesClientError(
+            "invalid-request",
+            "That number was not accepted.",
+          ),
+          unavailable: "A code could not be sent right now. Try again.",
+        });
+      },
+      async verifyOtp(phone, code, signal) {
+        if (!isE164(phone) || !/^\d{6}$/.test(code))
+          throw new GamesClientError(
+            "invalid-credentials",
+            "That code did not work.",
+          );
+        return authRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          fetcher,
+          path: "/auth/otp/verify",
+          signal,
+          body: { phone, code },
+          accepted: 200,
+          parse: parseAuthSession,
+          // Wrong code, unknown number, expired challenge, and a code already
+          // spent are one sentence. The API keeps the distinction; so do we.
+          rejected: new GamesClientError(
+            "invalid-credentials",
+            "That code did not work.",
+          ),
+          unavailable: "Sign in could not be completed right now. Try again.",
+        });
+      },
+      async refreshSession(token, signal) {
+        if (!isSessionToken(token))
+          throw new GamesClientError("unauthorized", "The session has ended.");
+        return authRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          fetcher,
+          path: "/auth/session/refresh",
+          signal,
+          token,
+          accepted: 200,
+          parse: parseAuthSession,
+          rejected: new GamesClientError(
+            "unauthorized",
+            "The session has ended.",
+          ),
+          unavailable: "The session could not be renewed right now.",
+        });
+      },
       async providerStatus(signal) {
         const timeoutSignal = AbortSignal.timeout(8_000);
         const requestSignal = AbortSignal.any([signal, timeoutSignal]);

@@ -6717,3 +6717,137 @@ footer {
 .event-explorer-card .evb-watch {
   margin-left: 0;
 }
+
+/* Our own sign-in (FTE-071): one column on a phone, centred on a desktop. */
+.sign-in-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px 16px;
+  background:
+    radial-gradient(
+      circle at 74% 8%,
+      rgba(139, 92, 246, 0.12),
+      transparent 28rem
+    ),
+    #09080d;
+}
+.sign-in-card {
+  width: 100%;
+  max-width: 26rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px 20px;
+  background: #0e0d13;
+}
+.sign-in-card h1 {
+  margin: 4px 0 12px;
+  font-size: 1.5rem;
+}
+.sign-in-lede,
+.sign-in-hint {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.sign-in-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sign-in-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sign-in-field > span {
+  color: #c4b5fd;
+  font: 600 10px var(--mono);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+.sign-in-field input {
+  width: 100%;
+  border: 1px solid #302b39;
+  border-radius: 8px;
+  outline: none;
+  padding: 12px;
+  color: #f3f1f8;
+  background: #0a090e;
+  font: 16px var(--mono);
+  letter-spacing: 2px;
+}
+.sign-in-field input:focus {
+  border-color: #8b5cf6;
+}
+.sign-in-form .sign-in-hint {
+  margin: 0;
+}
+.sign-in-submit {
+  border-color: #7c3aed;
+  padding: 12px;
+  color: #f3f1f8;
+  background: rgba(124, 58, 237, 0.22);
+  font: 600 12px var(--mono);
+}
+.sign-in-submit:disabled {
+  border-color: var(--line);
+  color: var(--muted);
+  background: transparent;
+  cursor: default;
+}
+.sign-in-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.sign-in-actions button {
+  flex: 1 1 auto;
+}
+.sign-in-error {
+  margin: 14px 0 0;
+  border: 1px solid #7f1d1d;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #fca5a5;
+  font-size: 0.85rem;
+}
+
+/* Signed-in indicator in the shell sidebar; it stays visible on small
+   screens, where the sidebar links themselves are hidden. */
+.shell-session {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid #201e29;
+}
+.shell-session-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font: 10px var(--mono);
+}
+.shell-session-state > span[aria-hidden="true"] {
+  color: #4ade80;
+}
+.shell-session-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 12px;
+  color: #c4b5fd;
+  font: 600 10px var(--mono);
+  text-decoration: none;
+}
+.shell-session-out {
+  margin-left: auto;
+  padding: 5px 10px;
+  font-size: 10px;
+}

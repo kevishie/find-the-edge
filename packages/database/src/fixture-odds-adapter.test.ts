@@ -212,11 +212,31 @@ describe("DynamoFixtureOddsAdapter", () => {
     // fix — a conditional write that loses is still billed, so the transaction
     // must never be issued.
     const gateway = boundHarness();
-    const adapter = new DynamoFixtureOddsAdapter(gateway);
+    // The mirrors must be wired here. Asserting "no writes" against an adapter
+    // with no snapshot index proves nothing: the mirrors are themselves
+    // conditional puts, and re-attempting them per poll was the real cost.
+    const mirrorLog: string[] = [];
+    const mirror = {
+      prepare: (snapshot: { snapshotId: string }) => {
+        mirrorLog.push(`prepare:${snapshot.snapshotId}`);
+        return Promise.resolve();
+      },
+      commitHistory: (snapshot: { snapshotId: string }) => {
+        mirrorLog.push(`commitHistory:${snapshot.snapshotId}`);
+        return Promise.resolve();
+      },
+      put: (snapshot: { snapshotId: string }) => {
+        mirrorLog.push(`put:${snapshot.snapshotId}`);
+        return Promise.resolve();
+      },
+    };
+    const adapter = new DynamoFixtureOddsAdapter(gateway, mirror);
     const first = await adapter.persist(input());
     expect(first.snapshot).toBe("created");
     expect(gateway.writeLog.length).toBeGreaterThan(0);
+    expect(mirrorLog.length).toBeGreaterThan(0);
     gateway.writeLog.length = 0;
+    mirrorLog.length = 0;
 
     // The provider stamps every poll with a fresh observedAt even when the
     // quote is unchanged, so BOTH clocks move between polls. Neither is a
@@ -229,6 +249,9 @@ describe("DynamoFixtureOddsAdapter", () => {
       },
     });
     expect(gateway.writeLog).toEqual([]);
+    // and the mirrors are not re-attempted either: a conditional put that
+    // loses is still billed, and it then pays a consistent read.
+    expect(mirrorLog).toEqual([]);
     expect(replay).toMatchObject({
       snapshot: "existing",
       current: "retained",
