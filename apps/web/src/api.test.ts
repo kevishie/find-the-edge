@@ -950,6 +950,71 @@ describe("arbitrage client", () => {
   });
 });
 
+describe("board market windows", () => {
+  it("accepts markets that moved at different times and rejects a torn one", async () => {
+    // Markets move independently: a moneyline can shift long after a total
+    // last did. Judging the whole row against one window blanked the entire
+    // Events page, so the window is per market — matching the serving join.
+    const drifted = structuredClone(payload) as {
+      items: { odds: { selections: Record<string, unknown>[] } }[];
+    };
+    const base = drifted.items[0]!.odds.selections;
+    const total = [
+      {
+        ...base[0]!,
+        marketKey: "total",
+        selectionKey: "over",
+        selectionLabel: "Over",
+        point: 8.5,
+        observedAt: "2026-08-01T11:40:00.000Z",
+        retrievedAt: "2026-08-01T11:40:00.000Z",
+      },
+      {
+        ...base[1]!,
+        marketKey: "total",
+        selectionKey: "under",
+        selectionLabel: "Under",
+        point: 8.5,
+        observedAt: "2026-08-01T11:40:00.000Z",
+        retrievedAt: "2026-08-01T11:40:00.000Z",
+      },
+    ];
+    drifted.items[0]!.odds.selections = [...base, ...total];
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(drifted))),
+    );
+    if (!client.ok) throw client.error;
+    const page = await client.value.list(
+      { sport: "mlb", day: "2026-08-01", status: "all" },
+      new AbortController().signal,
+    );
+    expect(page.items).toHaveLength(1);
+
+    // A single market whose own sides are hours apart is still refused.
+    const torn = structuredClone(drifted);
+    torn.items[0]!.odds.selections[3]!["observedAt"] =
+      "2026-08-01T06:00:00.000Z";
+    torn.items[0]!.odds.selections[3]!["retrievedAt"] =
+      "2026-08-01T06:00:00.000Z";
+    const failing = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(torn))),
+    );
+    if (!failing.ok) throw failing.error;
+    await expect(
+      failing.value.list(
+        { sport: "mlb", day: "2026-08-01", status: "all" },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+});
+
 describe("games client", () => {
   it("fails closed when the merged lifecycle response is invalid", async () => {
     const fetcher = vi

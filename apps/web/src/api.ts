@@ -2280,12 +2280,13 @@ const validGame = (
       ? (["away", "home"] as const)
       : (["away", "draw", "home"] as const);
   const selections = odds["selections"];
-  // Prices are only rewritten when they actually move, so the sides of a
-  // market legitimately carry different observation times. The server joins a
-  // market only when its prices share one book and one bounded observation
-  // window; the client enforces the identical rule so a board can never mix
-  // observation moments.
-  if (!selectionsShareObservationWindow(selections)) return false;
+  // One book for the whole board row: the server picks a single sportsbook per
+  // game, and mixing books inside one row would misrepresent where a price
+  // came from.
+  const book = selections[0]?.sportsbookId;
+  if (typeof book !== "string") return false;
+  if (selections.some((selection) => selection.sportsbookId !== book))
+    return false;
   const grouped = new Map<string, GameOddsSelectionDto[]>();
   for (const selection of selections) {
     const group = grouped.get(selection.marketKey) ?? [];
@@ -2296,6 +2297,12 @@ const validGame = (
     group.push(selection);
     grouped.set(selection.marketKey, group);
   }
+  // The observation window is a PER-MARKET rule, exactly as the serving join
+  // applies it. Markets move independently — a moneyline can shift minutes
+  // after a total last did — so judging the whole row against one window
+  // rejects entirely honest boards.
+  for (const market of grouped.values())
+    if (!selectionsShareObservationWindow(market)) return false;
   if (
     [...grouped.keys()].some(
       (key) => ![expectedMarket, "spread", "total"].includes(key),
