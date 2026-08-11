@@ -146,10 +146,7 @@ const repositories = (): readonly [
   string,
   () => { readonly repository: EntitlementRepository },
 ][] => [
-  [
-    "memory",
-    () => ({ repository: new MemoryEntitlementRepository() }),
-  ],
+  ["memory", () => ({ repository: new MemoryEntitlementRepository() })],
   [
     "dynamo",
     () => {
@@ -342,7 +339,10 @@ for (const [name, build] of repositories())
         updatedAt: NOW,
       });
       await expect(
-        repository.save({ ...record, state: "comped" } as unknown as Entitlement),
+        repository.save({
+          ...record,
+          state: "comped",
+        } as unknown as Entitlement),
       ).rejects.toThrow("stored-entitlement-invalid");
     });
   });
@@ -372,7 +372,9 @@ describe("dynamo entitlement storage shape", () => {
     expect(
       client.raw(`ENTITLEMENT#${ACCOUNT_ID}`, "RECORD")?.["lastEventCreated"],
     ).toBe(NOW_SECONDS + 5);
-    expect(client.raw(`STRIPE_CUSTOMER#${CUSTOMER}`, "ACCOUNT")).toBeUndefined();
+    expect(
+      client.raw(`STRIPE_CUSTOMER#${CUSTOMER}`, "ACCOUNT"),
+    ).toBeUndefined();
   });
 
   it("stores nothing but the account id in the customer pointer", async () => {

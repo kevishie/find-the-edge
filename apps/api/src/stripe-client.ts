@@ -1,7 +1,4 @@
-import {
-  isStripeCustomerId,
-  isStripePriceId,
-} from "@find-the-edge/domain";
+import { isStripeCustomerId, isStripePriceId } from "@find-the-edge/domain";
 
 export interface StripeCustomerRequest {
   /** Stored on the Stripe customer as metadata so a support conversation can
@@ -79,7 +76,11 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const HTTPS_URL = /^https:\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?(\/[^\s]*)?$/;
 
 const assertHttpsUrl = (value: string): string => {
-  if (typeof value !== "string" || value.length > 2048 || !HTTPS_URL.test(value))
+  if (
+    typeof value !== "string" ||
+    value.length > 2048 ||
+    !HTTPS_URL.test(value)
+  )
     throw new Error("stripe-url-invalid");
   return value;
 };

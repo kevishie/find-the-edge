@@ -368,10 +368,7 @@ const invoiceSubscriptionId = (
   );
   if (direct) return direct;
   const details = record(record(object["parent"])?.["subscription_details"]);
-  return referenceId(
-    details?.["subscription"] ?? null,
-    isStripeSubscriptionId,
-  );
+  return referenceId(details?.["subscription"] ?? null, isStripeSubscriptionId);
 };
 
 /**
@@ -399,8 +396,12 @@ export function normalizeStripeEvent(raw: unknown): StripeEvent {
   const object = record(record(envelope["data"])?.["object"]);
   if (!object) throw new Error(EVENT_INVALID);
   const type = envelope["type"];
-  if (!isHandledStripeEventType(type)) throw new Error(STRIPE_EVENT_UNSUPPORTED);
-  const customerId = referenceId(object["customer"] ?? null, isStripeCustomerId);
+  if (!isHandledStripeEventType(type))
+    throw new Error(STRIPE_EVENT_UNSUPPORTED);
+  const customerId = referenceId(
+    object["customer"] ?? null,
+    isStripeCustomerId,
+  );
   // Every event this product acts on is about one customer. Without one there
   // is no account to attribute it to, so the payload is malformed for us.
   if (!customerId) throw new Error(EVENT_INVALID);
@@ -411,9 +412,11 @@ export function normalizeStripeEvent(raw: unknown): StripeEvent {
     typeof cancelAtPeriodEnd !== "boolean"
   )
     throw new Error(EVENT_INVALID);
-  if (type === "customer.subscription.created" ||
+  if (
+    type === "customer.subscription.created" ||
     type === "customer.subscription.updated" ||
-    type === "customer.subscription.deleted") {
+    type === "customer.subscription.deleted"
+  ) {
     const subscriptionId = object["id"];
     if (!isStripeSubscriptionId(subscriptionId)) throw new Error(EVENT_INVALID);
     if (!isStripeSubscriptionStatus(object["status"]))
@@ -563,7 +566,8 @@ export function applyStripeEvent(
         ...fence,
         state: "canceled",
         accessUntil: null,
-        stripeSubscriptionId: event.subscriptionId ?? current.stripeSubscriptionId,
+        stripeSubscriptionId:
+          event.subscriptionId ?? current.stripeSubscriptionId,
         currentPeriodEnd: event.currentPeriodEnd ?? current.currentPeriodEnd,
       }),
       outcome: "applied",
@@ -587,7 +591,8 @@ export function applyStripeEvent(
         ...fence,
         state,
         accessUntil: boundaryFor(state, trialEndsAt, currentPeriodEnd),
-        stripeSubscriptionId: event.subscriptionId ?? current.stripeSubscriptionId,
+        stripeSubscriptionId:
+          event.subscriptionId ?? current.stripeSubscriptionId,
         currentPeriodEnd,
         trialEndsAt,
       }),
@@ -643,7 +648,8 @@ export function applyStripeEvent(
     next: createEntitlement({
       ...current,
       ...fence,
-      stripeSubscriptionId: event.subscriptionId ?? current.stripeSubscriptionId,
+      stripeSubscriptionId:
+        event.subscriptionId ?? current.stripeSubscriptionId,
     }),
     outcome: "applied",
   };

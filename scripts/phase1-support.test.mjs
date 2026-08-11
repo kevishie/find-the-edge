@@ -683,6 +683,10 @@ function validTemplate() {
           ["AuthOtpRequestRoute", "POST /auth/otp/request"],
           ["AuthOtpVerifyRoute", "POST /auth/otp/verify"],
           ["AuthSessionRefreshRoute", "POST /auth/session/refresh"],
+          ["BillingWebhookRoute", "POST /billing/webhook"],
+          ["BillingEntitlementRoute", "GET /billing/entitlement"],
+          ["BillingCheckoutRoute", "POST /billing/checkout"],
+          ["BillingPortalRoute", "POST /billing/portal"],
         ].map(([id, routeKey]) => [
           id,
           {
@@ -815,6 +819,7 @@ function validTemplate() {
                       "ACCOUNT#*",
                       "OTP#*",
                       "OTP_RATE#*",
+                      "ENTITLEMENT#*",
                     ],
                   },
                 },

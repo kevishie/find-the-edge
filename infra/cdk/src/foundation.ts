@@ -1299,6 +1299,14 @@ export class FoundationStack extends Stack {
       "IdentitySecret",
       `find-the-edge/${props.stageName}/identity`,
     );
+    // Stripe's secret key, the webhook signing secret, and the one price this
+    // product sells. Referenced by name, so the stack deploys before the
+    // secret exists: only the billing routes degrade until it is created.
+    const stripeSecret = Secret.fromSecretNameV2(
+      this,
+      "StripeSecret",
+      `find-the-edge/${props.stageName}/stripe`,
+    );
     const eventApi = new NodejsFunction(this, "EventApi", {
       entry: path.resolve(directory, "../../../apps/api/src/lambda.ts"),
       handler: "handler",
@@ -1314,6 +1322,11 @@ export class FoundationStack extends Stack {
         FTE_EVENT_TABLE_NAME: table.tableName,
         FTE_EVENT_CURSOR_SECRET_ARN: props.cursorSecretArn,
         FTE_IDENTITY_SECRET_ID: identitySecret.secretName,
+        FTE_STRIPE_SECRET_ID: stripeSecret.secretName,
+        // Where Stripe returns the browser after checkout or the portal. It
+        // is server-configured because a client-supplied return URL would be
+        // an open redirect.
+        FTE_WEB_BASE_URL: webOrigin,
       },
       bundling: { minify: true, sourceMap: true },
     });
@@ -1349,16 +1362,22 @@ export class FoundationStack extends Stack {
         },
       }),
     );
-    // Identity is the only thing the request path updates in place: the
-    // account row, the live OTP challenge, and the rate-limit counters.
-    // Nothing else in the table can be reached by an UpdateItem call.
+    // Identity and entitlement are the only things the request path updates
+    // in place: the account row, the live OTP challenge, the rate-limit
+    // counters, and the Stripe customer on an entitlement. Nothing else in
+    // the table can be reached by an UpdateItem call.
     eventApi.addToRolePolicy(
       new PolicyStatement({
         actions: ["dynamodb:UpdateItem"],
         resources: [table.tableArn],
         conditions: {
           "ForAllValues:StringLike": {
-            "dynamodb:LeadingKeys": ["ACCOUNT#*", "OTP#*", "OTP_RATE#*"],
+            "dynamodb:LeadingKeys": [
+              "ACCOUNT#*",
+              "OTP#*",
+              "OTP_RATE#*",
+              "ENTITLEMENT#*",
+            ],
           },
         },
       }),
@@ -1370,6 +1389,7 @@ export class FoundationStack extends Stack {
       }),
     );
     identitySecret.grantRead(eventApi);
+    stripeSecret.grantRead(eventApi);
     // SMS sign-in codes go out over SNS direct publish. The account's SMS
     // origination is already configured at account and region level, so this
     // stack provisions no phone number, sender id, or pool. A direct-to-phone
@@ -1425,6 +1445,27 @@ export class FoundationStack extends Stack {
         methods: [HttpMethod.POST],
         integration,
       });
+    // Billing carries no gateway authorizer either, for two different
+    // reasons. `/billing/webhook` is called by Stripe, which authenticates
+    // itself with a signature over the raw body — an authorizer expecting our
+    // token would reject every real webhook. The remaining three verify our
+    // own session token inside the handler, exactly as the auth routes do,
+    // because the Cognito authorizer knows nothing about it.
+    for (const path of [
+      "/billing/webhook",
+      "/billing/checkout",
+      "/billing/portal",
+    ])
+      api.addRoutes({
+        path,
+        methods: [HttpMethod.POST],
+        integration,
+      });
+    api.addRoutes({
+      path: "/billing/entitlement",
+      methods: [HttpMethod.GET],
+      integration,
+    });
     api.addRoutes({
       path: "/events",
       methods: [HttpMethod.GET],

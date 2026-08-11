@@ -325,7 +325,13 @@ describe("POST /billing/webhook", () => {
       webhook(body, {
         timestampSeconds: NOW_SECONDS - STRIPE_SIGNATURE_TOLERANCE_SECONDS - 1,
       }),
-      { ...signed, stripeSignature: undefined },
+      // No signature header at all.
+      {
+        route: "billing-webhook",
+        method: "POST",
+        contentType: "application/json",
+        body,
+      },
       webhook(body, { signature: "not-a-signature-header" }),
     ];
     for (const request of cases) {
@@ -403,12 +409,23 @@ describe("POST /billing/webhook", () => {
   it("refuses a webhook that is not a POST of JSON", async () => {
     const test = harness();
     await linked(test);
-    const body = subscriptionBody({ id: "evt_a00000000000001", status: "active" });
+    const body = subscriptionBody({
+      id: "evt_a00000000000001",
+      status: "active",
+    });
     const signed = webhook(body);
+    const bodyless: ApiRequest = {
+      route: "billing-webhook",
+      method: "POST",
+      contentType: "application/json",
+      ...(signed.stripeSignature
+        ? { stripeSignature: signed.stripeSignature }
+        : {}),
+    };
     for (const request of [
       { ...signed, method: "GET" as const },
       { ...signed, contentType: "text/plain" },
-      { ...signed, body: undefined },
+      bodyless,
       { ...signed, query: { replay: "1" } },
     ]) {
       const result = await test.call(request);
@@ -449,7 +466,9 @@ describe("POST /billing/webhook", () => {
         }),
       ),
     );
-    const line = test.logs.find((entry) => entry["event"] === "billing-request");
+    const line = test.logs.find(
+      (entry) => entry["event"] === "billing-request",
+    );
     expect(line).toMatchObject({
       route: "billing-webhook",
       outcome: "applied",
@@ -611,7 +630,10 @@ describe("POST /billing/checkout", () => {
 
   it("requires our session token", async () => {
     const test = harness();
-    const result = await test.call({ route: "billing-checkout", method: "POST" });
+    const result = await test.call({
+      route: "billing-checkout",
+      method: "POST",
+    });
     expect(result.statusCode).toBe(401);
     expect(test.stripe.customers).toHaveLength(0);
   });

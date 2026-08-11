@@ -59,9 +59,9 @@ describe("verifyStripeSignature", () => {
 
   it("rejects a tampered payload", () => {
     const signed = header();
-    expect(
-      verify({ header: signed, payload: `${PAYLOAD} ` }),
-    ).toBe("bad-signature");
+    expect(verify({ header: signed, payload: `${PAYLOAD} ` })).toBe(
+      "bad-signature",
+    );
     expect(
       verify({
         header: signed,
@@ -88,7 +88,9 @@ describe("verifyStripeSignature", () => {
     );
     // Exactly at the bound is still inside it.
     const edge = NOW_SECONDS - STRIPE_SIGNATURE_TOLERANCE_SECONDS;
-    expect(verify({ header: header({ timestampSeconds: edge }) })).toBe("valid");
+    expect(verify({ header: header({ timestampSeconds: edge }) })).toBe(
+      "valid",
+    );
   });
 
   it("honours a caller-supplied tolerance", () => {

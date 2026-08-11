@@ -153,12 +153,12 @@ describe("entitlement record", () => {
     expect(normalizeEntitlement(JSON.parse(JSON.stringify(record)))).toEqual(
       record,
     );
-    expect(() =>
-      normalizeEntitlement({ ...record, state: "comped" }),
-    ).toThrow("stored-entitlement-invalid");
-    expect(() => normalizeEntitlement({ ...record, schemaVersion: "v2" })).toThrow(
+    expect(() => normalizeEntitlement({ ...record, state: "comped" })).toThrow(
       "stored-entitlement-invalid",
     );
+    expect(() =>
+      normalizeEntitlement({ ...record, schemaVersion: "v2" }),
+    ).toThrow("stored-entitlement-invalid");
     expect(() => normalizeEntitlement(null)).toThrow(
       "stored-entitlement-invalid",
     );
@@ -254,7 +254,9 @@ describe("normalizeStripeEvent", () => {
         },
       },
     });
-    expect(normalized.currentPeriodEnd).toBe(iso(NOW_SECONDS + 14 * DAY_SECONDS));
+    expect(normalized.currentPeriodEnd).toBe(
+      iso(NOW_SECONDS + 14 * DAY_SECONDS),
+    );
     expect(normalized.customerId).toBe(CUSTOMER);
   });
 
@@ -300,19 +302,54 @@ describe("normalizeStripeEvent", () => {
       "evt_string",
       [],
       { type: "checkout.session.completed", created: NOW_SECONDS, data: {} },
-      { id: "not-an-event-id", type: "checkout.session.completed", created: NOW_SECONDS, data: { object: { customer: CUSTOMER } } },
-      { id: "evt_a1", type: "checkout.session.completed", created: "now", data: { object: { customer: CUSTOMER } } },
-      { id: "evt_a1", type: "checkout.session.completed", created: NOW_SECONDS * 1_000, data: { object: { customer: CUSTOMER } } },
-      { id: "evt_a1", type: "checkout.session.completed", created: NOW_SECONDS },
-      { id: "evt_a1", type: "checkout.session.completed", created: NOW_SECONDS, data: { object: {} } },
-      { id: "evt_a1", type: "checkout.session.completed", created: NOW_SECONDS, data: { object: { customer: 42 } } },
+      {
+        id: "not-an-event-id",
+        type: "checkout.session.completed",
+        created: NOW_SECONDS,
+        data: { object: { customer: CUSTOMER } },
+      },
+      {
+        id: "evt_a1",
+        type: "checkout.session.completed",
+        created: "now",
+        data: { object: { customer: CUSTOMER } },
+      },
+      {
+        id: "evt_a1",
+        type: "checkout.session.completed",
+        created: NOW_SECONDS * 1_000,
+        data: { object: { customer: CUSTOMER } },
+      },
+      {
+        id: "evt_a1",
+        type: "checkout.session.completed",
+        created: NOW_SECONDS,
+      },
+      {
+        id: "evt_a1",
+        type: "checkout.session.completed",
+        created: NOW_SECONDS,
+        data: { object: {} },
+      },
+      {
+        id: "evt_a1",
+        type: "checkout.session.completed",
+        created: NOW_SECONDS,
+        data: { object: { customer: 42 } },
+      },
       subscriptionPayload({ status: "comped" }),
       // A subscription event whose object is not a subscription.
       {
         id: "evt_a1",
         type: "customer.subscription.updated",
         created: NOW_SECONDS,
-        data: { object: { id: "in_notasubscription", customer: CUSTOMER, status: "active" } },
+        data: {
+          object: {
+            id: "in_notasubscription",
+            customer: CUSTOMER,
+            status: "active",
+          },
+        },
       },
       // A period end that is not a plausible epoch second.
       subscriptionPayload({ currentPeriodEnd: 5 }),

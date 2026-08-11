@@ -97,10 +97,7 @@ export interface BillingHttpResult {
 /** Stripe events are small; anything past this is not one worth hashing. */
 export const BILLING_WEBHOOK_MAX_BYTES = 262_144;
 
-const response = (
-  statusCode: number,
-  body: unknown,
-): BillingHttpResponse => ({
+const response = (statusCode: number, body: unknown): BillingHttpResponse => ({
   statusCode,
   headers: { "content-type": "application/json", "cache-control": "no-store" },
   body: JSON.stringify(body),
@@ -299,7 +296,9 @@ export const createBillingHttpHandler =
     // exactly the mistake this route exists to avoid.
     if (
       request.method !== "POST" ||
-      (request.body !== undefined && request.body !== "" && request.body !== "{}")
+      (request.body !== undefined &&
+        request.body !== "" &&
+        request.body !== "{}")
     )
       return {
         response: response(400, INVALID_REQUEST),

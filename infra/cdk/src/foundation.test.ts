@@ -548,10 +548,16 @@ describe("foundation CDK app", () => {
     // The identity routes are how a caller obtains a token, so they carry no
     // authorizer at all. FTE-074 retires the Cognito one; until then the two
     // schemes coexist and this assertion keeps them apart.
+    // Billing joins them: the webhook proves itself with a Stripe signature
+    // over the raw body, and the rest verify our own token in the handler.
     for (const routeKey of [
       "POST /auth/otp/request",
       "POST /auth/otp/verify",
       "POST /auth/session/refresh",
+      "POST /billing/webhook",
+      "GET /billing/entitlement",
+      "POST /billing/checkout",
+      "POST /billing/portal",
     ]) {
       const matches = Object.values(resources).filter(
         (resource) =>
@@ -591,7 +597,12 @@ describe("foundation CDK app", () => {
             Effect: "Allow",
             Condition: {
               "ForAllValues:StringLike": {
-                "dynamodb:LeadingKeys": ["ACCOUNT#*", "OTP#*", "OTP_RATE#*"],
+                "dynamodb:LeadingKeys": [
+                  "ACCOUNT#*",
+                  "OTP#*",
+                  "OTP_RATE#*",
+                  "ENTITLEMENT#*",
+                ],
               },
             },
           }),
@@ -608,6 +619,9 @@ describe("foundation CDK app", () => {
     template.resourceCountIs("AWS::Pinpoint::App", 0);
     template.resourceCountIs("AWS::SNS::Topic", 0);
     expect(rendered).toContain("find-the-edge/test/identity");
+    // Referenced by name, not resolved at synth: the stack deploys whether or
+    // not the Stripe secret exists yet.
+    expect(rendered).toContain("find-the-edge/test/stripe");
     expect(rendered).toContain(
       '\\"AllowMethods\\":[\\"GET\\",\\"POST\\",\\"DELETE\\",\\"OPTIONS\\"]',
     );

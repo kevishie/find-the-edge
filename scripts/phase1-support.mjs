@@ -686,6 +686,10 @@ export function validateTemplate(template, config) {
     "POST /auth/otp/request",
     "POST /auth/otp/verify",
     "POST /auth/session/refresh",
+    "POST /billing/webhook",
+    "GET /billing/entitlement",
+    "POST /billing/checkout",
+    "POST /billing/portal",
   ];
   if (
     apiRoutes.length !== requiredRouteKeys.length ||
@@ -741,11 +745,23 @@ export function validateTemplate(template, config) {
       // The identity routes are how a caller obtains a token, so they must
       // stay public: an authorizer here would lock everybody out, and a
       // scope would be meaningless on an unauthenticated request.
+      //
+      // The billing routes carry no gateway authorizer for two reasons.
+      // `POST /billing/webhook` is called by Stripe and proves itself with a
+      // signature over the raw body, so an authorizer expecting our token
+      // would reject every real webhook. The other three verify our own
+      // session token inside the handler — the Cognito authorizer knows
+      // nothing about it — so a JWT authorizer here would be wrong, not
+      // merely redundant.
       if (
         [
           "POST /auth/otp/request",
           "POST /auth/otp/verify",
           "POST /auth/session/refresh",
+          "POST /billing/webhook",
+          "GET /billing/entitlement",
+          "POST /billing/checkout",
+          "POST /billing/portal",
         ].includes(value.Properties?.RouteKey)
       )
         return (
@@ -1060,8 +1076,9 @@ export function validateTemplate(template, config) {
     throw new Error(
       "API DeleteItem IAM must be limited to watchlist partition keys",
     );
-  // The request path may only update identity rows: the account record, the
-  // live OTP challenge, and the rate-limit counters.
+  // The request path may only update identity and entitlement rows: the
+  // account record, the live OTP challenge, the rate-limit counters, and the
+  // Stripe customer on an entitlement.
   const apiUpdateStatements = entriesOfType(template, "AWS::IAM::Policy")
     .filter(([, policy]) =>
       (policy.Properties?.Roles ?? []).some((role) => isRef(role, apiRoleId)),
@@ -1081,7 +1098,7 @@ export function validateTemplate(template, config) {
       apiUpdateStatements[0].Condition?.["ForAllValues:StringLike"]?.[
         "dynamodb:LeadingKeys"
       ],
-    ) !== JSON.stringify(["ACCOUNT#*", "OTP#*", "OTP_RATE#*"])
+    ) !== JSON.stringify(["ACCOUNT#*", "OTP#*", "OTP_RATE#*", "ENTITLEMENT#*"])
   )
     throw new Error(
       "API UpdateItem IAM must be limited to identity partition keys",

@@ -26,10 +26,7 @@ export interface StripeSignatureInput {
 }
 
 export type StripeSignatureOutcome =
-  | "valid"
-  | "malformed-header"
-  | "timestamp-out-of-tolerance"
-  | "bad-signature";
+  "valid" | "malformed-header" | "timestamp-out-of-tolerance" | "bad-signature";
 
 export interface StripeSignatureResult {
   readonly outcome: StripeSignatureOutcome;
@@ -106,15 +103,15 @@ export function verifyStripeSignature(
   const now = Date.parse(input.now);
   if (!Number.isFinite(now) || new Date(now).toISOString() !== input.now)
     throw new Error("stripe-signature-now-invalid");
-  const tolerance = input.toleranceSeconds ?? STRIPE_SIGNATURE_TOLERANCE_SECONDS;
+  const tolerance =
+    input.toleranceSeconds ?? STRIPE_SIGNATURE_TOLERANCE_SECONDS;
   if (
     !Number.isSafeInteger(tolerance) ||
     tolerance < 1 ||
     tolerance > 24 * 60 * 60
   )
     throw new Error("stripe-signature-tolerance-invalid");
-  if (typeof input.payload !== "string")
-    return { outcome: "malformed-header" };
+  if (typeof input.payload !== "string") return { outcome: "malformed-header" };
   const parsed = parseHeader(input.header);
   if (!parsed) return { outcome: "malformed-header" };
   const expected = hmacSha256Hex(
@@ -128,8 +125,7 @@ export function verifyStripeSignature(
   // A future timestamp is refused on the same bound as a past one: a clock
   // far ahead of ours is either broken or chosen, and neither is a webhook
   // this endpoint should act on.
-  if (skewSeconds > tolerance)
-    return { outcome: "timestamp-out-of-tolerance" };
+  if (skewSeconds > tolerance) return { outcome: "timestamp-out-of-tolerance" };
   return { outcome: matched ? "valid" : "bad-signature" };
 }
 
