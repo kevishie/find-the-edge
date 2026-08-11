@@ -134,11 +134,37 @@ odds collection policy pulls `mls` and never `leagues_cup`, so those games
 can never receive a price. Note the underscore — `leagues-cup` is rejected
 as an invalid filter.
 
-Fix direction: add `leagues_cup` to the odds collection policy and confirm
-club-label matching holds for Liga MX sides. Same class as the recurring
-"SharpAPI moves a feed under us" failure — worth an alarm on a league whose
-games are all `unavailable` for more than one cadence, which is the signal
-that would have caught both of these in minutes rather than hours.
+This is NOT the policy addition it first looks like. Measured against the
+live feeds: the two listings for one fixture carry DIFFERENT uuids, and the
+uuid overlap between the `mls` and `leagues_cup` catalogues is 0 of 24. So
+the provider's stable identity does not link them.
+
+Charlotte v Pachuca, both listings:
+  mls          8bfe74b8cef596c7  3 markets  books: [fliff]
+  leagues_cup  b4389ac7b0149f8c  31 markets books: [circa, draftkings,
+                                  galera, goldrush, ladbrokes, prophetx,
+                                  saba, sportzino]
+
+Our canonical event was bootstrapped from the `mls` listing, whose only book
+is one we do not approve — which is the whole reason the row renders
+`unavailable`. The liquidity is in the sibling listing we never fetch.
+
+Two options, and the obvious one is wrong:
+  (a) Ingest `leagues_cup` as its own league. Rejected: with no shared uuid
+      it mints a SECOND canonical event per fixture, which is precisely the
+      duplicate-game defect reported and fixed on 2026-08-11.
+  (b) Resolve `leagues_cup` odds onto the existing canonical event by
+      participant pair plus start instant — the identity this codebase
+      already uses for schedule matching and split attribution. Correct, and
+      consistent with the architecture, but it is a change to the ingest
+      path's event resolution, not a config line. Note the `leagues_cup`
+      catalogue carries several listings per fixture at different market
+      counts (31, 4, 3), so it needs the same primary-market discrimination
+      the MLB schedule parser already applies.
+
+Worth pairing with an alarm on any league whose games are all `unavailable`
+for more than one cadence — the signal that would have caught both of
+today's faults in minutes rather than eleven hours.
 
 ## The live-projection fallback serves unfiltered boards (found 2026-08-11)
 
