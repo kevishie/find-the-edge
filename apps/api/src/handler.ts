@@ -62,6 +62,14 @@ import {
   type BillingRuntime,
 } from "./billing-handler";
 import { createSplitLookupCache } from "./splits-cache";
+import {
+  decideProductAccess,
+  denialBody,
+  denialStatus,
+  type ProductAccessDenial,
+  type ProductAccessRuntime,
+} from "./product-access";
+
 export interface ApiRequest {
   readonly route:
     | "list"
@@ -322,6 +330,7 @@ export const createEventHandler =
     identityRuntime?: IdentityRuntime,
     entitlementRepository?: EntitlementRepository,
     billingRuntime?: BillingRuntime,
+    productAccessRuntime?: ProductAccessRuntime,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -357,6 +366,7 @@ export const createEventHandler =
     } | null = null;
     let identityObservation: IdentityObservation | null = null;
     let billingObservation: BillingObservation | null = null;
+    let productAccessDenial: ProductAccessDenial | null = null;
     try {
       if (request.route.startsWith("billing-")) {
         if (!entitlementRepository || !identityRepository || !billingRuntime)
@@ -451,6 +461,36 @@ export const createEventHandler =
         });
         status = result.response.statusCode;
         return result.response;
+      }
+      // FTE-073. Every remaining route serves the paid product, so the
+      // entitlement decision happens here, once, before any of them run. It
+      // deliberately sits after the auth and billing branches above: those
+      // are how an account comes to exist and comes to be paid for.
+      if (productAccessRuntime && identityRepository && entitlementRepository) {
+        const decision = await decideProductAccess(
+          request,
+          productAccessRuntime,
+          identityRepository,
+          entitlementRepository,
+          new Date(started),
+        );
+        if (!decision.allowed) {
+          productAccessDenial = decision.denial;
+          // The reason is a category, never an identity: "who was refused"
+          // is not a metric dimension.
+          log({
+            event: "product-access-denied",
+            route: request.route,
+            reason: decision.denial,
+            ...(request.requestId
+              ? { requestId: request.requestId.slice(0, 128) }
+              : {}),
+          });
+          return response(
+            (status = denialStatus(decision.denial)),
+            denialBody(decision.denial),
+          );
+        }
       }
       if (request.route.startsWith("watchlist-")) {
         if (!watchlistRepository)
@@ -1687,6 +1727,14 @@ export const createEventHandler =
           Name,
           Unit: Name === "BillingLatency" ? "Milliseconds" : "Count",
         })),
+        // Denied-access counts carry the route dimension and the reason, and
+        // nothing that identifies who was refused.
+        ...(productAccessDenial === "unauthenticated"
+          ? [{ Name: "ProductAccessUnauthenticated", Unit: "Count" }]
+          : []),
+        ...(productAccessDenial === "not-entitled"
+          ? [{ Name: "ProductAccessNotEntitled", Unit: "Count" }]
+          : []),
       ];
       log({
         _aws: {
@@ -1776,6 +1824,12 @@ export const createEventHandler =
             name === "AuthLatency" ? Date.now() - started : 1,
           ]),
         ),
+        ...(productAccessDenial === "unauthenticated"
+          ? { ProductAccessUnauthenticated: 1 }
+          : {}),
+        ...(productAccessDenial === "not-entitled"
+          ? { ProductAccessNotEntitled: 1 }
+          : {}),
         ...Object.fromEntries(
           billingMetricNames.map((name) => [
             name,

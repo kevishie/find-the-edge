@@ -38,6 +38,7 @@ import {
   productionProviderStatusCatalog,
 } from "@find-the-edge/config";
 import { createEventHandler, eventIdCandidates } from "./handler";
+import { requiresProductAccess } from "./product-access";
 import { buildProviderStatusPage } from "./provider-status";
 import { createScoutingHttpHandler } from "./scouting-handler";
 import { loadIdentitySecrets } from "./identity-secrets";
@@ -91,6 +92,16 @@ const identitySecretId = process.env["FTE_IDENTITY_SECRET_ID"] ?? "";
 // secret still deploys and still serves every route except billing.
 const stripeSecretId = process.env["FTE_STRIPE_SECRET_ID"] ?? "";
 const webBaseUrl = process.env["FTE_WEB_BASE_URL"] ?? "";
+/**
+ * FTE-073's rollout switch. Entitlement is only reachable through Stripe
+ * checkout, so a stage with no billing secret has no entitled accounts and
+ * enforcing there would refuse every request including our own. The flag
+ * therefore ships off and is turned on per stage once billing is live. Only
+ * the exact string "true" enables it: a typo must fail closed to "open",
+ * never to a half-configured gate.
+ */
+const productAccessEnforced =
+  process.env["FTE_PRODUCT_ACCESS_ENFORCED"] === "true";
 const sms = createSnsSmsSender(new SNSClient({}));
 /**
  * The route keys billing owns. `POST /billing/webhook` is public — Stripe
@@ -323,7 +334,11 @@ export const handler = async (event: LambdaEvent) => {
     route === "auth-otp-request" ||
     route === "auth-otp-verify" ||
     route === "auth-session-refresh" ||
-    billingRoute
+    billingRoute ||
+    // Enforcement needs the ring on every product route, not just the auth
+    // ones. While the flag is off, the secret load stays on the auth path
+    // alone and product routes pay nothing for it.
+    (productAccessEnforced && requiresProductAccess(route))
       ? await loadIdentitySecrets(secrets, identitySecretId)
       : undefined;
   let billingSecrets: BillingSecrets | undefined;
@@ -402,6 +417,9 @@ export const handler = async (event: LambdaEvent) => {
           }),
           appBaseUrl: webBaseUrl,
         }
+      : undefined,
+    identity
+      ? { signingKeys: identity.signingKeys, enforced: productAccessEnforced }
       : undefined,
   )({
     route,

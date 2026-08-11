@@ -152,6 +152,8 @@ interface FoundationStackProps extends StackProps {
   apiCertificateArn?: string;
   cursorSecretArn: string;
   fixtureOddsSeedEnabled: boolean;
+  /** FTE-073. Defaults to false so a stage without billing keeps serving. */
+  productAccessEnforced?: boolean;
 }
 
 export class FoundationStack extends Stack {
@@ -1327,6 +1329,13 @@ export class FoundationStack extends Stack {
         // is server-configured because a client-supplied return URL would be
         // an open redirect.
         FTE_WEB_BASE_URL: webOrigin,
+        // FTE-073. Off until a stage has entitled accounts to let through:
+        // entitlement is only reachable via Stripe checkout, so enforcing on
+        // an unbilled stage refuses everyone, including us. Turning it on is
+        // this one string.
+        FTE_PRODUCT_ACCESS_ENFORCED: String(
+          props.productAccessEnforced ?? false,
+        ),
       },
       bundling: { minify: true, sourceMap: true },
     });
