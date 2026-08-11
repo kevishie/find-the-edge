@@ -58,6 +58,17 @@ const listingMatchesGame = (
   );
 };
 
+/** Same two participants in either order — the identity a duplicate shares
+ * with the real listing of the same game. */
+const participantIdentity = (game: {
+  readonly participants: readonly { readonly label: string }[];
+}) =>
+  game.participants
+    .slice(0, 2)
+    .map(({ label }) => label.trim().toLowerCase())
+    .sort()
+    .join("\u0000");
+
 export const usableScheduleListings = (
   events: readonly {
     readonly awayTeam?: string;
@@ -105,16 +116,36 @@ export const withoutWithdrawnListings = async <
   },
 ) => {
   if (!options.schedule) return page;
+  const schedule = options.schedule;
+  // Provider ids embed a time bucket, so a corrected start time mints a NEW
+  // id and we bootstrap a second canonical event for one real game. The
+  // orphan keeps the placeholder kickoff and whatever odds it collected, and
+  // the splits witness cannot reject it — consensus splits get attributed to
+  // it too, because it has the right teams on the right day.
+  //
+  // What separates it from a real game is the provider's own schedule: a
+  // doubleheader has BOTH games listed, while an orphan has a sibling with
+  // the same participants that the provider currently vouches for and no
+  // listing of its own. That pairing is the discriminator, and it is narrow
+  // on purpose — without a vouched-for sibling the older rules still decide.
+  const vouchedParticipants = new Set(
+    page.items
+      .filter((game) =>
+        schedule.some((listing) => listingMatchesGame(listing, game)),
+      )
+      .map(participantIdentity),
+  );
   const items: T[] = [];
   for (const game of page.items) {
     if (game.status !== "scheduled") {
       items.push(game);
       continue;
     }
-    if (options.schedule.some((listing) => listingMatchesGame(listing, game))) {
+    if (schedule.some((listing) => listingMatchesGame(listing, game))) {
       items.push(game);
       continue;
     }
+    if (vouchedParticipants.has(participantIdentity(game))) continue;
     // The provider flips a listing to in-play minutes before first pitch, so
     // a game inside the pre-start window is judged like a started game — by
     // its splits witness — rather than as a withdrawn future listing.

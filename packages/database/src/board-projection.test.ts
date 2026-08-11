@@ -186,6 +186,96 @@ describe("materialization", () => {
   });
 });
 
+describe("schedule-orphaned duplicates", () => {
+  const NOW = new Date("2026-08-11T21:19:00.000Z");
+  const royals = (id: string, startsAt: string) => ({
+    id,
+    status: "scheduled",
+    startsAt,
+    freshness: "2026-08-11T21:00:00.000Z",
+    participants: [
+      { label: "Kansas City Royals" },
+      { label: "Los Angeles Dodgers" },
+    ],
+  });
+
+  it("drops a bucket-churned orphan while the vouched game stays", async () => {
+    // One real game, two canonical events: the provider first published a
+    // placeholder start (a different time bucket, so a different id) and then
+    // corrected it. The orphan keeps the wrong kickoff and partial odds, and
+    // it has split evidence too, so only the schedule can tell them apart.
+    const page = {
+      items: [
+        royals("event:ghost", "2026-08-11T06:50:00.000Z"),
+        royals("event:real", "2026-08-12T02:10:00.000Z"),
+      ],
+      freshness: "2026-08-11T21:00:00.000Z",
+    };
+    const result = await withoutWithdrawnListings(page, {
+      schedule: [
+        {
+          awayTeam: "Kansas City Royals",
+          homeTeam: "Los Angeles Dodgers",
+          startsAt: "2026-08-12T02:10:00.000Z",
+        },
+      ],
+      now: NOW,
+      splitsExpected: true,
+      hasSplitEvidence: () => Promise.resolve(true),
+    });
+    expect(result.items.map(({ id }) => id)).toEqual(["event:real"]);
+  });
+
+  it("keeps both halves of a real doubleheader", async () => {
+    // Same participants twice on one day is legitimate when the provider
+    // lists both, which is exactly what separates it from an orphan.
+    const page = {
+      items: [
+        royals("event:game-1", "2026-08-11T17:10:00.000Z"),
+        royals("event:game-2", "2026-08-11T23:40:00.000Z"),
+      ],
+      freshness: "2026-08-11T21:00:00.000Z",
+    };
+    const result = await withoutWithdrawnListings(page, {
+      schedule: [
+        {
+          awayTeam: "Kansas City Royals",
+          homeTeam: "Los Angeles Dodgers",
+          startsAt: "2026-08-11T17:10:00.000Z",
+        },
+        {
+          awayTeam: "Kansas City Royals",
+          homeTeam: "Los Angeles Dodgers",
+          startsAt: "2026-08-11T23:40:00.000Z",
+        },
+      ],
+      now: NOW,
+      splitsExpected: true,
+      hasSplitEvidence: () => Promise.resolve(true),
+    });
+    expect(result.items.map(({ id }) => id)).toEqual([
+      "event:game-1",
+      "event:game-2",
+    ]);
+  });
+
+  it("leaves a lone unlisted game to the older rules", async () => {
+    // With no vouched sibling the new rule must not fire: an in-play game has
+    // left the schedule feed and is still real, proven by its splits.
+    const page = {
+      items: [royals("event:in-play", "2026-08-11T20:00:00.000Z")],
+      freshness: "2026-08-11T21:00:00.000Z",
+    };
+    const result = await withoutWithdrawnListings(page, {
+      schedule: [],
+      now: NOW,
+      splitsExpected: true,
+      hasSplitEvidence: () => Promise.resolve(true),
+    });
+    expect(result.items.map(({ id }) => id)).toEqual(["event:in-play"]);
+  });
+});
+
 describe("withdrawn listings", () => {
   const NOON = new Date("2026-08-08T16:00:00.000Z");
   const game = (
