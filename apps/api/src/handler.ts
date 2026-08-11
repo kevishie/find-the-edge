@@ -20,6 +20,7 @@ import {
   type ScoutingReportRepository,
   type WatchlistRepository,
   type IdentityRepository,
+  type EntitlementRepository,
   attachSplits,
   boardCounts,
   type BoardKey,
@@ -55,6 +56,11 @@ import {
   type IdentityObservation,
   type IdentityRuntime,
 } from "./identity-handler";
+import {
+  createBillingHttpHandler,
+  type BillingObservation,
+  type BillingRuntime,
+} from "./billing-handler";
 import { createSplitLookupCache } from "./splits-cache";
 export interface ApiRequest {
   readonly route:
@@ -94,7 +100,15 @@ export interface ApiRequest {
     // they cannot sit behind one.
     | "auth-otp-request"
     | "auth-otp-verify"
-    | "auth-session-refresh";
+    | "auth-session-refresh"
+    // Public by design: Stripe calls this one, and it authenticates itself
+    // with a signature over the raw body rather than with a token.
+    | "billing-webhook"
+    // Authenticated with our own token inside the handler, not by a gateway
+    // authorizer — see the billing handler.
+    | "billing-entitlement"
+    | "billing-checkout"
+    | "billing-portal";
   readonly subject?: string;
   readonly scopes?: readonly string[];
   readonly eventId?: string;
@@ -116,6 +130,11 @@ export interface ApiRequest {
   readonly query?: Readonly<Record<string, string | undefined>>;
   readonly method?: "GET" | "POST" | "DELETE";
   readonly contentType?: string;
+  /**
+   * The request body exactly as it arrived. The Stripe webhook route hashes
+   * these bytes, so nothing on the path from the gateway to the handler may
+   * parse and re-serialize it.
+   */
   readonly body?: string;
   readonly reviewerAuthorized?: boolean;
   readonly strategyPromoterAuthorized?: boolean;
@@ -123,6 +142,8 @@ export interface ApiRequest {
   readonly authorization?: string;
   /** Gateway-observed source address, used only as a rate-limit subject. */
   readonly sourceIp?: string;
+  /** Raw `Stripe-Signature` header, read only by the billing webhook. */
+  readonly stripeSignature?: string;
 }
 
 const safeDecode = (value: string): string | null => {
@@ -299,6 +320,8 @@ export const createEventHandler =
     watchlistRepository?: WatchlistRepository,
     identityRepository?: IdentityRepository,
     identityRuntime?: IdentityRuntime,
+    entitlementRepository?: EntitlementRepository,
+    billingRuntime?: BillingRuntime,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -333,7 +356,58 @@ export const createEventHandler =
       cursorRejected: number;
     } | null = null;
     let identityObservation: IdentityObservation | null = null;
+    let billingObservation: BillingObservation | null = null;
     try {
+      if (request.route.startsWith("billing-")) {
+        if (!entitlementRepository || !identityRepository || !billingRuntime)
+          // Only billing degrades when the Stripe secret is absent; every
+          // other route on this function keeps serving.
+          return response((status = 503), { error: "billing-unavailable" });
+        const result = await createBillingHttpHandler(
+          entitlementRepository,
+          identityRepository,
+          billingRuntime,
+        )({
+          route: request.route as
+            | "billing-webhook"
+            | "billing-entitlement"
+            | "billing-checkout"
+            | "billing-portal",
+          ...(request.method ? { method: request.method } : {}),
+          ...(request.contentType ? { contentType: request.contentType } : {}),
+          // The raw body, byte for byte: the webhook signature covers it.
+          ...(request.body === undefined ? {} : { body: request.body }),
+          ...(request.authorization
+            ? { authorization: request.authorization }
+            : {}),
+          ...(request.stripeSignature
+            ? { stripeSignature: request.stripeSignature }
+            : {}),
+          ...(request.query ? { query: request.query } : {}),
+        });
+        billingObservation = result.observation;
+        // Subscription lifecycle observability is the account id and the
+        // resulting state. Never a payload, never card data.
+        log({
+          event: "billing-request",
+          route: request.route,
+          outcome: result.observation.outcome,
+          ...(result.observation.eventType
+            ? { stripeEventType: result.observation.eventType }
+            : {}),
+          ...(result.observation.state
+            ? { entitlementState: result.observation.state }
+            : {}),
+          ...(result.observation.accountId
+            ? { accountId: result.observation.accountId }
+            : {}),
+          ...(request.requestId
+            ? { requestId: request.requestId.slice(0, 128) }
+            : {}),
+        });
+        status = result.response.statusCode;
+        return result.response;
+      }
       if (
         request.route === "auth-otp-request" ||
         request.route === "auth-otp-verify" ||
@@ -1501,6 +1575,35 @@ export const createEventHandler =
               : []),
           ]
         : [];
+      // Billing counters carry the route and nothing else, so no metric can
+      // be sliced by account, customer, or subscription.
+      const billingMetricNames = billingObservation
+        ? [
+            "BillingLatency",
+            ...(billingObservation.outcome === "applied"
+              ? ["BillingWebhookApplied"]
+              : []),
+            ...(billingObservation.outcome === "duplicate"
+              ? ["BillingWebhookDuplicate"]
+              : []),
+            ...(billingObservation.outcome === "ignored-older" ||
+            billingObservation.outcome === "superseded"
+              ? ["BillingWebhookOutOfOrder"]
+              : []),
+            ...(billingObservation.outcome === "invalid-signature"
+              ? ["BillingWebhookRejected"]
+              : []),
+            ...(billingObservation.outcome === "checkout-created"
+              ? ["BillingCheckoutCreated"]
+              : []),
+            ...(billingObservation.outcome === "provider-error"
+              ? ["BillingProviderError"]
+              : []),
+            ...(billingObservation.outcome === "unauthorized"
+              ? ["BillingUnauthorized"]
+              : []),
+          ]
+        : [];
       const metrics = [
         { Name: "Requests", Unit: "Count" },
         { Name: "Latency", Unit: "Milliseconds" },
@@ -1579,6 +1682,10 @@ export const createEventHandler =
         ...identityMetricNames.map((Name) => ({
           Name,
           Unit: Name === "AuthLatency" ? "Milliseconds" : "Count",
+        })),
+        ...billingMetricNames.map((Name) => ({
+          Name,
+          Unit: Name === "BillingLatency" ? "Milliseconds" : "Count",
         })),
       ];
       log({
@@ -1667,6 +1774,12 @@ export const createEventHandler =
           identityMetricNames.map((name) => [
             name,
             name === "AuthLatency" ? Date.now() - started : 1,
+          ]),
+        ),
+        ...Object.fromEntries(
+          billingMetricNames.map((name) => [
+            name,
+            name === "BillingLatency" ? Date.now() - started : 1,
           ]),
         ),
       });

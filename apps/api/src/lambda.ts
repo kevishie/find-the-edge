@@ -5,6 +5,7 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
   AwsDynamoGateway,
   DynamoIdentityRepository,
+  DynamoEntitlementRepository,
   DynamoGamesRepository,
   DynamoBettingSplitRepository,
   DynamoEventRepository,
@@ -40,6 +41,8 @@ import { createEventHandler, eventIdCandidates } from "./handler";
 import { buildProviderStatusPage } from "./provider-status";
 import { createScoutingHttpHandler } from "./scouting-handler";
 import { loadIdentitySecrets } from "./identity-secrets";
+import { loadBillingSecrets, type BillingSecrets } from "./billing-secrets";
+import { createStripeRestClient } from "./stripe-client";
 import { createSnsSmsSender } from "./sms-sender";
 import { loadSecretRing } from "./secrets";
 import { encodeApiResponse } from "./http-compression";
@@ -57,6 +60,7 @@ interface LambdaEvent {
   readonly queryStringParameters?: Record<string, string | undefined>;
   readonly headers?: Record<string, string | undefined>;
   readonly body?: string;
+  readonly isBase64Encoded?: boolean;
   readonly requestContext?: {
     readonly requestId?: string;
     readonly http?: { readonly sourceIp?: string };
@@ -83,7 +87,30 @@ const secrets = new SecretsManagerClient({});
 // is already registered at the account and region level, so the client needs
 // no configuration and the stack provisions no messaging resource.
 const identitySecretId = process.env["FTE_IDENTITY_SECRET_ID"] ?? "";
+// Billing is optional configuration on purpose: a stage without a Stripe
+// secret still deploys and still serves every route except billing.
+const stripeSecretId = process.env["FTE_STRIPE_SECRET_ID"] ?? "";
+const webBaseUrl = process.env["FTE_WEB_BASE_URL"] ?? "";
 const sms = createSnsSmsSender(new SNSClient({}));
+/**
+ * The route keys billing owns. `POST /billing/webhook` is public — Stripe
+ * calls it and proves itself with a signature over the raw body — and the
+ * rest verify our own session token inside the handler.
+ */
+const BILLING_ROUTES: Readonly<
+  Record<
+    string,
+    | "billing-webhook"
+    | "billing-entitlement"
+    | "billing-checkout"
+    | "billing-portal"
+  >
+> = {
+  "POST /billing/webhook": "billing-webhook",
+  "GET /billing/entitlement": "billing-entitlement",
+  "POST /billing/checkout": "billing-checkout",
+  "POST /billing/portal": "billing-portal",
+};
 // Projection readiness is a one-way latch in practice; probing it on every
 // request added a storage read to every page load. A confirmed-ready answer is
 // trusted for a minute, an unready answer only briefly so initialization is
@@ -131,7 +158,8 @@ export const handler = async (event: LambdaEvent) => {
   );
   const claims = event.requestContext?.authorizer?.jwt?.claims;
   const route =
-    event.routeKey === "POST /auth/otp/request"
+    BILLING_ROUTES[event.routeKey ?? ""] ??
+    (event.routeKey === "POST /auth/otp/request"
       ? "auth-otp-request"
       : event.routeKey === "POST /auth/otp/verify"
         ? "auth-otp-verify"
@@ -228,7 +256,7 @@ export const handler = async (event: LambdaEvent) => {
                                                                             "/{eventId}",
                                                                           )
                                                                         ? "detail"
-                                                                        : "list";
+                                                                        : "list");
   const eventId = event.pathParameters?.eventId;
   const eventIdAlternatives = eventIdCandidates(
     event.rawPath,
@@ -271,15 +299,42 @@ export const handler = async (event: LambdaEvent) => {
   const authorization = Object.entries(event.headers ?? {}).find(
     ([key]) => key.toLowerCase() === "authorization",
   )?.[1];
+  const stripeSignature = Object.entries(event.headers ?? {}).find(
+    ([key]) => key.toLowerCase() === "stripe-signature",
+  )?.[1];
   const sourceIp = event.requestContext?.http?.sourceIp;
+  /**
+   * The raw request body, byte for byte. API Gateway base64-encodes a body it
+   * judges binary; decoding here is the only transformation applied, and it
+   * is lossless. Nothing on this path parses or re-serializes the body, which
+   * is what lets the Stripe webhook verify a signature over it.
+   */
+  const rawBody =
+    event.body === undefined
+      ? undefined
+      : event.isBase64Encoded === true
+        ? Buffer.from(event.body, "base64").toString("utf8")
+        : event.body;
+  const billingRoute = route.startsWith("billing-");
   // The identity service is only built for the routes that need it, so a
-  // stage without the secret still serves every other route.
+  // stage without the secret still serves every other route. Billing shares
+  // the signing ring: its authenticated routes verify our own token.
   const identity =
     route === "auth-otp-request" ||
     route === "auth-otp-verify" ||
-    route === "auth-session-refresh"
+    route === "auth-session-refresh" ||
+    billingRoute
       ? await loadIdentitySecrets(secrets, identitySecretId)
       : undefined;
+  let billingSecrets: BillingSecrets | undefined;
+  if (billingRoute && stripeSecretId && webBaseUrl)
+    try {
+      billingSecrets = await loadBillingSecrets(secrets, stripeSecretId);
+    } catch {
+      // The stage has no Stripe secret yet, or it is malformed. Billing
+      // routes answer 503; every other route is untouched.
+      billingSecrets = undefined;
+    }
   const apiResponse = await createEventHandler(
     repository,
     games,
@@ -334,6 +389,20 @@ export const handler = async (event: LambdaEvent) => {
           signingKeys: identity.signingKeys,
         }
       : undefined,
+    new DynamoEntitlementRepository(documentClient, tableName),
+    // The only place a Stripe network client is constructed, and the only
+    // place the secret key is read.
+    billingSecrets && identity
+      ? {
+          signingKeys: identity.signingKeys,
+          webhookSecret: billingSecrets.webhookSecret,
+          priceId: billingSecrets.priceId,
+          stripe: createStripeRestClient({
+            secretKey: billingSecrets.secretKey,
+          }),
+          appBaseUrl: webBaseUrl,
+        }
+      : undefined,
   )({
     route,
     ...(subject ? { subject } : {}),
@@ -360,7 +429,8 @@ export const handler = async (event: LambdaEvent) => {
     ...(contentType ? { contentType } : {}),
     ...(authorization ? { authorization } : {}),
     ...(sourceIp ? { sourceIp } : {}),
-    ...(event.body ? { body: event.body } : {}),
+    ...(stripeSignature ? { stripeSignature } : {}),
+    ...(rawBody ? { body: rawBody } : {}),
   });
   return encodeApiResponse(apiResponse, acceptEncoding);
 };

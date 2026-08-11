@@ -96,6 +96,40 @@ the board-freshness alarm. Next: prod cutover (FTE-059, approval-gated),
 bet tracker (makes CLV personal), persist-path version re-resolution,
 middles, backlog FTE-044..058.
 
+## Write cost is control-plane run bookkeeping, not odds data (measured 2026-08-11)
+
+Two wrong hypotheses, then a measurement. DynamoDB Contributor Insights on
+the staging table names the culprit outright: the top partitions by access
+are `ODDS_CONTROL#RUN#<league>:sharpapi:<runId>` at 10,000-13,500 accesses
+per run per 20 minutes, five concurrent MLB runs plus soccer, 542,182
+sampled accesses in 20 minutes (~1.6M/hour). `ODDS_SNAPSHOTS_BY_ID` is a
+distant sixth at 5,368.
+
+Odds data was never the driver. Measured directly: 14,657 CURRENT
+advances and 87,393 retained across ALL leagues in two hours — ~51K
+persist operations/hour against a table consuming ~800K write units/hour.
+
+Cause: every fetched page walks a five-step transition (sealPage,
+commitPage, markEvidenceIntent, commitEvidencePage,
+markPageMetricDelivered), and several of those ALSO bump the single
+`ODDS_CONTROL#RUN#<runId>` item (version, evidenceCommitted, updatedAt).
+One item per run, rewritten several times per page, many pages per pass,
+~5 passes per minute from the fast lane.
+
+Not fixed tonight, deliberately: this is the idempotency, replay-safety
+and quota-fencing machinery, and it deserves a designed change rather
+than a late patch. Options to weigh: collapse the per-page transitions
+into one conditional write; stop mutating the run row per page and derive
+run state from its pages; or keep the ledger but drop `updatedAt`
+churn. Whatever is chosen must preserve exactly-once evidence commitment.
+
+Shipped in the meantime and worth keeping: unchanged prices no longer
+write (86% of persists are unchanged), and the snapshot mirrors are no
+longer re-attempted per poll — those were conditional puts that fail once
+the row exists, still billed, and then pay a consistent read. The test
+that claimed zero writes had been asserting against a harness with no
+mirrors wired; it now wires them and fails without the fix.
+
 ## Snapshot identity excluded our fetch clock (2026-08-10)
 
 Cost review of a $77.64 AWS bill traced $18.95 of DynamoDB writes to a
