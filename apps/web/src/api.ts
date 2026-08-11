@@ -163,6 +163,8 @@ export interface OddsHistoryDto {
 
 export interface ArbitrageLegDto {
   readonly selectionKey: string;
+  /** Resolved server-side from the event; absent when the event is gone. */
+  readonly selectionLabel?: string;
   readonly point: number | null;
   readonly best: {
     readonly sportsbookId: string;
@@ -173,6 +175,11 @@ export interface ArbitrageLegDto {
 
 export interface ArbitrageFindingDto {
   readonly findingId: string;
+  /** Matchup context resolved server-side; absent when the event is gone. */
+  readonly event?: {
+    readonly participants: readonly { readonly label: string }[];
+    readonly startsAt: string;
+  };
   readonly classification: "arbitrage" | "low-hold";
   readonly holdPercentage: number;
   readonly sumInverseDecimal: number;
@@ -1467,8 +1474,12 @@ const parseArbitragePage = (value: unknown): ArbitragePageDto => {
         !iso(best["observedAt"])
       )
         throw invalidArbitragePage();
+      const selectionLabel = leg["selectionLabel"];
+      if (selectionLabel !== undefined && !boundedString(selectionLabel, 160))
+        throw invalidArbitragePage();
       return {
         selectionKey: leg["selectionKey"],
+        ...(typeof selectionLabel === "string" ? { selectionLabel } : {}),
         point: leg["point"],
         best: {
           sportsbookId: best["sportsbookId"],
@@ -1477,8 +1488,28 @@ const parseArbitragePage = (value: unknown): ArbitragePageDto => {
         },
       };
     });
+    const eventValue = item["event"];
+    let event: ArbitrageFindingDto["event"];
+    if (eventValue !== undefined) {
+      if (
+        !plain(eventValue) ||
+        !Array.isArray(eventValue["participants"]) ||
+        !iso(eventValue["startsAt"])
+      )
+        throw invalidArbitragePage();
+      const startsAt = eventValue["startsAt"];
+      const participants = (eventValue["participants"] as unknown[]).map(
+        (participant) => {
+          if (!plain(participant) || !boundedString(participant["label"], 160))
+            throw invalidArbitragePage();
+          return { label: participant["label"] };
+        },
+      );
+      event = { participants, startsAt };
+    }
     return {
       findingId: item["findingId"],
+      ...(event ? { event } : {}),
       classification,
       holdPercentage: item["holdPercentage"],
       sumInverseDecimal: item["sumInverseDecimal"],

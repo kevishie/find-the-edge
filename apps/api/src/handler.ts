@@ -595,16 +595,82 @@ export const createEventHandler =
           sportKey,
           asOf,
         );
-        const findings = (board?.findings ?? []).filter(
-          (finding) =>
-            classification === undefined ||
-            finding.classification === classification,
-        );
+        const findings = (board?.findings ?? [])
+          .filter(
+            (finding) =>
+              classification === undefined ||
+              finding.classification === classification,
+          )
+          .slice(0, limit);
+        // A finding stores selection keys, not names. Without the event a card
+        // can only print "participant%3Amlb%253Amlb%3Aroyals" and never says
+        // which game it belongs to, so the matchup and the readable side names
+        // are resolved here from the authoritative event projection. A lookup
+        // that fails leaves the labels absent rather than inventing one.
+        const eventIds = [
+          ...new Set(findings.map(({ canonicalEventId }) => canonicalEventId)),
+        ];
+        const participantsById = new Map<
+          string,
+          {
+            readonly participants: readonly {
+              readonly id: string;
+              readonly label: string;
+            }[];
+            readonly startsAt: string;
+          }
+        >();
+        for (const id of eventIds) {
+          const detail = await repository.detail(id).catch(() => null);
+          const item = detail?.item;
+          if (item)
+            participantsById.set(id, {
+              participants: item.participants,
+              startsAt: item.startsAt,
+            });
+        }
+        const sideLabel = (
+          selectionKey: string,
+          eventId: string,
+        ): string | undefined => {
+          const known = participantsById.get(eventId);
+          const participant = known?.participants.find(
+            ({ id }) =>
+              participantSelectionKey(id as EntityId) === selectionKey,
+          );
+          if (participant) return participant.label;
+          if (selectionKey === "over") return "Over";
+          if (selectionKey === "under") return "Under";
+          if (selectionKey === "draw") return "Draw";
+          return undefined;
+        };
         return response(200, {
           schemaVersion: "arbitrage-page-v1",
           snapshotAt: board?.scannedAt ?? null,
           totalCount: board?.totalCount ?? 0,
-          items: findings.slice(0, limit),
+          items: findings.map((finding) => {
+            const known = participantsById.get(finding.canonicalEventId);
+            return {
+              ...finding,
+              ...(known
+                ? {
+                    event: {
+                      participants: known.participants,
+                      startsAt: known.startsAt,
+                    },
+                  }
+                : {}),
+              legs: finding.legs.map((leg) => {
+                const label = sideLabel(
+                  leg.selectionKey,
+                  finding.canonicalEventId,
+                );
+                return label === undefined
+                  ? leg
+                  : { ...leg, selectionLabel: label };
+              }),
+            };
+          }),
         });
       }
       if (request.route.startsWith("opportunity-")) {

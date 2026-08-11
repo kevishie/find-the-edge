@@ -870,6 +870,39 @@ describe("arbitrage client", () => {
     items: [finding],
   };
 
+  it("carries the resolved matchup and side names", async () => {
+    // A finding stores selection KEYS. Without the server-resolved names a
+    // card printed "participant%3Amlb%253Amlb%3Aroyals" and never said which
+    // game it belonged to.
+    const named = structuredClone(arbitragePage) as {
+      items: Record<string, unknown>[];
+    };
+    named.items[0]!["event"] = {
+      participants: [{ label: "Kansas City Royals" }, { label: "LA Dodgers" }],
+      startsAt: "2026-08-10T22:00:00.000Z",
+    };
+    (named.items[0]!["legs"] as Record<string, unknown>[])[0]![
+      "selectionLabel"
+    ] = "Kansas City Royals";
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(named))),
+    );
+    if (!client.ok) throw client.error;
+    const page = await client.value.listArbitrage!(
+      "mlb",
+      new AbortController().signal,
+    );
+    expect(
+      page.items[0]?.event?.participants.map(({ label }) => label),
+    ).toEqual(["Kansas City Royals", "LA Dodgers"]);
+    expect(page.items[0]?.legs[0]?.selectionLabel).toBe("Kansas City Royals");
+    // A finding without event context stays unnamed rather than guessing.
+    expect(page.items[0]?.legs[1]?.selectionLabel).toBeUndefined();
+  });
+
   it("parses the display projection and fails closed on contradictions", async () => {
     const client = createGamesClient(
       { ok: true, value: bootstrap() },

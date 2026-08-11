@@ -294,6 +294,9 @@ function ArbitrageCard({ item }: { readonly item: ArbitrageFindingDto }) {
           {item.holdPercentage.toFixed(2)}% hold
         </b>
         <span className="arbitrage-market">
+          {item.event
+            ? `${item.event.participants.map(({ label }) => label).join(" vs ")} · `
+            : ""}
           {identifierLabel(item.marketKey)} · {easternTime(item.startsAt)}{" "}
           Eastern
         </span>
@@ -303,9 +306,10 @@ function ArbitrageCard({ item }: { readonly item: ArbitrageFindingDto }) {
           <li key={leg.selectionKey}>
             <SportsbookLogo scope={leg.best.sportsbookId} />
             <span className="arbitrage-selection">
-              {identifierLabel(
-                leg.selectionKey.replace(/^participant:/, "").slice(0, 40),
-              )}
+              {/* The server resolves participant keys to team names. Without
+                  the event it stays unnamed rather than printing the raw
+                  encoded key. */}
+              {leg.selectionLabel ?? "Unnamed selection"}
               {leg.point !== null ? ` ${String(leg.point)}` : ""}
             </span>
             <b>{displayAmericanOdds(leg.best.americanOdds).text}</b>
