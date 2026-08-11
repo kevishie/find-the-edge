@@ -380,6 +380,13 @@ export interface BoardMaterializationResult {
    * exists (an empty slate is not staleness). Provider health alone has
    * twice proven blind to frozen persistence — this measures the data. */
   readonly scheduledOddsAgeSeconds: number | null;
+  /**
+   * How many listings the withdrawn-listing filter removed across all boards.
+   * Zero is ambiguous on its own — it means either "nothing to remove" or
+   * "the filter never ran" — so it is read alongside the sweep's own log,
+   * which names the reason whenever the schedule was unavailable.
+   */
+  readonly withdrawnDropped: number;
 }
 
 export const materializeBoards = async (input: {
@@ -399,6 +406,7 @@ export const materializeBoards = async (input: {
   let stored = 0;
   let skipped = 0;
   let scheduledOddsAgeSeconds: number | null = null;
+  let withdrawnDropped = 0;
   const scheduleCache = new Map<string, readonly ScheduleListing[] | null>();
   const scheduleFor = async (sportKey: "mlb" | "soccer") => {
     if (!input.scheduleListings) return null;
@@ -439,6 +447,7 @@ export const materializeBoards = async (input: {
       splitsExpected: key.sportKey === "mlb",
       hasSplitEvidence,
     })) as typeof rawPage;
+    withdrawnDropped += rawPage.items.length - page.items.length;
     if (page.nextCursor !== null || page.projectionState !== "ready") {
       skipped += 1;
       continue;
@@ -487,5 +496,5 @@ export const materializeBoards = async (input: {
     });
     stored += 1;
   }
-  return { stored, skipped, scheduledOddsAgeSeconds };
+  return { stored, skipped, scheduledOddsAgeSeconds, withdrawnDropped };
 };

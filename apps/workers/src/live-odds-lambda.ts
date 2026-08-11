@@ -544,6 +544,21 @@ const runLiveOddsHandler = async (event?: unknown) => {
     // naming ("Inter Miami CF", "St. Louis City SC") defeats the
     // nickname-anchored matcher — filtering soccer wiped real games.
     if (sportKey !== "mlb") return Promise.resolve(null);
+    // A null result here disables the withdrawn-listing filter for this run,
+    // which is the right failure direction but was previously indistinguishable
+    // from "the schedule says every game is real". Ghost listings survived on
+    // the board for days because nothing said which of the two had happened.
+    // Every exit now names itself.
+    const abandon = (reason: string, detail?: Record<string, unknown>) => {
+      process.stdout.write(
+        `${JSON.stringify({
+          event: "schedule-sweep-unavailable",
+          reason,
+          ...detail,
+        })}\n`,
+      );
+      return null;
+    };
     mlbListingsSweep ??= (async () => {
       const league = sharpApiLeagueByKey("mlb");
       const events: {
@@ -553,21 +568,49 @@ const runLiveOddsHandler = async (event?: unknown) => {
       }[] = [];
       let offset: number | undefined = 0;
       for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
-        const schedulePage = await fetchSharpApiSchedulePage(
-          league,
-          sharpApiKey,
-          offset,
-        );
+        let schedulePage: Awaited<ReturnType<typeof fetchSharpApiSchedulePage>>;
+        try {
+          schedulePage = await fetchSharpApiSchedulePage(
+            league,
+            sharpApiKey,
+            offset,
+          );
+        } catch (error) {
+          return abandon("fetch-failed", {
+            pageNumber,
+            offset,
+            errorName: error instanceof Error ? error.name : "unknown",
+            errorMessage: error instanceof Error ? error.message : "unknown",
+          });
+        }
         events.push(...schedulePage.events);
-        if (!schedulePage.hasMore) return usableScheduleListings(events);
+        if (!schedulePage.hasMore) {
+          const listings = usableScheduleListings(events);
+          process.stdout.write(
+            `${JSON.stringify({
+              event: "schedule-sweep-complete",
+              pages: pageNumber + 1,
+              events: events.length,
+              listings: listings.length,
+            })}\n`,
+          );
+          // An empty sweep is not evidence that every listing was withdrawn;
+          // it is evidence that we learned nothing. Filtering on it would
+          // erase the whole board.
+          return listings.length > 0 ? listings : abandon("no-listings");
+        }
         if (
           schedulePage.nextOffset === undefined ||
           schedulePage.nextOffset <= (offset ?? 0)
         )
-          return null;
+          return abandon("pagination-stalled", {
+            pageNumber,
+            offset,
+            nextOffset: schedulePage.nextOffset ?? null,
+          });
         offset = schedulePage.nextOffset;
       }
-      return null;
+      return abandon("page-limit-exceeded", { offset });
     })();
     return mlbListingsSweep;
   };

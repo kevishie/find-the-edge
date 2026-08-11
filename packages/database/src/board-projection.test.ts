@@ -120,6 +120,7 @@ describe("materialization", () => {
       stored: 10,
       skipped: 0,
       scheduledOddsAgeSeconds: null,
+      withdrawnDropped: 0,
     });
     const splitBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#splits#"));
     const gameBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#games#"));
@@ -181,6 +182,7 @@ describe("materialization", () => {
       stored: 0,
       skipped: 10,
       scheduledOddsAgeSeconds: null,
+      withdrawnDropped: 0,
     });
     expect(puts).toHaveLength(0);
   });
