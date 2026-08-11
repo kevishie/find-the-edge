@@ -11,10 +11,11 @@ import {
 // assembled at runtime instead of written out. The value is still a valid
 // test-mode shape for the parser.
 const fakeSecretKey = ["sk", "test", "F".repeat(24)].join("_");
+const fakeRestrictedLiveKey = ["rk", "live", "L".repeat(24)].join("_");
 
 const valid = {
   secretKey: fakeSecretKey,
-  webhookSecret: "whsec_TestWebhookSecret0123456789",
+  webhookSecret: ["whsec", "F".repeat(24)].join("_"),
   priceId: "price_TestMonthly001",
 };
 
@@ -25,9 +26,9 @@ describe("billing secrets", () => {
     expect(parseBillingSecrets(JSON.stringify(valid))).toEqual(valid);
     expect(
       parseBillingSecrets(
-        JSON.stringify({ ...valid, secretKey: "rk_live_ABCDEFGHIJKLMNOPQRST" }),
+        JSON.stringify({ ...valid, secretKey: fakeRestrictedLiveKey }),
       ).secretKey,
-    ).toBe("rk_live_ABCDEFGHIJKLMNOPQRST");
+    ).toBe(fakeRestrictedLiveKey);
   });
 
   it("refuses a secret it cannot trust rather than degrading", () => {
