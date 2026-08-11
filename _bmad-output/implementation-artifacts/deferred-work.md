@@ -96,6 +96,50 @@ the board-freshness alarm. Next: prod cutover (FTE-059, approval-gated),
 bet tracker (makes CLV personal), persist-path version re-resolution,
 middles, backlog FTE-044..058.
 
+## Soccer had no prices for eleven hours — two causes (2026-08-11)
+
+Soccer games rendered on the board with `odds.state: "unavailable"` and not
+one price. Two independent faults, found by reading state rather than logs.
+
+**1. A latched ambiguity marker froze MLS ingestion.** MLS returned
+`provider-request-ambiguous`, 0 pages, on every pass from 11:20 to 22:18
+while every other league completed normally. `runOddsLeague` gates on
+`if (continuation?.ambiguousUntil)` — the field's PRESENCE, not whether its
+window is still open. The window had expired at 11:25:40. Nothing clears it:
+`putContinuationCas` deliberately carries `ambiguousUntil` forward on every
+write, and the reconciliation probe sits *after* this gate, so it is
+unreachable once the gate returns. Ambiguity had no path to resolution.
+
+Cleared operationally by deleting `ODDS_CONTROL#CONTINUATION#mls` and
+`ODDS_CONTROL#HEALTH#sharpapi:mls:odds` — the same remediation as
+2026-08-10 — after which MLS went healthy within one pass.
+
+NOT fixed in code, deliberately. Loosening the gate to respect the expiry
+was tried and reverted: it breaks "fences ambiguous transport and blocks
+fallback or paid recall", which exists so a paid request of unknown outcome
+is never blindly reissued. That test is right. The real fix is to make
+reconciliation reachable for a league continuation whose ambiguity window
+has lapsed — a probe that resolves the outcome, not a gate that ignores it.
+Until then this can re-latch on any ambiguous transport error, and the new
+run already carries `evidenceCommitted: true`, which puts it outside the
+age ceiling's reach.
+
+**2. Leagues Cup odds are published under a league we do not ingest.**
+Even with MLS healthy, the seven soccer fixtures stayed priceless. They are
+Leagues Cup (MLS v Liga MX): Charlotte/Pachuca, Columbus/Pumas,
+Minnesota/Atlante, Tigres/Vancouver. Verified against the live provider:
+`/odds?league=leagues_cup` returns them directly, while `/odds?league=mls`
+carries only "US Major League Soccer" derivative rows for those clubs. Our
+odds collection policy pulls `mls` and never `leagues_cup`, so those games
+can never receive a price. Note the underscore — `leagues-cup` is rejected
+as an invalid filter.
+
+Fix direction: add `leagues_cup` to the odds collection policy and confirm
+club-label matching holds for Liga MX sides. Same class as the recurring
+"SharpAPI moves a feed under us" failure — worth an alarm on a league whose
+games are all `unavailable` for more than one cadence, which is the signal
+that would have caught both of these in minutes rather than hours.
+
 ## The live-projection fallback serves unfiltered boards (found 2026-08-11)
 
 `withoutWithdrawnListings` runs only during board materialization. The API

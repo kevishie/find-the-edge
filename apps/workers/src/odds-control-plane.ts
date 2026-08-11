@@ -643,6 +643,18 @@ export async function runOddsLeague(input: {
       continuation = null;
     }
   }
+  // NOTE: this tests that the field EXISTS, not that its window is still
+  // open, and nothing clears it if the owning worker never returns —
+  // putContinuationCas carries it forward on every write. MLS latched on a
+  // window that expired at 11:25 on 2026-08-11 and answered
+  // "provider-request-ambiguous" on every pass for the next eleven hours,
+  // with games on the board and not one price.
+  //
+  // Loosening this to respect the expiry is NOT the fix: an ambiguous paid
+  // request must never be blindly reissued, which is what the "fences
+  // ambiguous transport and blocks fallback or paid recall" test protects.
+  // The real gap is that the reconciliation probe below is unreachable once
+  // this returns, so ambiguity has no path to resolution. See deferred-work.
   if (continuation?.ambiguousUntil)
     return {
       leagueKey: policy.leagueKey,
@@ -969,8 +981,10 @@ export async function runOddsLeague(input: {
         league: policy.leagueKey,
         provider: candidate.providerId,
       });
+    const { ambiguousUntil: lapsedAmbiguity, ...carried } = continuation ?? {};
+    void lapsedAmbiguity;
     const owner = await store.claimContinuation({
-      ...continuation,
+      ...(staleRun ? carried : continuation),
       leagueKey: policy.leagueKey,
       runId:
         continuation?.runId && !staleRun
