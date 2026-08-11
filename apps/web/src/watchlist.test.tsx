@@ -209,7 +209,9 @@ it("puts the row back and says so when the removal fails", async () => {
       "That event could not be removed from the watchlist.",
     ),
   ).toBeVisible();
-  expect(screen.getByRole("listitem")).toBeVisible();
+  // The row is restored in a later render than the failure message, so this
+  // must wait for it rather than assume the two land in the same tick.
+  expect(await screen.findByRole("listitem")).toBeVisible();
   expect(
     screen.queryByText("Removed from your watchlist."),
   ).not.toBeInTheDocument();
