@@ -1316,6 +1316,108 @@ Every story below includes: Story ID, title, epic, user/system outcome, context,
 - Risk: Medium.
 - Approval required before merge: No.
 
+### Epic 12: Owned Phone/OTP Authentication and Paid Access
+
+Supersedes Epic 2's Cognito approach. FTE-008 through FTE-012 are obsolete:
+the product will not use a third-party hosted sign-in. A visitor must never be
+navigated away from a public page to someone else's login form.
+
+Product shape: `/` and the marketing surfaces are public. The product surfaces
+(Events, Splits, Scanner, Watchlist, Reports) require an account with an active
+entitlement — a seven-day trial or a paid $99/month subscription. Sign-in is a
+phone number plus a one-time code, on our own form, and the session is a JWT we
+mint and the browser stores.
+
+#### FTE-070: Own Phone/OTP Identity Service
+
+- Epic: Owned authentication and paid access.
+- Outcome: A person can prove they control a phone number and receive a session token, with no third-party login UI.
+- Context: Cognito's hosted UI hijacked public pages and is being removed entirely; identity must be ours.
+- In scope: account record keyed by E.164 phone; OTP request/verify endpoints; single-use codes with short expiry, per-number and per-IP rate limits, constant-time comparison, attempt lockout; SMS delivery through AWS End User Messaging; signed JWT issuance with rotation-ready key handling; refresh and revoke.
+- Out of scope: Email login, social login, passwords, multi-tenant roles.
+- Dependencies: FTE-001.
+- Acceptance criteria: A valid code exchanges for a token bound to the account; a wrong, reused, or expired code never issues one; brute force is bounded by rate limit and lockout; codes are never logged or returned in a response; tokens verify against our own key and carry account id, entitlement state, and expiry.
+- Required automated tests: Domain tests for code lifecycle and constant-time verify; repository tests for idempotent request and single-use consumption; handler tests for rate limits, lockout, and neutral failures; token signing/verification round-trip and tamper rejection.
+- Likely files/packages affected: `packages/domain`, `packages/database`, `apps/api`, `infra/cdk`.
+- Observability: Delivery outcome and failure-class metrics only — never a code, never a full phone number.
+- Security: Codes hashed at rest; no code in logs, metrics, or error bodies; per-number and per-IP limits; lockout after repeated failures; keys in Secrets Manager.
+- Data migration/backfill impact: None; no Cognito accounts are migrated.
+- Definition of done: A phone number can obtain and refresh a session token end to end on staging.
+- Risk: High.
+- Approval required before merge: Yes.
+
+#### FTE-071: Sign-In Form and Client Session
+
+- Epic: Owned authentication and paid access.
+- Outcome: The user signs in on our own form and stays signed in across reloads.
+- Context: Replaces the deleted hosted-UI provider.
+- In scope: phone entry and code entry screens; resend with cooldown; JWT persisted in localStorage per product direction; attach the token to authenticated requests; expiry handling and sign-out; a signed-in indicator in the shell.
+- Out of scope: Any redirect to a third-party domain.
+- Dependencies: FTE-070.
+- Acceptance criteria: A public page never navigates to a login; signing in returns the user to where they were; a reload keeps the session; an expired token signs out cleanly without a loop; sign-out clears the token.
+- Required automated tests: Component tests for both steps, cooldown, invalid code, expiry; Playwright sign-in flow against a stubbed API.
+- Likely files/packages affected: `apps/web`.
+- Observability: Client auth failures logged without token or code values.
+- Security: Token stored in localStorage is readable by any script on the origin, so the app must keep a strict CSP, never inject third-party scripts, and keep token lifetime short with refresh. This tradeoff is a deliberate product decision recorded here.
+- Data migration/backfill impact: None.
+- Definition of done: Sign-in works on staging with no third-party navigation.
+- Risk: Medium.
+- Approval required before merge: No.
+
+#### FTE-072: Stripe Subscriptions, Trial, and Entitlement
+
+- Epic: Owned authentication and paid access.
+- Outcome: An account can start a seven-day trial or subscribe at $99/month, and the product knows what it is entitled to.
+- Context: Access to product surfaces is paid.
+- In scope: Stripe customer per account; checkout for the $99/month price; seven-day trial without immediate charge; webhook ingestion with signature verification and idempotent replay; durable entitlement record (trialing, active, past_due, canceled, expired) derived only from Stripe events; billing portal link.
+- Out of scope: Coupons, annual plans, multiple tiers, proration UI, tax handling beyond Stripe defaults.
+- Dependencies: FTE-070.
+- Acceptance criteria: Trial start grants access without a charge; a completed subscription grants access; cancellation or failed payment removes access at the boundary Stripe reports; webhook replay never double-applies; entitlement is never inferred from the client.
+- Required automated tests: Webhook signature and idempotency tests; entitlement state-machine tests over the real event sequences; handler tests proving the client cannot assert entitlement.
+- Likely files/packages affected: `packages/domain`, `packages/database`, `apps/api`, `infra/cdk`.
+- Observability: Subscription lifecycle transitions with account id only — never card data.
+- Security: Webhook signature required; Stripe keys in Secrets Manager; no card data ever stored or logged.
+- Data migration/backfill impact: None.
+- Definition of done: A real Stripe test-mode subscription drives entitlement end to end on staging.
+- Risk: High.
+- Approval required before merge: Yes.
+
+#### FTE-073: Public and Entitled Route Split
+
+- Epic: Owned authentication and paid access.
+- Outcome: Public marketing surfaces stay open; product surfaces require an entitled session.
+- Context: The landing page must stay reachable and fast for anonymous visitors.
+- In scope: server-side entitlement enforcement on product APIs; client route guards that render a paywall or sign-in instead of redirecting away; upgrade and trial calls to action; the CloudFront SPA whitelist for the new routes.
+- Out of scope: Per-feature entitlements, usage metering.
+- Dependencies: FTE-071, FTE-072.
+- Acceptance criteria: `/` and legal pages load anonymously; a product route without entitlement shows a paywall rather than a redirect; the API refuses unentitled product reads regardless of what the client claims; an entitled session sees the product unchanged.
+- Required automated tests: Handler tests for entitled and unentitled access per product route; component tests for the paywall; Playwright anonymous-landing and entitled-product flows.
+- Likely files/packages affected: `apps/web`, `apps/api`, `infra/cdk`, `scripts`.
+- Observability: Denied-access counts by reason, no identity in dimensions.
+- Security: Entitlement decided server-side from the stored record; a client claim is never trusted.
+- Data migration/backfill impact: None.
+- Definition of done: Anonymous visitors browse the landing page; product access requires trial or subscription.
+- Risk: Medium.
+- Approval required before merge: Yes.
+
+#### FTE-074: Retire Cognito Infrastructure
+
+- Epic: Owned authentication and paid access.
+- Outcome: No Cognito resource, dependency, or code path remains.
+- Context: The hosted-UI provider script is already deleted and guarded against; the API authorizer, user pool, and scopes remain.
+- In scope: remove the JWT authorizer and user-pool/domain resources from CDK; replace API authorization with our own token verification; delete Cognito scope plumbing from runtime config, preflight pins, and the web client; delete `packages/auth` Cognito helpers; mark FTE-008 through FTE-012 obsolete.
+- Out of scope: Anything that would leave a product endpoint unauthenticated — this story lands only after FTE-070 and FTE-073.
+- Dependencies: FTE-070, FTE-073.
+- Acceptance criteria: No `cognito` reference outside historical notes; every previously protected route is protected by our own verification; deleting the user pool destroys no data the product still needs; preflight passes with the new route contract.
+- Required automated tests: A repository-wide assertion that no shipped source references Cognito; handler tests proving every product route rejects an unsigned or foreign token.
+- Likely files/packages affected: `infra/cdk`, `apps/api`, `apps/web`, `packages/auth`, `scripts`.
+- Observability: Unchanged.
+- Security: The cutover must not open a window where scouting or watchlist is unauthenticated.
+- Data migration/backfill impact: The Cognito user pool is deleted; no accounts are migrated.
+- Definition of done: Cognito is gone and every protected route verifies our token.
+- Risk: High.
+- Approval required before merge: Yes.
+
 ### Epic 9: Bet Tracker and Settlement
 
 #### FTE-048: Manual Bet Entry with Opportunity or Report Source Link

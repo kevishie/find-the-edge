@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-045
+nextReadyStory: FTE-070
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -865,3 +865,63 @@ stories:
     validationCommands: [pnpm check, "pnpm phase1:preflight"]
     risk: Medium
     approvalRequiredBeforeMerge: false
+  - id: FTE-070
+    title: Own Phone/OTP Identity Service
+    sport: core
+    league: all
+    module: authentication
+    priority: P0
+    status: ready
+    dependencies: [FTE-001]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-071
+    title: Sign-In Form and Client Session
+    sport: core
+    league: all
+    module: authentication
+    priority: P0
+    status: backlog
+    dependencies: [FTE-070]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-072
+    title: Stripe Subscriptions, Trial, and Entitlement
+    sport: core
+    league: all
+    module: billing
+    priority: P0
+    status: backlog
+    dependencies: [FTE-070]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-073
+    title: Public and Entitled Route Split
+    sport: core
+    league: all
+    module: authentication
+    priority: P0
+    status: backlog
+    dependencies: [FTE-071, FTE-072]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: true
+  - id: FTE-074
+    title: Retire Cognito Infrastructure
+    sport: core
+    league: all
+    module: authentication
+    priority: P0
+    status: backlog
+    dependencies: [FTE-070, FTE-073]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
