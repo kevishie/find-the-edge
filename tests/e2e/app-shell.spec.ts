@@ -190,6 +190,7 @@ test("renders the ranked evidence dashboard without horizontal overflow", async 
     await expect(bar).toBeVisible();
     await expect(bar.getByRole("link", { name: "Events" })).toBeVisible();
     await expect(bar.getByRole("link", { name: "Splits" })).toBeVisible();
+    await expect(bar.getByRole("link", { name: "Watchlist" })).toBeVisible();
     await expect(bar.getByRole("link", { name: "Scanner" })).toBeVisible();
   }
   await expect(page.locator("html")).toHaveJSProperty(

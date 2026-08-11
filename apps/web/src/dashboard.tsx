@@ -666,7 +666,10 @@ export function Dashboard({
         aria-label="Upcoming dashboard modules"
       >
         {[
-          ["Upcoming watched events", "Not connected · Watchlist is not built"],
+          [
+            "Upcoming watched events",
+            "Not connected · Open Watchlist for watched events",
+          ],
           [
             "Recent line movement",
             "Open an Event to inspect available history",

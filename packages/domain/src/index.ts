@@ -448,6 +448,43 @@ export interface EventDisplayDto {
   readonly metadata: EventMetadataAssessment;
 }
 
+/**
+ * How far apart two prices in one served market may have been observed and
+ * still belong to the same board.
+ *
+ * Selections are only rewritten when their price actually changes, so the two
+ * sides of a market legitimately carry different observation times — the
+ * favourite may have moved a minute ago and the underdog an hour ago. Requiring
+ * identical timestamps would drop those markets entirely. The window still
+ * refuses a genuinely mixed board (the failure this rule exists for was a total
+ * observed at 20:39 joined to a moneyline observed at 22:25) and every consumer
+ * — the serving join and the browser validator — must agree on it.
+ */
+export const MARKET_OBSERVATION_WINDOW_MS = 15 * 60_000;
+
+/** True when these selections can honestly be shown as one market: one book,
+ * each observation no newer than its retrieval, and all observations inside
+ * MARKET_OBSERVATION_WINDOW_MS of the newest. */
+export function selectionsShareObservationWindow(
+  selections: readonly {
+    readonly sportsbookId: string;
+    readonly observedAt: string;
+    readonly retrievedAt: string;
+  }[],
+): boolean {
+  if (selections.length === 0) return false;
+  const book = selections[0]!.sportsbookId;
+  const observed = selections.map(({ observedAt }) => Date.parse(observedAt));
+  if (observed.some((value) => !Number.isFinite(value))) return false;
+  const newest = Math.max(...observed);
+  return selections.every(
+    (selection, index) =>
+      selection.sportsbookId === book &&
+      selection.observedAt <= selection.retrievedAt &&
+      newest - observed[index]! <= MARKET_OBSERVATION_WINDOW_MS,
+  );
+}
+
 export interface GameOddsSelectionDto {
   readonly marketKey: string;
   readonly selectionKey: string;

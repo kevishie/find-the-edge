@@ -2677,3 +2677,197 @@ describe("games client", () => {
     expect(result.error.code).toBe("configuration");
   });
 });
+
+describe("watchlist browser client", () => {
+  const entry = {
+    schemaVersion: "watchlist-entry-v1",
+    eventId: "event:mlb%3Amlb:fixture-1",
+    eventVersion: 1,
+    sportKey: "mlb",
+    leagueKey: "mlb",
+    startsAt: "2026-08-01T23:05:00.000Z",
+    addedAt: "2026-07-30T12:00:00.000Z",
+  };
+  const laterEntry = {
+    ...entry,
+    eventId: "event:mlb%3Amlb:fixture-2",
+    startsAt: "2026-08-02T23:05:00.000Z",
+  };
+  // The watchlist authorises on the token subject, so no scouting scope is
+  // granted here: a session with only the base read scope must still work.
+  const watchlistToken = `x.${btoa(
+    JSON.stringify({
+      iss: "https://issuer.example.test",
+      client_id: "client-id",
+      token_use: "access",
+      exp: Math.floor(Date.now() / 1000) + 3_600,
+      scope: "events/events:read",
+    }),
+  )
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "")}.x`;
+
+  const installWatchlistProvider = () => {
+    Object.defineProperty(globalThis, "__FTE_TOKEN_PROVIDERS__", {
+      configurable: true,
+      value: { session: vi.fn(() => Promise.resolve(watchlistToken)) },
+    });
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "__FTE_TOKEN_PROVIDERS__");
+    Reflect.deleteProperty(globalThis, "__FTE_TOKEN_INVALIDATORS__");
+  });
+
+  const client = (fetcher: typeof fetch) => {
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+    return result.value;
+  };
+
+  it("lists a watchlist without asking for a scouting scope", async () => {
+    installWatchlistProvider();
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            schemaVersion: "watchlist-page-v1",
+            items: [entry, laterEntry],
+          }),
+        ),
+      ),
+    );
+    const page = await client(fetcher).listWatchlist?.(
+      new AbortController().signal,
+    );
+    expect(page?.items.map((item) => item.eventId)).toEqual([
+      entry.eventId,
+      laterEntry.eventId,
+    ]);
+    const [url, init] = fetcher.mock.calls[0] ?? [];
+    expect(url).toBe("https://api.example.test/watchlist");
+    expect(init?.method).toBe("GET");
+    expect(new Headers(init?.headers).get("authorization")).toBe(
+      `Bearer ${watchlistToken}`,
+    );
+  });
+
+  it.each([
+    ["a broken kickoff ordering", [laterEntry, entry]],
+    ["a repeated event", [entry, entry]],
+    ["an unknown entry schema", [{ ...entry, schemaVersion: "v2" }]],
+    ["a missing field", [{ ...entry, addedAt: undefined }]],
+    ["an unexpected field", [{ ...entry, requesterId: "someone" }]],
+  ])("fails closed on %s", async (_label, items) => {
+    installWatchlistProvider();
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ schemaVersion: "watchlist-page-v1", items }),
+        ),
+      ),
+    );
+    await expect(
+      client(fetcher).listWatchlist?.(new AbortController().signal),
+    ).rejects.toBeInstanceOf(GamesClientError);
+  });
+
+  it("accepts a first add and a repeat add and keeps the stored addedAt", async () => {
+    installWatchlistProvider();
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(entry), { status: 201 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(entry), { status: 200 }),
+      );
+    const first = await client(fetcher).addToWatchlist?.(
+      entry.eventId,
+      new AbortController().signal,
+    );
+    const repeat = await client(fetcher).addToWatchlist?.(
+      entry.eventId,
+      new AbortController().signal,
+    );
+    expect(first?.addedAt).toBe(entry.addedAt);
+    expect(repeat).toEqual(first);
+    const [, init] = fetcher.mock.calls[0] ?? [];
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify({ eventId: entry.eventId }));
+  });
+
+  it("treats an unknown event as a neutral not-found", async () => {
+    installWatchlistProvider();
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("", { status: 404 })),
+    );
+    await expect(
+      client(fetcher).addToWatchlist?.(
+        entry.eventId,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "not-found" });
+  });
+
+  it("removes with no content and rejects a removal that answers with a body", async () => {
+    installWatchlistProvider();
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(entry), { status: 200 }),
+      );
+    await expect(
+      client(fetcher).removeFromWatchlist?.(
+        entry.eventId,
+        new AbortController().signal,
+      ),
+    ).resolves.toBeUndefined();
+    const [url, init] = fetcher.mock.calls[0] ?? [];
+    expect(url).toBe(
+      `https://api.example.test/watchlist/${encodeURIComponent(entry.eventId)}`,
+    );
+    expect(init?.method).toBe("DELETE");
+    await expect(
+      client(fetcher).removeFromWatchlist?.(
+        entry.eventId,
+        new AbortController().signal,
+      ),
+    ).rejects.toBeInstanceOf(GamesClientError);
+  });
+
+  it("clears the cached session when the API answers 401", async () => {
+    installWatchlistProvider();
+    const invalidate = vi.fn();
+    Object.defineProperty(globalThis, "__FTE_TOKEN_INVALIDATORS__", {
+      configurable: true,
+      value: { session: invalidate },
+    });
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("", { status: 401 })),
+    );
+    await expect(
+      client(fetcher).listWatchlist?.(new AbortController().signal),
+    ).rejects.toMatchObject({ code: "authentication" });
+    expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits watchlist methods without complete launch auth configuration", () => {
+    const result = createGamesClient({
+      ok: true,
+      value: {
+        config: {
+          schemaVersion: 1,
+          apiBase: "https://api.example.test",
+          tokenProviderKey: "session",
+        },
+      },
+    });
+    if (!result.ok) throw result.error;
+    expect("listWatchlist" in result.value).toBe(false);
+    expect("addToWatchlist" in result.value).toBe(false);
+    expect("removeFromWatchlist" in result.value).toBe(false);
+  });
+});

@@ -1317,6 +1317,44 @@ describe("joined games repository", () => {
       expect(selection.sharpAmericanOdds).toBeUndefined();
   });
 
+  it("serves a market whose sides last moved at different times", async () => {
+    // Prices are only rewritten when they actually move, so the two sides of a
+    // market normally carry different observation times. Requiring identical
+    // timestamps dropped whole markets from the board; the rule is one book
+    // and one bounded window.
+    const away = current(event, "away", "Boston", "moneyline", "hardrock");
+    const home = current(
+      event,
+      "home",
+      "New York",
+      "moneyline",
+      "hardrock",
+      "2026-08-01T11:52:00.000Z",
+    );
+    const page = await new JoinedGamesRepository(
+      events(),
+      { batchGet: () => Promise.resolve([row(away), row(home)]) },
+      ["hardrock"],
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+    expect(page.items[0]?.odds).toMatchObject({ state: "available" });
+
+    // A market mixing observation moments is still refused outright.
+    const ancient = current(
+      event,
+      "home",
+      "New York",
+      "moneyline",
+      "hardrock",
+      "2026-08-01T09:00:00.000Z",
+    );
+    const mixed = await new JoinedGamesRepository(
+      events(),
+      { batchGet: () => Promise.resolve([row(away), row(ancient)]) },
+      ["hardrock"],
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+    expect(mixed.items[0]?.odds).toEqual({ state: "unavailable" });
+  });
+
   it("serves detail cells persisted one version behind the event", async () => {
     // Same churn as the list path: the canonical version advanced but the
     // odds persist path still writes at the prior version's keys. The

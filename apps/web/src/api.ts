@@ -13,6 +13,7 @@ import type {
   ScoutingReportProvenance,
   ScoutingReportStatus,
 } from "@find-the-edge/domain";
+import { selectionsShareObservationWindow } from "@find-the-edge/domain";
 import {
   collapseNearDuplicateGames,
   EVENT_LIFECYCLE_STATES,
@@ -237,6 +238,26 @@ export interface ScoutReportVersionsDto {
   readonly items: readonly ScoutReportVersionSummaryDto[];
 }
 
+/**
+ * Public projection of one watched event (FTE-045). The entry carries only the
+ * identity of the event and when it was watched: live odds, report status, and
+ * lineup state are deliberately absent from this contract.
+ */
+export interface WatchlistEntryDto {
+  readonly schemaVersion: "watchlist-entry-v1";
+  readonly eventId: string;
+  readonly eventVersion: number;
+  readonly sportKey: string;
+  readonly leagueKey: string;
+  readonly startsAt: string;
+  readonly addedAt: string;
+}
+
+export interface WatchlistPageDto {
+  readonly schemaVersion: "watchlist-page-v1";
+  readonly items: readonly WatchlistEntryDto[];
+}
+
 export interface GamesClient {
   providerStatus?(signal: AbortSignal): Promise<ProviderStatusPageDto>;
   listOpportunities?(
@@ -335,6 +356,12 @@ export interface GamesClient {
     reportId: string,
     signal: AbortSignal,
   ): Promise<ScoutReportVersionsDto>;
+  listWatchlist?(signal: AbortSignal): Promise<WatchlistPageDto>;
+  addToWatchlist?(
+    eventId: string,
+    signal: AbortSignal,
+  ): Promise<WatchlistEntryDto>;
+  removeFromWatchlist?(eventId: string, signal: AbortSignal): Promise<void>;
 }
 export interface RetrospectiveDto {
   readonly retrospectiveId: string;
@@ -1285,6 +1312,79 @@ export function parseScoutReportVersions(
   });
 }
 
+const invalidWatchlist = () =>
+  new GamesClientError(
+    "invalid-response",
+    "The watchlist response was invalid.",
+  );
+
+/**
+ * Fails closed on anything that is not exactly one stored watchlist entry: the
+ * envelope is pinned to its published schema version and every field is
+ * checked, so a corrupt or foreign-shaped response never reaches the screen.
+ */
+export function parseWatchlistEntry(value: unknown): WatchlistEntryDto {
+  if (
+    !plain(value) ||
+    !exact(value, [
+      "schemaVersion",
+      "eventId",
+      "eventVersion",
+      "sportKey",
+      "leagueKey",
+      "startsAt",
+      "addedAt",
+    ]) ||
+    value["schemaVersion"] !== "watchlist-entry-v1" ||
+    !isCanonicalScoutingEventId(value["eventId"]) ||
+    !Number.isSafeInteger(value["eventVersion"]) ||
+    Number(value["eventVersion"]) < 1 ||
+    !boundedString(value["sportKey"], 64) ||
+    !boundedString(value["leagueKey"], 128) ||
+    !iso(value["startsAt"]) ||
+    !iso(value["addedAt"])
+  )
+    throw invalidWatchlist();
+  return Object.freeze({
+    schemaVersion: "watchlist-entry-v1" as const,
+    eventId: value["eventId"],
+    eventVersion: Number(value["eventVersion"]),
+    sportKey: value["sportKey"],
+    leagueKey: value["leagueKey"],
+    startsAt: value["startsAt"],
+    addedAt: value["addedAt"],
+  });
+}
+
+/**
+ * The page contract is one row per event ordered soonest kickoff first. A
+ * duplicate row or a broken ordering is a rewritten page rather than the
+ * watchlist the API publishes, so the whole page is rejected.
+ */
+export function parseWatchlistPage(value: unknown): WatchlistPageDto {
+  if (
+    !plain(value) ||
+    !exact(value, ["schemaVersion", "items"]) ||
+    value["schemaVersion"] !== "watchlist-page-v1" ||
+    !Array.isArray(value["items"]) ||
+    value["items"].length > 1_000
+  )
+    throw invalidWatchlist();
+  const items = value["items"].map((item) => parseWatchlistEntry(item));
+  const seen = new Set<string>();
+  let previous = "";
+  for (const item of items) {
+    if (seen.has(item.eventId) || item.startsAt < previous)
+      throw invalidWatchlist();
+    seen.add(item.eventId);
+    previous = item.startsAt;
+  }
+  return Object.freeze({
+    schemaVersion: "watchlist-page-v1" as const,
+    items: Object.freeze(items),
+  });
+}
+
 const validAmericanOdds = (value: unknown): value is number =>
   Number.isSafeInteger(value) &&
   Math.abs(Number(value)) >= 100 &&
@@ -2149,20 +2249,12 @@ const validGame = (
       ? (["away", "home"] as const)
       : (["away", "draw", "home"] as const);
   const selections = odds["selections"];
-  const sportsbookId = selections[0]?.sportsbookId;
-  const observedAt = selections[0]?.observedAt;
-  const retrievedAt = selections[0]?.retrievedAt;
-  if (
-    typeof sportsbookId !== "string" ||
-    !selections.every(
-      (selection) =>
-        selection.sportsbookId === sportsbookId &&
-        selection.observedAt === observedAt &&
-        selection.retrievedAt === retrievedAt &&
-        selection.observedAt <= selection.retrievedAt,
-    )
-  )
-    return false;
+  // Prices are only rewritten when they actually move, so the sides of a
+  // market legitimately carry different observation times. The server joins a
+  // market only when its prices share one book and one bounded observation
+  // window; the client enforces the identical rule so a board can never mix
+  // observation moments.
+  if (!selectionsShareObservationWindow(selections)) return false;
   const grouped = new Map<string, GameOddsSelectionDto[]>();
   for (const selection of selections) {
     const group = grouped.get(selection.marketKey) ?? [];
@@ -2755,25 +2847,30 @@ const invalidateScoutingSession = (providerKey: string | undefined): void => {
   }
 };
 
-const scoutingSession = async (
+/**
+ * Resolves the Cognito access token a protected call needs. The required
+ * scopes are a parameter because not every protected surface carries the same
+ * grant: scouting needs its own scopes, while the watchlist is authorised by
+ * the token subject alone.
+ */
+const authenticatedSession = async (
   providerKey: string | undefined,
   expectedIssuer: string | undefined,
   expectedClientId: string | undefined,
+  requiredScopes: readonly string[],
+  messages: {
+    readonly signIn: string;
+    readonly forbidden: string;
+  },
 ): Promise<{ readonly token: string }> => {
   if (!providerKey || !expectedIssuer || !expectedClientId)
-    throw new GamesClientError(
-      "authentication",
-      "Sign in is required to use scouting.",
-    );
+    throw new GamesClientError("authentication", messages.signIn);
   const registry = (globalThis as Record<string, unknown>)[
     "__FTE_TOKEN_PROVIDERS__"
   ];
   const provider = plain(registry) ? registry[providerKey] : undefined;
   if (typeof provider !== "function")
-    throw new GamesClientError(
-      "authentication",
-      "Sign in is required to use scouting.",
-    );
+    throw new GamesClientError("authentication", messages.signIn);
   let token: unknown;
   try {
     token = await (provider as () => Promise<unknown>)();
@@ -2813,12 +2910,9 @@ const scoutingSession = async (
       typeof payload["exp"] !== "number" ||
       !Number.isFinite(payload["exp"]) ||
       payload["exp"] <= Date.now() / 1000 + 30 ||
-      !SCOUTING_SCOPES.every((scope) => scopes.includes(scope))
+      !requiredScopes.every((scope) => scopes.includes(scope))
     )
-      throw new GamesClientError(
-        "forbidden",
-        "This session does not have scouting access.",
-      );
+      throw new GamesClientError("forbidden", messages.forbidden);
   } catch (error) {
     if (error instanceof GamesClientError) throw error;
     throw new GamesClientError(
@@ -2828,6 +2922,37 @@ const scoutingSession = async (
   }
   return { token };
 };
+
+const scoutingSession = (
+  providerKey: string | undefined,
+  expectedIssuer: string | undefined,
+  expectedClientId: string | undefined,
+): Promise<{ readonly token: string }> =>
+  authenticatedSession(
+    providerKey,
+    expectedIssuer,
+    expectedClientId,
+    SCOUTING_SCOPES,
+    {
+      signIn: "Sign in is required to use scouting.",
+      forbidden: "This session does not have scouting access.",
+    },
+  );
+
+/**
+ * The watchlist API authorises on the token subject and asks for no extra
+ * Cognito scope, so the session check here verifies only that the token is a
+ * live access token minted for this app.
+ */
+const watchlistSession = (
+  providerKey: string | undefined,
+  expectedIssuer: string | undefined,
+  expectedClientId: string | undefined,
+): Promise<{ readonly token: string }> =>
+  authenticatedSession(providerKey, expectedIssuer, expectedClientId, [], {
+    signIn: "Sign in is required to use the watchlist.",
+    forbidden: "This session cannot use the watchlist.",
+  });
 
 const scoutingHttpError = (
   response: Response,
@@ -3054,6 +3179,102 @@ const scoutReportRequest = async <T>({
   return parse(await response.json().catch(() => null));
 };
 
+const WATCHLIST_REQUEST_TIMEOUT_MS = 10_000;
+
+const watchlistUnavailable = () =>
+  new GamesClientError(
+    "request-failed",
+    "The watchlist is temporarily unavailable.",
+  );
+
+const watchlistHttpError = (response: Response): GamesClientError => {
+  if (response.status === 401)
+    return new GamesClientError(
+      "authentication",
+      "Sign in is required to use the watchlist.",
+    );
+  if (response.status === 403)
+    return new GamesClientError(
+      "forbidden",
+      "This session cannot use the watchlist.",
+    );
+  // A missing event and an event that never existed are one neutral answer.
+  if (response.status === 404)
+    return new GamesClientError("not-found", "This event is unavailable.");
+  return watchlistUnavailable();
+};
+
+/**
+ * One authenticated watchlist round trip. The accepted status codes are the
+ * caller's, because the API distinguishes a first add (201) from a repeat
+ * (200) and answers a removal with no content at all (204).
+ */
+const watchlistRequest = async <T>({
+  apiBase,
+  providerKey,
+  expectedIssuer,
+  expectedClientId,
+  fetcher,
+  method,
+  path,
+  signal,
+  body,
+  accepted,
+  parse,
+}: {
+  readonly apiBase: string;
+  readonly providerKey: string;
+  readonly expectedIssuer: string;
+  readonly expectedClientId: string;
+  readonly fetcher: typeof fetch;
+  readonly method: "GET" | "POST" | "DELETE";
+  readonly path: string;
+  readonly signal: AbortSignal;
+  readonly body?: Readonly<Record<string, unknown>>;
+  readonly accepted: readonly number[];
+  readonly parse: (value: unknown) => T;
+}): Promise<T> => {
+  const timeoutSignal = AbortSignal.timeout(WATCHLIST_REQUEST_TIMEOUT_MS);
+  const requestSignal = AbortSignal.any([signal, timeoutSignal]);
+  let token: string;
+  try {
+    ({ token } = await awaitWithSignal(
+      watchlistSession(providerKey, expectedIssuer, expectedClientId),
+      requestSignal,
+    ));
+  } catch (error) {
+    if (signal.aborted) throw error;
+    if (timeoutSignal.aborted) throw watchlistUnavailable();
+    throw error;
+  }
+  let response: Response;
+  try {
+    response = await awaitWithSignal(
+      fetcher(`${apiBase}${path}`, {
+        method,
+        credentials: "omit",
+        cache: "no-store",
+        signal: requestSignal,
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }),
+      requestSignal,
+    );
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw watchlistUnavailable();
+  }
+  if (!accepted.includes(response.status)) {
+    if (response.status === 401) invalidateScoutingSession(providerKey);
+    throw watchlistHttpError(response);
+  }
+  if (response.status === 204) return parse(undefined);
+  return parse(await response.json().catch(() => null));
+};
+
 export function createGamesClient(
   bootstrap: Result<RuntimeBootstrap, RuntimeConfigError>,
   fetcher: typeof fetch = fetch,
@@ -3212,6 +3433,68 @@ export function createGamesClient(
               });
               if (versions.reportId !== reportId) throw invalidScoutReport();
               return versions;
+            },
+            async listWatchlist(signal) {
+              return watchlistRequest({
+                apiBase: bootstrap.value.config.apiBase,
+                providerKey: scoutingAuth.providerKey,
+                expectedIssuer: scoutingAuth.issuer,
+                expectedClientId: scoutingAuth.clientId,
+                fetcher,
+                method: "GET",
+                path: "/watchlist",
+                signal,
+                accepted: [200],
+                parse: parseWatchlistPage,
+              });
+            },
+            async addToWatchlist(eventId, signal) {
+              if (!isCanonicalScoutingEventId(eventId))
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The watchlist request was invalid.",
+                );
+              // The API resolves the submitted id against the event store and
+              // answers with the canonical identity it stored, which is the
+              // one the screen keys on. It is deliberately not compared to the
+              // id sent here: the store is the authority on canonical form.
+              return watchlistRequest({
+                apiBase: bootstrap.value.config.apiBase,
+                providerKey: scoutingAuth.providerKey,
+                expectedIssuer: scoutingAuth.issuer,
+                expectedClientId: scoutingAuth.clientId,
+                fetcher,
+                method: "POST",
+                path: "/watchlist",
+                signal,
+                body: { eventId },
+                accepted: [200, 201],
+                parse: parseWatchlistEntry,
+              });
+            },
+            async removeFromWatchlist(eventId, signal) {
+              if (!isCanonicalScoutingEventId(eventId))
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The watchlist request was invalid.",
+                );
+              // A removal carries no representation, so anything in the body
+              // is a response this contract does not describe.
+              await watchlistRequest({
+                apiBase: bootstrap.value.config.apiBase,
+                providerKey: scoutingAuth.providerKey,
+                expectedIssuer: scoutingAuth.issuer,
+                expectedClientId: scoutingAuth.clientId,
+                fetcher,
+                method: "DELETE",
+                path: `/watchlist/${encodeCanonicalEventPathSegment(eventId)}`,
+                signal,
+                accepted: [204],
+                parse: (value) => {
+                  if (value !== undefined) throw invalidWatchlist();
+                  return null;
+                },
+              });
             },
           }
         : {}),

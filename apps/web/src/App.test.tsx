@@ -1239,7 +1239,7 @@ describe("Shell navigation", () => {
       within(nav)
         .getAllByRole("link")
         .map((link) => link.textContent?.replace(/^[^A-Za-z]+/, "")),
-    ).toEqual(["Events", "Splits", "Scanner"]);
+    ).toEqual(["Events", "Splits", "Watchlist", "Scanner"]);
     for (const removed of [
       "Dashboard",
       "Scout Reports",
@@ -2659,5 +2659,137 @@ describe("Betting splits", () => {
     expect(
       screen.getAllByRole("img", { name: /89% handle/ }).length,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("events explorer watch toggle", () => {
+  const watchEntry = {
+    schemaVersion: "watchlist-entry-v1" as const,
+    eventId: game.id,
+    eventVersion: 1,
+    sportKey: "mlb",
+    leagueKey: "mlb",
+    startsAt: game.startsAt,
+    addedAt: "2026-07-30T12:00:00.000Z",
+  };
+
+  it("adds an event without following the row through to the event", async () => {
+    const addToWatchlist = vi.fn(() => Promise.resolve(watchEntry));
+    render(
+      <App
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist: vi.fn(() =>
+              Promise.resolve({
+                schemaVersion: "watchlist-page-v1" as const,
+                items: [],
+              }),
+            ),
+            addToWatchlist,
+            removeFromWatchlist: vi.fn(() => Promise.resolve()),
+          },
+        }}
+      />,
+    );
+
+    const toggle = await screen.findByRole("button", {
+      name: "Add Boston vs New York to watchlist",
+    });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(toggle);
+
+    // The whole row is a link; the toggle must not trigger it.
+    expect(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(addToWatchlist).toHaveBeenCalledWith(game.id, expect.anything());
+    expect(screen.queryByText("Loading game detail…")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Open Boston vs New York" }),
+    ).toBeVisible();
+  });
+
+  it("reflects already-watched state from the single watchlist query", async () => {
+    const listWatchlist = vi.fn(() =>
+      Promise.resolve({
+        schemaVersion: "watchlist-page-v1" as const,
+        items: [watchEntry],
+      }),
+    );
+    render(
+      <App
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist,
+            addToWatchlist: vi.fn(() => Promise.resolve(watchEntry)),
+            removeFromWatchlist: vi.fn(() => Promise.resolve()),
+          },
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(listWatchlist).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers sign-in rather than an error on the public explorer", async () => {
+    render(
+      <App
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist: vi.fn(() =>
+              Promise.reject(
+                new GamesClientError(
+                  "authentication",
+                  "Sign in is required to use the watchlist.",
+                ),
+              ),
+            ),
+            addToWatchlist: vi.fn(() => Promise.resolve(watchEntry)),
+            removeFromWatchlist: vi.fn(() => Promise.resolve()),
+          },
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("link", { name: "Sign in to watch" }),
+    ).toHaveAttribute("href", "/watchlist");
+  });
+
+  it("hides the control entirely when the deployment has no watchlist API", async () => {
+    render(
+      <App
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(() => Promise.resolve(page())) },
+        }}
+      />,
+    );
+
+    expect(await screen.findByLabelText("Lifecycle: scheduled")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: /watchlist/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Sign in to watch" }),
+    ).not.toBeInTheDocument();
   });
 });

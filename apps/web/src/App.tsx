@@ -5,6 +5,7 @@ import {
   createContext,
   lazy,
   type ReactElement,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -48,7 +49,12 @@ import type {
 import { sportsbookScopeKey } from "./sportsbooks";
 import { LandingPage } from "./landing-page";
 import { PublicLegalPage } from "./public-legal";
-import { type OddsHistoryDto, type RetrospectiveDto } from "./api";
+import {
+  GamesClientError,
+  type OddsHistoryDto,
+  type RetrospectiveDto,
+  type WatchlistEntryDto,
+} from "./api";
 // Off-nav screens load on demand so the landing path never parses them.
 const Dashboard = lazy(() =>
   import("./dashboard").then((module) => ({ default: module.Dashboard })),
@@ -61,6 +67,9 @@ const DataSources = lazy(() =>
 import { ScoutEventButton, ScoutingProgress } from "./scouting";
 import { ScoutReport } from "./scout-report";
 const GameDetail = lazy(() => import("./game-detail"));
+const Watchlist = lazy(() =>
+  import("./watchlist").then((module) => ({ default: module.Watchlist })),
+);
 const PerformanceDashboard = lazy(() => import("./performance"));
 const RetrospectivesList = lazy(() =>
   import("./retrospectives").then((module) => ({
@@ -231,7 +240,7 @@ function NumberField({
 }
 
 type GamesSport = "mlb" | "soccer";
-interface UiGamesPage {
+export interface UiGamesPage {
   readonly projectionState: "ready" | "uninitialized";
   readonly unavailableReason: "projection-uninitialized" | null;
   readonly snapshotAt?: string | null;
@@ -429,6 +438,11 @@ export interface UiGamesClient {
   listScoutReportVersions?: NonNullable<
     import("./api").GamesClient["listScoutReportVersions"]
   >;
+  listWatchlist?: NonNullable<import("./api").GamesClient["listWatchlist"]>;
+  addToWatchlist?: NonNullable<import("./api").GamesClient["addToWatchlist"]>;
+  removeFromWatchlist?: NonNullable<
+    import("./api").GamesClient["removeFromWatchlist"]
+  >;
 }
 export interface StrategyExperimentDto {
   readonly experimentId: string;
@@ -464,6 +478,256 @@ const defaultGamesClient: GamesClientResult = {
 };
 export const GamesClientContext =
   createContext<GamesClientResult>(defaultGamesClient);
+
+/**
+ * Availability of the watchlist in the current session. The explorer is a
+ * public screen, so "signed-out" is an ordinary state that offers sign-in
+ * rather than an error, and "unavailable" means the deployment has no
+ * watchlist API at all.
+ */
+export type WatchlistAvailability =
+  "loading" | "ready" | "signed-out" | "unavailable";
+
+export interface WatchlistControl {
+  readonly availability: WatchlistAvailability;
+  /** Ordered soonest kickoff first, exactly as the API published it. */
+  readonly entries: readonly WatchlistEntryDto[];
+  readonly unavailableReason: string | null;
+  readonly pending: ReadonlySet<string>;
+  readonly mutationError: string | null;
+  readonly isWatched: (eventId: string) => boolean;
+  readonly add: (eventId: string) => Promise<boolean>;
+  readonly remove: (eventId: string) => Promise<boolean>;
+  readonly retry: () => void;
+}
+
+type WatchlistState =
+  | { readonly kind: "loading" }
+  | {
+      readonly kind: "ready";
+      readonly entries: readonly WatchlistEntryDto[];
+      readonly loadedAt: string;
+    }
+  | { readonly kind: "signed-out" }
+  | { readonly kind: "unavailable"; readonly reason: string };
+
+const byKickoff = (
+  entries: readonly WatchlistEntryDto[],
+): readonly WatchlistEntryDto[] =>
+  [...entries].sort((left, right) =>
+    left.startsAt === right.startsAt
+      ? left.eventId.localeCompare(right.eventId)
+      : left.startsAt < right.startsAt
+        ? -1
+        : 1,
+  );
+
+const withoutEntry = (
+  entries: readonly WatchlistEntryDto[],
+  eventId: string,
+): readonly WatchlistEntryDto[] =>
+  entries.filter((entry) => entry.eventId !== eventId);
+
+/**
+ * Single source of watched state for every screen in a session: the list is
+ * fetched once and mutations are applied optimistically, so a row never claims
+ * a state the API has not been asked for. A failed mutation restores exactly
+ * what was there before and says so.
+ */
+export function useWatchlistControl(
+  client: GamesClientResult,
+): WatchlistControl {
+  const listWatchlist = client.ok ? client.value.listWatchlist : undefined;
+  const addToWatchlist = client.ok ? client.value.addToWatchlist : undefined;
+  const removeFromWatchlist = client.ok
+    ? client.value.removeFromWatchlist
+    : undefined;
+  const [state, setState] = useState<WatchlistState>(() =>
+    listWatchlist
+      ? { kind: "loading" }
+      : {
+          kind: "unavailable",
+          reason: "The watchlist is unavailable in this environment.",
+        },
+  );
+  const [pending, setPending] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [generation, setGeneration] = useState(0);
+  // Mutations outlive the effect that started them, so they share one
+  // controller that is aborted when the screen goes away.
+  const mutations = useRef<AbortController | null>(null);
+  const entries = useRef<readonly WatchlistEntryDto[]>([]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    mutations.current = controller;
+    return () => {
+      controller.abort();
+      mutations.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    entries.current = state.kind === "ready" ? state.entries : [];
+  }, [state]);
+
+  useEffect(() => {
+    if (!listWatchlist) return;
+    const controller = new AbortController();
+    listWatchlist(controller.signal)
+      .then((page) => {
+        if (controller.signal.aborted) return;
+        setState({
+          kind: "ready",
+          entries: page.items,
+          loadedAt: new Date().toISOString(),
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        const code = error instanceof GamesClientError ? error.code : null;
+        if (code === "authentication" || code === "forbidden") {
+          setState({ kind: "signed-out" });
+          return;
+        }
+        setState({
+          kind: "unavailable",
+          reason:
+            code === "invalid-response"
+              ? "The watchlist did not match its published contract, so none of it is shown."
+              : "The watchlist is temporarily unavailable.",
+        });
+      });
+    return () => controller.abort();
+  }, [generation, listWatchlist]);
+
+  const markPending = useCallback((eventId: string, active: boolean) => {
+    setPending((current) => {
+      const next = new Set(current);
+      if (active) next.add(eventId);
+      else next.delete(eventId);
+      return next;
+    });
+  }, []);
+
+  const add = useCallback(
+    async (eventId: string): Promise<boolean> => {
+      const signal = mutations.current?.signal;
+      if (!addToWatchlist || !signal) return false;
+      markPending(eventId, true);
+      setMutationError(null);
+      try {
+        const entry = await addToWatchlist(eventId, signal);
+        setState((current) =>
+          current.kind === "ready"
+            ? {
+                ...current,
+                entries: byKickoff([
+                  ...withoutEntry(current.entries, entry.eventId),
+                  entry,
+                ]),
+              }
+            : current,
+        );
+        return true;
+      } catch (error: unknown) {
+        if (signal.aborted) return false;
+        const code = error instanceof GamesClientError ? error.code : null;
+        setMutationError(
+          code === "authentication" || code === "forbidden"
+            ? "Sign in is required to use the watchlist."
+            : code === "not-found"
+              ? "That event is no longer available, so it was not watched."
+              : "That event could not be added to the watchlist.",
+        );
+        return false;
+      } finally {
+        markPending(eventId, false);
+      }
+    },
+    [addToWatchlist, markPending],
+  );
+
+  const remove = useCallback(
+    async (eventId: string): Promise<boolean> => {
+      const signal = mutations.current?.signal;
+      if (!removeFromWatchlist || !signal) return false;
+      const removed = entries.current.find(
+        (entry) => entry.eventId === eventId,
+      );
+      markPending(eventId, true);
+      setMutationError(null);
+      setState((current) =>
+        current.kind === "ready"
+          ? { ...current, entries: withoutEntry(current.entries, eventId) }
+          : current,
+      );
+      try {
+        await removeFromWatchlist(eventId, signal);
+        return true;
+      } catch (error: unknown) {
+        if (signal.aborted) return false;
+        // The row goes back exactly where it was; nothing was removed.
+        if (removed)
+          setState((current) =>
+            current.kind === "ready"
+              ? {
+                  ...current,
+                  entries: byKickoff([
+                    ...withoutEntry(current.entries, eventId),
+                    removed,
+                  ]),
+                }
+              : current,
+          );
+        const code = error instanceof GamesClientError ? error.code : null;
+        setMutationError(
+          code === "authentication" || code === "forbidden"
+            ? "Sign in is required to use the watchlist."
+            : "That event could not be removed from the watchlist.",
+        );
+        return false;
+      } finally {
+        markPending(eventId, false);
+      }
+    },
+    [markPending, removeFromWatchlist],
+  );
+
+  const watched = useMemo(
+    () =>
+      new Set(
+        state.kind === "ready"
+          ? state.entries.map((entry) => entry.eventId)
+          : [],
+      ),
+    [state],
+  );
+
+  const retry = useCallback(() => {
+    setState({ kind: "loading" });
+    setGeneration((value) => value + 1);
+  }, []);
+
+  return {
+    availability:
+      state.kind === "ready"
+        ? "ready"
+        : state.kind === "loading"
+          ? "loading"
+          : state.kind,
+    entries: state.kind === "ready" ? state.entries : [],
+    unavailableReason: state.kind === "unavailable" ? state.reason : null,
+    pending,
+    mutationError,
+    isWatched: (eventId: string) => watched.has(eventId),
+    add,
+    remove,
+    retry,
+  };
+}
 
 function GlassNav({
   eventsSearch,
@@ -513,6 +777,17 @@ function GlassNav({
           ▦
         </span>
         <span className="glass-label">Splits</span>
+      </Link>
+      <Link
+        to="/watchlist"
+        className="glass-tab"
+        activeProps={{ className: "glass-tab active" }}
+        activeOptions={{ includeSearch: false }}
+      >
+        <span className="glass-icon" aria-hidden="true">
+          ★
+        </span>
+        <span className="glass-label">Watchlist</span>
       </Link>
       <Link
         to="/dashboard"
@@ -619,6 +894,19 @@ function AppShell() {
             </span>
             <span className={navCollapsed ? "sr-only" : "nav-label"}>
               Splits
+            </span>
+          </Link>
+          <Link
+            to="/watchlist"
+            activeProps={{ className: "active" }}
+            activeOptions={{ includeSearch: false }}
+            title="Watchlist"
+          >
+            <span className="nav-icon" aria-hidden="true">
+              ★
+            </span>
+            <span className={navCollapsed ? "sr-only" : "nav-label"}>
+              Watchlist
             </span>
           </Link>
           <Link
@@ -944,7 +1232,7 @@ export const easternDisplay = (value: string) =>
     timeStyle: "short",
   });
 
-const currentEasternDay = (now = new Date()) =>
+export const currentEasternDay = (now = new Date()) =>
   new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/New_York",
     year: "numeric",
@@ -968,7 +1256,7 @@ const gamesShortDay = (day: string) =>
     month: "short",
     day: "numeric",
   }).format(new Date(`${day}T12:00:00-05:00`));
-const kickoffDisplay = (instant: string) => {
+export const kickoffDisplay = (instant: string) => {
   const at = new Date(instant);
   const day = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
@@ -985,6 +1273,8 @@ const kickoffDisplay = (instant: string) => {
 
 function GamesExplorer() {
   const client = useContext(GamesClientContext);
+  // One watchlist query serves every row on the board.
+  const watchlist = useWatchlistControl(client);
   const search = useSearch({ from: "/events" });
   const navigate = useNavigate({ from: "/events" });
   const { sport, day, status, competition, query, sort, direction } = search;
@@ -1337,6 +1627,7 @@ function GamesExplorer() {
                     game={game}
                     explorerSearch={search}
                     snapshotAt={state.page.snapshotAt}
+                    watchlist={watchlist}
                   />
                 ))}
               </table>
@@ -1352,6 +1643,7 @@ function GamesExplorer() {
                   key={game.id}
                   game={game}
                   explorerSearch={search}
+                  watchlist={watchlist}
                 />
               ))}
             </section>
@@ -1461,14 +1753,67 @@ function FairCell({
   );
 }
 
+/**
+ * Watch toggle for a board row. The explorer is public, so a session that has
+ * no watchlist offers sign-in instead of failing, and a deployment without the
+ * watchlist API shows no control at all. The row itself is clickable, so every
+ * interaction here stops before the row's own handlers see it.
+ */
+function WatchToggle({
+  eventId,
+  matchup,
+  watchlist,
+}: {
+  readonly eventId: string;
+  readonly matchup: string;
+  readonly watchlist: WatchlistControl;
+}) {
+  if (watchlist.availability === "unavailable") return null;
+  if (watchlist.availability === "signed-out")
+    return (
+      <Link
+        to="/watchlist"
+        className="evb-watch"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        Sign in to watch
+      </Link>
+    );
+  const watched = watchlist.isWatched(eventId);
+  const busy = watchlist.pending.has(eventId);
+  return (
+    <button
+      type="button"
+      className={`evb-watch${watched ? " watching" : ""}`}
+      aria-pressed={watched}
+      disabled={busy || watchlist.availability === "loading"}
+      aria-label={`${watched ? "Remove" : "Add"} ${matchup} ${
+        watched ? "from" : "to"
+      } watchlist`}
+      onClick={(event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        void (watched ? watchlist.remove(eventId) : watchlist.add(eventId));
+      }}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <span aria-hidden="true">{watched ? "★" : "☆"}</span>{" "}
+      {watched ? "Watching" : "Watch"}
+    </button>
+  );
+}
+
 function EventGameBlock({
   game,
   explorerSearch,
   snapshotAt,
+  watchlist,
 }: {
   readonly game: UiGamesPage["items"][number];
   readonly explorerSearch: ExplorerSearch;
   readonly snapshotAt: string | null | undefined;
+  readonly watchlist: WatchlistControl;
 }) {
   const navigate = useNavigate();
   const prices = game.odds.state === "available" ? game.odds.selections : [];
@@ -1631,7 +1976,11 @@ function EventGameBlock({
               // schedule evidence, which legitimately idles for hours on an
               // unchanged listing while prices refresh every minute — it
               // must never contradict a fresh odds age here.
-              const oddsStale = oddsAgeMinutes !== null && oddsAgeMinutes > 15;
+              // Age is the time since this price last MOVED, not since we
+              // last polled, so a quiet market is not a broken one. The
+              // threshold matches the served freshness window used by the
+              // detail cells and the board alarm.
+              const oddsStale = oddsAgeMinutes !== null && oddsAgeMinutes > 120;
               return oddsAgeMinutes !== null ? (
                 <span className={`evb-age${oddsStale ? " stale" : ""}`}>
                   · odds {oddsAgeMinutes}m old
@@ -1639,6 +1988,11 @@ function EventGameBlock({
                 </span>
               ) : null;
             })()}
+            <WatchToggle
+              eventId={game.id}
+              matchup={eventMatchupLabel(game)}
+              watchlist={watchlist}
+            />
           </div>
         </td>
       </tr>
@@ -1649,9 +2003,11 @@ function EventGameBlock({
 function EventExplorerCard({
   game,
   explorerSearch,
+  watchlist,
 }: {
   readonly game: UiGamesPage["items"][number];
   readonly explorerSearch: ExplorerSearch;
+  readonly watchlist: WatchlistControl;
 }) {
   const client = useContext(GamesClientContext);
   const prices = game.odds.state === "available" ? game.odds.selections : [];
@@ -1691,14 +2047,11 @@ function EventExplorerCard({
           disabledReason={`Scouting is available only for scheduled events. This event is ${game.status}.`}
           client={client}
         />
-        <span className="disabled-action">
-          <button disabled aria-describedby={`card-watch-${game.id}`}>
-            Watchlist
-          </button>
-          <small id={`card-watch-${game.id}`}>
-            Unavailable: Watchlist API is not built yet.
-          </small>
-        </span>
+        <WatchToggle
+          eventId={game.id}
+          matchup={eventMatchupLabel(game)}
+          watchlist={watchlist}
+        />
       </div>
     </article>
   );
@@ -2653,6 +3006,18 @@ const splitsRoute = createRoute({
   path: "/splits",
   component: SplitsExplorer,
 });
+function WatchlistRoute() {
+  return (
+    <Suspense fallback={<p role="status">Loading watchlist…</p>}>
+      <Watchlist client={useContext(GamesClientContext)} />
+    </Suspense>
+  );
+}
+const watchlistRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/watchlist",
+  component: WatchlistRoute,
+});
 const performanceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/performance",
@@ -2814,6 +3179,7 @@ const routeTree = rootRoute.addChildren([
   scoutingProgressRoute,
   scoutReportRoute,
   splitsRoute,
+  watchlistRoute,
   performanceRoute,
   dataSourcesRoute,
   retrospectivesRoute,

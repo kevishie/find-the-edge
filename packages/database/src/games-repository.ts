@@ -3,6 +3,7 @@ import {
   gamePassesMlbParticipantBoundary,
   fixtureOddsPartition,
   participantSelectionKey,
+  selectionsShareObservationWindow,
   type GameDisplayDto,
   type GameOddsComparisonDto,
   type GameOddsCellDto,
@@ -802,15 +803,7 @@ export class JoinedGamesRepository implements GamesRepository {
             continue;
           }
           const market = merged as NonNullable<(typeof merged)[number]>[];
-          const first = market[0]!;
-          if (
-            !market.every(
-              (selection) =>
-                selection.sportsbookId === first.sportsbookId &&
-                selection.observedAt === first.observedAt &&
-                selection.retrievedAt === first.retrievedAt,
-            )
-          ) {
+          if (!selectionsShareObservationWindow(market)) {
             if (specification.required) return null;
             continue;
           }
@@ -818,13 +811,10 @@ export class JoinedGamesRepository implements GamesRepository {
           selections.push(...market);
         }
         if (!requiredAvailable) return null;
-        const first = selections[0]!;
-        return selections.filter(
-          (selection) =>
-            selection.sportsbookId === first.sportsbookId &&
-            selection.observedAt === first.observedAt &&
-            selection.retrievedAt === first.retrievedAt,
-        );
+        // Every market that survived above already shares one book and one
+        // observation window; a market whose prices drifted outside it was
+        // dropped rather than trimmed, so nothing further needs filtering.
+        return selections;
       });
       const selected = candidates.find(
         (candidate): candidate is GameOddsSelectionDto[] =>

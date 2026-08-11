@@ -6461,8 +6461,13 @@ footer {
   .glass-nav.condensed .glass-label {
     opacity: 0;
   }
+  /* Four tabs share the bar. Each keeps the 68px handoff width until the
+     viewport is too narrow for all of them, then they share the row evenly
+     instead of overflowing it. */
   .glass-tab {
-    width: 68px;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 68px;
     height: 46px;
     display: flex;
     flex-direction: column;
@@ -6517,4 +6522,198 @@ footer {
   main {
     padding-bottom: 110px;
   }
+}
+
+/* Watchlist (FTE-046). Mobile-first: rows are stacked cards that widen into a
+   grid of evidence cells once there is room for it. */
+.watchlist {
+  display: block;
+}
+.watchlist-header h1 {
+  margin: 4px 0 6px;
+}
+.watchlist-header .lede {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.watchlist-state {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  background: #0e0d13;
+}
+.watchlist-state.error {
+  border-color: #7f1d1d;
+}
+.watchlist-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.watchlist-empty {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 24px 16px;
+  background: #0e0d13;
+  text-align: center;
+}
+.watchlist-empty h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+.watchlist-empty p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.watchlist-error {
+  margin: 12px 0 0;
+  border: 1px solid #7f1d1d;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(127, 29, 29, 0.18);
+  color: #fca5a5;
+  font: 11px var(--mono);
+}
+.watchlist-undo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #131120;
+  font: 11px var(--mono);
+}
+.watchlist-undo button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 10px;
+  color: #c4b5fd;
+  font: inherit;
+  cursor: pointer;
+}
+.watchlist-undo button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.watchlist-rows {
+  list-style: none;
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 0;
+  padding: 0;
+}
+.watchlist-row {
+  border: 1px solid #201e29;
+  border-radius: 12px;
+  padding: 14px;
+  background: #0e0d13;
+}
+.watchlist-row-head h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.watchlist-kickoff {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font: 11px var(--mono);
+}
+.watchlist-cells {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+}
+.watchlist-cells > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.watchlist-cells dt {
+  color: var(--muted);
+  font: 600 9px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.watchlist-cells dd {
+  margin: 0;
+  font: 11px var(--mono);
+}
+.watchlist-unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.watchlist-unavailable strong {
+  color: #fbbf24;
+  font-weight: 600;
+}
+.watchlist-unavailable small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+.watchlist-stale {
+  color: #f87171;
+}
+.watchlist-pending {
+  color: var(--muted);
+}
+.watchlist-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+.watchlist-row-actions .detail-link {
+  margin-top: 0;
+}
+.watchlist-row-actions button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 12px;
+  color: #f3f1f8;
+  font: 11px var(--mono);
+  cursor: pointer;
+}
+.watchlist-row-actions button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+@media (min-width: 720px) {
+  .watchlist-cells {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+}
+
+/* Watch toggle shared by the events table rows and the mobile cards. */
+.evb-watch {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  color: #c4b5fd;
+  font: 600 10px var(--mono);
+  text-decoration: none;
+  cursor: pointer;
+}
+.evb-watch.watching {
+  border-color: #a855f7;
+  color: #e9d8ff;
+  background: rgba(168, 85, 247, 0.16);
+}
+.evb-watch:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.event-explorer-card .evb-watch {
+  margin-left: 0;
 }
