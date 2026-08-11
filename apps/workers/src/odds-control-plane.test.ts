@@ -529,6 +529,101 @@ describe("odds collection control plane", () => {
   );
   it.each([
     {
+      name: "abandons an aged run with no committed evidence",
+      aged: true,
+      committed: false,
+      resumes: false,
+    },
+    {
+      name: "keeps an aged run that already committed evidence",
+      aged: true,
+      committed: true,
+      resumes: true,
+    },
+    // A young run is left to the existing rules, which already restart an
+    // expired provider cursor on their own; the ceiling decides only the two
+    // aged cases above.
+  ])("age ceiling: $name", async ({ aged, committed, resumes }) => {
+    // SharpAPI is the only odds provider, so a retryable failure keeps the
+    // continuation and every later pass resumes the same runId. MLS sat on
+    // one run for ten hours with an empty board and green provider health.
+    // The ceiling breaks that — except where evidence is already committed,
+    // because re-walking those pages would commit the same evidence twice.
+    const store = new MemoryOddsControlPlaneStore();
+    const startedAt = new Date(now.getTime() - (aged ? 90 : 5) * 60_000);
+    const staleRunId = `${policy.leagueKey}:sharpapi:${startedAt.toISOString()}`;
+    await store.putRun({
+      runId: staleRunId,
+      leagueKey: policy.leagueKey,
+      providerId: "sharpapi",
+      policyVersion: "test",
+      status: "failed",
+      startedAt: startedAt.toISOString(),
+      updatedAt: startedAt.toISOString(),
+      failureReason: "provider-rejected",
+      evidenceCommitted: committed,
+      quotaCost: 7,
+    });
+    await store.claimContinuation({
+      leagueKey: policy.leagueKey,
+      runId: staleRunId,
+      providerId: "sharpapi",
+      updatedAt: startedAt.toISOString(),
+      startedAt: startedAt.toISOString(),
+      capability: "odds",
+      evidenceCommitted: committed,
+      quotaCost: 7,
+      ownerId: "finished-worker",
+      leaseUntil: startedAt.toISOString(),
+    });
+    await store.sealPage({
+      runId: staleRunId,
+      pageToken: "start",
+      nextPageToken: "wedged-cursor",
+      responseDigest: "committed-page",
+      normalizedItems: [],
+      gaps: [],
+      quotaCost: 1,
+      sealedAt: startedAt.toISOString(),
+      committedAt: startedAt.toISOString(),
+    });
+    const fetchPage = vi
+      .fn()
+      .mockResolvedValue({ items: [], gaps: [], quotaCost: 1, digest: "d" });
+
+    await runOddsLeague({
+      policy,
+      store,
+      providers: new Map([
+        [
+          "sharpapi",
+          {
+            ...provider("sharpapi", fetchPage),
+            restartTerminalCursorRun: true,
+          },
+        ],
+      ]),
+      committer: { commit: vi.fn() },
+      now,
+      clock: () => now,
+      forceRefresh: true,
+    });
+
+    const wedged = () =>
+      expect.objectContaining({ pageToken: "wedged-cursor" }) as unknown;
+    if (resumes) expect(fetchPage).toHaveBeenCalledWith(wedged());
+    else {
+      // A fresh run walking from the beginning, with the quota ratchet reset:
+      // a carried-over cost would starve the league the restart just freed.
+      expect(fetchPage).not.toHaveBeenCalledWith(wedged());
+      expect(fetchPage).toHaveBeenCalledWith(
+        expect.objectContaining({ pageToken: "start" }),
+      );
+    }
+  });
+
+  it.each([
+    {
       name: "durable committed evidence",
       runCommitted: true,
       pageIntent: false,

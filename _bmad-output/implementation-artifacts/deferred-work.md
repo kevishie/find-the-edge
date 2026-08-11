@@ -96,6 +96,29 @@ the board-freshness alarm. Next: prod cutover (FTE-059, approval-gated),
 bet tracker (makes CLV personal), persist-path version re-resolution,
 middles, backlog FTE-044..058.
 
+## The live-projection fallback serves unfiltered boards (found 2026-08-11)
+
+`withoutWithdrawnListings` runs only during board materialization. The API
+serves a stored board when the request key matches a materialized one
+(route, sport, league, status, day, limit) and otherwise falls through to
+the live projection — which applies no withdrawn-listing filter at all.
+
+So the same question gets two different answers depending on a cache hit.
+A request missing `league`, or carrying a non-materialized limit, day, or
+cursor, is served ghost listings that the stored board correctly drops.
+Verified live: `sport=mlb&status=all&day=2026-08-11&limit=50` returned 19
+items including four bogus 06:50Z rows, while the full key returned 15 with
+none. The web app happens to always send the full key, so the UI is correct
+today — the gap is one query-string change away from being user-visible.
+
+This also cost real diagnosis time: a malformed verification query looked
+exactly like a broken filter, and sent me chasing a bug that was not there.
+
+Fix direction: apply the filter on the live-projection path too, so the
+answer does not depend on which path served it. The schedule sweep is a
+provider call, which is why it lives in the worker; the serve path would
+need a cached or persisted listing set rather than its own sweep.
+
 ## Write cost is control-plane run bookkeeping, not odds data (measured 2026-08-11)
 
 Two wrong hypotheses, then a measurement. DynamoDB Contributor Insights on

@@ -211,6 +211,13 @@ export function deduplicateProviderBookEvidence<
   return [...selected.values()];
 }
 
+/**
+ * How long one odds run may stay resumable. Long enough that a healthy
+ * multi-page walk is never cut short, short enough that a wedged run cannot
+ * hold a league's board hostage for hours. Matches the splits ceiling.
+ */
+export const ODDS_RUN_MAX_AGE_MS = 45 * 60_000;
+
 const iso = (d: Date) => d.toISOString();
 const attemptLeaseUntil = (d: Date) =>
   new Date(d.getTime() + 5 * 60_000).toISOString();
@@ -558,6 +565,12 @@ export async function runOddsLeague(input: {
     };
   }
   let continuation = await store.getContinuation(policy.leagueKey);
+  // Whether this run has already put evidence beyond recall — either the run
+  // row says so, or the page scan below finds an intent marker and promotes
+  // it. The age ceiling at the claim reads this and refuses to abandon such a
+  // run: restarting one would re-walk pages whose evidence is already
+  // committed, and no staleness is worth committing evidence twice.
+  let continuationEvidenceCommitted = false;
   if (continuation) {
     let durableRun = await store.getRun(continuation.runId);
     let sealedFirstPage: Awaited<ReturnType<typeof store.getPage>> = null;
@@ -580,6 +593,7 @@ export async function runOddsLeague(input: {
         await store.putRun(durableRun);
       }
     }
+    continuationEvidenceCommitted = durableRun?.evidenceCommitted === true;
     sealedFirstPage ??= await store.getPage(continuation.runId, "start");
     const explicitLeaseUntil = Date.parse(continuation.leaseUntil ?? "");
     const continuationUpdatedAt = Date.parse(continuation.updatedAt);
@@ -928,18 +942,51 @@ export async function runOddsLeague(input: {
       continue;
     }
     const claimNow = clock();
+    // SharpAPI is the only odds provider, so a retryable failure keeps the
+    // continuation rather than moving on — and every later pass then resumes
+    // the SAME runId, replaying whatever wedged it while the quota ratchet
+    // climbs. MLS sat on one run for ten hours this way, its board empty and
+    // its provider health green, which is precisely the shape that blanked
+    // the splits board on 2026-08-10.
+    //
+    // The splits path already solved this with an age ceiling; odds had none.
+    // Abandoning costs the page cursor, which is the point: the cursor is the
+    // poison. Committed evidence is durable in its sealed pages, so a fresh
+    // run re-walks from page one idempotently. The quota resets with it, or a
+    // ratcheted cost would starve the league it just freed.
+    const runPrefix = `${policy.leagueKey}:${candidate.providerId}:`;
+    const encodedRunStart = continuation?.runId?.startsWith(runPrefix)
+      ? Date.parse(continuation.runId.slice(runPrefix.length))
+      : Number.NaN;
+    const staleRun =
+      continuation?.runId !== undefined &&
+      !continuationEvidenceCommitted &&
+      continuation.evidenceCommitted !== true &&
+      (!Number.isFinite(encodedRunStart) ||
+        claimNow.getTime() - encodedRunStart > ODDS_RUN_MAX_AGE_MS);
+    if (staleRun)
+      input.metrics?.emit("OddsRunAbandoned", 1, {
+        league: policy.leagueKey,
+        provider: candidate.providerId,
+      });
     const owner = await store.claimContinuation({
       ...continuation,
       leagueKey: policy.leagueKey,
       runId:
-        continuation?.runId ??
-        `${policy.leagueKey}:${candidate.providerId}:${now.toISOString()}`,
+        continuation?.runId && !staleRun
+          ? continuation.runId
+          : `${runPrefix}${now.toISOString()}`,
       providerId: candidate.providerId,
       updatedAt: iso(claimNow),
-      startedAt: continuation?.startedAt ?? iso(claimNow),
+      startedAt: staleRun
+        ? iso(claimNow)
+        : (continuation?.startedAt ?? iso(claimNow)),
       capability: "odds",
-      evidenceCommitted: continuation?.evidenceCommitted ?? false,
-      quotaCost: continuation?.quotaCost ?? 0,
+      ...(staleRun ? { pageToken: undefined } : {}),
+      evidenceCommitted: staleRun
+        ? false
+        : (continuation?.evidenceCommitted ?? false),
+      quotaCost: staleRun ? 0 : (continuation?.quotaCost ?? 0),
       ownerId,
       leaseUntil: attemptLeaseUntil(claimNow),
     });
@@ -956,7 +1003,7 @@ export async function runOddsLeague(input: {
     const runId = owner.runId;
     const durableRun = await store.getRun(runId);
     let run: OddsRunRecord = {
-      ...((await store.getRun(runId)) ?? {}),
+      ...(durableRun ?? {}),
       runId,
       leagueKey: policy.leagueKey,
       providerId: candidate.providerId,
