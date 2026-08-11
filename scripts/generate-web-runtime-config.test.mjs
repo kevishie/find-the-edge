@@ -66,7 +66,7 @@ test("creates an exact selective-auth non-secret artifact", () => {
   assert.doesNotMatch(artifact, /password|bearer|clientSecret|accessToken/i);
 });
 
-test("production HTML installs the lazy provider after config and before the module", async () => {
+test("production HTML loads config before the module and ships no hosted-UI provider", async () => {
   const html = await readFile(
     new URL("../apps/web/index.html", import.meta.url),
     "utf8",
@@ -74,14 +74,10 @@ test("production HTML installs the lazy provider after config and before the mod
   assert.ok(
     html.indexOf('src="/runtime-config.js"') < html.indexOf('type="module"'),
   );
-  assert.ok(
-    html.indexOf('src="/runtime-config.js"') <
-      html.indexOf('src="/cognito-token-provider.js"'),
-  );
-  assert.ok(
-    html.indexOf('src="/cognito-token-provider.js"') <
-      html.indexOf('type="module"'),
-  );
+  // No third-party login script may ship: a public page must never navigate a
+  // visitor to a hosted sign-in.
+  assert.equal(html.includes("cognito-token-provider"), false);
+  assert.equal(html.includes("amazoncognito.com"), false);
 });
 
 test("rejects unsafe URLs and unexpected arguments", async () => {

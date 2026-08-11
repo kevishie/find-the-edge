@@ -9,18 +9,22 @@ import {
   assertSafeBundleOutput,
 } from "./build-phase1-web.mjs";
 
-test("requires config then lazy provider before the application module", () => {
+test("requires runtime config before the module and no hosted-UI provider", () => {
   assert.doesNotThrow(() =>
     assertRuntimeScriptOrder(
-      '<script src="/runtime-config.js"></script><script src="/cognito-token-provider.js"></script><script type="module"></script>',
+      '<script src="/runtime-config.js"></script><script type="module"></script>',
     ),
   );
   for (const html of [
-    '<script src="/runtime-config.js"></script><script type="module"></script>',
-    '<script src="/cognito-token-provider.js"></script><script src="/runtime-config.js"></script><script type="module"></script>',
-    '<script src="/runtime-config.js"></script><script type="module"></script><script src="/cognito-token-provider.js"></script>',
+    // Module before config.
+    '<script type="module"></script><script src="/runtime-config.js"></script>',
+    // Config missing entirely.
+    '<script type="module"></script>',
+    // A hosted-UI provider must never be reintroduced: it navigates the
+    // visitor away from a public page to a third-party login.
+    '<script src="/runtime-config.js"></script><script src="/cognito-token-provider.js"></script><script type="module"></script>',
   ])
-    assert.throws(() => assertRuntimeScriptOrder(html), /lazy authentication/);
+    assert.throws(() => assertRuntimeScriptOrder(html));
 });
 
 test("allows only the dedicated real generated bundle subtree", async (t) => {

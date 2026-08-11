@@ -53,17 +53,17 @@ export async function assertSafeBundleOutput(root, output) {
 
 export function assertRuntimeScriptOrder(html) {
   const runtimeIndex = html.indexOf('src="/runtime-config.js"');
-  const providerIndex = html.indexOf('src="/cognito-token-provider.js"');
   const moduleIndex = html.indexOf('type="module"');
+  // The hosted-UI token provider is gone: the app never redirects a visitor to
+  // a third-party login. Runtime config still has to land before the module.
   if (
     runtimeIndex < 0 ||
-    providerIndex < 0 ||
     moduleIndex < 0 ||
-    runtimeIndex > providerIndex ||
-    providerIndex > moduleIndex
+    runtimeIndex > moduleIndex ||
+    html.includes("cognito-token-provider")
   )
     throw new Error(
-      "runtime config and lazy authentication provider must load before the application module",
+      "runtime config must load before the application module, and no hosted-UI provider may be injected",
     );
 }
 
