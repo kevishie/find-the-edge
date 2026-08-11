@@ -70,6 +70,19 @@ test.beforeEach(async ({ page }) => {
     sessionStorage.removeItem("fte.oauth.session");
     sessionStorage.removeItem("fte.oauth.state");
     sessionStorage.removeItem("fte.oauth.verifier");
+    // Product routes require a session. This is a well-formed fixture, not a
+    // credential: the client guard asks only whether a live session exists,
+    // and the hosted API does not yet enforce entitlement. When enforcement
+    // is turned on, this smoke needs a real test account and these two data
+    // tests will fail loudly rather than silently pass — which is the point.
+    localStorage.setItem(
+      "fte.session.v1",
+      JSON.stringify({
+        token: `fte1.${"payload".padEnd(40, "x")}.${"a".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"b".repeat(64)}`,
+      }),
+    );
   });
   await page.goto("/events");
   // The explorer fills its default search parameters, so the path is a prefix.
@@ -142,18 +155,24 @@ test("hosted event drill-in resolves a provider game through the gateway", async
   ).toBeVisible({ timeout: 20_000 });
 });
 
-test("anonymous session survives reload without Cognito state or redirects", async ({
+test("a signed-out visitor reaches our own form, never a hosted login", async ({
   page,
-  request,
+  context,
 }) => {
-  const mlb = await findProviderGame(request, "mlb", true);
-  test.skip(mlb === null, "no provider-backed MLB evidence is ingested yet");
-  await page.getByLabel("Eastern calendar day").fill(mlb!.day);
-  await page.reload();
-  await expect(page.locator("[data-event-id]").first()).toBeVisible();
-  // The property under test is that browsing anonymously stores no OAuth
-  // material. An environment with Cognito configured still installs a logout
-  // helper, which says nothing about whether a session exists.
+  // The product is no longer browsable anonymously. What this proves on the
+  // real hosted bundle is where a signed-out visitor ends up: our own route,
+  // on our own origin, with no OAuth material stored on the way.
+  await context.clearCookies();
+  await page.addInitScript(() => {
+    localStorage.removeItem("fte.session.v1");
+  });
+  await page.goto("/splits");
+
+  await page.waitForURL(/\/login(\?|$)/, { timeout: 20_000 });
+  expect(new URL(page.url()).origin).toBe(expectedWebOrigin);
+  // The destination survived the trip, so signing in resumes the journey.
+  expect(new URL(page.url()).searchParams.get("returnUrl")).toBe("/splits");
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   expect(
     await page.evaluate(() => ({
       session: sessionStorage.getItem("fte.oauth.session"),
@@ -161,5 +180,4 @@ test("anonymous session survives reload without Cognito state or redirects", asy
       verifier: sessionStorage.getItem("fte.oauth.verifier"),
     })),
   ).toEqual({ session: null, state: null, verifier: null });
-  expect(new URL(page.url()).origin).toBe(expectedWebOrigin);
 });
