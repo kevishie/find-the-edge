@@ -114,15 +114,35 @@ Cleared operationally by deleting `ODDS_CONTROL#CONTINUATION#mls` and
 `ODDS_CONTROL#HEALTH#sharpapi:mls:odds` — the same remediation as
 2026-08-10 — after which MLS went healthy within one pass.
 
-NOT fixed in code, deliberately. Loosening the gate to respect the expiry
-was tried and reverted: it breaks "fences ambiguous transport and blocks
-fallback or paid recall", which exists so a paid request of unknown outcome
-is never blindly reissued. That test is right. The real fix is to make
-reconciliation reachable for a league continuation whose ambiguity window
-has lapsed — a probe that resolves the outcome, not a gate that ignores it.
-Until then this can re-latch on any ambiguous transport error, and the new
-run already carries `evidenceCommitted: true`, which puts it outside the
-age ceiling's reach.
+FIXED 2026-08-12 with an absolute ceiling, and one earlier claim here was
+wrong. I first said loosening the gate breaks "fences ambiguous transport
+and blocks fallback or paid recall". Re-tracing showed that is not what
+that test protects: the providers in it have no `probe`, so the
+unhealthy-health branch independently blocks any recall. Only the failure
+STRING would have changed. The paid-recall invariant was never at risk.
+
+What ships: after 45 minutes of unresolved ambiguity the league row is
+claimed (its lease provably lapsed — ambiguity and lease are both
+five-minute windows and the lease was renewed first) and cleared, exactly
+as the operator did by hand. The pass still returns skipped; the NEXT pass
+starts a fresh run. A recall is then accounted rather than blind: the
+reserved cost was never refunded and the next response's quotaRemaining
+overwrites local with provider truth.
+
+Evidence beyond recall is checked against the PAGE ledger, not the
+continuation's own flag — the ambiguous write sets that flag from a local
+variable, which is precisely what put MLS beyond the reach of the age
+ceiling that already existed.
+
+The probe row latched identically, and was left latched on 2026-08-11
+because only the league and health rows were deleted. It now gets the same
+ceiling; without that the fix would merely have relocated the wedge to the
+path that resolves ambiguity.
+
+Still open: the same presence-check gate exists on the schedule path
+(`production-odds-control-plane.ts` ~1366), and `unhealthyOddsProviderState`
+writes no `expiresAt` for `class: "ambiguous"`, which is why the health row
+also had to be deleted by hand.
 
 **2. Leagues Cup odds are published under a league we do not ingest.**
 Even with MLS healthy, the seven soccer fixtures stayed priceless. They are

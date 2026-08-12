@@ -45,6 +45,26 @@ const putContinuationCas = async (
   throw new Error("continuation-transition-conflict");
 };
 
+/**
+ * Whether any page of this run carries an evidence-intent marker, read from
+ * the durable page ledger rather than from the run row's self-reported flag.
+ * The ambiguous write sets that flag from a local variable, so trusting it
+ * would tell us evidence was committed when nothing was.
+ */
+const sealedEvidenceIntent = async (
+  store: OddsControlPlaneStore,
+  runId: string,
+): Promise<boolean> => {
+  let token: string | undefined = "start";
+  for (let guard = 0; token && guard < 100; guard += 1) {
+    const page = await store.getPage(runId, token);
+    if (!page) return false;
+    if (page.evidenceIntentAt !== undefined) return true;
+    token = page.nextPageToken;
+  }
+  return false;
+};
+
 const clearOwnedContinuation = async (
   store: OddsControlPlaneStore,
   leagueKey: string,
@@ -217,6 +237,14 @@ export function deduplicateProviderBookEvidence<
  * hold a league's board hostage for hours. Matches the splits ceiling.
  */
 export const ODDS_RUN_MAX_AGE_MS = 45 * 60_000;
+
+/**
+ * How long a league may stay fenced by an unresolved ambiguous request.
+ * Generous: the fence is correct and a recall is genuinely unsafe while the
+ * outcome is unknown. But a fence with no exit is an outage, and eleven hours
+ * of a priceless board is worse than one accounted re-request.
+ */
+export const ODDS_AMBIGUITY_MAX_AGE_MS = 45 * 60_000;
 
 const iso = (d: Date) => d.toISOString();
 const attemptLeaseUntil = (d: Date) =>
@@ -643,19 +671,68 @@ export async function runOddsLeague(input: {
       continuation = null;
     }
   }
-  // NOTE: this tests that the field EXISTS, not that its window is still
-  // open, and nothing clears it if the owning worker never returns —
-  // putContinuationCas carries it forward on every write. MLS latched on a
-  // window that expired at 11:25 on 2026-08-11 and answered
-  // "provider-request-ambiguous" on every pass for the next eleven hours,
-  // with games on the board and not one price.
+  // An ambiguous paid request has an unknown provider-side outcome, so the
+  // league is fenced until it is resolved: it must never be blindly reissued.
+  // But the fence had no exit. This tests that the field EXISTS, not that its
+  // window is still open, and nothing clears it — putContinuationCas carries
+  // it forward on every write. MLS latched on a window that expired at 11:25
+  // on 2026-08-11 and answered "provider-request-ambiguous" on every pass for
+  // eleven hours, with games on the board and not one price. An operator
+  // deleting the row by hand was the only way out.
   //
-  // Loosening this to respect the expiry is NOT the fix: an ambiguous paid
-  // request must never be blindly reissued, which is what the "fences
-  // ambiguous transport and blocks fallback or paid recall" test protects.
-  // The real gap is that the reconciliation probe below is unreachable once
-  // this returns, so ambiguity has no path to resolution. See deferred-work.
-  if (continuation?.ambiguousUntil)
+  // The ceiling is that exit, and it deliberately does the same thing the
+  // operator did rather than anything cleverer. Below it, nothing changes.
+  if (continuation?.ambiguousUntil) {
+    const ambiguousFor =
+      clock().getTime() - Date.parse(continuation.ambiguousUntil);
+    // Evidence beyond recall is checked against the PAGE ledger, not against
+    // the continuation's own flag: the ambiguous write sets that flag from a
+    // local variable, which is exactly what put MLS out of reach of the age
+    // ceiling that already existed.
+    const ledgerEvidence = await sealedEvidenceIntent(
+      store,
+      continuation.runId,
+    );
+    if (
+      Number.isFinite(ambiguousFor) &&
+      ambiguousFor > ODDS_AMBIGUITY_MAX_AGE_MS &&
+      !ledgerEvidence
+    ) {
+      // The lease was renewed strictly before the ambiguity was written and
+      // both are five-minute windows, so a lapsed ambiguity implies a lapsed
+      // lease: this row is legally claimable.
+      const reclaimNow = clock();
+      const owner = await store.claimContinuation({
+        ...continuation,
+        leagueKey: policy.leagueKey,
+        updatedAt: iso(reclaimNow),
+        ownerId,
+        leaseUntil: attemptLeaseUntil(reclaimNow),
+      });
+      if (owner.ownerId === ownerId) {
+        await clearOwnedContinuation(
+          store,
+          policy.leagueKey,
+          continuation.runId,
+          ownerId,
+        );
+        input.metrics?.emit("OddsAmbiguityAbandoned", 1, {
+          league: policy.leagueKey,
+          provider: continuation.providerId,
+        });
+      }
+      // Still a skipped pass: the next one starts a fresh run from page one,
+      // far enough after the ambiguous request that a recall is accounted
+      // rather than blind — the reserved cost was never refunded, and the
+      // next response's quotaRemaining overwrites local with provider truth.
+      return {
+        leagueKey: policy.leagueKey,
+        status: "skipped",
+        reason: "provider-recovering",
+        pages: 0,
+        quotaCost: continuation.quotaCost ?? 0,
+      };
+    }
     return {
       leagueKey: policy.leagueKey,
       status: "failed",
@@ -663,6 +740,7 @@ export async function runOddsLeague(input: {
       pages: 0,
       quotaCost: continuation.quotaCost ?? 0,
     };
+  }
   const checkpoint = await store.getCheckpoint(policy.leagueKey);
   if (checkpoint)
     input.metrics?.emit(
@@ -748,8 +826,30 @@ export async function runOddsLeague(input: {
         const probeNow = clock();
         const probeKey = `probe:${candidate.providerId}:${policy.leagueKey}:odds`;
         const existingProbe = await store.getContinuation(probeKey);
+        // The probe row latches exactly as the league row did. Left alone it
+        // would simply relocate the wedge one level down: ambiguity on the
+        // probe would block the very path that resolves ambiguity.
         if (existingProbe?.ambiguousUntil) {
-          lastReason = "provider-request-ambiguous";
+          const probeAmbiguousFor =
+            clock().getTime() - Date.parse(existingProbe.ambiguousUntil);
+          if (
+            !Number.isFinite(probeAmbiguousFor) ||
+            probeAmbiguousFor <= ODDS_AMBIGUITY_MAX_AGE_MS
+          ) {
+            lastReason = "provider-request-ambiguous";
+            continue;
+          }
+          const reclaim = clock();
+          const stale = await store.claimContinuation({
+            ...existingProbe,
+            leagueKey: probeKey,
+            updatedAt: iso(reclaim),
+            ownerId,
+            leaseUntil: attemptLeaseUntil(reclaim),
+          });
+          if (stale.ownerId === ownerId)
+            await clearOwnedContinuation(store, probeKey, stale.runId, ownerId);
+          lastReason = "provider-recovering";
           continue;
         }
         const probeOwner = await store.claimContinuation({

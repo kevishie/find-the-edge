@@ -529,6 +529,91 @@ describe("odds collection control plane", () => {
   );
   it.each([
     {
+      name: "unwedges a lapsed ambiguity",
+      minutesAgo: 90,
+      intent: false,
+      fenced: false,
+    },
+    {
+      name: "keeps fencing while the window is open",
+      minutesAgo: 2,
+      intent: false,
+      fenced: true,
+    },
+    {
+      name: "keeps fencing when the ledger shows evidence beyond recall",
+      minutesAgo: 90,
+      intent: true,
+      fenced: true,
+    },
+  ])("ambiguity ceiling: $name", async ({ minutesAgo, intent, fenced }) => {
+    // MLS answered provider-request-ambiguous on every pass for eleven hours
+    // because the fence had no exit; an operator deleting the row was the
+    // only way out. The ceiling automates exactly that, and only that.
+    const store = new MemoryOddsControlPlaneStore();
+    const runId = "mlb:sharpapi:ambiguous-run";
+    const stamped = new Date(now.getTime() - minutesAgo * 60_000).toISOString();
+    await store.putRun({
+      runId,
+      leagueKey: policy.leagueKey,
+      providerId: "sharpapi",
+      policyVersion: "test",
+      status: "failed",
+      startedAt: stamped,
+      updatedAt: stamped,
+      failureReason: "provider-request-ambiguous",
+      evidenceCommitted: false,
+      quotaCost: 1,
+    });
+    await store.claimContinuation({
+      leagueKey: policy.leagueKey,
+      runId,
+      providerId: "sharpapi",
+      updatedAt: stamped,
+      startedAt: stamped,
+      capability: "odds",
+      evidenceCommitted: false,
+      quotaCost: 1,
+      ownerId: "vanished-worker",
+      leaseUntil: stamped,
+      ambiguousUntil: stamped,
+    });
+    await store.sealPage({
+      runId,
+      pageToken: "start",
+      responseDigest: "d",
+      normalizedItems: [],
+      gaps: [],
+      quotaCost: 1,
+      sealedAt: stamped,
+      ...(intent ? { evidenceIntentAt: stamped } : {}),
+    });
+    const fetchPage = vi.fn();
+
+    const result = await runOddsLeague({
+      policy,
+      store,
+      providers: new Map([["sharpapi", provider("sharpapi", fetchPage)]]),
+      committer: { commit: vi.fn() },
+      now,
+      clock: () => now,
+    });
+
+    // Either way the ambiguous request is never blindly reissued in the same
+    // pass; the fence only decides whether the league stays stuck forever.
+    expect(fetchPage).not.toHaveBeenCalled();
+    if (fenced) {
+      expect(result.reason).toBe("provider-request-ambiguous");
+      expect(await store.getContinuation(policy.leagueKey)).not.toBeNull();
+    } else {
+      expect(result).toMatchObject({ status: "skipped" });
+      // The poisoned row is gone, so the next pass starts a fresh run.
+      expect(await store.getContinuation(policy.leagueKey)).toBeNull();
+    }
+  });
+
+  it.each([
+    {
       name: "abandons an aged run with no committed evidence",
       aged: true,
       committed: false,
