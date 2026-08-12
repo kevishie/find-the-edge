@@ -176,98 +176,100 @@ export const handler = async (event: LambdaEvent) => {
         ? "auth-otp-verify"
         : event.routeKey === "POST /auth/session/refresh"
           ? "auth-session-refresh"
-          : event.routeKey === "GET /watchlist"
-            ? "watchlist-list"
-            : event.routeKey === "POST /watchlist"
-              ? "watchlist-add"
-              : event.routeKey === "DELETE /watchlist/{eventId}"
-                ? "watchlist-remove"
-                : event.routeKey === "POST /events/{eventId}/scout"
-                  ? "scout-create"
-                  : event.routeKey === "GET /scout-jobs/{jobId}"
-                    ? "scout-status"
-                    : event.routeKey === "POST /scout-jobs/{jobId}/retry"
-                      ? "scout-retry"
-                      : event.routeKey === "GET /scout-jobs/{jobId}/report"
-                        ? "scout-report-by-job"
-                        : event.routeKey ===
-                            "GET /scout-reports/{reportId}/versions"
-                          ? "scout-report-versions"
+          : event.routeKey === "POST /auth/session/revoke"
+            ? "auth-session-revoke"
+            : event.routeKey === "GET /watchlist"
+              ? "watchlist-list"
+              : event.routeKey === "POST /watchlist"
+                ? "watchlist-add"
+                : event.routeKey === "DELETE /watchlist/{eventId}"
+                  ? "watchlist-remove"
+                  : event.routeKey === "POST /events/{eventId}/scout"
+                    ? "scout-create"
+                    : event.routeKey === "GET /scout-jobs/{jobId}"
+                      ? "scout-status"
+                      : event.routeKey === "POST /scout-jobs/{jobId}/retry"
+                        ? "scout-retry"
+                        : event.routeKey === "GET /scout-jobs/{jobId}/report"
+                          ? "scout-report-by-job"
                           : event.routeKey ===
-                              "GET /scout-reports/{reportId}/versions/{versionNumber}"
-                            ? "scout-report-version"
-                            : event.routeKey === "GET /providers/status"
-                              ? "provider-status"
-                              : event.routeKey ===
-                                  "GET /sports/{sportKey}/opportunities"
-                                ? "opportunity-list"
+                              "GET /scout-reports/{reportId}/versions"
+                            ? "scout-report-versions"
+                            : event.routeKey ===
+                                "GET /scout-reports/{reportId}/versions/{versionNumber}"
+                              ? "scout-report-version"
+                              : event.routeKey === "GET /providers/status"
+                                ? "provider-status"
                                 : event.routeKey ===
-                                    "GET /sports/{sportKey}/opportunities/{opportunityId}"
-                                  ? "opportunity-detail"
+                                    "GET /sports/{sportKey}/opportunities"
+                                  ? "opportunity-list"
                                   : event.routeKey ===
-                                      "GET /sports/{sportKey}/arbitrage"
-                                    ? "arbitrage-list"
+                                      "GET /sports/{sportKey}/opportunities/{opportunityId}"
+                                    ? "opportunity-detail"
                                     : event.routeKey ===
-                                        "GET /sports/{sportKey}/clv"
-                                      ? "clv-list"
+                                        "GET /sports/{sportKey}/arbitrage"
+                                      ? "arbitrage-list"
                                       : event.routeKey ===
-                                          "GET /strategy-experiments"
-                                        ? "experiment-list"
+                                          "GET /sports/{sportKey}/clv"
+                                        ? "clv-list"
                                         : event.routeKey ===
-                                            "GET /strategy-experiments/{eventId}"
-                                          ? "experiment-detail"
+                                            "GET /strategy-experiments"
+                                          ? "experiment-list"
                                           : event.routeKey ===
-                                              "POST /strategy-experiments/{eventId}/approve"
-                                            ? "experiment-approve"
+                                              "GET /strategy-experiments/{eventId}"
+                                            ? "experiment-detail"
                                             : event.routeKey ===
-                                                "POST /strategy-experiments/{eventId}/promote"
-                                              ? "experiment-promote"
+                                                "POST /strategy-experiments/{eventId}/approve"
+                                              ? "experiment-approve"
                                               : event.routeKey ===
-                                                  "POST /strategy-experiments/{eventId}/rollback"
-                                                ? "experiment-rollback"
+                                                  "POST /strategy-experiments/{eventId}/promote"
+                                                ? "experiment-promote"
                                                 : event.routeKey ===
-                                                    "GET /retrospectives"
-                                                  ? "retrospective-list"
+                                                    "POST /strategy-experiments/{eventId}/rollback"
+                                                  ? "experiment-rollback"
                                                   : event.routeKey ===
-                                                      "GET /retrospectives/{eventId}"
-                                                    ? "retrospective-detail"
+                                                      "GET /retrospectives"
+                                                    ? "retrospective-list"
                                                     : event.routeKey ===
-                                                        "GET /retrospectives/{eventId}/versions"
-                                                      ? "retrospective-versions"
+                                                        "GET /retrospectives/{eventId}"
+                                                      ? "retrospective-detail"
                                                       : event.routeKey ===
-                                                          "POST /retrospectives/{eventId}/review"
-                                                        ? "retrospective-review"
+                                                          "GET /retrospectives/{eventId}/versions"
+                                                        ? "retrospective-versions"
                                                         : event.routeKey ===
-                                                            "GET /games/{eventId}/odds-history"
-                                                          ? "odds-history"
-                                                          : event.routeKey?.startsWith(
-                                                                "GET /games",
-                                                              )
-                                                            ? "games"
+                                                            "POST /retrospectives/{eventId}/review"
+                                                          ? "retrospective-review"
+                                                          : event.routeKey ===
+                                                              "GET /games/{eventId}/odds-history"
+                                                            ? "odds-history"
                                                             : event.routeKey?.startsWith(
-                                                                  "GET /splits",
+                                                                  "GET /games",
                                                                 )
-                                                              ? "splits"
-                                                              : event.routeKey ===
-                                                                  "GET /performance/reports"
-                                                                ? "performance-reports"
-                                                                : event.routeKey?.startsWith(
-                                                                      "GET /performance/reports/",
-                                                                    )
-                                                                  ? "performance-detail"
+                                                              ? "games"
+                                                              : event.routeKey?.startsWith(
+                                                                    "GET /splits",
+                                                                  )
+                                                                ? "splits"
+                                                                : event.routeKey ===
+                                                                    "GET /performance/reports"
+                                                                  ? "performance-reports"
                                                                   : event.routeKey?.startsWith(
-                                                                        "GET /performance/cohorts/",
+                                                                        "GET /performance/reports/",
                                                                       )
-                                                                    ? "performance-members"
+                                                                    ? "performance-detail"
                                                                     : event.routeKey?.startsWith(
-                                                                          "GET /performance/cohorts",
+                                                                          "GET /performance/cohorts/",
                                                                         )
-                                                                      ? "performance-list"
-                                                                      : event.routeKey?.includes(
-                                                                            "/{eventId}",
+                                                                      ? "performance-members"
+                                                                      : event.routeKey?.startsWith(
+                                                                            "GET /performance/cohorts",
                                                                           )
-                                                                        ? "detail"
-                                                                        : "list");
+                                                                        ? "performance-list"
+                                                                        : event.routeKey?.includes(
+                                                                              "/{eventId}",
+                                                                            )
+                                                                          ? "detail"
+                                                                          : "list");
   const eventId = event.pathParameters?.eventId;
   const eventIdAlternatives = eventIdCandidates(
     event.rawPath,
@@ -334,6 +336,7 @@ export const handler = async (event: LambdaEvent) => {
     route === "auth-otp-request" ||
     route === "auth-otp-verify" ||
     route === "auth-session-refresh" ||
+    route === "auth-session-revoke" ||
     billingRoute ||
     // Enforcement needs the ring on every product route, not just the auth
     // ones. While the flag is off, the secret load stays on the auth path

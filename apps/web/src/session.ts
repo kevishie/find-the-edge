@@ -239,6 +239,22 @@ export function createSessionStore(
   const clear = () => {
     inFlight = null;
     write(null);
+    // Signing out clears everything this app stored, not just the token.
+    // View preferences and cached boards are still a record of what the
+    // previous reader was looking at, and on a shared machine the next
+    // person should inherit none of it.
+    try {
+      const owned: string[] = [];
+      for (let index = 0; index < (storage?.length ?? 0); index += 1) {
+        const key = storage?.key(index);
+        if (key !== null && key !== undefined && key.startsWith("fte."))
+          owned.push(key);
+      }
+      for (const key of owned) storage?.removeItem(key);
+    } catch {
+      // Storage may be unavailable or full; the in-memory session is still
+      // dropped below, which is what actually signs the reader out.
+    }
     if (current !== null) {
       current = null;
       notify();

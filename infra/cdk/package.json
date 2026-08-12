@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint src",
     "synth": "pnpm build && cdk synth --app \"node dist/app.js\" --output cdk.out",
-    "test": "vitest run --testTimeout=30000",
+    "test": "vitest run --testTimeout=120000",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

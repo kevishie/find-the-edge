@@ -396,6 +396,8 @@ export interface GamesClient {
     signal: AbortSignal,
   ): Promise<AuthSessionDto>;
   refreshSession?(token: string, signal: AbortSignal): Promise<AuthSessionDto>;
+  /** Retires the token server-side. Signing out must end it, not forget it. */
+  revokeSession?(token: string, signal: AbortSignal): Promise<void>;
 }
 export interface RetrospectiveDto {
   readonly retrospectiveId: string;
@@ -3784,6 +3786,23 @@ export function createGamesClient(
             "That code did not work.",
           ),
           unavailable: "Sign in could not be completed right now. Try again.",
+        });
+      },
+      async revokeSession(token, signal) {
+        if (!isSessionToken(token)) return;
+        await authRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          fetcher,
+          path: "/auth/session/revoke",
+          signal,
+          token,
+          accepted: 200,
+          parse: () => undefined,
+          rejected: new GamesClientError(
+            "unauthorized",
+            "The session has ended.",
+          ),
+          unavailable: "The session could not be ended right now.",
         });
       },
       async refreshSession(token, signal) {

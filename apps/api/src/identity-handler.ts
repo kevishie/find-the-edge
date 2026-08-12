@@ -29,7 +29,10 @@ import {
 } from "./sms-sender";
 
 export type IdentityHttpRoute =
-  "auth-otp-request" | "auth-otp-verify" | "auth-session-refresh";
+  | "auth-otp-request"
+  | "auth-otp-verify"
+  | "auth-session-refresh"
+  | "auth-session-revoke";
 
 export interface IdentityHttpRequest {
   readonly route: IdentityHttpRoute;
@@ -81,6 +84,7 @@ export type IdentityOutcome =
   | "verified"
   | "invalid-credentials"
   | "refreshed"
+  | "revoked"
   | "unauthorized";
 
 export interface IdentityHttpResult {
@@ -255,6 +259,52 @@ export const createIdentityHttpHandler =
         }),
         observation: {
           outcome: "refreshed",
+          delivery: null,
+          failureClass: null,
+          phoneDigest: null,
+        },
+      };
+    }
+    if (request.route === "auth-session-revoke") {
+      // Signing out has to end the token, not merely forget it. Dropping the
+      // copy in the browser leaves a signed, unexpired bearer token that any
+      // other holder — a shared machine, a synced profile, a copied string —
+      // could still spend until it lapsed on its own.
+      //
+      // Bumping the stored version is what actually retires it: every path
+      // that accepts our token compares the two, so the old one dies at the
+      // refresh route, the billing routes, and the product-access gate at
+      // once, for every device that holds it.
+      const unauthorized: IdentityHttpResult = {
+        response: response(401, UNAUTHORIZED),
+        observation: {
+          outcome: "unauthorized",
+          delivery: null,
+          failureClass: null,
+          phoneDigest: null,
+        },
+      };
+      const token = bearerToken(request.authorization);
+      if (
+        request.method !== "POST" ||
+        Object.keys(request.query ?? {}).length > 0 ||
+        (request.body !== undefined && request.body !== "") ||
+        !token
+      )
+        return unauthorized;
+      const verified = verifySessionToken(token, runtime.signingKeys, now);
+      if (verified.outcome !== "valid") return unauthorized;
+      const account = await repository.getAccount(verified.payload.accountId);
+      // A token whose version is already behind was revoked by an earlier
+      // sign-out. That is the goal state, so say so rather than failing: a
+      // reader pressing sign-out twice has not hit an error.
+      if (!account || account.tokenVersion !== verified.payload.tokenVersion)
+        return unauthorized;
+      await repository.bumpTokenVersion(account.accountId);
+      return {
+        response: response(200, { schemaVersion: "auth-revoke-v1" }),
+        observation: {
+          outcome: "revoked",
           delivery: null,
           failureClass: null,
           phoneDigest: null,

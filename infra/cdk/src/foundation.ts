@@ -1448,6 +1448,7 @@ export class FoundationStack extends Stack {
       "/auth/otp/request",
       "/auth/otp/verify",
       "/auth/session/refresh",
+      "/auth/session/revoke",
     ])
       api.addRoutes({
         path,

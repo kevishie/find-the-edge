@@ -379,13 +379,21 @@ describe("the shell indicator", () => {
     expect(window.localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
   });
 
-  it("shows the signed-in account and clears the token on sign-out", async () => {
+  it("retires the token, empties our storage, and leaves the screen on sign-out", async () => {
+    const revokeSession = vi.fn(() => Promise.resolve());
     const sessionStore = store();
     sessionStore.signIn(live());
+    // Anything this app stored is a record of the previous reader; on a
+    // shared machine the next one should inherit none of it.
+    window.localStorage.setItem("fte.splitsView", "grid");
+    window.localStorage.setItem("fte.navCollapsed", "1");
     render(
       <App
         initialPath="/performance"
-        gamesClient={shellClient}
+        gamesClient={{
+          ok: true as const,
+          value: { ...shellClient.value, revokeSession },
+        }}
         sessionStore={sessionStore}
       />,
     );
@@ -395,8 +403,45 @@ describe("the shell indicator", () => {
     ).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
-    expect(await screen.findByRole("link", { name: "Sign in" })).toBeVisible();
-    expect(window.localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    // Off the product screen entirely: staying would show a shell whose every
+    // request is about to fail.
+    expect(
+      (await screen.findAllByRole("link", { name: "Start free trial" })).length,
+    ).toBeGreaterThan(0);
     expect(sessionStore.getSnapshot()).toBeNull();
+    expect(window.localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem("fte.splitsView")).toBeNull();
+    expect(window.localStorage.getItem("fte.navCollapsed")).toBeNull();
+    // The token is retired server-side, so every other copy of it dies too.
+    expect(revokeSession).toHaveBeenCalledWith(TOKEN, expect.anything());
+  });
+
+  it("still signs the reader out when revocation cannot be delivered", async () => {
+    // A flaky connection must not strand someone on a screen they asked to
+    // leave. The local session goes either way and the token lapses on its own.
+    const revokeSession = vi.fn(() => Promise.reject(new Error("offline")));
+    const sessionStore = store();
+    sessionStore.signIn(live());
+    render(
+      <App
+        initialPath="/performance"
+        gamesClient={{
+          ok: true as const,
+          value: { ...shellClient.value, revokeSession },
+        }}
+        sessionStore={sessionStore}
+      />,
+    );
+
+    expect(
+      await screen.findByText(`Signed in …${ACCOUNT.slice(-6)}`),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(
+      (await screen.findAllByRole("link", { name: "Start free trial" })).length,
+    ).toBeGreaterThan(0);
+    expect(sessionStore.getSnapshot()).toBeNull();
+    expect(window.localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
   });
 });

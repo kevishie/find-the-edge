@@ -418,6 +418,98 @@ describe("POST /auth/otp/verify", () => {
   });
 });
 
+describe("POST /auth/session/revoke", () => {
+  const signedIn = async (harness: Harness) => {
+    await harness.call(requestOtp(PHONE));
+    harness.setNow(later(1_000));
+    return (await harness.call(verifyOtp(PHONE, "907531"))).body as {
+      token: string;
+      accountId: string;
+    };
+  };
+
+  it("retires the token everywhere, not just in the browser that signed out", async () => {
+    // Dropping the copy in local storage leaves a signed, unexpired bearer
+    // token that any other holder could still spend. Bumping the stored
+    // version is what actually ends it.
+    const harness = build();
+    const session = await signedIn(harness);
+    harness.setNow(later(60_000));
+
+    const revoked = await harness.call({
+      route: "auth-session-revoke",
+      method: "POST",
+      authorization: `Bearer ${session.token}`,
+    });
+    expect(revoked.statusCode).toBe(200);
+    // The token still verifies cryptographically — it has not expired — which
+    // is exactly why the version check has to be the thing that retires it.
+    expect(
+      verifySessionToken(session.token, KEY_RING, later(90_000)).outcome,
+    ).toBe("valid");
+    // But it can no longer buy a new one.
+    const refreshed = await harness.call({
+      route: "auth-session-refresh",
+      method: "POST",
+      authorization: `Bearer ${session.token}`,
+    });
+    expect(refreshed.statusCode).toBe(401);
+  });
+
+  it("refuses a second revoke with the same spent token", async () => {
+    const harness = build();
+    const session = await signedIn(harness);
+    harness.setNow(later(60_000));
+    await harness.call({
+      route: "auth-session-revoke",
+      method: "POST",
+      authorization: `Bearer ${session.token}`,
+    });
+    const again = await harness.call({
+      route: "auth-session-revoke",
+      method: "POST",
+      authorization: `Bearer ${session.token}`,
+    });
+    expect(again.statusCode).toBe(401);
+  });
+
+  it("refuses anything that is not a live token", async () => {
+    const harness = build();
+    const session = await signedIn(harness);
+    harness.setNow(later(60_000));
+    for (const request of [
+      { route: "auth-session-revoke" as const, method: "POST" as const },
+      {
+        route: "auth-session-revoke" as const,
+        method: "POST" as const,
+        authorization: session.token,
+      },
+      {
+        route: "auth-session-revoke" as const,
+        method: "GET" as const,
+        authorization: `Bearer ${session.token}`,
+      },
+      {
+        route: "auth-session-revoke" as const,
+        method: "POST" as const,
+        authorization: `Bearer ${session.token}`,
+        body: JSON.stringify({ token: session.token }),
+      },
+    ])
+      expect((await harness.call(request)).statusCode).toBe(401);
+    // None of those refusals may have retired a still-good token.
+    expect(
+      (
+        await harness.call({
+          route: "auth-session-refresh",
+          method: "POST",
+          authorization: `Bearer ${session.token}`,
+        })
+      ).statusCode,
+    ).toBe(200);
+  });
+});
+
 describe("POST /auth/session/refresh", () => {
   const signedIn = async (harness: Harness) => {
     await harness.call(requestOtp(PHONE));

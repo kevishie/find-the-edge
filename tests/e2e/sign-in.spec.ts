@@ -161,9 +161,18 @@ test("signs in on our own form, lands where it started, survives a reload, and s
   await page.reload();
   await expect(page.getByText(/^Signed in …/)).toBeVisible();
 
+  // Signing out leaves the product entirely; staying would show a shell whose
+  // every request is about to fail. Nothing this app stored survives it.
+  await page.evaluate(() => localStorage.setItem("fte.splitsView", "grid"));
   await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
+  await page.waitForURL(/\/(\?|$)/, { timeout: 20_000 });
   await expect(
-    page.evaluate(() => window.localStorage.getItem("fte.session.v1")),
-  ).resolves.toBeNull();
+    page.getByRole("link", { name: "Start free trial" }).first(),
+  ).toBeVisible();
+  await expect(
+    page.evaluate(() => ({
+      session: localStorage.getItem("fte.session.v1"),
+      view: localStorage.getItem("fte.splitsView"),
+    })),
+  ).resolves.toEqual({ session: null, view: null });
 });

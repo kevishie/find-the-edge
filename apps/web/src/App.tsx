@@ -494,6 +494,7 @@ export interface UiGamesClient {
   requestOtp?: NonNullable<import("./api").GamesClient["requestOtp"]>;
   verifyOtp?: NonNullable<import("./api").GamesClient["verifyOtp"]>;
   refreshSession?: NonNullable<import("./api").GamesClient["refreshSession"]>;
+  revokeSession?: NonNullable<import("./api").GamesClient["revokeSession"]>;
 }
 export interface StrategyExperimentDto {
   readonly experimentId: string;
@@ -863,7 +864,25 @@ function GlassNav({
 function SessionBadge({ collapsed }: { readonly collapsed: boolean }) {
   const store = useContext(SessionContext);
   const session = useSession(store);
+  const client = useContext(GamesClientContext);
+  const router = useRouter();
   const here = useRouterState({ select: (state) => state.location.href });
+  const signOut = useCallback(() => {
+    const token = session?.token;
+    // Retire the token server-side first, so every other copy of it dies too.
+    // Best effort on purpose: a reader who presses sign out on a flaky
+    // connection must still end up signed out locally rather than stuck on a
+    // screen they asked to leave. The local session is dropped either way,
+    // and the token expires on its own within the hour.
+    if (token && client.ok && client.value.revokeSession)
+      void client.value
+        .revokeSession(token, new AbortController().signal)
+        .catch(() => undefined);
+    store.signOut();
+    // Leaving is the point. Staying on a product screen after signing out
+    // shows a shell whose every request is about to fail.
+    void router.navigate({ to: "/", replace: true });
+  }, [client, router, session, store]);
   if (session === null)
     return (
       <div className="shell-session">
@@ -886,11 +905,7 @@ function SessionBadge({ collapsed }: { readonly collapsed: boolean }) {
           Signed in {accountHint(session.accountId)}
         </span>
       </span>
-      <button
-        type="button"
-        className="shell-session-out"
-        onClick={() => store.signOut()}
-      >
+      <button type="button" className="shell-session-out" onClick={signOut}>
         Sign out
       </button>
     </div>

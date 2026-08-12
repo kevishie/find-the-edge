@@ -109,6 +109,7 @@ export interface ApiRequest {
     | "auth-otp-request"
     | "auth-otp-verify"
     | "auth-session-refresh"
+    | "auth-session-revoke"
     // Public by design: Stripe calls this one, and it authenticates itself
     // with a signature over the raw body rather than with a token.
     | "billing-webhook"
@@ -421,7 +422,8 @@ export const createEventHandler =
       if (
         request.route === "auth-otp-request" ||
         request.route === "auth-otp-verify" ||
-        request.route === "auth-session-refresh"
+        request.route === "auth-session-refresh" ||
+        request.route === "auth-session-revoke"
       ) {
         if (!identityRepository || !identityRuntime)
           throw new Error("identity-service-not-configured");

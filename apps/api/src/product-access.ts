@@ -27,6 +27,8 @@ const OPEN_ROUTES = new Set([
   "auth-otp-request",
   "auth-otp-verify",
   "auth-session-refresh",
+  // Signing out must work even for a session the gate would refuse.
+  "auth-session-revoke",
   "billing-webhook",
   "billing-entitlement",
   "billing-checkout",
