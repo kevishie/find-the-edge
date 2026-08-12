@@ -62,6 +62,7 @@ export * from "./dynamodb-scouting-job-repository";
 export * from "./scouting-report-repository";
 export * from "./dynamodb-scouting-report-repository";
 export * from "./board-projection";
+export * from "./bet-repository.js";
 export * from "./watchlist-repository";
 export * from "./identity-repository";
 export * from "./entitlement-repository";
