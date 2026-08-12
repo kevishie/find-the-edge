@@ -19,6 +19,12 @@ export interface BillingSecrets {
   /** The endpoint's `whsec_` signing secret. Inbound webhooks only. */
   readonly webhookSecret: string;
   readonly priceId: string;
+  /**
+   * The yearly price. Optional so a stage configured before annual existed
+   * still starts; where it is absent the annual plan is simply not offered,
+   * which is the honest failure — never a yearly promise billed monthly.
+   */
+  readonly annualPriceId?: string;
 }
 
 const SECRET_KEY = /^(sk|rk)_(test|live)_[A-Za-z0-9]{16,247}$/;
@@ -37,21 +43,33 @@ export const parseBillingSecrets = (raw: string): BillingSecrets => {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("invalid-billing-secret");
   const item = parsed as Readonly<Record<string, unknown>>;
-  if (!exact(item, ["secretKey", "webhookSecret", "priceId"]))
+  if (
+    !exact(item, ["secretKey", "webhookSecret", "priceId"]) &&
+    !exact(item, ["secretKey", "webhookSecret", "priceId", "annualPriceId"])
+  )
     throw new Error("invalid-billing-secret");
   const secretKey = item["secretKey"];
   const webhookSecret = item["webhookSecret"];
   const priceId = item["priceId"];
+  const annualPriceId = item["annualPriceId"];
   if (
     typeof secretKey !== "string" ||
     !SECRET_KEY.test(secretKey) ||
     typeof webhookSecret !== "string" ||
     webhookSecret.length < STRIPE_WEBHOOK_SECRET_MIN_LENGTH ||
     !WEBHOOK_SECRET.test(webhookSecret) ||
-    !isStripePriceId(priceId)
+    !isStripePriceId(priceId) ||
+    (annualPriceId !== undefined && !isStripePriceId(annualPriceId)) ||
+    // Two plans that charge the same price would make the choice a lie.
+    annualPriceId === priceId
   )
     throw new Error("invalid-billing-secret");
-  return Object.freeze({ secretKey, webhookSecret, priceId });
+  return Object.freeze({
+    secretKey,
+    webhookSecret,
+    priceId,
+    ...(annualPriceId === undefined ? {} : { annualPriceId }),
+  });
 };
 
 const cache = new Map<

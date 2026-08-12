@@ -415,6 +415,9 @@ export const handler = async (event: LambdaEvent) => {
           signingKeys: identity.signingKeys,
           webhookSecret: billingSecrets.webhookSecret,
           priceId: billingSecrets.priceId,
+          ...(billingSecrets.annualPriceId
+            ? { annualPriceId: billingSecrets.annualPriceId }
+            : {}),
           stripe: createStripeRestClient({
             secretKey: billingSecrets.secretKey,
           }),

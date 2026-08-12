@@ -285,6 +285,64 @@ export interface AuthSessionDto {
   readonly accountId: string;
 }
 
+/** The two plans this product sells. A name, never a price. */
+export const CHECKOUT_PLANS = ["monthly", "annual"] as const;
+export type CheckoutPlan = (typeof CHECKOUT_PLANS)[number];
+
+/**
+ * What the browser is allowed to know about an account's paid state.
+ * Deliberately not a Stripe customer or subscription id: those identify the
+ * account in somebody else's system and the UI has no use for them.
+ */
+export interface EntitlementDto {
+  readonly schemaVersion: "billing-entitlement-v1";
+  readonly state: string;
+  readonly accessUntil: string | null;
+  readonly hasAccess: boolean;
+}
+
+const parseEntitlement = (value: unknown): EntitlementDto => {
+  const record = value as Partial<EntitlementDto> | null;
+  if (
+    !record ||
+    typeof record !== "object" ||
+    record.schemaVersion !== "billing-entitlement-v1" ||
+    typeof record.state !== "string" ||
+    typeof record.hasAccess !== "boolean" ||
+    (record.accessUntil !== null && typeof record.accessUntil !== "string")
+  )
+    throw new GamesClientError("invalid-response", "Billing state is unclear.");
+  return {
+    schemaVersion: "billing-entitlement-v1",
+    state: record.state,
+    accessUntil: record.accessUntil ?? null,
+    hasAccess: record.hasAccess,
+  };
+};
+
+/**
+ * Stripe's hosted URL, checked before the browser is sent to it. An origin we
+ * do not expect is refused rather than followed: a redirect target is exactly
+ * the thing worth verifying, even when it came from our own API.
+ */
+const parseStripeUrl = (value: unknown, key: string): string => {
+  const url = (value as Record<string, unknown> | null)?.[key];
+  if (typeof url !== "string")
+    throw new GamesClientError("invalid-response", "Billing is unavailable.");
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new GamesClientError("invalid-response", "Billing is unavailable.");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !/(^|\.)stripe\.com$/.test(parsed.hostname)
+  )
+    throw new GamesClientError("invalid-response", "Billing is unavailable.");
+  return parsed.toString();
+};
+
 export interface GamesClient {
   providerStatus?(signal: AbortSignal): Promise<ProviderStatusPageDto>;
   listOpportunities?(
@@ -398,6 +456,14 @@ export interface GamesClient {
   refreshSession?(token: string, signal: AbortSignal): Promise<AuthSessionDto>;
   /** Retires the token server-side. Signing out must end it, not forget it. */
   revokeSession?(token: string, signal: AbortSignal): Promise<void>;
+  entitlement?(token: string, signal: AbortSignal): Promise<EntitlementDto>;
+  /** Returns the Stripe-hosted URL to send the reader to. */
+  startCheckout?(
+    token: string,
+    plan: CheckoutPlan,
+    signal: AbortSignal,
+  ): Promise<string>;
+  openBillingPortal?(token: string, signal: AbortSignal): Promise<string>;
 }
 export interface RetrospectiveDto {
   readonly retrospectiveId: string;
@@ -1545,6 +1611,7 @@ const authRequest = async <T>({
   apiBase,
   fetcher,
   path,
+  method = "POST",
   signal,
   body,
   token,
@@ -1556,6 +1623,7 @@ const authRequest = async <T>({
   readonly apiBase: string;
   readonly fetcher: typeof fetch;
   readonly path: string;
+  readonly method?: "GET" | "POST";
   readonly signal: AbortSignal;
   readonly body?: Readonly<Record<string, string>>;
   readonly token?: string;
@@ -1569,7 +1637,7 @@ const authRequest = async <T>({
   let response: Response;
   try {
     response = await fetcher(`${apiBase}${path}`, {
-      method: "POST",
+      method,
       credentials: "omit",
       cache: "no-store",
       signal: requestSignal,
@@ -3786,6 +3854,56 @@ export function createGamesClient(
             "That code did not work.",
           ),
           unavailable: "Sign in could not be completed right now. Try again.",
+        });
+      },
+      async entitlement(token, signal) {
+        return authRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          fetcher,
+          path: "/billing/entitlement",
+          method: "GET",
+          signal,
+          token,
+          accepted: 200,
+          parse: parseEntitlement,
+          rejected: new GamesClientError(
+            "unauthorized",
+            "The session has ended.",
+          ),
+          unavailable: "Billing state is unavailable right now.",
+        });
+      },
+      async startCheckout(token, plan, signal) {
+        return authRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          fetcher,
+          path: "/billing/checkout",
+          signal,
+          token,
+          body: { plan },
+          accepted: 200,
+          parse: (value) => parseStripeUrl(value, "url"),
+          rejected: new GamesClientError(
+            "request-failed",
+            "Checkout could not be started.",
+          ),
+          unavailable: "Checkout is unavailable right now.",
+        });
+      },
+      async openBillingPortal(token, signal) {
+        return authRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          fetcher,
+          path: "/billing/portal",
+          signal,
+          token,
+          accepted: 200,
+          parse: (value) => parseStripeUrl(value, "url"),
+          rejected: new GamesClientError(
+            "request-failed",
+            "The billing portal could not be opened.",
+          ),
+          unavailable: "The billing portal is unavailable right now.",
         });
       },
       async revokeSession(token, signal) {

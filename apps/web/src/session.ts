@@ -37,6 +37,9 @@ export const SIGNED_IN_HOME = "/dashboard";
 /** The sign-in form's own address. Returning to it would be a loop. */
 export const LOGIN_PATH = "/login";
 
+/** Where a signed-in reader without paid access is sent. */
+export const SUBSCRIBE_PATH = "/subscribe";
+
 /**
  * Every route this app actually serves, as literal segments and as parented
  * prefixes for the ones that take an id. A return address is checked against
@@ -79,6 +82,9 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "/terms",
   "/privacy",
   LOGIN_PATH,
+  // The paywall needs a session but not an entitlement, so the session guard
+  // skips it; its own route sends a signed-out reader to the form.
+  SUBSCRIBE_PATH,
 ];
 
 export const requiresSession = (pathname: string): boolean =>

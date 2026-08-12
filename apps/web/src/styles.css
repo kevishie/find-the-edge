@@ -6869,3 +6869,100 @@ footer {
   padding: 5px 10px;
   font-size: 10px;
 }
+
+/* The paywall a signed-in reader without access lands on. It borrows the
+   landing page's pricing language deliberately: the reader has just been told
+   the same two numbers, and a different look here would read as a different
+   offer. */
+.subscribe {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 48px 20px 64px;
+  color: #ece9f2;
+}
+.subscribe h1 {
+  font-size: clamp(28px, 5vw, 40px);
+  margin: 0 0 12px;
+}
+.subscribe-lede {
+  color: #c8c3d4;
+  margin: 0 0 8px;
+}
+.subscribe-note {
+  color: #a29daf;
+  font-size: 14px;
+  margin: 0 0 24px;
+}
+.subscribe-error {
+  border: 1px solid #7f1d1d;
+  background: rgba(127, 29, 29, 0.18);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin: 0 0 20px;
+}
+.subscribe-plans {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.subscribe-plan {
+  border: 1px solid #2a2733;
+  border-radius: 14px;
+  padding: 20px;
+  background: #121016;
+}
+.subscribe-plan-annual {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 22px rgba(139, 92, 246, 0.22);
+}
+.subscribe-plan small {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #a29daf;
+  font-size: 12px;
+}
+.subscribe-price {
+  margin: 8px 0 4px;
+}
+.subscribe-price b {
+  font-size: 34px;
+}
+.subscribe-price span {
+  color: #a29daf;
+}
+.subscribe-plan-note {
+  color: #a29daf;
+  font-size: 13.5px;
+  margin: 0 0 16px;
+}
+.subscribe-plan button {
+  width: 100%;
+  padding: 11px 16px;
+  border-radius: 10px;
+  border: 1px solid #8b5cf6;
+  background: #8b5cf6;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.subscribe-plan button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.subscribe-footer {
+  color: #a29daf;
+  font-size: 13px;
+  margin-top: 28px;
+}
+.subscribe-signout {
+  background: none;
+  border: none;
+  color: #c4b5fd;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}

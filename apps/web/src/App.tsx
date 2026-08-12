@@ -62,6 +62,7 @@ import {
   LOGIN_PATH,
   PUBLIC_ROUTES,
   requiresSession,
+  SUBSCRIBE_PATH,
   DEFAULT_RETURN_PATH,
   safeReturnPath,
   SessionContext,
@@ -69,6 +70,7 @@ import {
   useSession,
   type SessionStore,
 } from "./session";
+import { SubscribeScreen } from "./subscribe";
 
 /**
  * Whether a usable session exists right now, read straight from the store
@@ -495,6 +497,8 @@ export interface UiGamesClient {
   verifyOtp?: NonNullable<import("./api").GamesClient["verifyOtp"]>;
   refreshSession?: NonNullable<import("./api").GamesClient["refreshSession"]>;
   revokeSession?: NonNullable<import("./api").GamesClient["revokeSession"]>;
+  startCheckout?: NonNullable<import("./api").GamesClient["startCheckout"]>;
+  entitlement?: NonNullable<import("./api").GamesClient["entitlement"]>;
 }
 export interface StrategyExperimentDto {
   readonly experimentId: string;
@@ -3055,6 +3059,40 @@ const indexRoute = createRoute({
   },
   component: LandingPage,
 });
+function SubscribeRoute() {
+  const store = useContext(SessionContext);
+  const session = useSession(store);
+  const client = useContext(GamesClientContext);
+  const router = useRouter();
+  return (
+    <Suspense fallback={<p role="status">Loading…</p>}>
+      <SubscribeScreen
+        client={client}
+        token={session?.token ?? null}
+        onSignOut={() => {
+          store.signOut();
+          void router.navigate({ to: "/", replace: true });
+        }}
+      />
+    </Suspense>
+  );
+}
+const subscribeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: SUBSCRIBE_PATH,
+  // A reader with no session at all belongs on the form, not on a paywall
+  // that cannot tell them anything useful.
+  beforeLoad: ({ context, location }) => {
+    if (!hasLiveSession(context.session))
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({
+        to: LOGIN_PATH,
+        search: { returnUrl: safeReturnPath(location.pathname) },
+        replace: true,
+      });
+  },
+  component: SubscribeRoute,
+});
 const termsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/terms",
@@ -3350,6 +3388,7 @@ const legacyGameDetailRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   legacySignInRoute,
+  subscribeRoute,
   termsRoute,
   privacyRoute,
   signInRoute,

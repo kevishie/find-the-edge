@@ -581,6 +581,73 @@ describe("GET /billing/entitlement", () => {
   });
 });
 
+describe("choosing a plan", () => {
+  const ANNUAL = "price_annual0000000000001";
+
+  it("prices the session from the plan name, never from the caller", async () => {
+    const test = harness({ annualPriceId: ANNUAL });
+    const token = await signIn(test);
+    await test.call({
+      ...authed("billing-checkout", token),
+      body: JSON.stringify({ plan: "annual" }),
+    });
+    expect(test.stripe.checkouts[0]).toMatchObject({ priceId: ANNUAL });
+  });
+
+  it("still means monthly when the caller says nothing", async () => {
+    // A client written before the choice existed keeps working unchanged.
+    const test = harness({ annualPriceId: ANNUAL });
+    const token = await signIn(test);
+    for (const body of [
+      undefined,
+      "",
+      "{}",
+      JSON.stringify({ plan: "monthly" }),
+    ])
+      await test.call({
+        ...authed("billing-checkout", token),
+        ...(body === undefined ? {} : { body }),
+      });
+    for (const checkout of test.stripe.checkouts)
+      expect(checkout).toMatchObject({ priceId: PRICE });
+  });
+
+  it("refuses a body that names anything other than a plan we sell", async () => {
+    // The whole point of a name rather than a price: a caller cannot invent
+    // what it is charged, nor smuggle a second field past the parser.
+    const test = harness({ annualPriceId: ANNUAL });
+    const token = await signIn(test);
+    for (const body of [
+      JSON.stringify({ priceId: "price_free00000000000001" }),
+      JSON.stringify({ plan: "annual", priceId: "price_free00000000000001" }),
+      JSON.stringify({ plan: "lifetime" }),
+      JSON.stringify({ plan: ANNUAL }),
+      JSON.stringify({ plan: null }),
+      JSON.stringify(["annual"]),
+      "not json",
+    ]) {
+      const result = await test.call({
+        ...authed("billing-checkout", token),
+        body,
+      });
+      expect(result.statusCode).toBe(400);
+    }
+    expect(test.stripe.checkouts).toHaveLength(0);
+  });
+
+  it("refuses the annual plan on a stage that has no annual price", async () => {
+    // Charging monthly for a yearly promise would be the worse answer.
+    const test = harness();
+    const token = await signIn(test);
+    const result = await test.call({
+      ...authed("billing-checkout", token),
+      body: JSON.stringify({ plan: "annual" }),
+    });
+    expect(result.statusCode).toBe(400);
+    expect(test.stripe.checkouts).toHaveLength(0);
+  });
+});
+
 describe("POST /billing/checkout", () => {
   it("creates a customer once and a session priced by the server", async () => {
     const test = harness();

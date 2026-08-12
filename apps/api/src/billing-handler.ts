@@ -57,6 +57,8 @@ export interface BillingRuntime {
    * client-supplied return URL would be an open redirect. */
   readonly appBaseUrl: string;
   readonly trialDays?: number;
+  /** Absent means this stage sells only the monthly plan. */
+  readonly annualPriceId?: string;
   readonly signatureToleranceSeconds?: number;
   readonly now?: () => Date;
 }
@@ -105,6 +107,37 @@ const response = (statusCode: number, body: unknown): BillingHttpResponse => ({
 
 const UNAUTHORIZED = Object.freeze({ error: "unauthorized" });
 const INVALID_REQUEST = Object.freeze({ error: "invalid-request" });
+
+/** The only two plans this product sells. A name, never a price. */
+export const CHECKOUT_PLANS = ["monthly", "annual"] as const;
+export type CheckoutPlan = (typeof CHECKOUT_PLANS)[number];
+
+/**
+ * The plan a checkout body asks for, or null when the body is anything this
+ * route does not understand. An empty body still means monthly, so a caller
+ * that predates the choice keeps working exactly as before.
+ */
+const checkoutPlan = (request: {
+  readonly body?: string;
+}): CheckoutPlan | null => {
+  const body = request.body;
+  if (body === undefined || body === "" || body === "{}") return "monthly";
+  if (body.length > 64) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
+  const keys = Object.keys(parsed);
+  if (keys.length !== 1 || keys[0] !== "plan") return null;
+  const plan = (parsed as { plan?: unknown }).plan;
+  return CHECKOUT_PLANS.includes(plan as CheckoutPlan)
+    ? (plan as CheckoutPlan)
+    : null;
+};
 /** One shape for every signature failure: bad secret, tampered payload,
  * stale timestamp, missing header. Stripe needs no more, and neither does
  * anybody probing the endpoint. */
@@ -290,16 +323,25 @@ export const createBillingHttpHandler =
         }),
       };
     }
-    // Checkout and portal both take no input at all. There is nothing a
-    // caller could usefully send: the price, the trial length, and the return
-    // URL are all server-side, and accepting any of them from the client is
-    // exactly the mistake this route exists to avoid.
+    // Checkout takes exactly one thing from the caller, and it is a plan
+    // NAME, never a price. "monthly" and "annual" are the only two words this
+    // route understands; each is resolved to a price id held server-side, so
+    // a caller can pick between the plans we sell and cannot invent one. The
+    // trial length and return URL stay entirely server-side. Portal still
+    // takes nothing at all.
+    const plan = checkoutPlan(request);
     if (
       request.method !== "POST" ||
-      (request.body !== undefined &&
-        request.body !== "" &&
-        request.body !== "{}")
+      plan === null ||
+      (request.route === "billing-portal" && plan !== "monthly")
     )
+      return {
+        response: response(400, INVALID_REQUEST),
+        observation: observation("invalid-request", { accountId }),
+      };
+    // A stage without an annual price does not offer the annual plan. Saying
+    // so is the honest failure; charging monthly for a yearly promise is not.
+    if (plan === "annual" && !runtime.annualPriceId)
       return {
         response: response(400, INVALID_REQUEST),
         observation: observation("invalid-request", { accountId }),
@@ -349,7 +391,10 @@ export const createBillingHttpHandler =
       }
       const session = await runtime.stripe.createCheckoutSession({
         customerId,
-        priceId: runtime.priceId,
+        priceId:
+          plan === "annual" && runtime.annualPriceId
+            ? runtime.annualPriceId
+            : runtime.priceId,
         trialDays: runtime.trialDays ?? ENTITLEMENT_TRIAL_DAYS,
         clientReferenceId: accountId,
         successUrl: `${origin}/?billing=success`,
