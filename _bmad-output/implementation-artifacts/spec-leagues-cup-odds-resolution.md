@@ -1,7 +1,37 @@
 # Leagues Cup odds: resolve onto existing events, never mint new ones
 
-Status: designed, not implemented. Written 2026-08-12 from a full trace of
-the ingestion path.
+Status: IMPLEMENTED AND DEPLOYED (227f333), BUT NOT WORKING IN PRODUCTION.
+Soccer is still 0 priced. Written 2026-08-12.
+
+## Where it stands
+
+The design below shipped: secondary catalogue on the MLS league, page chain
+continues into it, resolve-or-skip alias binding, gap metric. All unit tests
+pass, including one asserting the bootstrap path throws if ever reached.
+
+But on staging **neither `OddsSecondaryObservation` nor
+`OddsSecondaryUnresolved` has a single datapoint**, which means the secondary
+pass never runs — the fetch never produces a secondary page at all. The
+resolution logic is therefore untested against real data.
+
+Next diagnostic, in order:
+1. Confirm `sharpLeague.secondaryOddsProviderLeagues` is actually populated at
+   the `fetchPage` closure in `production-odds-control-plane.ts` — the
+   `sharpLeague` in that scope may be a different object than the one edited
+   in `packages/providers/src/sharp-api.ts`.
+2. Check whether the MLS primary chain ever reaches exhaustion. The hand-off
+   to the secondary only fires when `page.hasMore` is false; if the run ends
+   on a page limit, a cadence boundary, or an expired cursor (which returns
+   `hasMore: false` with zero events — see the OddsCursorExpired branch), the
+   chain may terminate before the hand-off or hand off from a synthesised
+   empty page.
+3. Verify the run's sealed page chain on staging: walk `ODDS_CONTROL#PAGE#`
+   rows for the current MLS runId and look for a `secondary:leagues_cup:*`
+   token. That answers 1 and 2 outright.
+
+Do not assume the resolver works until a secondary page is observed. The
+alias matcher is only covered by unit fixtures, and the live label pairing
+between the two catalogues has never been exercised.
 
 ## The problem
 
