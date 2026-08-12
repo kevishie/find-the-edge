@@ -1805,6 +1805,24 @@ retiring one.
 - Risk: Low.
 - Approval required before merge: No.
 
+#### FTE-091: A Future Game Is Not Withdrawn Just Because Its Row Rotated Out
+
+- Epic: Live game state. **Does not depend on the add-on.**
+- Outcome: An upcoming game the product already holds evidence for survives a gap in the provider's schedule catalogue.
+- Context: `withoutWithdrawnListings` drops a past-start game only after asking the splits witness, but for a game starting more than fifteen minutes from now it drops **unconditionally** — `if (startsInFuture) continue;` consults no evidence at all. Measured on staging 2026-08-12T23:00Z: the two 22:10 Eastern games (Rangers at Angels, Royals at Dodgers) were deleted from the board despite carrying sixteen current split observations and available odds each. The provider's MLB `/events` catalogue returned 416 rows for the day and contained **no clean full-game row for either game** — only Kalshi binaries, `- Player Props` derivatives, and empty-participant `binary`/`outright` rows, all of which our parser correctly refuses. The listing did not go away because the game did; it went away because the catalogue rotated and the pollution stayed. This is the third distinct way this filter loses real games, and the only one that never looks at evidence before deciding.
+- In scope: requiring positive evidence before dropping a future game that the product already holds — current odds or split observations are the game asserting itself; a bounded window so a genuinely withdrawn listing still ages out; counting future drops separately from past-start drops so the two rules can be judged apart; the same treatment on the live projection path and the materialization path, which currently disagree.
+- Out of scope: Widening the schedule parser to accept derivative rows. Those exclusions are correct and must stay — this story fixes what the board does when a correct exclusion leaves nothing behind.
+- Dependencies: None. FTE-084 and FTE-087 supersede parts of it once game state lands, and this must not be written so it has to be unpicked then.
+- Acceptance criteria: A future game with current odds or splits is retained when the provider's catalogue has no clean row for it; a future game with no evidence at all still ages out; the 2026-08-12 late-game case is pinned as a regression; the stored board and the live projection return the same rows for the same query, which they did not on 2026-08-12 — 13 against 15; drops are counted by rule so the future and past-start paths never merge into one number.
+- Required automated tests: Board projection tests for a future game with evidence, without evidence, and inside the pre-start grace; a regression pinning the two 22:10 Eastern games; a test asserting the materialized and live paths agree on the same fixture.
+- Likely files/packages affected: `packages/database/src/board-projection.ts`, `apps/api/src/handler.ts`, `apps/workers`.
+- Observability: Listings dropped by rule and by lead time, so a catalogue rotation is visible as a spike rather than as a quiet shorter board.
+- Security: None.
+- Data migration/backfill impact: None.
+- Definition of done: The board stops deleting games it has evidence for, and the two read paths agree.
+- Risk: High — this rule decides what appears on the board.
+- Approval required before merge: Yes.
+
 ### Epic 9: Bet Tracker and Settlement
 
 #### FTE-048: Manual Bet Entry with Opportunity or Report Source Link

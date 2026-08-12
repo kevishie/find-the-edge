@@ -550,3 +550,62 @@ Structural follow-ups are FTE-087 (a slate short a game alarms without a
 person counting rows), FTE-084 (a stale splits witness must not delete
 started games), and FTE-090. A promotion gap this size is its own risk and
 belongs in Epic 11 rather than here.
+
+## Incident 2026-08-12: the late games vanish from the MLB board (OPEN)
+
+Reported on staging: "12 games in the splits, missing the late games."
+Reproduced at 2026-08-12T23:00Z. The count depends on the query key:
+
+| query | rows |
+| --- | --- |
+| `/splits?sport=mlb&status=scheduled&day=…&limit=50` | 15 |
+| `/splits?sport=mlb&league=mlb&status=scheduled&day=…&limit=50` | **13** |
+
+Same for `/games`: 15 without `league`, 13 with. The web client sends the
+full key, so the product sees 13. The two missing rows are both 22:10
+Eastern — Rangers at Angels, Royals at Dodgers.
+
+The two paths are not the same code. `loadStoredBoard` matches on
+`leagueKey`, so the full key hits the **materialized** board and a partial
+key falls through to the **live projection**. `withoutWithdrawnListings`
+runs only during materialization. The stored board is therefore filtered and
+the live one is not, and nothing reconciles them.
+
+The filter is doing this, in `board-projection.ts`:
+
+```ts
+if (startsInFuture) continue; // a future listing the provider no longer has
+```
+
+For a past-start game the filter asks the splits witness first. For a game
+starting more than `PRE_START_IN_PLAY_GRACE_MS` (15 min) ahead it consults
+**nothing** — absence from the current schedule listing is treated as proof
+of withdrawal. Both dropped games carried 16 current split observations and
+available odds.
+
+Why they left the listing, established by direct provider calls
+(`/events?league=mlb&live=false&limit=200`, offsets 0/200/400):
+
+- The MLB catalogue returned **416 rows** for the day, overwhelmingly
+  derivatives: `MLB Player Awards`, `- Player Props`, `First 3 Innings`,
+  `WSH3 Washington wins by…`, Kalshi `kalshi_fut_kxmlbspread_*` binaries,
+  and empty-participant rows carrying `binary`/`outright` markets.
+- Of the nine rows at `2026-08-13T02:10Z`, **not one is a clean full-game
+  row**. Every one is a prop, a binary, or an empty-participant row, and our
+  parser correctly refuses all of them.
+
+So the listing did not disappear because the game did. The catalogue rotated
+its full-game rows out while the pollution stayed, and a correct exclusion
+left nothing behind for the board filter to match.
+
+This is the third distinct way this filter loses real games, and the only
+one that never looks at evidence:
+
+1. Past-start game, splits witness down — FTE-084.
+2. Slate short and nothing notices — FTE-087.
+3. **Future game, no witness consulted at all — FTE-091 (this one).**
+
+Not yet established: how long a full-game row stays out of the catalogue,
+and whether the rotation correlates with first pitch approaching. Both
+matter for choosing the bounded window in FTE-091 and are worth sampling
+across a full day before that story is written into code.
