@@ -14,6 +14,10 @@ export default tseslint.config(
       "_bmad/**",
       "_bmad-output/**",
       ".agents/**",
+      // Agent worktrees are whole nested checkouts of this repo. Linting them
+      // reports every file twice and, because they are outside the tsconfig
+      // project, mostly as parse errors.
+      ".claude/**",
       "eslint.config.mjs",
       "scripts/*.mjs",
       "apps/web/public/*.js",
