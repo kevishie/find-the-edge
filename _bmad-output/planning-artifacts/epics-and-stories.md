@@ -1436,6 +1436,18 @@ The epic is deliberately ordered measure → reduce → re-measure → evaluate 
 adopt. Two cost claims have already been made on this project before they
 were measured, and both were wrong; FTE-078 exists so a third cannot be.
 
+**The streaming trial is 72 hours and it starts on the first stream
+connection, not on a signup click.** No credit card is required, which means
+nothing stops an exploratory connect from silently burning the clock. So the
+consumer is built and tested against recorded fixtures BEFORE any connection
+is opened — FTE-079 records a capture through a single deliberate connect and
+everything after it runs offline until FTE-080 is ready to use the remaining
+window on purpose. Treat the first connection as an irreversible act.
+
+Protocols offered are SSE and WebSocket. SSE is the cheaper fit for a Lambda
+consumer and should be evaluated first; WebSocket is only worth its
+connection-state complexity if SSE cannot deliver ordering or resume.
+
 #### FTE-075: Cost Attribution Baseline for the Ingestion Table
 
 - Epic: Ingestion cost, measurement, and streaming.
@@ -1513,9 +1525,9 @@ were measured, and both were wrong; FTE-078 exists so a third cannot be.
 - Epic: Ingestion cost, measurement, and streaming.
 - Outcome: A decision, with evidence, on whether streaming can carry this product's evidence guarantees.
 - Context: Streaming is a $99/month add-on on our existing `sharp` tier, so it is additive spend. Its real promise is not provider cost but retiring the pagination model that generates most of the bookkeeping — and removing the failure class behind both 2026-08-11 outages, which were a poisoned cursor and a latched ambiguity marker. Neither exists in a push model.
-- In scope: a time-boxed spike against the real stream — message shape, ordering guarantees, delivery semantics, gap and resume behaviour after a disconnect, whether a message identifies the same event identity our canonical mapping needs, observed message rate and freshness against our current ten-second fast lane.
-- Out of scope: Production ingestion. Nothing from this spike ships to a serving path.
-- Dependencies: FTE-075.
+- In scope: a time-boxed spike against the real stream — message shape, ordering guarantees, delivery semantics, gap and resume behaviour after a disconnect, whether a message identifies the same event identity our canonical mapping needs, observed message rate and freshness against our current ten-second fast lane. SSE is evaluated before WebSocket. The connection is opened once, deliberately, and everything received is captured to a recorded fixture so the rest of the epic can be built offline.
+- Out of scope: Production ingestion. Nothing from this spike ships to a serving path. Opening a second connection before FTE-080 is ready.
+- Dependencies: FTE-075. Note the trial clock: this story starts the 72 hours and FTE-080 must be ready to consume the remainder.
 - Acceptance criteria: Documented answers on ordering, at-least-once versus at-most-once, resume-after-disconnect, and identity; a written judgement on whether every served number stays reproducible from stored evidence; a recommendation with the reasoning that would change it.
 - Required automated tests: None — this is a spike. Findings are recorded, not shipped.
 - Likely files/packages affected: `_bmad-output/implementation-artifacts`, a scratch harness that is not merged.
@@ -1535,7 +1547,7 @@ were measured, and both were wrong; FTE-078 exists so a third cannot be.
 - Out of scope: Retiring any polling. That is FTE-081 and only after divergence is observed at zero.
 - Dependencies: FTE-079 approved.
 - Acceptance criteria: With the flag off, behaviour is byte-identical to today; with it on, streamed prices produce snapshots indistinguishable from polled ones for the same observation; divergence is measured continuously and alarmed; a stream disconnect degrades to polling without losing evidence.
-- Required automated tests: Consumer tests for out-of-order, duplicate, and dropped messages; a test proving a disconnect mid-stream loses no committed evidence; divergence-metric tests.
+- Required automated tests: Consumer tests for out-of-order, duplicate, and dropped messages, all driven from FTE-079's recorded fixture so they run without a live connection; a test proving a disconnect mid-stream loses no committed evidence; divergence-metric tests.
 - Likely files/packages affected: `packages/providers`, `apps/workers`, `infra/cdk`, `packages/config`.
 - Observability: Divergence by league and book; stream connection state; message age at receipt.
 - Security: Streaming credential in Secrets Manager; no payload logged.
@@ -1560,6 +1572,123 @@ were measured, and both were wrong; FTE-078 exists so a third cannot be.
 - Data migration/backfill impact: None.
 - Definition of done: Streaming is primary, rollback is proven, and the change is measured.
 - Risk: High.
+- Approval required before merge: Yes.
+
+### Epic 14: Live Game State
+
+SharpAPI offers Game State as a $79/month add-on: live multi-book consensus
+scores, period, clock, and possession across all major sports, at
+`/gamestate` and `/gamestate/:sport`, with consensus drawn from 10+
+sportsbooks. Billing is prorated and access enables when payment clears — so
+unlike streaming there is no trial clock, and the work can proceed at its own
+pace.
+
+Two things make this worth more than a scoreboard.
+
+First, it answers a question this product has repeatedly got wrong. The board
+cannot reliably distinguish a game that is in play from a listing the
+provider withdrew: the schedule feed drops started games, so a past-start
+absentee needs a second witness, and the current one is betting splits — a
+proxy that only works in MLB and that let four ghost listings sit on the
+board on 2026-08-11. Game state answers "is this game actually happening"
+directly.
+
+Second, settlement. The bet tracker settles by hand (FTE-050). A final score
+turns that into a confirmation rather than a data-entry task.
+
+The caution is the same one that governs odds here: this is a **consensus
+across books, not an official feed**. It is evidence about a game, not the
+game's record. Nothing in this epic may present a consensus score as
+authoritative, and no money may move from it automatically.
+
+#### FTE-082: Spike - Game State Feed Shape and Trustworthiness
+
+- Epic: Live game state.
+- Outcome: A documented judgement on what the feed actually knows, how fast, and how often it is wrong.
+- Context: SharpAPI's own feeds have changed shape under this product more than once, and its catalogues carry derivative and prop rows that look like games. A consensus across books is a derived claim with no stated accuracy guarantee.
+- In scope: sampling `/gamestate` and `/gamestate/:sport` across sports we serve; the event identity a row carries and whether it maps to our canonical events (the same identity problem Leagues Cup exposed — do not assume a shared id); update cadence and observed lag against a known live game; disagreement between books within one consensus; behaviour around start, period breaks, delays, and finals; whether a final is ever revised after first publication.
+- Out of scope: Any serving path. Any billing commitment beyond the add-on itself.
+- Dependencies: None.
+- Acceptance criteria: A written answer on identity mapping, cadence, lag, and revision behaviour, each backed by captured samples; an explicit statement of what the feed cannot be trusted for; a recommendation on which of FTE-083 to FTE-086 are worth building.
+- Required automated tests: None — findings are recorded, not shipped.
+- Likely files/packages affected: `_bmad-output/implementation-artifacts`.
+- Observability: Not applicable.
+- Security: The add-on credential is in Secrets Manager from the first call.
+- Data migration/backfill impact: None.
+- Definition of done: A recommendation a reader could disagree with on stated grounds.
+- Risk: Low.
+- Approval required before merge: Yes — the outcome authorises the rest of the epic.
+
+#### FTE-083: Game State Domain Model and Ingestion
+
+- Epic: Live game state.
+- Outcome: Live state is ingested and stored as evidence, with the same provenance discipline as odds.
+- Context: Every served number in this product must be reproducible from stored evidence. A score is no different, and a consensus score needs its disagreement recorded, not averaged away silently.
+- In scope: a game state domain model (score, period, clock, possession, status) that re-derives on read and rejects a stored row edited underneath it; ingestion onto existing canonical events by the resolution path, never bootstrapping a new one; recording book disagreement within a consensus; a freshness stamp on every reading.
+- Out of scope: Any UI. Any use of game state to settle a bet or move a lifecycle.
+- Dependencies: FTE-082 approved.
+- Acceptance criteria: State attaches only to canonical events that already exist, and an unmatched row is counted rather than minted — the Leagues Cup rule; a stored row that was edited is rejected; disagreement between books is preserved and inspectable; every reading carries an observation time distinct from our fetch time.
+- Required automated tests: Domain tests for the model and its rejections; a test asserting an unresolvable row never creates an event; ingestion tests for period, clock, and possession transitions including a game that goes to extra time.
+- Likely files/packages affected: `packages/domain`, `packages/database`, `packages/providers`, `apps/workers`.
+- Observability: Rows ingested, rows unresolved by reason, book disagreement rate, feed lag.
+- Security: None beyond credential handling.
+- Data migration/backfill impact: None — new records only.
+- Definition of done: Game state is stored evidence, reproducible and provenanced.
+- Risk: Medium.
+- Approval required before merge: No.
+
+#### FTE-084: Game State as the Lifecycle Witness
+
+- Epic: Live game state.
+- Outcome: The board tells an in-play game from a withdrawn listing by asking what is happening, not by inferring it.
+- Context: `withoutWithdrawnListings` currently needs a second witness for a past-start game absent from the schedule feed, and uses betting splits — which exist only in MLB and which vouched for four ghost listings on 2026-08-11. This replaces a proxy with the actual signal.
+- In scope: using game state as the primary in-play witness; retaining the splits witness as a fallback where game state is absent; a stated precedence order; removing the splits-only assumption from soccer, which never had it.
+- Out of scope: Removing the splits witness. It stays as a fallback until game state is proven across a full season of edge cases.
+- Dependencies: FTE-083.
+- Acceptance criteria: A past-start game confirmed in play by game state is retained regardless of splits; a game the feed says has finished, or knows nothing about, is judged by the existing rules rather than dropped on absence alone; a game state outage degrades to today's behaviour rather than emptying the board.
+- Required automated tests: Board projection tests for in-play, finished, unknown, and feed-absent; a regression pinning the 2026-08-11 ghost case; a test proving a total game state outage changes nothing.
+- Likely files/packages affected: `packages/database/src/board-projection.ts`, `apps/workers`.
+- Observability: Listings retained or dropped by witness, so the two witnesses can be compared before the fallback is retired.
+- Security: None.
+- Data migration/backfill impact: None.
+- Definition of done: In-play is answered by evidence about the game, with a safe degradation path.
+- Risk: High — this rule decides what appears on the board.
+- Approval required before merge: Yes.
+
+#### FTE-085: Live Score, Period, Clock, and Possession on the Product
+
+- Epic: Live game state.
+- Outcome: A reader can see the state of a game they have a position or an interest in.
+- Context: The product renders lines only, by rule. Score is a new surface and must not crowd out the prices or imply an authority it does not have.
+- In scope: live state on event detail and, where it earns the room, the board and watchlist; an explicit consensus label with its freshness; honest empty and stale states; mobile-first layout.
+- Out of scope: Play-by-play, box scores, win probability, and any derived in-play model.
+- Dependencies: FTE-083.
+- Acceptance criteria: State is labelled as multi-book consensus with an observation time, never as an official score; a stale or absent reading says so rather than showing an old number; the lines remain the primary content on every breakpoint; no layout shift when a clock ticks.
+- Required automated tests: Component tests for live, stale, absent, and finished; a Playwright check on mobile and desktop; an assertion that the consensus label and freshness are always present with a score.
+- Likely files/packages affected: `apps/web`, `apps/api`, `packages/ui`.
+- Observability: Render counts of stale and absent states.
+- Security: Entitled product surface.
+- Data migration/backfill impact: None.
+- Definition of done: Game state is visible, honest about what it is, and subordinate to the lines.
+- Risk: Medium.
+- Approval required before merge: No.
+
+#### FTE-086: Assisted Bet Settlement from Final Game State
+
+- Epic: Live game state.
+- Outcome: Settling a bet is confirming a result the product proposes, never a result it applies.
+- Context: FTE-050 settles by hand. A consensus final is good enough to propose an outcome and nowhere near good enough to move money unattended — and FTE-082 establishes whether finals are ever revised after first publication.
+- In scope: proposing a settlement for an open bet whose event has a final state; showing the evidence and its provenance beside the proposal; one deliberate confirmation per bet; recording that the settlement was proposed by the feed and confirmed by the reader.
+- Out of scope: Automatic settlement of any kind. Bulk-confirming multiple bets in one action. Proposing a settlement for any market the feed cannot resolve unambiguously.
+- Dependencies: FTE-083, FTE-050.
+- Acceptance criteria: No bet ever changes status without an explicit per-bet confirmation; the proposal shows the final it came from and when it was observed; a revised final after confirmation surfaces as a correction prompt rather than a silent rewrite; markets the feed cannot resolve are left alone with a stated reason.
+- Required automated tests: Tests proving no state change occurs without confirmation; a revision-after-confirmation test; tests for markets that must not be proposed.
+- Likely files/packages affected: `packages/domain`, `apps/api`, `apps/web`, `packages/database`.
+- Observability: Proposals shown, confirmed, rejected, and revised — the rejection rate measures whether the feed deserves the trust.
+- Security: User-scoped; a proposal is never applied server-side without the confirmation.
+- Data migration/backfill impact: None. Existing open bets remain open.
+- Definition of done: Settlement is assisted, auditable, and always a human act.
+- Risk: High — this touches recorded money.
 - Approval required before merge: Yes.
 
 ### Epic 9: Bet Tracker and Settlement
@@ -1805,6 +1934,9 @@ Stories requiring human approval before merge:
 - FTE-079: Spike - SharpAPI Streaming Against the Evidence Contract.
 - FTE-080: Streaming Ingestion Behind a Flag, Polling as Reconciliation.
 - FTE-081: Streaming Cutover and Polling Cadence Reduction.
+- FTE-082: Spike - Game State Feed Shape and Trustworthiness.
+- FTE-084: Game State as the Lifecycle Witness.
+- FTE-086: Assisted Bet Settlement from Final Game State.
 
 ## 9. Prototype Alignment Notes
 
