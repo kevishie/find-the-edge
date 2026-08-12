@@ -1444,9 +1444,31 @@ is opened — FTE-079 records a capture through a single deliberate connect and
 everything after it runs offline until FTE-080 is ready to use the remaining
 window on purpose. Treat the first connection as an irreversible act.
 
-Protocols offered are SSE and WebSocket. SSE is the cheaper fit for a Lambda
-consumer and should be evaluated first; WebSocket is only worth its
-connection-state complexity if SSE cannot deliver ordering or resume.
+Protocols offered are SSE and WebSocket. SSE is the cheaper fit and should be
+evaluated first; WebSocket is only worth its connection-state complexity if
+SSE cannot deliver ordering or resume.
+
+**Confirmed active 2026-08-12 as the paid add-on, not the trial**, so there
+is no 72-hour clock. The account reports `streaming.enabled: true` — and
+`max_connections: 1`.
+
+That single connection is the dominant architectural constraint and it
+invalidates the obvious design. One connection cannot be consumed by a
+horizontally scaled Lambda: two concurrent invocations would fight over it,
+and a developer connecting locally would evict production. Streaming needs
+ONE long-lived consumer — a single-task Fargate service, or an equivalent
+with hard concurrency of one — with a documented rule that local development
+uses a recorded fixture and never the live stream. FTE-079 must confirm the
+eviction behaviour before FTE-080 designs around it.
+
+**Polling is permanent. It is never deleted, and its data is never
+discarded.** Streaming is an accelerator layered on top of a polling
+substrate that remains the system of record and the fallback. Turning
+streaming off — by choice, by outage, by billing lapse, or by a connection
+we lose and cannot reclaim — must leave a fully working product with no
+recovery step beyond a flag. FTE-081 reduces polling CADENCE and retires
+only machinery the old cadence uniquely required; it does not remove the
+polling path, and no story in this epic may.
 
 #### FTE-075: Cost Attribution Baseline for the Ingestion Table
 
@@ -1562,7 +1584,7 @@ connection-state complexity if SSE cannot deliver ordering or resume.
 - Outcome: Streaming is the primary source and polling drops to a reconciliation cadence, with the cost and freshness change measured.
 - Context: Only justified once FTE-080 has shown sustained zero divergence over a period that includes a provider incident, a deploy, and a disconnect.
 - In scope: promoting streaming to primary; reducing the fast lane to a reconciliation cadence; retiring the control-plane machinery that only the old cadence required; re-measuring cost and board freshness against FTE-078's numbers.
-- Out of scope: Removing reconciliation entirely, and removing any evidence record a later dispute would need.
+- Out of scope: Removing the polling path, removing reconciliation, and removing any evidence record a later dispute would need. Cadence may fall; the path stays.
 - Dependencies: FTE-080, and a stated divergence-free observation window.
 - Acceptance criteria: Board freshness improves measurably; no served number loses reproducibility from stored evidence; the cost change is measured, not projected; rollback to polling-primary is one configuration change and is tested.
 - Required automated tests: A rollback test proving polling-primary still serves correctly after cutover; freshness assertions on the served board.
@@ -1605,7 +1627,7 @@ authoritative, and no money may move from it automatically.
 
 - Epic: Live game state.
 - Outcome: A documented judgement on what the feed actually knows, how fast, and how often it is wrong.
-- Context: SharpAPI's own feeds have changed shape under this product more than once, and its catalogues carry derivative and prop rows that look like games. A consensus across books is a derived claim with no stated accuracy guarantee.
+- Context: SharpAPI's own feeds have changed shape under this product more than once, and its catalogues carry derivative and prop rows that look like games. A consensus across books is a derived claim with no stated accuracy guarantee. Confirmed active 2026-08-12: `/gamestate` returns 200 with ~247KB keyed sport → provider event id → state, carrying `away_score`, `home_score`, `game_clock`, `in_play`, `is_live`, `book_count`, `consensus_at`, and `primary_book`. It also carries the same pollution class as the other catalogues — obscure and book-specific leagues sit beside the real ones — so the identity and filtering problem is present here too.
 - In scope: sampling `/gamestate` and `/gamestate/:sport` across sports we serve; the event identity a row carries and whether it maps to our canonical events (the same identity problem Leagues Cup exposed — do not assume a shared id); update cadence and observed lag against a known live game; disagreement between books within one consensus; behaviour around start, period breaks, delays, and finals; whether a final is ever revised after first publication.
 - Out of scope: Any serving path. Any billing commitment beyond the add-on itself.
 - Dependencies: None.
