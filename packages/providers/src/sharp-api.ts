@@ -1168,10 +1168,15 @@ export function parseSharpApiSchedulePage(
     // catalogues despite an exact filter. League identity is the only field we
     // need in order to exclude those rows safely.
     if (
-      ![
-        league.leagueKey,
-        ...acceptedProviderLeagues(league).map((name) => name.toLowerCase()),
-      ].includes(value["league"].toLowerCase())
+      // Schedule only — and deliberately NOT widened to the secondary
+      // catalogues. This request asks for one league, and rows outside it are
+      // skipped here BEFORE the shape check below, which throws. Accepting a
+      // foreign row moves it past that guard, so a single live row fails the
+      // whole page — which took MLS's schedule down, and with it the odds run
+      // the schedule gates.
+      ![league.leagueKey, league.providerLeague.toLowerCase()].includes(
+        value["league"].toLowerCase(),
+      )
     )
       continue;
     if (
