@@ -93,6 +93,46 @@ not the class. Any run that commits evidence and then fails repeatably is
 still exempt from the staleness ceiling forever. Recorded in
 `deferred-work.md`.
 
+## Verified on staging after the fix (2026-08-12 23:20Z)
+
+The outage is over and the wedge self-healed, exactly as predicted:
+
+- the wedged continuation (`…16:05:08.918Z`, version 3431) is **gone**,
+  replaced by a fresh run `mls:sharpapi:2026-08-12T23:19:49.106Z` at
+  version 18 that is progressing normally;
+- `sharpapi:mls:odds` is **healthy**, last success 23:19:49Z (it had been
+  frozen at 16:05:08.918Z for seven hours), `recommendationImpact` back to
+  `none` from `suppressed`;
+- the account summary went from 6 healthy / 9 stale / 10 impacted to
+  **11 healthy / 5 stale / 5 impacted**.
+
+**Soccer is still unpriced, and that is this spec's original problem.** The
+outage was a separate defect layered on top of it. The board for
+2026-08-12, fetched with the exact UI query, holds 13 fixtures and every one
+is `odds.state: "unavailable"`:
+
+- **7 are Leagues Cup** — Inter Miami v León, Orlando City v San Luis,
+  Monterrey v Nashville, Toluca v FC Dallas, San Diego v Puebla, Seattle v
+  Chivas, LAFC v Querétaro — all under provider ids prefixed
+  `usa_-_major_league_soccer_`. These are precisely the fixtures "The
+  problem" section describes: canonical from the `mls` listing whose only
+  book is `fliff`, with the liquidity in the `leagues_cup` catalogue we do
+  not fetch. The design below is still the fix and is still inert.
+- **6 are `mls+` derivative listings** — `mls+_earthquakes_rapids_…`, with
+  participants labelled "Rapids +" / "Earthquakes +". These are the
+  catalogue-pollution class, not real games, and they should probably never
+  reach a board. Not yet investigated; recorded here because it is a
+  separate defect from either of the above.
+
+**A likely explanation for why the combined request broke MLS.** The
+combined call adds 166 Leagues Cup rows whose start times come from a
+different catalogue than the canonical events they resolve onto. Any one of
+them drifting past the tolerance would have hit the throw that has now been
+removed — aborting the league on the first such row, keeping the
+continuation, and wedging exactly as observed. That is a hypothesis, not a
+demonstrated cause, but it fits the evidence better than the three suspects
+above and it means the blocker to re-enabling may already be gone.
+
 Do not re-enable the combined request without an assertion that MLS still
 completes.
 
