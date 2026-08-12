@@ -1418,6 +1418,150 @@ mint and the browser stores.
 - Risk: High.
 - Approval required before merge: Yes.
 
+### Epic 13: Ingestion Cost, Measurement, and Streaming
+
+Measured 2026-08-12: the ingestion table consumes ~960K write units and
+~1.64M read units per hour, sustained. At on-demand rates that is a forward
+run-rate near $1,176/month for DynamoDB alone, against an actual bill of
+$64.97 for 2026-08-01..12 — the rate ramped as the fast lane, opportunity
+generation, and further leagues landed, so the bill lags reality.
+
+Attribution matters more than the total. Odds persistence is ~51K operations
+per hour, roughly 5% of writes. The rest is control-plane bookkeeping — runs,
+sealed pages, attempts, continuations, health, checkpoints — which exists
+because ingestion is paginated polling. SharpAPI offers WebSocket streaming
+as a $99/month add-on on our existing `sharp` tier.
+
+The epic is deliberately ordered measure → reduce → re-measure → evaluate →
+adopt. Two cost claims have already been made on this project before they
+were measured, and both were wrong; FTE-078 exists so a third cannot be.
+
+#### FTE-075: Cost Attribution Baseline for the Ingestion Table
+
+- Epic: Ingestion cost, measurement, and streaming.
+- Outcome: Every write and read against the ingestion table is attributed to a named cause, with a recorded baseline that later work is judged against.
+- Context: Contributor Insights already named `ODDS_CONTROL#RUN#*` as the top partition at 10,000-13,500 accesses per run per twenty minutes. That was a spot reading, not a baseline, and it predates the per-page read removal.
+- In scope: a repeatable attribution procedure (Contributor Insights rules, CloudWatch consumed-capacity by table and index, EMF counters per control-plane operation); a recorded baseline of writes and reads per hour split by partition prefix; a documented cost model converting units to dollars.
+- Out of scope: Any change to write volume. This story only measures.
+- Dependencies: None.
+- Acceptance criteria: The baseline names the top five partition prefixes by consumed capacity with a percentage each; the procedure can be rerun by one documented command sequence; the dollar model reproduces the observed bill within 15% for a period where the bill is settled.
+- Required automated tests: Unit tests for the EMF counters added; a check that the attribution script fails loudly rather than reporting zero when a metric is missing.
+- Likely files/packages affected: `packages/database`, `apps/workers`, `scripts`, `docs`.
+- Observability: This story creates the measurement.
+- Security: No table contents in any exported artefact; partition prefixes only, never full keys.
+- Data migration/backfill impact: None.
+- Definition of done: A recorded, reproducible baseline exists and is referenced by FTE-078.
+- Risk: Low.
+- Approval required before merge: No.
+
+#### FTE-076: Collapse Per-Run Control-Plane Bookkeeping
+
+- Epic: Ingestion cost, measurement, and streaming.
+- Outcome: A fetch pass writes to the run row a bounded number of times regardless of how many pages it walks.
+- Context: The per-page run READ is already gone (2026-08-12). The remaining amplifiers are catalogued in deferred-work: every `getRun`-then-`putRun` caller pair costs three accesses because `putVersioned` re-reads anyway; schedule pages pay two evidence transactions each; the pre-ownership read runs before `claimContinuation`, so a worker that bails still touches the contended item; and `:skip:`/`:odds:` audit runs mint a fresh RUN item every ten seconds per league that nothing ever reads back.
+- In scope: removing redundant reads around `putRun`; collapsing the double evidence transaction on schedule pages; moving the pre-ownership read below the claim; replacing never-read audit runs with a counter or a bounded log.
+- Out of scope: Changing the exactly-once evidence contract; changing quota fencing; anything that alters what is durably recorded about a run's outcome.
+- Dependencies: FTE-075.
+- Acceptance criteria: A full pass over a hundred-page run performs a bounded, asserted number of RUN-partition accesses; exactly-once evidence commitment and quota fencing are unchanged; no audit information a later incident would need is lost.
+- Required automated tests: A counting harness asserting RUN accesses per pass, with a deliberate access proving the counter is wired — the existing `markEvidenceIntent` test is the pattern; replay and crash-interruption tests unchanged and passing.
+- Likely files/packages affected: `packages/database/src/odds-control-plane.ts`, `apps/workers/src/odds-control-plane.ts`, `apps/workers/src/production-odds-control-plane.ts`.
+- Observability: Per-operation write counters from FTE-075 must move visibly.
+- Security: None.
+- Data migration/backfill impact: Existing run rows remain readable; no rewrite.
+- Definition of done: Bookkeeping writes per pass are bounded and asserted.
+- Risk: High — this is idempotency and replay-safety machinery.
+- Approval required before merge: Yes.
+
+#### FTE-077: Right-Size Read Consistency in the Control Plane
+
+- Epic: Ingestion cost, measurement, and streaming.
+- Outcome: Strongly consistent reads are used only where correctness depends on them.
+- Context: The control plane reads with `ConsistentRead: true` throughout. A strongly consistent read costs twice an eventually consistent one, and at ~1,200M reads per month that difference is roughly $150/month on its own.
+- In scope: an audit of every `ConsistentRead` in the control plane and repositories, each classified as required (a read whose staleness would break a fence or a claim) or not; downgrading the rest; recording the reasoning per call site.
+- Out of scope: Changing any read that participates in ownership, leases, optimistic version checks, or evidence decisions.
+- Dependencies: FTE-075.
+- Acceptance criteria: Each remaining strongly consistent read carries a comment naming what would break without it; downgraded reads are proven safe by a test that exercises the stale-read case; read units per hour fall measurably.
+- Required automated tests: Tests that simulate a stale read on each downgraded path and assert the caller still behaves correctly.
+- Likely files/packages affected: `packages/database`, `apps/workers`.
+- Observability: Read units per hour, from FTE-075's baseline.
+- Security: None.
+- Data migration/backfill impact: None.
+- Definition of done: Consistency is a decision per call site, not a default.
+- Risk: High — a wrongly downgraded read fails intermittently and invisibly.
+- Approval required before merge: Yes.
+
+#### FTE-078: Verified Cost Reduction Re-Measurement
+
+- Epic: Ingestion cost, measurement, and streaming.
+- Outcome: The reduction from FTE-076 and FTE-077 is stated as a measured number or not stated at all.
+- Context: Two cost claims have been made on this project before measurement and both were wrong. This story is the gate that prevents a third.
+- In scope: rerunning FTE-075's procedure after the reductions land and settle; comparing against the recorded baseline; publishing the delta with its measurement window; updating the dollar model.
+- Out of scope: Any further optimisation. If the reduction is smaller than expected, that is the finding, not a reason to keep changing code inside this story.
+- Dependencies: FTE-075, FTE-076, FTE-077.
+- Acceptance criteria: A published before/after with identical methodology and a stated measurement window; the delta is attributed to named changes; a reduction below expectation is recorded honestly rather than re-run until favourable.
+- Required automated tests: None beyond the procedure's own guards.
+- Likely files/packages affected: `docs`, `_bmad-output/implementation-artifacts`.
+- Observability: Unchanged.
+- Security: None.
+- Data migration/backfill impact: None.
+- Definition of done: The saving is a measured number with a window, or it is not claimed.
+- Risk: Low.
+- Approval required before merge: No.
+
+#### FTE-079: Spike - SharpAPI Streaming Against the Evidence Contract
+
+- Epic: Ingestion cost, measurement, and streaming.
+- Outcome: A decision, with evidence, on whether streaming can carry this product's evidence guarantees.
+- Context: Streaming is a $99/month add-on on our existing `sharp` tier, so it is additive spend. Its real promise is not provider cost but retiring the pagination model that generates most of the bookkeeping — and removing the failure class behind both 2026-08-11 outages, which were a poisoned cursor and a latched ambiguity marker. Neither exists in a push model.
+- In scope: a time-boxed spike against the real stream — message shape, ordering guarantees, delivery semantics, gap and resume behaviour after a disconnect, whether a message identifies the same event identity our canonical mapping needs, observed message rate and freshness against our current ten-second fast lane.
+- Out of scope: Production ingestion. Nothing from this spike ships to a serving path.
+- Dependencies: FTE-075.
+- Acceptance criteria: Documented answers on ordering, at-least-once versus at-most-once, resume-after-disconnect, and identity; a written judgement on whether every served number stays reproducible from stored evidence; a recommendation with the reasoning that would change it.
+- Required automated tests: None — this is a spike. Findings are recorded, not shipped.
+- Likely files/packages affected: `_bmad-output/implementation-artifacts`, a scratch harness that is not merged.
+- Observability: Not applicable.
+- Security: The streaming credential is stored in Secrets Manager from the outset; never in a scratch file or a log.
+- Data migration/backfill impact: None.
+- Definition of done: A recommendation exists that a reader could disagree with on stated grounds.
+- Risk: Low.
+- Approval required before merge: Yes — the outcome authorises or refuses FTE-080.
+
+#### FTE-080: Streaming Ingestion Behind a Flag, Polling as Reconciliation
+
+- Epic: Ingestion cost, measurement, and streaming.
+- Outcome: Prices can arrive by stream while polling continues to prove nothing was missed.
+- Context: A stream drops messages; a reconciliation poll is how that is caught rather than discovered by a reader looking at a stale board. The two must agree before the stream is trusted alone.
+- In scope: a streaming consumer writing the same durable snapshots the polling path writes; an off-by-default flag; a reduced-cadence reconciliation poll; a divergence metric comparing what the stream delivered against what reconciliation found, by league and by book.
+- Out of scope: Retiring any polling. That is FTE-081 and only after divergence is observed at zero.
+- Dependencies: FTE-079 approved.
+- Acceptance criteria: With the flag off, behaviour is byte-identical to today; with it on, streamed prices produce snapshots indistinguishable from polled ones for the same observation; divergence is measured continuously and alarmed; a stream disconnect degrades to polling without losing evidence.
+- Required automated tests: Consumer tests for out-of-order, duplicate, and dropped messages; a test proving a disconnect mid-stream loses no committed evidence; divergence-metric tests.
+- Likely files/packages affected: `packages/providers`, `apps/workers`, `infra/cdk`, `packages/config`.
+- Observability: Divergence by league and book; stream connection state; message age at receipt.
+- Security: Streaming credential in Secrets Manager; no payload logged.
+- Data migration/backfill impact: None — same snapshot records.
+- Definition of done: Streaming runs in parallel with polling and their disagreement is a number on a dashboard.
+- Risk: High.
+- Approval required before merge: Yes.
+
+#### FTE-081: Streaming Cutover and Polling Cadence Reduction
+
+- Epic: Ingestion cost, measurement, and streaming.
+- Outcome: Streaming is the primary source and polling drops to a reconciliation cadence, with the cost and freshness change measured.
+- Context: Only justified once FTE-080 has shown sustained zero divergence over a period that includes a provider incident, a deploy, and a disconnect.
+- In scope: promoting streaming to primary; reducing the fast lane to a reconciliation cadence; retiring the control-plane machinery that only the old cadence required; re-measuring cost and board freshness against FTE-078's numbers.
+- Out of scope: Removing reconciliation entirely, and removing any evidence record a later dispute would need.
+- Dependencies: FTE-080, and a stated divergence-free observation window.
+- Acceptance criteria: Board freshness improves measurably; no served number loses reproducibility from stored evidence; the cost change is measured, not projected; rollback to polling-primary is one configuration change and is tested.
+- Required automated tests: A rollback test proving polling-primary still serves correctly after cutover; freshness assertions on the served board.
+- Likely files/packages affected: `apps/workers`, `infra/cdk`, `packages/config`, `docs`.
+- Observability: Board freshness, divergence, cost per hour.
+- Security: Unchanged.
+- Data migration/backfill impact: None.
+- Definition of done: Streaming is primary, rollback is proven, and the change is measured.
+- Risk: High.
+- Approval required before merge: Yes.
+
 ### Epic 9: Bet Tracker and Settlement
 
 #### FTE-048: Manual Bet Entry with Opportunity or Report Source Link
@@ -1656,6 +1800,11 @@ Stories requiring human approval before merge:
 - FTE-056: Secrets, IAM, Encryption, Throttling, and Audit Hardening.
 - FTE-058: Production Deployment, Rollback, Cost, and Release Checklist.
 - FTE-059: Production and Staging Environments, Custom Domains, and Branch Deployments.
+- FTE-076: Collapse Per-Run Control-Plane Bookkeeping.
+- FTE-077: Right-Size Read Consistency in the Control Plane.
+- FTE-079: Spike - SharpAPI Streaming Against the Evidence Contract.
+- FTE-080: Streaming Ingestion Behind a Flag, Polling as Reconciliation.
+- FTE-081: Streaming Cutover and Polling Cadence Reduction.
 
 ## 9. Prototype Alignment Notes
 
