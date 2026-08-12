@@ -1202,7 +1202,19 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 79);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 80);
+    // Every board alarm must carry the dimension its metric is published
+    // with. Declared without one, a CloudWatch alarm watches a metric that is
+    // never emitted and sits OK forever — which is exactly what shipped on
+    // 2026-08-11 while soccer read 0% priced for two hours.
+    for (const sport of ["mlb", "soccer"])
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        MetricName: "UpcomingGamesPricedShare",
+        Dimensions: [{ Name: "sport", Value: sport }],
+        Threshold: 0,
+        ComparisonOperator: "LessThanOrEqualToThreshold",
+      });
+
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });
@@ -1232,7 +1244,7 @@ describe("foundation CDK app", () => {
     const alarms = Object.values(rendered.Resources).filter(
       ({ Type }) => Type === "AWS::CloudWatch::Alarm",
     );
-    expect(alarms.length).toBe(79);
+    expect(alarms.length).toBe(80);
     expect(
       alarms.every((alarm) => alarm.Properties?.AlarmActions?.length === 1),
     ).toBe(true);

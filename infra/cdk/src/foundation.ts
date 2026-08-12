@@ -1950,18 +1950,32 @@ export class FoundationStack extends Stack {
       // hours on 2026-08-11 behind healthy provider status. Two causes, one
       // signal. Zero is the threshold because a partial outage is a
       // different, noisier question; this alarm answers "is this sport dead".
-      new Alarm(this, "SportPricelessBoardAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/Boards",
-          metricName: "UpcomingGamesPricedShare",
-          statistic: "Maximum",
-          period: Duration.minutes(15),
-        }),
-        threshold: 0,
-        evaluationPeriods: 2,
-        comparisonOperator: ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: TreatMissingData.NOT_BREACHING,
-      }),
+      // One alarm per sport, and the dimension is not optional. The metric is
+      // published WITH a `sport` dimension, and a CloudWatch alarm does not
+      // aggregate across dimensions — declared without one it watches a
+      // metric that is never emitted and sits permanently OK. It shipped that
+      // way on 2026-08-11 and reported "no datapoints received" while soccer
+      // read 0% for two hours. An alarm that cannot fire is worse than none,
+      // because it buys false confidence.
+      ...(["mlb", "soccer"] as const).map(
+        (sport) =>
+          new Alarm(this, `SportPricelessBoardAlarm${sport}`, {
+            metric: new Metric({
+              namespace: "FindTheEdge/Boards",
+              metricName: "UpcomingGamesPricedShare",
+              dimensionsMap: { sport },
+              statistic: "Maximum",
+              period: Duration.minutes(15),
+            }),
+            threshold: 0,
+            evaluationPeriods: 2,
+            comparisonOperator:
+              ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
+            // A sport with no upcoming games emits nothing; that is an empty
+            // slate, not an outage.
+            treatMissingData: TreatMissingData.NOT_BREACHING,
+          }),
+      ),
       new Alarm(this, "OddsControlPlaneCadenceLagAlarm", {
         metric: new Metric({
           namespace: "FindTheEdge/OddsControlPlane",
