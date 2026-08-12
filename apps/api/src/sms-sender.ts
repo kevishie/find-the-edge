@@ -31,10 +31,39 @@ export interface SmsSender {
   send(message: SmsMessage): Promise<SmsSendResult>;
 }
 
-/** The only text we ever send. No link, no account detail, no branding that
- * would help a phisher reuse it, and the code appears exactly once. */
-export const otpMessageBody = (code: string): string =>
-  `${code} is your Find The Edge sign-in code. It expires in 5 minutes. We will never ask you for it.`;
+const HOST_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+const BINDABLE_HOST = new RegExp(
+  `^${HOST_LABEL}(?:\\.${HOST_LABEL})*(?::\\d{1,5})?$`,
+  "i",
+);
+
+/**
+ * The only text we ever send. No link, no account detail, no branding that
+ * would help a phisher reuse it.
+ *
+ * The trailing `@host #code` line is the origin-bound format WebOTP defines.
+ * Android Chrome's `navigator.credentials.get({ otp })` will not resolve
+ * without it — the phone refuses to hand a code to a site the message never
+ * named. iOS Safari already offered the code heuristically from
+ * `autocomplete="one-time-code"`, and reads this form as a domain check on
+ * top of that. So the line buys Android autofill and hardens iOS.
+ *
+ * The code appears twice, which is inherent to the format. That is the whole
+ * cost: it is not a clickable link and it names only the host the reader is
+ * already looking at.
+ *
+ * `host` must come from the stage's own configuration and never from a
+ * request header. A host the caller chose is a code bound to the caller's
+ * origin, which is precisely a site that could then autofill it.
+ */
+export const otpMessageBody = (code: string, host?: string): string => {
+  const message = `${code} is your Find The Edge sign-in code. It expires in 5 minutes. We will never ask you for it.`;
+  // A malformed or absent host degrades to the message we sent before rather
+  // than to a line that binds the code to the wrong origin.
+  return host && host.length <= 253 && BINDABLE_HOST.test(host)
+    ? `${message}\n\n@${host} #${code}`
+    : message;
+};
 
 const failureClassOf = (error: unknown): SmsFailureClass => {
   const name = error instanceof Error ? error.name : "";

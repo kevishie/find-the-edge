@@ -165,6 +165,20 @@ describe("POST /auth/otp/request", () => {
     expect(JSON.stringify(stored)).not.toContain("907531");
   });
 
+  it("binds the message to the configured host, and omits it when unset", async () => {
+    const bound = build({ webOtpHost: "staging.kevishie.com" });
+    await bound.call(requestOtp(PHONE));
+    expect(bound.sms.sent[0]?.body.split("\n").at(-1)).toBe(
+      "@staging.kevishie.com #907531",
+    );
+    const unbound = build();
+    await unbound.call(requestOtp(PHONE));
+    expect(unbound.sms.sent[0]?.body).not.toContain("@");
+    // The bound and unbound bodies differ only by the trailing line: the
+    // response is identical either way, so this changes nothing a caller sees.
+    expect(bound.sms.sent[0]?.body).toContain(unbound.sms.sent[0]?.body ?? "");
+  });
+
   it("answers identically for a known and an unknown number", async () => {
     const harness = build();
     await harness.call(requestOtp(PHONE));

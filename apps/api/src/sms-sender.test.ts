@@ -56,6 +56,43 @@ describe("sms sender", () => {
     expect(body.length).toBeLessThan(160);
   });
 
+  it("binds the code to the configured host in the WebOTP format", () => {
+    const body = otpMessageBody("907531", "staging.kevishie.com");
+    // The format is exact and the binding line must be last: a phone parses
+    // the final line and nothing else.
+    expect(body.split("\n").at(-1)).toBe("@staging.kevishie.com #907531");
+    expect(body).toContain(
+      "907531 is your Find The Edge sign-in code. It expires in 5 minutes. We will never ask you for it.",
+    );
+    // Still no link, and still one SMS segment with the line attached.
+    expect(body).not.toContain("http");
+    expect(body.length).toBeLessThan(160);
+  });
+
+  it("keeps a non-default port, which is part of the origin", () => {
+    expect(otpMessageBody("907531", "localhost:5173").split("\n").at(-1)).toBe(
+      "@localhost:5173 #907531",
+    );
+  });
+
+  it("sends the unbound text rather than bind to a host we cannot trust", () => {
+    const plain = otpMessageBody("907531");
+    for (const host of [
+      "",
+      " ",
+      "kevishie.com evil.com",
+      "https://kevishie.com",
+      "kevishie.com/path",
+      "kevishie..com",
+      "-kevishie.com",
+      "kevishie.com-",
+      "kevishie.com\n@evil.com",
+      "kevishie.com #000000\n@evil.com",
+      `${"a".repeat(250)}.com`,
+    ])
+      expect(otpMessageBody("907531", host)).toBe(plain);
+  });
+
   it("classifies failures without leaking the provider's message", async () => {
     for (const [name, outcome, failureClass] of [
       ["ThrottledException", "failed", "throttled"],

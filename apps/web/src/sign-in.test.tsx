@@ -140,6 +140,97 @@ it("carries a normalized number to the code step and stores the session at the d
   ).toEqual(sessionStore.getSnapshot());
 });
 
+/**
+ * Stands in for Chrome on Android. jsdom has neither `OTPCredential` nor
+ * `navigator.credentials`, so both are installed for the test and removed
+ * after it — absence is the other case under test.
+ */
+const withWebOtp = (
+  get: (options: CredentialRequestOptions) => Promise<unknown>,
+): (() => void) => {
+  const target = window as unknown as Record<string, unknown>;
+  target["OTPCredential"] = class {};
+  Object.defineProperty(navigator, "credentials", {
+    configurable: true,
+    value: { get },
+  });
+  return () => {
+    delete target["OTPCredential"];
+    Reflect.deleteProperty(navigator, "credentials");
+  };
+};
+
+describe("WebOTP autofill", () => {
+  let restore: (() => void) | null = null;
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  it("fills the code from the message and leaves submitting to the reader", async () => {
+    const verifyOtp = vi.fn(() => Promise.resolve(authSession));
+    restore = withWebOtp(() => Promise.resolve({ code: "778899" }));
+    render(
+      <SignIn
+        client={client({ verifyOtp })}
+        store={store()}
+        onSignedIn={vi.fn()}
+      />,
+    );
+
+    typePhone("5551234567");
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+
+    const field = await screen.findByLabelText("6-digit code");
+    await vi.waitFor(() => expect(field).toHaveValue("778899"));
+    // Filling is not signing in: the code arrived, and the reader still has
+    // to press the button.
+    expect(verifyOtp).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Verify code" })).toBeEnabled();
+  });
+
+  it("asks only once the code step is reached, and gives up when it is left", async () => {
+    const signals: AbortSignal[] = [];
+    restore = withWebOtp((options) => {
+      if (options.signal) signals.push(options.signal);
+      return new Promise(() => {
+        // A phone that never receives a message: the request stays pending
+        // until something aborts it.
+      });
+    });
+    const { unmount } = render(
+      <SignIn client={client()} store={store()} onSignedIn={vi.fn()} />,
+    );
+
+    // Nothing is armed while the reader is still entering a number.
+    expect(signals).toHaveLength(0);
+    typePhone("5551234567");
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+
+    await screen.findByLabelText("6-digit code");
+    // The effect arms WebOTP a render after the field appears, so this waits
+    // rather than assuming the two land together.
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    expect(signals[0]?.aborted).toBe(false);
+    unmount();
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it("stays out of the way in a browser without the API", async () => {
+    render(<SignIn client={client()} store={store()} onSignedIn={vi.fn()} />);
+    typePhone("5551234567");
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+
+    const field = await screen.findByLabelText("6-digit code");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(field).toHaveValue("");
+    await typeCode("123456");
+    expect(field).toHaveValue("123456");
+  });
+});
+
 it("never returns the reader to another origin", async () => {
   const onSignedIn = vi.fn();
   render(

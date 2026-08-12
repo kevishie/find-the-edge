@@ -59,6 +59,12 @@ export interface IdentityRuntime {
   /** Permanent secret behind the account id; see deriveAccountId. */
   readonly accountPepper: string;
   readonly signingKeys: SessionKeyRing;
+  /**
+   * Host of the web origin readers sign in on, bound into the code text so a
+   * phone will offer it for autofill. Stage configuration only — never a
+   * request header; see otpMessageBody. Absent means we send the plain text.
+   */
+  readonly webOtpHost?: string;
   readonly now?: () => Date;
   readonly generateCode?: () => string;
   readonly generateSalt?: () => string;
@@ -365,7 +371,10 @@ export const createIdentityHttpHandler =
       // no longer hold — so there is nothing to send, and nothing to say.
       const delivery =
         result.outcome === "created"
-          ? await runtime.sms.send({ phone, body: otpMessageBody(code) })
+          ? await runtime.sms.send({
+              phone,
+              body: otpMessageBody(code, runtime.webOtpHost),
+            })
           : null;
       // The same body every time: known number or not, delivered or not.
       // Anything conditional here would be an enumeration oracle.

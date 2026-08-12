@@ -93,6 +93,20 @@ const identitySecretId = process.env["FTE_IDENTITY_SECRET_ID"] ?? "";
 const stripeSecretId = process.env["FTE_STRIPE_SECRET_ID"] ?? "";
 const webBaseUrl = process.env["FTE_WEB_BASE_URL"] ?? "";
 /**
+ * The origin a sign-in code is bound to for WebOTP autofill. It is derived
+ * from this stage's own configured web origin — the same value CORS allows —
+ * and never from a request header, because a code bound to a host the caller
+ * supplied is a code the caller's site can autofill. A stage without the
+ * variable sends the unbound text, which still works everywhere it did.
+ */
+const webOtpHost = ((): string | undefined => {
+  try {
+    return new URL(webBaseUrl).host;
+  } catch {
+    return undefined;
+  }
+})();
+/**
  * FTE-073's rollout switch. Entitlement is only reachable through Stripe
  * checkout, so a stage with no billing secret has no entitled accounts and
  * enforcing there would refuse every request including our own. The flag
@@ -405,6 +419,7 @@ export const handler = async (event: LambdaEvent) => {
           otpPepper: identity.otpPepper,
           accountPepper: identity.accountPepper,
           signingKeys: identity.signingKeys,
+          ...(webOtpHost ? { webOtpHost } : {}),
         }
       : undefined,
     new DynamoEntitlementRepository(documentClient, tableName),

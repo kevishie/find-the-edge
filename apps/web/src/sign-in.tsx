@@ -71,6 +71,36 @@ interface Cooldown {
 const NO_COOLDOWN: Cooldown = { seconds: 0, scope: "resend" };
 
 /**
+ * WebOTP. Chrome on Android resolves this with the code from a message whose
+ * last line names our origin — which is the `@host #code` line the API sends —
+ * and rejects if the message names anyone else. Everywhere else the API is
+ * absent and the field is filled from `autocomplete="one-time-code"` instead.
+ *
+ * Every failure is silent and returns null: no API, no permission, no message,
+ * a cancelled request. The reader can always still type the code, so nothing
+ * here is allowed to surface an error that would suggest otherwise.
+ */
+const requestSmsCode = async (signal: AbortSignal): Promise<string | null> => {
+  if (
+    typeof window === "undefined" ||
+    !("OTPCredential" in window) ||
+    !navigator.credentials
+  )
+    return null;
+  try {
+    // A rejected promise and a synchronous throw are both just "no code".
+    const credential = await navigator.credentials.get({
+      otp: { transport: ["sms"] },
+      signal,
+    } as CredentialRequestOptions);
+    const code = (credential as { readonly code?: unknown } | null)?.code;
+    return typeof code === "string" ? code : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Our own two-step sign-in. Nothing on this screen leaves the origin: there is
  * no hosted login, no provider script, and no link off the app. A failure says
  * only what the API said, which never distinguishes a wrong code from a number
@@ -121,6 +151,22 @@ export function SignIn({
     );
     return () => window.clearInterval(timer);
   }, [counting]);
+
+  // Reaching the code step arms WebOTP, so on Android the code comes from the
+  // message rather than from retyping it. Leaving the step or unmounting
+  // cancels the request; the field is filled but never submitted, which is
+  // what iOS already does and keeps this off the path of a busy submit.
+  const awaitingCode = step.kind === "code";
+  useEffect(() => {
+    if (!awaitingCode) return;
+    const controller = new AbortController();
+    void requestSmsCode(controller.signal).then((received) => {
+      if (controller.signal.aborted || received === null) return;
+      setCode(received.replace(/\D/g, "").slice(0, 6));
+      setError(null);
+    });
+    return () => controller.abort();
+  }, [awaitingCode]);
 
   const requestOtp = client.ok ? client.value.requestOtp : undefined;
   const verifyOtp = client.ok ? client.value.verifyOtp : undefined;
