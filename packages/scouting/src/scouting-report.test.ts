@@ -940,7 +940,10 @@ describe("structured scouting report generation", () => {
       }),
     ).rejects.toMatchObject({ code: "INVALID_CONTEXT" });
     expect(providerCalled).toBe(false);
-  });
+    // Eighty references means eighty real hashes. The work is deliberate and
+    // the assertion is exact; only the clock needs the extra room, and CI's
+    // runner crossed the default at 5.2s.
+  }, 30_000);
 
   it("rejects an invalid expected model identity before calling the provider", async () => {
     let providerCalled = false;
