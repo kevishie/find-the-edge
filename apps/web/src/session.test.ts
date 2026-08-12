@@ -255,6 +255,9 @@ describe("where a return address may point", () => {
 
   it("keeps the routes we do serve, including parented ones", () => {
     for (const path of [
+      // The paywall is a real destination: a reader sent to sign in from it
+      // must come back to it, not to a default board they did not ask for.
+      "/subscribe",
       "/splits",
       "/dashboard",
       "/watchlist",

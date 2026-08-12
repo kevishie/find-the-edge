@@ -103,6 +103,17 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("returns a reader to the paywall they were sent from", async ({
+  page,
+}) => {
+  // The paywall is reachable only with a session, so a signed-out visitor is
+  // sent to the form — and must come back to the paywall, not to a default
+  // board they never asked for. This exact case shipped broken once.
+  await page.goto("/subscribe");
+  await page.waitForURL(/\/login\?returnUrl=/);
+  expect(new URL(page.url()).searchParams.get("returnUrl")).toBe("/subscribe");
+});
+
 test("refuses a return address that is not ours", async ({ page }) => {
   // The destination survives a round trip through the URL, so it is exactly
   // the kind of parameter an attacker crafts. Anything off-origin, or any

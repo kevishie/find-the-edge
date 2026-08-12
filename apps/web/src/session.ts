@@ -51,6 +51,7 @@ const KNOWN_ROUTES: readonly string[] = [
   "/",
   "/terms",
   "/privacy",
+  SUBSCRIBE_PATH,
   "/dashboard",
   "/events",
   "/games",
