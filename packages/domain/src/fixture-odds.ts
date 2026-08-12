@@ -23,6 +23,7 @@ export type OddsEvidenceGapReason =
   | "missing-provider-timestamp"
   | "participant-unavailable"
   | "participant-conflict"
+  | "start-time-conflict"
   | "participant-out-of-scope"
   | "same-club-matchup"
   | "catalogue-derivative"

@@ -57,6 +57,14 @@ export interface SharpApiIngestionSummary {
   readonly skippedLeagues: number;
 }
 
+/**
+ * How far the provider's odds-side start time may sit from the authoritative
+ * schedule before the listing stops describing a game we can price. Wide
+ * enough to absorb a provider rounding a start to the quarter hour; far
+ * narrower than a postponement.
+ */
+export const ODDS_START_DRIFT_TOLERANCE_MS = 15 * 60_000;
+
 const providerEvent = (
   league: SharpApiLeague,
   event: SharpApiOddsPage["events"][number],
@@ -632,24 +640,39 @@ export async function persistSharpApiOddsPage(
     const priceRetrievedBeforeStart = (
       price: SharpApiOddsPage["events"][number]["bookmakers"][number]["prices"][number],
     ) => Date.parse(price.retrievedAt ?? eventRetrievedAt) < canonicalStartsAt;
+    const startDrift = Math.abs(
+      Date.parse(raw.startsAt) - Date.parse(canonical.startsAt),
+    );
+    // SharpAPI's events endpoint remains authoritative for displayed game
+    // time. Its odds endpoint can lag after a delay or postponement, so an
+    // exact source event ID plus both matching teams may still contribute
+    // prices without rewriting the canonical schedule. An unparseable start
+    // proves nothing and is never trusted through.
+    const trustedThroughDrift =
+      Number.isFinite(startDrift) && exactMapping?.bindingKind === "source";
+    // A listing whose start disagrees past the tolerance describes a game we
+    // cannot price confidently. That is ONE row's problem, so it is omitted
+    // and counted — it must never abort the league's run. Throwing here left
+    // MLS replaying the same wedged run for seven hours on 2026-08-12 while
+    // its board sat empty: the failure kept the continuation, and the run had
+    // committed evidence, which exempts it from the staleness ceiling that
+    // would otherwise have abandoned it. One unpriceable fixture is not a
+    // reason to stop pricing a league.
+    if (
+      (!Number.isFinite(startDrift) ||
+        startDrift > ODDS_START_DRIFT_TOLERANCE_MS) &&
+      !trustedThroughDrift
+    ) {
+      rejectionCounts["start-time-conflict"] =
+        (rejectionCounts["start-time-conflict"] ?? 0) + 1;
+      continue;
+    }
     canonicalOddsEvents.push({ raw, canonical });
-    const providerParticipantIndexes = (() => {
-      const startDrift = Math.abs(
-        Date.parse(raw.startsAt) - Date.parse(canonical.startsAt),
-      );
-      if (!Number.isFinite(startDrift))
-        throw new Error("sharpapi-odds-mapping-start-mismatch");
-      if (startDrift > 15 * 60_000) {
-        // SharpAPI's events endpoint remains authoritative for displayed game
-        // time. Its odds endpoint can lag after a delay or postponement, so an
-        // exact source event ID plus both matching teams may still contribute
-        // prices without rewriting the canonical schedule.
-        if (exactMapping?.bindingKind === "source")
-          return participantIndexes(raw, canonical, true);
-        throw new Error("sharpapi-odds-mapping-start-mismatch");
-      }
-      return participantIndexes(raw, canonical);
-    })();
+    const providerParticipantIndexes = participantIndexes(
+      raw,
+      canonical,
+      trustedThroughDrift && startDrift > ODDS_START_DRIFT_TOLERANCE_MS,
+    );
     let eventObservations = 0;
     for (const book of raw.bookmakers) {
       const normalizedBook = normalizeSportsbook(book.id);

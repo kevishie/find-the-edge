@@ -949,6 +949,9 @@ describe("SharpAPI primary ingestion", () => {
       ),
     ).resolves.toMatchObject({ observations: 3 });
 
+    // A start time past the tolerance omits the listing and counts it. It
+    // used to throw, which aborted the whole league's run — see the
+    // regression test below.
     await expect(
       persistSharpApiOddsPage(
         store,
@@ -965,7 +968,10 @@ describe("SharpAPI primary ingestion", () => {
         },
         { pinnacle: "collected" },
       ),
-    ).rejects.toThrow("sharpapi-odds-mapping-start-mismatch");
+    ).resolves.toMatchObject({
+      observations: 0,
+      rejectionCounts: { "start-time-conflict": 1 },
+    });
     await expect(
       persistSharpApiOddsPage(
         store,
@@ -1010,6 +1016,114 @@ describe("SharpAPI primary ingestion", () => {
         { pinnacle: "collected" },
       ),
     ).rejects.toThrow("sharpapi-odds-mapping-participant-mismatch");
+  });
+
+  /**
+   * The 2026-08-12 MLS outage. One fixture whose odds-side start disagreed
+   * with the schedule threw, which aborted the league's entire run. The run
+   * had already committed evidence, and a committed run is exempt from the
+   * staleness ceiling — so it was never abandoned, and every later pass
+   * replayed the same failure. MLS odds froze for seven hours with a green
+   * health row while every other league priced normally.
+   */
+  it("prices the rest of a page when one listing's start time disagrees", async () => {
+    const canonical = {
+      id: "event-mls-1",
+      version: 2,
+      sportKey: "soccer",
+      startsAt: "2026-08-11T23:30:00.000Z",
+      participantIds: ["charlotte-id", "pachuca-id"],
+      participantLabels: ["Charlotte FC", "Pachuca"],
+    } as unknown as CanonicalEvent;
+    const persist = vi.fn(
+      (input: Parameters<SharpApiOddsPersister["persist"]>[0]) => {
+        void input;
+        return Promise.resolve({}) as ReturnType<
+          SharpApiOddsPersister["persist"]
+        >;
+      },
+    );
+    const base = {
+      marketKey: "moneyline" as const,
+      outcomeStructure: "three-way" as const,
+      providerMarketType: "moneyline_3-way",
+      providerMarketId: "market-mls-1",
+      americanOdds: 120,
+      decimalOdds: 2.2,
+      impliedProbability: 0.4545,
+      isLive: false,
+      isMainLine: true,
+      isAlternateLine: false,
+      isPlayerProp: false,
+      isStalePregamePrice: false,
+      observedAt: "2026-08-11T22:00:00.000Z" as IsoTimestamp,
+    };
+    const priced = (providerEventId: string, startsAt: string) => ({
+      providerEventId,
+      providerEventUuid: `${providerEventId}-uuid`,
+      awayTeam: "Charlotte FC",
+      homeTeam: "Pachuca",
+      startsAt: startsAt as IsoTimestamp,
+      bookmakers: [
+        {
+          id: "pinnacle",
+          label: "Pinnacle",
+          prices: [
+            {
+              ...base,
+              providerPriceId: `${providerEventId}-away`,
+              selectionKey: "away" as const,
+              selectionLabel: "Charlotte FC",
+              providerSelectionId: "away-selection",
+            },
+            {
+              ...base,
+              providerPriceId: `${providerEventId}-home`,
+              selectionKey: "home" as const,
+              selectionLabel: "Pachuca",
+              providerSelectionId: "home-selection",
+            },
+            {
+              ...base,
+              providerPriceId: `${providerEventId}-draw`,
+              selectionKey: "draw" as const,
+              selectionLabel: "Draw",
+              providerSelectionId: "draw-selection",
+            },
+          ],
+        },
+      ],
+    });
+    const store = {
+      ingestEvent: vi.fn(() => {
+        throw new Error("exact binding must bypass identity reconciliation");
+      }),
+      getExactMapping: vi.fn().mockResolvedValue({ bindingKind: "alias" }),
+      resolveExactCanonicalBinding: vi.fn().mockResolvedValue(canonical),
+    } as unknown as EventIngestionStore;
+
+    const result = await persistSharpApiOddsPage(
+      store,
+      { persist },
+      { sportKey: "soccer", leagueKey: "mls" } as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-11T22:00:01.000Z" as IsoTimestamp,
+        events: [
+          // Four hours adrift: unpriceable, and previously fatal to the page.
+          priced("mls-drifted", "2026-08-12T03:30:00.000Z"),
+          priced("mls-on-time", "2026-08-11T23:30:00.000Z"),
+        ],
+      },
+      { pinnacle: "collected" },
+    );
+
+    // The sound listing is priced; the drifted one is counted, not silent.
+    expect(result.observations).toBe(3);
+    expect(result.rejectionCounts["start-time-conflict"]).toBe(1);
+    // Persistence is per price, so assert on which events were reached at all.
+    expect([
+      ...new Set(persist.mock.calls.map(([input]) => input.providerEventId)),
+    ]).toEqual(["mls-on-time"]);
   });
 
   it("preserves explicit expected-book states instead of downgrading them to missing", async () => {

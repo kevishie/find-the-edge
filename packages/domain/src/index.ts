@@ -147,7 +147,11 @@ export type OddsNormalizationReason =
   | "incomplete-market"
   | "missing-provider-timestamp"
   | "participant-unavailable"
-  | "participant-conflict";
+  | "participant-conflict"
+  /** The provider's start time disagrees with the authoritative schedule by
+   * more than the pricing tolerance, so this listing describes a game we
+   * cannot confidently price. */
+  | "start-time-conflict";
 export type CanonicalSelectionKey =
   | `participant:${string}`
   | "draw"

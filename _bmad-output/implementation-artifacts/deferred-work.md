@@ -449,3 +449,30 @@ selection + exact point). FE FairCell and gameHasEdge de-vig the anchor when
 every side of a market has one; otherwise the old same-book fallback (which
 by construction can never show an edge). Follow-ups: detail path could badge
 "vs sharp" per cell; consider surfacing anchor age.
+
+## A run that commits evidence and then fails repeatably is immortal (found 2026-08-12)
+
+`odds-control-plane.ts:1074` exempts a continuation with
+`evidenceCommitted: true` from the 45-minute staleness ceiling. The
+exemption is correct in intent — 04f2008 added it so a resumed run never
+re-walks sealed pages and commits the same evidence twice — but it is
+unbounded, so a run that commits evidence and then hits a *repeatable*
+failure is replayed forever with nothing able to abandon it.
+
+Observed: MLS odds froze for seven hours on 2026-08-12 behind a single
+`sharpapi-odds-mapping-start-mismatch`. The continuation row had been
+rewritten 3,287 times against one runId. Fixing the trigger (that throw now
+omits one listing rather than aborting the league) removes this instance,
+not the class — the next repeatable post-evidence failure wedges the same
+way.
+
+Also note the failure was invisible in the obvious place: passes landing
+inside the lease reported `provider-recovering`, which is deliberately
+exempt from marking health unhealthy, so both MLS health rows stayed green
+throughout. `/providers/status` did derive `stale` from freshness, but the
+stored health record said healthy. The real cause was only on the RUN row's
+`failureReason`.
+
+A fix needs to distinguish "resumable, mid-flight" from "wedged on a
+repeatable failure" — a consecutive-identical-failure count on the run row
+would do it — and abandon the latter without re-walking committed pages.

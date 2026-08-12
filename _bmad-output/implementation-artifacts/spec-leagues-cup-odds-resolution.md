@@ -39,7 +39,64 @@ What is still true and worth keeping:
   tagging, and the resolve-or-skip alias binding all remain in the tree and
   are inert while the request is narrow. They are tested and ready.
 
-Prime suspects for the next session, in order:
+## ANSWERED 2026-08-12 22:00Z — all three suspects were wrong
+
+The three suspects below were **quota**, **`expectedProviderEvents`**, and
+**page-count explosion**. Staging data refutes each: no `quota-reserve` and
+no `sharpapi-event-binding-unavailable` appears anywhere in the log window,
+and the skip carries `pages: 0`, so nothing paginated at all.
+
+The revert also did **not** fix MLS, which the section above assumed. MLS
+odds last succeeded at **16:05:08.918Z** — minutes after the revert deployed
+— and had not succeeded for the seven hours since.
+
+The real chain, every link evidenced:
+
+1. `sharp-api-ingestion.ts` **threw** `sharpapi-odds-mapping-start-mismatch`
+   when one listing's odds-side start disagreed with the authoritative
+   schedule by more than 15 minutes. A throw there aborts the whole page, so
+   **one unpriceable fixture stopped the entire league**.
+   Log: `{"leagueKey":"mls","status":"failed",`
+   `"reason":"sharpapi-odds-mapping-start-mismatch","pages":23}`.
+2. The failure is retryable and SharpAPI is the only odds provider, so the
+   run **keeps its continuation** rather than moving on.
+3. The run had committed evidence, and `odds-control-plane.ts:1074`'s
+   staleness ceiling **exempts a run with `evidenceCommitted: true`** — added
+   deliberately in 04f2008 so pages are never re-walked and committed twice.
+   The exemption is unbounded, so the wedged run became immortal.
+4. Every later pass resumed the same runId and failed identically. The
+   continuation row had been rewritten **3,287 times**; the run row 160.
+5. Passes arriving inside the 5-minute lease of whichever invocation held it
+   reported `provider-recovering` with `pages: 0` — the observed symptom is
+   `odds-control-plane.ts:1105`, and it is lease contention, not the cause.
+   The cause is on the RUN row's `failureReason`, not in the skip summary.
+
+Staging evidence, `ODDS_CONTROL#CONTINUATION#mls` (MLB and EPL have no row
+at all, which is what a healthy league looks like — a completed run clears
+its continuation):
+
+```
+runId: mls:sharpapi:2026-08-12T16:05:08.918Z   evidenceCommitted: true
+version: 3287   quotaCost: 23   updatedAt: 22:55:09Z
+RUN row → status: failed, failureReason: sharpapi-odds-mapping-start-mismatch
+```
+
+**Fixed:** a start-time disagreement now omits and counts that one listing
+(`start-time-conflict`, which emits through the existing
+`OddsNormalizationRejected` metric) instead of aborting the league. An exact
+`source` binding is still trusted through a delay or postponement. Once MLS
+stops failing, the run completes and clears its own continuation, so the
+staging wedge self-heals.
+
+**Still open — the immortal run.** Closing the throw removes *this* trigger,
+not the class. Any run that commits evidence and then fails repeatably is
+still exempt from the staleness ceiling forever. Recorded in
+`deferred-work.md`.
+
+Do not re-enable the combined request without an assertion that MLS still
+completes.
+
+## Superseded suspects (kept for the record)
 
 1. **Quota.** 34 MLS rows became 200 rows a page. `provider-recovering` is
    reported with `quotaCost: 22` and the quota-reserve branch is one of the
@@ -52,10 +109,6 @@ Prime suspects for the next session, in order:
    shape that trips it.
 3. **Page-count explosion.** 19-20 pages became however many 200-row pages
    166+34 rows require, against a 100-page guard and a per-pass cadence.
-
-Do not re-enable the combined request without an assertion that MLS still
-completes. The cheapest safe next step is to instrument which branch returns
-`provider-recovering` before changing anything.
 
 ## The problem
 
