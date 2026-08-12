@@ -3,47 +3,59 @@
 Status: IMPLEMENTED AND DEPLOYED (227f333), BUT NOT WORKING IN PRODUCTION.
 Soccer is still 0 priced. Written 2026-08-12.
 
-## Where it stands (2026-08-12, latest)
+## Where it stands (2026-08-12, REVERTED)
 
-Deployed through 02c1a67. **Soccer is still 0 priced and MLS is not running
-at all**: every ingestion pass reports `mls: skipped (0 pages)` with reason
-`provider-recovering`, so no odds request is made and both secondary metrics
-stay empty.
+The combined request is **reverted**. MLS is back to asking for its own
+catalogue only. Soccer remains unpriced, which is where it started — but MLS
+ingestion works again, and a working league is worth more than an unpriced
+one.
 
-Facts established, so the next session does not re-derive them:
+The question the last session should have asked first was answered by
+sampling the ingestion log across 20 hours:
 
-- `league` IS comma-separated and works. Verified live:
+| when | mls |
+|---|---|
+| T-20h | failed, provider-request-ambiguous (the latch, since fixed) |
+| T-12h | completed, 20 pages |
+| T-6h | completed, 19 pages |
+| T-2h | completed, 19 pages |
+| after the change | **skipped, provider-recovering, every pass** |
+
+So MLS was healthy immediately before, and the combined request broke it.
+The schedule-parser revert (02c1a67) was a genuine latent-bug fix but not the
+cause; the odds-side change is.
+
+What is still true and worth keeping:
+
+- `league` IS comma-separated and the combined call works **by hand**:
   `league=MLS,leagues_cup` returns 166 Leagues Cup rows beside 34 MLS rows.
-  The page-chaining machinery from the earlier attempt is therefore dead code
-  and should be deleted.
-- Both MLS health rows are **healthy**: `sharpapi:mls:schedule`
-  (133 consecutive successes, updated minutes ago) and `sharpapi:mls:odds`
-  (517 consecutive successes) — but the odds row has not updated in about an
-  hour, consistent with the odds run never executing.
-- Every other league completes normally in the same pass (mlb 34p, epl 7p,
-  liga-mx 7p, ucl 1p). The fault is specific to MLS.
+  The failure is in what the ingestion path does with them, not in the
+  request.
+- Both MLS health rows stayed **green** throughout the outage — schedule and
+  odds — while the league reported skipped/provider-recovering. Whatever
+  fails, it fails without marking health, which is itself worth fixing:
+  a league that stops running while its health says healthy is invisible.
+- The `secondaryOddsProviderLeagues` declaration, the per-row catalogue
+  tagging, and the resolve-or-skip alias binding all remain in the tree and
+  are inert while the request is narrow. They are tested and ready.
 
-A hypothesis was tested and did NOT fix it: widening the SCHEDULE parser's
-league acceptance was wrong and was reverted in 02c1a67 (a foreign row
-accepted there skips past a shape check that throws on any non-`upcoming`
-status, so one live game would fail the whole page). That revert was correct
-on its own merits but MLS remained skipped, so it was not the cause.
+Prime suspects for the next session, in order:
 
-Next diagnostic — do NOT assume, instrument:
-1. `provider-recovering` is returned from several places in `runOddsLeague`'s
-   candidate loop. Log which branch produces it for MLS. With both health rows
-   green, the likely candidates are the `scheduleReady` gate that deletes the
-   provider when a schedule scan has not completed for this league in this
-   run, and the quota-reserve branch.
-2. Check `scheduleReady` membership for `sharpapi:mls` directly — it is
-   populated from the schedule scan, and MLS is the one league whose schedule
-   request now differs from its odds request.
-3. Confirm whether MLS was skipped BEFORE the comma-separated change landed.
-   If it was, this is a pre-existing fault the Leagues Cup work merely
-   uncovered, and the odds-parser widening is innocent.
+1. **Quota.** 34 MLS rows became 200 rows a page. `provider-recovering` is
+   reported with `quotaCost: 22` and the quota-reserve branch is one of the
+   few paths that returns it with health green. Compare `quotaRemaining`
+   before and after; the reserve is 100 (`packages/config/src/feed-coverage.ts`).
+2. **`expectedProviderEvents`.** `production-odds-control-plane.ts:2082`
+   resolves every omitted expected event and throws
+   `sharpapi-event-binding-unavailable`. 166 unexpected rows arriving in a
+   run whose expectations came from an MLS-only schedule scan is exactly the
+   shape that trips it.
+3. **Page-count explosion.** 19-20 pages became however many 200-row pages
+   166+34 rows require, against a 100-page guard and a per-pass cadence.
 
-Until MLS actually runs, none of the Leagues Cup resolution logic has ever
-executed against real data.
+Do not re-enable the combined request without an assertion that MLS still
+completes. The cheapest safe next step is to instrument which branch returns
+`provider-recovering` before changing anything.
 
 ## The problem
 

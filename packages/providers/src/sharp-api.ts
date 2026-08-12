@@ -1585,11 +1585,14 @@ export async function fetchSharpApiOddsPage(
   fetcher: typeof fetch = fetch,
 ): Promise<SharpApiOddsPage> {
   const query = new URLSearchParams({
-    // SharpAPI documents `league` as comma-separated, so a league and any
-    // secondary catalogue carrying its fixtures arrive in ONE paginated
-    // response. Fetching them as separate page sequences was a workaround for
-    // a parameter the provider already supports.
-    league: acceptedProviderLeagues(league).join(","),
+    // REVERTED 2026-08-12. `league` IS comma-separated and the combined
+    // request works when called by hand — but asking for MLS,leagues_cup in
+    // the ingestion path took MLS from completing 19-20 pages a run to
+    // skipping every pass with provider-recovering, and reverting the
+    // schedule parser did not bring it back. A working league is worth more
+    // than an unpriced one, so the request narrows again until the cause is
+    // understood. See spec-leagues-cup-odds-resolution.md.
+    league: league.providerLeague,
     market: "main",
     is_live: "false",
     limit: "200",
