@@ -375,9 +375,8 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
   }
   async commitEvidencePage(r: string, t: string, a: string) {
     const existing = await this.getPage(r, t);
-    const existingRun = await this.getRun(r);
     if (existing?.committedAt) {
-      if (existing.committedAt === a && existingRun?.evidenceCommitted) return;
+      if (existing.committedAt === a) return;
       throw new Error("evidence-transition-conflict");
     }
     await this.commitPage(r, t, a);
@@ -880,12 +879,30 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       }),
     );
   }
+  /**
+   * The run row used to be READ here purely to learn its version number, so
+   * the transaction could fence on it. That read was the single largest
+   * amplifier on `ODDS_CONTROL#RUN#*`, which Contributor Insights measured at
+   * 10,000-13,500 accesses per run per twenty minutes — one item, hit from
+   * inside a hundred-iteration page loop.
+   *
+   * It is not load-bearing. Exactly-once evidence commitment is enforced by
+   * the PAGE leg's `attribute_not_exists(#v.#intent)`: two workers racing the
+   * same page, one wins and the other's whole transaction cancels. The RUN
+   * leg only latches a monotonic flag. Fencing it on `attribute_exists(pk)`
+   * and bumping the version blindly keeps a concurrent `putRun` honest — its
+   * own `#v.#version = :expected` still fails against the bumped value — and
+   * removes a consistent read per page.
+   */
   async markEvidenceIntent(r: string, t: string, a: string) {
     const page = await this.getPage(r, t);
-    const run = await this.getRun(r);
-    if (!page || !run) throw new Error("evidence-transition-conflict");
+    if (!page) throw new Error("evidence-transition-conflict");
     if (page.evidenceIntentAt) {
-      if (page.evidenceIntentAt === a && run.evidenceCommitted) return;
+      // Intent and the run's latch are set in ONE transaction below, so a
+      // page already carrying this attempt's marker proves the latch went
+      // with it. Re-reading the run to confirm would be asking a question the
+      // atomicity already answered.
+      if (page.evidenceIntentAt === a) return;
       throw new Error("evidence-transition-conflict");
     }
     try {
@@ -911,8 +928,8 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
                 TableName: this.tableName,
                 Key: key("RUN", r),
                 UpdateExpression:
-                  "SET #v.#e = :yes, #v.#u = :a, #v.#version = #v.#version + :one",
-                ConditionExpression: "#v.#version = :expected",
+                  "SET #v.#e = :yes, #v.#u = :a, #v.#version = if_not_exists(#v.#version, :zero) + :one",
+                ConditionExpression: "attribute_exists(pk)",
                 ExpressionAttributeNames: {
                   "#v": "value",
                   "#e": "evidenceCommitted",
@@ -923,7 +940,7 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
                   ":yes": true,
                   ":a": a,
                   ":one": 1,
-                  ":expected": run.version,
+                  ":zero": 0,
                 },
               },
             },
@@ -939,12 +956,14 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       throw error;
     }
   }
+  /** Same reasoning as markEvidenceIntent: the run read was only a version
+   * lookup, and it cost a consistent read per committed page. */
   async commitEvidencePage(r: string, t: string, a: string) {
     const existing = await this.getPage(r, t);
-    const run = await this.getRun(r);
-    if (!run) throw new Error("evidence-transition-conflict");
     if (existing?.committedAt) {
-      if (existing.committedAt === a && run?.evidenceCommitted) return;
+      // The commit and the run's latch land in one transaction, so a page
+      // already stamped by this attempt carries the latch with it.
+      if (existing.committedAt === a) return;
       throw new Error("evidence-transition-conflict");
     }
     try {
@@ -971,8 +990,7 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
                 Key: key("RUN", r),
                 UpdateExpression:
                   "SET #v.#e = :yes, #v.#u = :a, #v.#version = if_not_exists(#v.#version, :zero) + :one",
-                ConditionExpression:
-                  "attribute_exists(pk) AND #v.#version = :expected",
+                ConditionExpression: "attribute_exists(pk)",
                 ExpressionAttributeNames: {
                   "#v": "value",
                   "#e": "evidenceCommitted",
@@ -984,7 +1002,6 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
                   ":a": a,
                   ":one": 1,
                   ":zero": 0,
-                  ":expected": run.version,
                 },
               },
             },

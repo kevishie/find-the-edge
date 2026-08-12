@@ -93,6 +93,89 @@ const stores = (): readonly OddsControlPlaneStore[] => {
     ),
   ];
 };
+describe("control-plane read amplification", () => {
+  /**
+   * Contributor Insights measured `ODDS_CONTROL#RUN#*` at 10,000-13,500
+   * accesses per run per twenty minutes — one item, hit from inside a
+   * hundred-iteration page loop. Most of it was a read that existed only to
+   * learn a version number. This counts the reads rather than trusting that
+   * the change removed them.
+   */
+  class CountingClient {
+    readonly runReads: string[] = [];
+    readonly rows = new Map<string, Record<string, unknown>>();
+    send(command: { input?: Record<string, unknown> }) {
+      const input = command.input ?? {};
+      const key = input["Key"] as { pk?: string; sk?: string } | undefined;
+      if (input["TransactItems"]) return Promise.resolve({});
+      if (input["Item"]) {
+        const item = input["Item"] as { pk: string; sk: string };
+        this.rows.set(`${item.pk}|${item.sk}`, item);
+        return Promise.resolve({});
+      }
+      if (key && input["UpdateExpression"]) return Promise.resolve({});
+      if (key) {
+        if (key.pk?.startsWith("ODDS_CONTROL#RUN#")) this.runReads.push(key.pk);
+        return Promise.resolve({
+          Item: structuredClone(this.rows.get(`${key.pk!}|${key.sk!}`)),
+        });
+      }
+      throw new Error("unsupported");
+    }
+  }
+
+  const sealed = {
+    runId: "mlb:sharpapi:run-1",
+    pageToken: "start",
+    responseDigest: "digest-1",
+    normalizedItems: [],
+    gaps: [],
+    quotaCost: 1,
+    sealedAt: "2026-08-11T12:00:00.000Z",
+  };
+
+  it("commits a page's evidence without reading the run row", async () => {
+    const client = new CountingClient();
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    await store.putRun({
+      runId: sealed.runId,
+      leagueKey: "mlb",
+      providerId: "sharpapi",
+      policyVersion: "test",
+      status: "running",
+      startedAt: sealed.sealedAt,
+      updatedAt: sealed.sealedAt,
+      evidenceCommitted: false,
+      quotaCost: 0,
+    });
+    await store.sealPage(sealed);
+    client.runReads.length = 0;
+
+    await store.markEvidenceIntent(
+      sealed.runId,
+      sealed.pageToken,
+      "2026-08-11T12:00:01.000Z",
+    );
+    await store.commitEvidencePage(
+      sealed.runId,
+      sealed.pageToken,
+      "2026-08-11T12:00:02.000Z",
+    );
+
+    // The exactly-once fence lives on the PAGE leg's conditions; the run row
+    // only latches a monotonic flag, so neither step needs to read it.
+    expect(client.runReads).toEqual([]);
+    // And the counter is genuinely wired: a deliberate read shows up. Without
+    // this the assertion above would pass just as happily against a probe
+    // that was never connected to anything.
+    await store.getRun(sealed.runId);
+    expect(client.runReads).toEqual([`ODDS_CONTROL#RUN#${sealed.runId}`]);
+  });
+});
+
 describe("odds control plane store", () => {
   it("reads bounded exact health keys in caller order", async () => {
     for (const store of stores()) {
