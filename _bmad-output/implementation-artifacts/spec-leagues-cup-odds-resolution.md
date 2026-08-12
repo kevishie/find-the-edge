@@ -3,35 +3,47 @@
 Status: IMPLEMENTED AND DEPLOYED (227f333), BUT NOT WORKING IN PRODUCTION.
 Soccer is still 0 priced. Written 2026-08-12.
 
-## Where it stands
+## Where it stands (2026-08-12, latest)
 
-The design below shipped: secondary catalogue on the MLS league, page chain
-continues into it, resolve-or-skip alias binding, gap metric. All unit tests
-pass, including one asserting the bootstrap path throws if ever reached.
+Deployed through 02c1a67. **Soccer is still 0 priced and MLS is not running
+at all**: every ingestion pass reports `mls: skipped (0 pages)` with reason
+`provider-recovering`, so no odds request is made and both secondary metrics
+stay empty.
 
-But on staging **neither `OddsSecondaryObservation` nor
-`OddsSecondaryUnresolved` has a single datapoint**, which means the secondary
-pass never runs — the fetch never produces a secondary page at all. The
-resolution logic is therefore untested against real data.
+Facts established, so the next session does not re-derive them:
 
-Next diagnostic, in order:
-1. Confirm `sharpLeague.secondaryOddsProviderLeagues` is actually populated at
-   the `fetchPage` closure in `production-odds-control-plane.ts` — the
-   `sharpLeague` in that scope may be a different object than the one edited
-   in `packages/providers/src/sharp-api.ts`.
-2. Check whether the MLS primary chain ever reaches exhaustion. The hand-off
-   to the secondary only fires when `page.hasMore` is false; if the run ends
-   on a page limit, a cadence boundary, or an expired cursor (which returns
-   `hasMore: false` with zero events — see the OddsCursorExpired branch), the
-   chain may terminate before the hand-off or hand off from a synthesised
-   empty page.
-3. Verify the run's sealed page chain on staging: walk `ODDS_CONTROL#PAGE#`
-   rows for the current MLS runId and look for a `secondary:leagues_cup:*`
-   token. That answers 1 and 2 outright.
+- `league` IS comma-separated and works. Verified live:
+  `league=MLS,leagues_cup` returns 166 Leagues Cup rows beside 34 MLS rows.
+  The page-chaining machinery from the earlier attempt is therefore dead code
+  and should be deleted.
+- Both MLS health rows are **healthy**: `sharpapi:mls:schedule`
+  (133 consecutive successes, updated minutes ago) and `sharpapi:mls:odds`
+  (517 consecutive successes) — but the odds row has not updated in about an
+  hour, consistent with the odds run never executing.
+- Every other league completes normally in the same pass (mlb 34p, epl 7p,
+  liga-mx 7p, ucl 1p). The fault is specific to MLS.
 
-Do not assume the resolver works until a secondary page is observed. The
-alias matcher is only covered by unit fixtures, and the live label pairing
-between the two catalogues has never been exercised.
+A hypothesis was tested and did NOT fix it: widening the SCHEDULE parser's
+league acceptance was wrong and was reverted in 02c1a67 (a foreign row
+accepted there skips past a shape check that throws on any non-`upcoming`
+status, so one live game would fail the whole page). That revert was correct
+on its own merits but MLS remained skipped, so it was not the cause.
+
+Next diagnostic — do NOT assume, instrument:
+1. `provider-recovering` is returned from several places in `runOddsLeague`'s
+   candidate loop. Log which branch produces it for MLS. With both health rows
+   green, the likely candidates are the `scheduleReady` gate that deletes the
+   provider when a schedule scan has not completed for this league in this
+   run, and the quota-reserve branch.
+2. Check `scheduleReady` membership for `sharpapi:mls` directly — it is
+   populated from the schedule scan, and MLS is the one league whose schedule
+   request now differs from its odds request.
+3. Confirm whether MLS was skipped BEFORE the comma-separated change landed.
+   If it was, this is a pre-existing fault the Leagues Cup work merely
+   uncovered, and the odds-parser widening is innocent.
+
+Until MLS actually runs, none of the Leagues Cup resolution logic has ever
+executed against real data.
 
 ## The problem
 
