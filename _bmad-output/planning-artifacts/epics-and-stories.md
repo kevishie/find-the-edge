@@ -1605,7 +1605,7 @@ sportsbooks. Billing is prorated and access enables when payment clears — so
 unlike streaming there is no trial clock, and the work can proceed at its own
 pace.
 
-Two things make this worth more than a scoreboard.
+Three things make this worth more than a scoreboard.
 
 First, it answers a question this product has repeatedly got wrong. The board
 cannot reliably distinguish a game that is in play from a listing the
@@ -1615,7 +1615,20 @@ proxy that only works in MLB and that let four ghost listings sit on the
 board on 2026-08-11. Game state answers "is this game actually happening"
 directly.
 
-Second, settlement. The bet tracker settles by hand (FTE-050). A final score
+Second — and this is the half the epic originally missed — the splits
+witness fails in **both** directions, and the expensive direction is the one
+where real games disappear. `withoutWithdrawnListings` drops a past-start
+MLB game unless `hasSplitEvidence` vouches for it. The witness is therefore
+load-bearing for every started game on the board, and it is sourced from the
+one feed with the worst observed uptime in this product: MLB splits
+self-poisoned on 2026-08-09 (twenty hours) and again on 2026-08-12 (sixteen
+hours and counting at the time of writing). A witness that goes quiet does
+not merely fail to reject ghosts — it silently deletes real games and their
+lines from the board, which is precisely the "missing games and lines"
+complaint that opened this work. See the 2026-08-12 incident entry in
+`deferred-work.md` for the measured evidence.
+
+Third, settlement. The bet tracker settles by hand (FTE-050). A final score
 turns that into a confirmation rather than a data-entry task.
 
 The caution is the same one that governs odds here: this is a **consensus
@@ -1623,15 +1636,22 @@ across books, not an official feed**. It is evidence about a game, not the
 game's record. Nothing in this epic may present a consensus score as
 authoritative, and no money may move from it automatically.
 
+**Running order.** Story ids are allocation order, not execution order. The
+sequence is FTE-090 and FTE-087 first — neither depends on the add-on and
+both address live board damage — then the spike FTE-082, then FTE-083, then
+FTE-084 and FTE-088 together, then FTE-085, FTE-086, and finally FTE-089
+once the two witnesses have been compared for long enough to justify
+retiring one.
+
 #### FTE-082: Spike - Game State Feed Shape and Trustworthiness
 
 - Epic: Live game state.
 - Outcome: A documented judgement on what the feed actually knows, how fast, and how often it is wrong.
 - Context: SharpAPI's own feeds have changed shape under this product more than once, and its catalogues carry derivative and prop rows that look like games. A consensus across books is a derived claim with no stated accuracy guarantee. Confirmed active 2026-08-12: `/gamestate` returns 200 with ~247KB keyed sport → provider event id → state, carrying `away_score`, `home_score`, `game_clock`, `in_play`, `is_live`, `book_count`, `consensus_at`, and `primary_book`. It also carries the same pollution class as the other catalogues — obscure and book-specific leagues sit beside the real ones — so the identity and filtering problem is present here too.
-- In scope: sampling `/gamestate` and `/gamestate/:sport` across sports we serve; the event identity a row carries and whether it maps to our canonical events (the same identity problem Leagues Cup exposed — do not assume a shared id); update cadence and observed lag against a known live game; disagreement between books within one consensus; behaviour around start, period breaks, delays, and finals; whether a final is ever revised after first publication.
+- In scope: sampling `/gamestate` and `/gamestate/:sport` across sports we serve; the event identity a row carries and whether it maps to our canonical events (the same identity problem Leagues Cup exposed — do not assume a shared id); update cadence and observed lag against a known live game; disagreement between books within one consensus; behaviour around start, period breaks, delays, and finals; whether a final is ever revised after first publication. **Coverage is a first-class question of this spike, not a detail**: for a full MLB slate, does the feed carry every game before first pitch, while in play, and after the final, and for how long does a finished game remain? Establish this by counting a known slate — 2026-08-12 had fifteen real MLB games — against the feed on a fixed cadence across a whole day.
 - Out of scope: Any serving path. Any billing commitment beyond the add-on itself.
 - Dependencies: None.
-- Acceptance criteria: A written answer on identity mapping, cadence, lag, and revision behaviour, each backed by captured samples; an explicit statement of what the feed cannot be trusted for; a recommendation on which of FTE-083 to FTE-086 are worth building.
+- Acceptance criteria: A written answer on identity mapping, cadence, lag, and revision behaviour, each backed by captured samples; a coverage answer stated as a per-phase count against a known slate (pre-game, in-play, final, and post-final retention window), because FTE-087 cannot use this feed as a completeness oracle unless the feed is itself complete; an explicit statement of what the feed cannot be trusted for; a recommendation on which of FTE-083 to FTE-089 are worth building.
 - Required automated tests: None — findings are recorded, not shipped.
 - Likely files/packages affected: `_bmad-output/implementation-artifacts`.
 - Observability: Not applicable.
@@ -1662,13 +1682,13 @@ authoritative, and no money may move from it automatically.
 #### FTE-084: Game State as the Lifecycle Witness
 
 - Epic: Live game state.
-- Outcome: The board tells an in-play game from a withdrawn listing by asking what is happening, not by inferring it.
-- Context: `withoutWithdrawnListings` currently needs a second witness for a past-start game absent from the schedule feed, and uses betting splits — which exist only in MLB and which vouched for four ghost listings on 2026-08-11. This replaces a proxy with the actual signal.
-- In scope: using game state as the primary in-play witness; retaining the splits witness as a fallback where game state is absent; a stated precedence order; removing the splits-only assumption from soccer, which never had it.
-- Out of scope: Removing the splits witness. It stays as a fallback until game state is proven across a full season of edge cases.
+- Outcome: The board tells an in-play game from a withdrawn listing by asking what is happening, not by inferring it — and stops deleting real games when the inference goes quiet.
+- Context: `withoutWithdrawnListings` currently needs a second witness for a past-start game absent from the schedule feed, and uses betting splits — which exist only in MLB and which vouched for four ghost listings on 2026-08-11. This replaces a proxy with the actual signal. The proxy fails both ways and the second way is worse: `hasSplitEvidence` returning false deletes a real started game and its lines from the board, and it returns false whenever the splits feed is down — twenty hours on 2026-08-09, sixteen on 2026-08-12. The witness is least available exactly when the schedule feed has already dropped the game, because both feeds lose interest at first pitch. That correlation is the design flaw; game state is the uncorrelated third source that answers it.
+- In scope: using game state as the primary in-play witness; retaining the splits witness as a fallback where game state is absent; a stated precedence order; a staleness bound on the splits witness, so evidence too old to describe the current slate neither vouches for a ghost nor condemns a real game; removing the splits-only assumption from soccer, which never had it.
+- Out of scope: Removing the splits witness. It stays as a fallback until game state is proven across a full season of edge cases — FTE-089 owns that retirement.
 - Dependencies: FTE-083.
-- Acceptance criteria: A past-start game confirmed in play by game state is retained regardless of splits; a game the feed says has finished, or knows nothing about, is judged by the existing rules rather than dropped on absence alone; a game state outage degrades to today's behaviour rather than emptying the board.
-- Required automated tests: Board projection tests for in-play, finished, unknown, and feed-absent; a regression pinning the 2026-08-11 ghost case; a test proving a total game state outage changes nothing.
+- Acceptance criteria: A past-start game confirmed in play by game state is retained regardless of splits; a game the feed says has finished, or knows nothing about, is judged by the existing rules rather than dropped on absence alone; a past-start game is never dropped solely because the splits feed is stale or unavailable — an absent witness is an absent opinion, not a rejection; a game state outage degrades to today's behaviour rather than emptying the board.
+- Required automated tests: Board projection tests for in-play, finished, unknown, and feed-absent; a regression pinning the 2026-08-11 ghost case; a regression pinning the 2026-08-12 case, where a full slate whose splits evidence is sixteen hours old must not lose its started games; a test proving a total game state outage changes nothing.
 - Likely files/packages affected: `packages/database/src/board-projection.ts`, `apps/workers`.
 - Observability: Listings retained or dropped by witness, so the two witnesses can be compared before the fallback is retired.
 - Security: None.
@@ -1712,6 +1732,78 @@ authoritative, and no money may move from it automatically.
 - Definition of done: Settlement is assisted, auditable, and always a human act.
 - Risk: High — this touches recorded money.
 - Approval required before merge: Yes.
+
+#### FTE-087: Board Completeness Reconciliation and the Missing-Game Alarm
+
+- Epic: Live game state.
+- Outcome: The product knows how many games a slate should have, compares that to what it serves, and says so out loud when the two disagree.
+- Context: Every incident in this epic's history was found by a person counting rows on a screen. On 2026-08-12 production served sixteen MLB rows for fifteen real games — one phantom from provider-id churn, and split evidence sixteen hours stale — while the board reported `projectionState: ready` and offered the reader no indication that anything was wrong. The product measures freshness of the evidence it *has*; it has never measured whether the evidence it has covers the slate. Those are different failures and only the first is currently instrumented. Game state supplies the independent count that makes the second measurable, and FTE-082 must confirm the feed is complete enough to serve as that count before this story leans on it.
+- In scope: a per-sport, per-Eastern-day reconciliation of served board rows against the game state slate; classifying each divergence as a missing game, a surplus row, or a duplicate participant pairing; an alarm on sustained divergence with the divergence class in the message; surfacing an honest incomplete-board state to the reader rather than a silently short list. Reconciliation reads game state and never writes canonical events — FTE-088 owns admission.
+- Out of scope: Repairing a divergence automatically. Any counting for a sport whose game state coverage FTE-082 did not establish.
+- Dependencies: FTE-083; FTE-082 for the coverage answer.
+- Acceptance criteria: A slate short by one game raises a missing-game divergence naming the absent participants; a duplicate pairing such as the 2026-08-12 Reds/White Sox rows at 23:40Z and 23:45Z is reported as a duplicate rather than a surplus; divergence must persist across consecutive reconciliations before alarming, so a mid-ingestion snapshot does not page; a reader looking at an incomplete board is told it is incomplete; a game state outage suspends reconciliation rather than declaring every game missing.
+- Required automated tests: Reconciliation tests for the missing, surplus, duplicate, and equal cases; a test pinning the 2026-08-12 sixteen-rows-for-fifteen-games slate; a test proving a game state outage raises no divergence; an alarm-threshold test proving a single divergent snapshot does not fire.
+- Likely files/packages affected: `apps/workers`, `packages/database`, `packages/observability`, `infra/cdk`, `apps/api`.
+- Observability: This story is observability — divergence count by class and by league, emitted per reconciliation.
+- Security: None.
+- Data migration/backfill impact: None.
+- Definition of done: A slate that is missing a game says so without a person counting rows.
+- Risk: Medium — an alarm that cries wolf gets muted, so the threshold matters more than the detection.
+- Approval required before merge: Yes.
+
+#### FTE-088: Admit a Game First Seen In Play
+
+- Epic: Live game state.
+- Outcome: A real game that was already under way the first time we looked can still reach the board, under a fence narrow enough to keep the Leagues Cup rule intact.
+- Context: FTE-083 forbids bootstrapping a canonical event from game state, and it is right for the ordinary case — an unmatched row is usually a derivative, a prop, or a league we do not serve. But the schedule feed carries only upcoming games, so a game that starts inside an ingestion gap is invisible to every path we have: the schedule feed has already dropped it, and it never existed to be dropped from the board. Refusing to bootstrap makes that permanent. This story is the deliberate, bounded exception, and it exists because FTE-087 will otherwise report a missing game that nothing is allowed to fix.
+- In scope: admitting a game state row with no canonical event when, and only when, its league is on the allowlist, its participants resolve to known clubs by the existing canonical resolution path, its start instant falls on the slate's Eastern day, and no canonical event already carries that participant pairing on that day; marking such an event as admitted-from-game-state in its provenance; reconciling it with a later schedule listing rather than minting a sibling.
+- Out of scope: Admitting a row whose participants do not resolve. Admitting into a league not on the allowlist. Relaxing FTE-083's default, which remains no-bootstrap for every path other than this one.
+- Dependencies: FTE-083, FTE-087.
+- Acceptance criteria: An unresolvable row is still counted and never minted; a derivative or prop row is never admitted; an admitted game whose real schedule listing later appears resolves to one canonical event, not two — the churn-orphan failure must not be reintroduced by a new door; provenance records that the event was admitted from game state and never loses that fact; a doubleheader is still admissible because the pairing guard is scoped to the start instant, not the day alone.
+- Required automated tests: Admission tests for the resolvable, unresolvable, off-allowlist, and duplicate-pairing cases; a test proving a later schedule listing merges rather than mints; a doubleheader admission test; a test proving provenance survives a version bump.
+- Likely files/packages affected: `packages/domain`, `packages/database`, `apps/workers`.
+- Observability: Admissions by league, and admissions later confirmed by a schedule listing — the confirmation rate is the measure of whether the fence is tight enough.
+- Security: None.
+- Data migration/backfill impact: None — new events only, and only forward.
+- Definition of done: A game we only ever saw in play can appear, and nothing else can.
+- Risk: High — this is a new way for rows to enter the board, which is the failure mode this product has paid for most often.
+- Approval required before merge: Yes.
+
+#### FTE-089: Retire the Splits Witness on Evidence
+
+- Epic: Live game state.
+- Outcome: The splits witness is removed once the comparison FTE-084 records shows game state does its job better, and not before.
+- Context: FTE-084 keeps both witnesses and instruments their disagreement precisely so this decision can be made on data rather than confidence. Left unowned, "temporary" fallbacks become permanent, and this one is not harmless: it is the mechanism that deletes started games when MLB splits go down, and it is the reason MLB is the only league that loses games this way. Retiring it is the point of the epic, so it gets a story rather than a hope.
+- In scope: a stated retirement gate expressed in the FTE-084 counters — a minimum observation period, a maximum rate at which game state and splits disagree, and zero cases where splits was right and game state wrong; removing `splitsExpected` and `hasSplitEvidence` from the board projection once the gate passes; recording the evidence that justified the removal.
+- Out of scope: Removing betting splits from the product. Splits remain a first-class displayed market — this story retires their use as a lifecycle witness only, and the distinction must be explicit in the change.
+- Dependencies: FTE-084, and the observation period it defines.
+- Acceptance criteria: The gate is stated numerically before any removal and evaluated against recorded counters, not recollection; if the gate does not pass, the story closes as not-yet rather than shipping a partial removal; after removal, no board path consults split evidence to decide whether a game exists; splits continue to render exactly as before.
+- Required automated tests: Board projection tests proving lifecycle decisions no longer read split evidence; a test proving splits still render on the splits board; the 2026-08-11 ghost and 2026-08-12 missing-game regressions must both still pass under game state alone.
+- Likely files/packages affected: `packages/database/src/board-projection.ts`, `apps/workers`.
+- Observability: The retirement decision itself is recorded with the counter values that justified it.
+- Security: None.
+- Data migration/backfill impact: None.
+- Definition of done: One witness, chosen on evidence, with the discarded one's record written down.
+- Risk: Medium.
+- Approval required before merge: Yes.
+
+#### FTE-090: A Live Row Must Not Fail a Schedule Page
+
+- Epic: Live game state. **Does not depend on the add-on and can ship immediately.**
+- Context: `parseSharpApiSchedulePage` throws `event-shape` on any in-league row whose `status` is not `upcoming` or whose `is_live` is not `false`, and that throw fails the entire page, not the row. Today the league filter above it happens to skip foreign rows before they reach the check, which is why 02c1a67 had to be reverted — widening league acceptance moved live rows past the guard and took MLS's schedule down, and with it the odds run the schedule gates. The guard is still one provider decision away from doing the same to MLB: the moment SharpAPI includes a live row in a league's own catalogue, that league loses its whole schedule page. A row we do not want should be skipped like every other unwanted row in that parser, not treated as proof the response is corrupt.
+- Outcome: An unwanted schedule row costs us that row, never the page.
+- In scope: skipping a non-upcoming or live row as a counted exclusion rather than throwing; keeping the throw for rows that are genuinely malformed, which is what `event-shape` is for; a reason code distinguishing the two so the counters do not merge a provider behaviour with a provider defect.
+- Out of scope: Re-widening the schedule parser to secondary catalogues. That was reverted on its own merits and stays reverted; this story does not revisit it.
+- Dependencies: None.
+- Acceptance criteria: A page containing one live row yields the remaining rows and one counted exclusion; a page containing a genuinely malformed row still throws; the counted exclusion carries a reason distinct from every existing one; the MLS regression from 02c1a67 passes with league acceptance widened, proving the latent defect is actually gone rather than hidden behind the filter order.
+- Required automated tests: Parser tests for a live row, a non-upcoming row, and a malformed row on the same page; the 02c1a67 scenario replayed with widened league acceptance.
+- Likely files/packages affected: `packages/providers/src/sharp-api.ts`.
+- Observability: Schedule exclusions by reason.
+- Security: None.
+- Data migration/backfill impact: None.
+- Definition of done: One bad row cannot take a league's schedule down, and the counters say which kind of bad it was.
+- Risk: Low.
+- Approval required before merge: No.
 
 ### Epic 9: Bet Tracker and Settlement
 

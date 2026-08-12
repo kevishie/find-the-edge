@@ -476,3 +476,77 @@ stored health record said healthy. The real cause was only on the RUN row's
 A fix needs to distinguish "resumable, mid-flight" from "wedged on a
 repeatable failure" — a consecutive-identical-failure count on the run row
 would do it — and abandon the latter without re-walking committed pages.
+
+## Incident 2026-08-12: production is five days stale and MLB is dark (OPEN)
+
+Reported symptom: "missing games and lines in MLB — 7 splits showing, 15
+games today." Measured at 2026-08-12T22:04Z against both environments.
+
+**Production is not running the code that fixes this.** `origin/production`
+is at `c62fafa` (2026-08-07); `origin/main` is 153 commits ahead. Everything
+merged since 08-07 — the splits poisoning fix, churn-identity aliasing, the
+board freshness alarm, alarm email routing, closing lines — is on staging
+and absent from prod.
+
+Prod `GET /providers/status`, MLB scopes, all three in outage:
+
+| scope | connection | last success | age vs expected |
+| --- | --- | --- | --- |
+| `sharpapi:mlb:splits`   | outage | 2026-08-12T06:28:11Z | 56,228s / 900s |
+| `sharpapi:mlb:schedule` | outage | 2026-08-12T20:58:11Z | 4,027s / 3,600s |
+| `sharpapi:mlb:odds`     | outage | 2026-08-12T21:58:11Z | 428s / 3,600s |
+
+MLB is the only league in outage on all three capabilities; the soccer
+leagues' schedule and splits are healthy.
+
+The splits outage is the **2026-08-10 self-poisoning, recurring verbatim**.
+Prod `ODDS_CONTROL#HEALTH#sharpapi:mlb:splits` carries
+`failureStage: splits-history:event-timestamp`, `failureReason:
+invalid-response`, `consecutiveSuccesses: 0`, `version: 782`. Prod
+`ODDS_CONTROL#CONTINUATION#splits:mlb` still holds `runId:
+splits:mlb:2026-08-12T06:33:11.269Z` — a dead 30-minute window replayed
+every tick for 15.5 hours, with `startedAt` refreshed to 22:03:20Z on each
+attempt. The abandon-aged-runs fix (3d8424e, 2026-08-10) computes staleness
+from the timestamp encoded in the runId and would have minted a fresh run on
+the first tick after 07:18Z. It is on main. It is not on production.
+
+Environment comparison for the same slate, same minute:
+
+| | production | staging |
+| --- | --- | --- |
+| MLB rows served | 16 | 15 |
+| newest split observation | 2026-08-12T06:28Z | 2026-08-12T22:01Z |
+| Reds/White Sox rows | 2 (23:40Z and 23:45Z) | 1 |
+
+Fifteen is correct. Prod's sixteenth row is the provider-id churn orphan
+described in the 2026-08-08 entry above, also fixed on main (6edff78,
+0b68369) and also not in production.
+
+Board `freshness` is `2026-08-10T00:53Z` on prod and `2026-08-10T00:47Z` on
+staging — the *odds* evidence is two days old in both. That is a second,
+independent problem and it is not explained by the promotion gap. Soccer
+odds scopes are in outage on prod; MLB odds report healthy on staging with
+an 11-second age, so staging's stale board freshness needs its own look.
+
+Not established: why the reporter counted 7. At 22:04Z the prod API returns
+16 rows for the day, so 7 is neither the row count nor the unstarted count
+(10 at that moment). Candidates are a client-side filter, the five-minute
+whole-response board cache serving a partially materialised page, or an
+earlier observation. Worth pinning down, because a UI that shows 7 of 16
+served rows is a third defect.
+
+Actions, in order:
+1. Promote main to production. This is the whole fix for items 1–3.
+2. Prod recovery for the poisoned run is the documented one — delete
+   `ODDS_CONTROL#CONTINUATION#splits:mlb` and
+   `ODDS_CONTROL#HEALTH#sharpapi:mlb:splits` — but only if the promotion
+   cannot happen promptly, since the deployed fix does this by itself.
+3. Ask why 15.5 hours of `OddsSplitFailure` did not page. The 2026-08-10
+   entry claims "twenty hours of OddsSplitFailure will page next time" —
+   that routing also shipped in 3d8424e and is therefore also not in prod.
+4. Reconcile the two boards' odds freshness independently of the promotion.
+
+Structural follow-ups are FTE-087 (a slate short a game alarms without a
+person counting rows), FTE-084 (a stale splits witness must not delete
+started games), and FTE-090. A promotion gap this size is its own risk and
+belongs in Epic 11 rather than here.
