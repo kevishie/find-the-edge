@@ -532,7 +532,17 @@ export async function persistSharpApiOddsPage(
     let canonical = exactMapping
       ? await store.resolveExactCanonicalBinding(binding)
       : null;
-    if (!canonical && secondaryProviderLeague !== undefined) {
+    // Both catalogues now arrive in ONE response, so the catalogue is a
+    // property of the ROW, not of the page. A row whose provider id belongs to
+    // a secondary catalogue may only alias; letting it take the normal path
+    // would bootstrap a second canonical event per fixture.
+    const rowSecondary =
+      (league.secondaryOddsProviderLeagues ?? []).find((candidate) =>
+        raw.providerEventId
+          .toLowerCase()
+          .startsWith(`${candidate.toLowerCase()}_`),
+      ) ?? secondaryProviderLeague;
+    if (!canonical && rowSecondary !== undefined) {
       // Resolve-or-skip. The only identity shared with the primary catalogue
       // is the participant pair, so match on that — the same nickname-anchored
       // comparison split attribution uses — and bind an ALIAS. Failing to

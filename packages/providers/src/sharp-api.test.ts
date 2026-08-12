@@ -160,7 +160,9 @@ describe("SharpAPI activation boundary", () => {
       fetcher,
     );
     expect(calls[0]).toContain(
-      "league=MLS&market=main&is_live=false&limit=200",
+      // One request carries the league and every secondary catalogue that
+      // holds its fixtures — the documented comma-separated form.
+      "league=MLS%2Cleagues_cup&market=main&is_live=false&limit=200",
     );
     expect(calls[0]).not.toContain("secret-key");
     expect(featured.request.endpointMode).toBe("featured");

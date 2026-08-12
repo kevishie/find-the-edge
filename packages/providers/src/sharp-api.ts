@@ -1168,9 +1168,10 @@ export function parseSharpApiSchedulePage(
     // catalogues despite an exact filter. League identity is the only field we
     // need in order to exclude those rows safely.
     if (
-      ![league.leagueKey, league.providerLeague.toLowerCase()].includes(
-        value["league"].toLowerCase(),
-      )
+      ![
+        league.leagueKey,
+        ...acceptedProviderLeagues(league).map((name) => name.toLowerCase()),
+      ].includes(value["league"].toLowerCase())
     )
       continue;
     if (
@@ -1549,6 +1550,29 @@ export async function fetchSharpApiAccount(
   }
 }
 
+/**
+ * Every provider catalogue a league's odds may legitimately arrive from: its
+ * own, plus any secondary catalogue carrying fixtures it already schedules.
+ */
+export const acceptedProviderLeagues = (
+  league: SharpApiLeague,
+): readonly string[] => [
+  league.providerLeague,
+  ...(league.secondaryOddsProviderLeagues ?? []),
+];
+
+/**
+ * The secondary catalogue a row came from, or null when it is the league's
+ * own. A secondary row may only alias onto an event this league already has.
+ */
+export const secondaryLeagueOf = (
+  league: SharpApiLeague,
+  rowLeague: string,
+): string | null =>
+  (league.secondaryOddsProviderLeagues ?? []).find(
+    (candidate) => candidate.toLowerCase() === rowLeague.toLowerCase(),
+  ) ?? null;
+
 export async function fetchSharpApiOddsPage(
   league: SharpApiLeague,
   apiKey: string,
@@ -1556,7 +1580,11 @@ export async function fetchSharpApiOddsPage(
   fetcher: typeof fetch = fetch,
 ): Promise<SharpApiOddsPage> {
   const query = new URLSearchParams({
-    league: league.providerLeague,
+    // SharpAPI documents `league` as comma-separated, so a league and any
+    // secondary catalogue carrying its fixtures arrive in ONE paginated
+    // response. Fetching them as separate page sequences was a workaround for
+    // a parameter the provider already supports.
+    league: acceptedProviderLeagues(league).join(","),
     market: "main",
     is_live: "false",
     limit: "200",
@@ -1651,9 +1679,10 @@ export async function fetchSharpApiEventOdds(
         !record(row) ||
         row["event_id"] !== providerEventId ||
         !canonical(row["league"], 128) ||
-        ![league.leagueKey, league.providerLeague.toLowerCase()].includes(
-          row["league"].toLowerCase(),
-        )
+        ![
+          league.leagueKey,
+          ...acceptedProviderLeagues(league).map((name) => name.toLowerCase()),
+        ].includes(row["league"].toLowerCase())
       )
         throw invalidResponse("focused-odds", "identity");
     }
