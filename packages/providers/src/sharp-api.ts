@@ -45,6 +45,21 @@ export interface SharpApiLeague {
     "mlb" | "mls" | "epl" | "liga-mx" | "uefa-champions-league";
   /** Exact, catalog-verified SharpAPI league identity. Never fuzzy matched. */
   readonly providerLeague: string;
+  /**
+   * Extra provider catalogues whose ODDS belong to games this league already
+   * schedules. Leagues Cup is the case: MLS clubs play Liga MX clubs, our
+   * canonical event is bootstrapped from the `mls` listing (whose only book
+   * we do not approve), and the liquidity sits in a `leagues_cup` listing
+   * with a different provider id and a different uuid — the catalogues share
+   * no identity at all.
+   *
+   * Deliberately NOT a league of its own. Cross-league binding is refused by
+   * the mapping scope check and by the odds snapshot's own condition, so
+   * these rows must persist under THIS leagueKey; and a separate league
+   * would mint a second canonical event per fixture, which is the
+   * duplicate-game defect fixed on 2026-08-11.
+   */
+  readonly secondaryOddsProviderLeagues?: readonly string[];
   readonly moneylineMarket: "moneyline";
 }
 
@@ -59,6 +74,9 @@ export const sharpApiLeagues: readonly SharpApiLeague[] = [
     sportKey: "soccer" as SportKey,
     leagueKey: "mls",
     providerLeague: "MLS",
+    // Every MLS fixture on the board through August is Leagues Cup, and none
+    // of them can be priced from the MLS catalogue alone.
+    secondaryOddsProviderLeagues: ["leagues_cup"],
     moneylineMarket: "moneyline",
   },
   {

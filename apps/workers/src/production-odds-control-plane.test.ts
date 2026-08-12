@@ -1533,7 +1533,7 @@ describe("production odds control-plane composition", () => {
       "sharpapi",
     ]);
     expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(5);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
     expect(options.metrics.emit).toHaveBeenCalledWith(
       "OddsNormalizedObservation",
       2,
@@ -1596,7 +1596,7 @@ describe("production odds control-plane composition", () => {
       "skipped",
       "skipped",
     ]);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(5);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
 
     // Twenty seconds in, the base cadence is still not due; only the
     // durable 12:45 scheduled start puts every league in its ten-second
@@ -1614,7 +1614,7 @@ describe("production odds control-plane composition", () => {
       "completed",
     ]);
     expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(10);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(12);
   });
 
   it("keeps an approved book active when the same event continues on another page", async () => {
@@ -1857,7 +1857,7 @@ describe("production odds control-plane composition", () => {
       sealedAt: at,
     });
 
-    const merged = await reconstructSharpOddsRun(control, "legacy-run");
+    const { merged } = await reconstructSharpOddsRun(control, "legacy-run");
     expect(
       merged.events[0]?.bookmakers[0]?.prices.map(
         ({ selectionKey }) => selectionKey,
@@ -1987,7 +1987,7 @@ describe("production odds control-plane composition", () => {
         2.5,
       ),
     );
-    const merged = await reconstructSharpOddsRun(control, "repriced-run");
+    const { merged } = await reconstructSharpOddsRun(control, "repriced-run");
     expect(merged.events[0]?.bookmakers[0]?.prices[0]).toMatchObject({
       providerPriceId: "stable-price-id",
       americanOdds: 125,
@@ -2065,7 +2065,7 @@ describe("production odds control-plane composition", () => {
       quotaCost: 1,
       sealedAt: at,
     });
-    const merged = await reconstructSharpOddsRun(control, "drift-run");
+    const { merged } = await reconstructSharpOddsRun(control, "drift-run");
     expect(merged.events).toHaveLength(1);
     expect(merged.events[0]).toMatchObject({
       awayTeam: "Toronto Blue Jays",
@@ -2269,7 +2269,7 @@ describe("production odds control-plane composition", () => {
       status: "failed",
       reason: "schedule-provider-unavailable",
     });
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(4);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(5);
     expect(fetchSharpOdds.mock.calls[0]?.[0].leagueKey).toBe("mls");
     expect(
       [...control.runs.values()].some(
@@ -2938,7 +2938,7 @@ describe("production odds control-plane composition", () => {
       ["sharpapi", "completed"],
       ["sharpapi", "completed"],
     ]);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(10);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(12);
   });
 
   it("does not poison provider health when another schedule worker owns the lease", async () => {

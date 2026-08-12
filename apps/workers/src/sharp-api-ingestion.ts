@@ -383,6 +383,19 @@ export async function persistSharpApiOddsPage(
   }) => void,
   expectedBookMarkets?: Readonly<Record<string, readonly string[]>>,
   acceptedProviderEventIds?: ReadonlySet<string>,
+  /**
+   * Set when this page came from a secondary catalogue (Leagues Cup). Its
+   * rows may only ALIAS onto a canonical event this league already has —
+   * never bootstrap one — because the two catalogues describe the same
+   * fixtures under different provider ids and different uuids, and minting
+   * from the secondary would put every game on the board twice.
+   */
+  secondaryProviderLeague?: string,
+  /** Canonical events already resolved in this run, matched by participants. */
+  resolvedThisRun?: readonly {
+    readonly canonical: CanonicalEvent;
+  }[],
+  onSecondaryGap?: (reason: "no-candidate" | "ambiguous") => void,
 ) {
   const comparableParticipant = (value: string) =>
     value
@@ -519,6 +532,57 @@ export async function persistSharpApiOddsPage(
     let canonical = exactMapping
       ? await store.resolveExactCanonicalBinding(binding)
       : null;
+    if (!canonical && secondaryProviderLeague !== undefined) {
+      // Resolve-or-skip. The only identity shared with the primary catalogue
+      // is the participant pair, so match on that — the same nickname-anchored
+      // comparison split attribution uses — and bind an ALIAS. Failing to
+      // match drops the row; it never creates an event.
+      const matches = (resolvedThisRun ?? [])
+        .map(({ canonical: candidate }) => candidate)
+        .filter(
+          (candidate) =>
+            // Either orientation. The two catalogues are separate renderings
+            // of the same fixture and nothing guarantees they agree on which
+            // club is home — and a silent drop here is precisely the failure
+            // that leaves a board priceless with no error anywhere.
+            splitParticipantsMatchCanonical(
+              candidate,
+              raw.awayTeam,
+              raw.homeTeam,
+            ) ||
+            splitParticipantsMatchCanonical(
+              candidate,
+              raw.homeTeam,
+              raw.awayTeam,
+            ),
+        );
+      const unique = uniqueCanonicalSplitCandidate(matches);
+      if (!unique) {
+        onSecondaryGap?.(matches.length === 0 ? "no-candidate" : "ambiguous");
+        continue;
+      }
+      const aliased = await store.ingestEvent({
+        ...event,
+        providerId: SHARP_API_PROVIDER_ID,
+        startsAt: unique.startsAt,
+        status: unique.status,
+        ...(unique.participantLabels === undefined
+          ? {}
+          : { participantLabels: unique.participantLabels }),
+        normalizedIdentity: unique.candidateIdentity,
+        mappingKind: "alias",
+        observedAt: eventRetrievedAt,
+      });
+      if (aliased.kind === "unresolved") {
+        onSecondaryGap?.("no-candidate");
+        continue;
+      }
+      canonical = await store.resolveExactCanonicalBinding(binding);
+      if (!canonical) {
+        onSecondaryGap?.("no-candidate");
+        continue;
+      }
+    }
     if (!canonical) {
       let ingested = await store.ingestEvent({
         ...event,

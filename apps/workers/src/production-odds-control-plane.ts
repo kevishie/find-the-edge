@@ -215,7 +215,36 @@ import {
 interface SharpPageMaterial {
   readonly kind: "sharpapi";
   readonly page: SharpApiOddsPage;
+  /**
+   * Set when this page came from a secondary catalogue (Leagues Cup) rather
+   * than the league's own. Rows from a secondary page may only ALIAS onto a
+   * canonical event this league already has; they must never bootstrap one,
+   * or one fixture becomes two.
+   */
+  readonly secondaryProviderLeague?: string;
 }
+
+/**
+ * A page token naming a secondary catalogue and its cursor. The primary
+ * sequence runs to exhaustion first, then each secondary catalogue in turn,
+ * so a single run still walks one linear chain of sealed pages and the
+ * evidence machinery is untouched.
+ */
+const SECONDARY_TOKEN = /^secondary:([a-z0-9_]+):(.*)$/;
+
+const secondaryToken = (league: string, cursor: string) =>
+  `secondary:${league}:${cursor}`;
+
+const parseSecondaryToken = (
+  token: string,
+): { readonly league: string; readonly cursor: string | undefined } | null => {
+  const match = SECONDARY_TOKEN.exec(token);
+  if (!match) return null;
+  return {
+    league: match[1]!,
+    cursor: match[2] === "start" ? undefined : match[2]!,
+  };
+};
 
 type CanonicalSharpOddsEvents = Awaited<
   ReturnType<typeof persistSharpApiOddsPage>
@@ -783,10 +812,22 @@ export const reconstructSharpOddsRun = async (
   runId: string,
 ) => {
   const pages: SharpApiOddsPage[] = [];
+  // Secondary-catalogue pages are kept apart from the league's own. They
+  // describe the same fixtures under different provider ids, so merging them
+  // into one page would ask the resolver to bootstrap what it must only
+  // alias — and put every Leagues Cup game on the board twice.
+  const secondaryPages = new Map<string, SharpApiOddsPage[]>();
   const seenTokens = new Set<string>();
   let token: string | undefined = "start";
+  const assembled = () => ({
+    merged: mergeSharpOddsPages(pages),
+    secondary: [...secondaryPages].map(([league, group]) => ({
+      league,
+      page: mergeSharpOddsPages(group),
+    })),
+  });
   for (let guard = 0; guard < 100; guard += 1) {
-    if (!token) return mergeSharpOddsPages(pages);
+    if (!token) return assembled();
     if (seenTokens.has(token))
       throw new SharpApiError(
         "invalid-response",
@@ -807,7 +848,13 @@ export const reconstructSharpOddsRun = async (
       const material = item as SharpPageMaterial;
       if (material.kind !== "sharpapi")
         throw new Error("provider-page-material-mismatch");
-      pages.push(material.page);
+      if (material.secondaryProviderLeague === undefined) {
+        pages.push(material.page);
+        continue;
+      }
+      const group = secondaryPages.get(material.secondaryProviderLeague) ?? [];
+      group.push(material.page);
+      secondaryPages.set(material.secondaryProviderLeague, group);
     }
     token = sealed.nextPageToken;
   }
@@ -1964,10 +2011,8 @@ export async function runProductionOddsControlPlane(input: {
                 expectedProviderEvents.get(
                   `${SHARP_API_PROVIDER_ID}:${policy.leagueKey}`,
                 ) ?? [];
-              const merged = await reconstructSharpOddsRun(
-                input.control,
-                runId,
-              );
+              const { merged, secondary: secondaryCatalogues } =
+                await reconstructSharpOddsRun(input.control, runId);
               const expectedBooks = policy.providers[0]?.expectedBooks;
               const persisted = await persistSharpApiOddsPage(
                 input.events,
@@ -2008,6 +2053,42 @@ export async function runProductionOddsControlPlane(input: {
                 expectedBooks,
                 new Set(expectedEvents),
               );
+              // Secondary catalogues run AFTER the primary, because they can
+              // only alias onto canonical events the primary just resolved.
+              // A row that matches nothing is dropped and counted; it must
+              // never bootstrap, or one fixture becomes two.
+              for (const catalogue of secondaryCatalogues) {
+                const dimensions = {
+                  provider: SHARP_API_PROVIDER_ID,
+                  league: policy.leagueKey,
+                  catalogue: catalogue.league,
+                };
+                const aliased = await persistSharpApiOddsPage(
+                  input.events,
+                  input.odds,
+                  sharpLeague,
+                  catalogue.page,
+                  policy.providers[0]?.books,
+                  undefined,
+                  expectedBooks,
+                  undefined,
+                  catalogue.league,
+                  persisted.canonicalOddsEvents,
+                  (reason) =>
+                    // Label drift between two catalogues silently drops a
+                    // fixture. This is the whole class of failure that keeps
+                    // costing this product hours, so it is counted.
+                    input.metrics?.emit("OddsSecondaryUnresolved", 1, {
+                      ...dimensions,
+                      reason,
+                    }),
+                );
+                input.metrics?.emit(
+                  "OddsSecondaryObservation",
+                  aliased.observations,
+                  dimensions,
+                );
+              }
               input.metrics?.emit(
                 "OddsNormalizedObservation",
                 persisted.observations,
@@ -2154,6 +2235,18 @@ export async function runProductionOddsControlPlane(input: {
               };
             },
             fetchPage: async ({ runId, pageToken }) => {
+              // A secondary catalogue holds odds for games this league already
+              // schedules — Leagues Cup fixtures whose MLS listing carries no
+              // book we approve. It is fetched as a continuation of the same
+              // page chain rather than as its own league, because a league of
+              // its own would mint a second canonical event per fixture.
+              const secondaries =
+                sharpLeague.secondaryOddsProviderLeagues ?? [];
+              const secondary = parseSecondaryToken(pageToken);
+              const activeLeague =
+                secondary === null
+                  ? sharpLeague
+                  : { ...sharpLeague, providerLeague: secondary.league };
               input.metrics?.emit("OddsProviderRequest", 1, {
                 provider: SHARP_API_PROVIDER_ID,
                 league: policy.leagueKey,
@@ -2161,12 +2254,21 @@ export async function runProductionOddsControlPlane(input: {
                 markets: "main",
                 quota: "reserved",
               });
-              const cursor = pageToken === "start" ? undefined : pageToken;
+              const cursor =
+                secondary === null
+                  ? pageToken === "start"
+                    ? undefined
+                    : pageToken
+                  : secondary.cursor;
               const fetchPage = () =>
                 (input.fetchSharpOdds
-                  ? input.fetchSharpOdds(sharpLeague, input.sharpApiKey, cursor)
+                  ? input.fetchSharpOdds(
+                      activeLeague,
+                      input.sharpApiKey,
+                      cursor,
+                    )
                   : (input.fetchSharpFeatured ?? fetchSharpApiFeaturedOdds)(
-                      sharpLeague,
+                      activeLeague,
                       input.sharpApiKey,
                       cursor,
                     ).then(({ page }) => page)
@@ -2204,7 +2306,13 @@ export async function runProductionOddsControlPlane(input: {
                 }),
               );
               const { page } = fetched;
-              const material: SharpPageMaterial = { kind: "sharpapi", page };
+              const material: SharpPageMaterial = {
+                kind: "sharpapi",
+                page,
+                ...(secondary === null
+                  ? {}
+                  : { secondaryProviderLeague: secondary.league }),
+              };
               const pageRateWindow = nonEmptyRateWindow(
                 page.responseMetadata?.rateWindow,
               );
@@ -2233,9 +2341,25 @@ export async function runProductionOddsControlPlane(input: {
                   ({ providerEventId }) => providerEventId,
                 ),
                 digest: digest(material),
-                ...(page.hasMore && page.nextCursor
-                  ? { nextPageToken: page.nextCursor }
-                  : {}),
+                ...(() => {
+                  if (page.hasMore && page.nextCursor)
+                    return {
+                      nextPageToken:
+                        secondary === null
+                          ? page.nextCursor
+                          : secondaryToken(secondary.league, page.nextCursor),
+                    };
+                  // This catalogue is exhausted; hand the chain to the next
+                  // one, or end the run when none are left.
+                  const index =
+                    secondary === null
+                      ? -1
+                      : secondaries.indexOf(secondary.league);
+                  const next = secondaries[index + 1];
+                  return next === undefined
+                    ? {}
+                    : { nextPageToken: secondaryToken(next, "start") };
+                })(),
               };
             },
           },

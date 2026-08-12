@@ -1234,6 +1234,133 @@ describe("SharpAPI primary ingestion", () => {
     expect(persist).not.toHaveBeenCalled();
   });
 
+  it("aliases a secondary-catalogue event and never bootstraps one", async () => {
+    // Leagues Cup: our canonical event comes from the MLS listing, whose only
+    // book we do not approve. The liquidity is in a leagues_cup listing with
+    // a different provider id and a different uuid — the catalogues share no
+    // identity at all, so the participant pair is the only way across.
+    const canonical = {
+      id: "event:soccer%3Amls:usa_-_major_league_soccer_charlotte_pachuca_2026-08-11_b3",
+      version: 1,
+      sportKey: "soccer",
+      leagueKey: "mls",
+      status: "scheduled",
+      startsAt: "2026-08-11T23:30:00.000Z",
+      participantLabels: ["Charlotte FC", "Pachuca"],
+      candidateIdentity: "charlotte-pachuca",
+    } as unknown as CanonicalEvent;
+    const onSecondaryGap = vi.fn();
+    let bound = false;
+    const ingestEvent = vi.fn(() => {
+      bound = true;
+      return Promise.resolve({ kind: "exact" as const });
+    });
+
+    const persisted = await persistSharpApiOddsPage(
+      {
+        getExactMapping: vi.fn(() => Promise.resolve(null)),
+        resolveExactCanonicalBinding: vi.fn(() =>
+          Promise.resolve(bound ? canonical : null),
+        ),
+        ingestEvent,
+        // If this is ever reached the fix has failed: bootstrapping from the
+        // secondary catalogue is what puts one fixture on the board twice.
+        reconcileScheduledEvent: vi.fn(() => {
+          throw new Error("secondary catalogue must never bootstrap");
+        }),
+      } as unknown as EventIngestionStore,
+      {
+        persist: vi.fn(() => Promise.resolve({ history: "inserted" })),
+      } as never,
+      {
+        sportKey: "soccer",
+        leagueKey: "mls",
+        providerLeague: "MLS",
+        secondaryOddsProviderLeagues: ["leagues_cup"],
+        moneylineMarket: "moneyline",
+      } as unknown as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-11T22:00:00.000Z" as IsoTimestamp,
+        events: [
+          {
+            providerEventId: "leagues_cup_charlotte_pachuca_2026-08-11_b3",
+            providerEventUuid: "b4389ac7b0149f8c",
+            awayTeam: "Pachuca",
+            homeTeam: "Charlotte FC",
+            startsAt: "2026-08-11T23:30:00.000Z" as IsoTimestamp,
+            bookmakers: [],
+          },
+        ],
+      },
+      {},
+      undefined,
+      undefined,
+      undefined,
+      "leagues_cup",
+      [{ canonical }],
+      onSecondaryGap,
+    );
+
+    // It bound as an ALIAS onto the event MLS already had.
+    expect(ingestEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ mappingKind: "alias" }),
+    );
+    expect(onSecondaryGap).not.toHaveBeenCalled();
+    // The binding is the point; this fixture carries no books, so there is
+    // nothing to observe and nothing to assert about observations.
+    expect(persisted.events).toBe(0);
+  });
+
+  it("drops a secondary row that matches no scheduled fixture", async () => {
+    // Label drift between two catalogues is the failure mode that keeps
+    // costing this product hours, so an unmatched row is counted rather than
+    // quietly turned into a second canonical event.
+    const onSecondaryGap = vi.fn();
+    const ingestEvent = vi.fn();
+
+    const persisted = await persistSharpApiOddsPage(
+      {
+        getExactMapping: vi.fn(() => Promise.resolve(null)),
+        resolveExactCanonicalBinding: vi.fn(() => Promise.resolve(null)),
+        ingestEvent,
+        reconcileScheduledEvent: vi.fn(() => {
+          throw new Error("secondary catalogue must never bootstrap");
+        }),
+      } as unknown as EventIngestionStore,
+      { persist: vi.fn() },
+      {
+        sportKey: "soccer",
+        leagueKey: "mls",
+        providerLeague: "MLS",
+        moneylineMarket: "moneyline",
+      } as unknown as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-11T22:00:00.000Z" as IsoTimestamp,
+        events: [
+          {
+            providerEventId: "leagues_cup_someone_else_2026-08-11_b3",
+            providerEventUuid: "ffff",
+            awayTeam: "Club Nobody",
+            homeTeam: "Club Unknown",
+            startsAt: "2026-08-11T23:30:00.000Z" as IsoTimestamp,
+            bookmakers: [],
+          },
+        ],
+      },
+      {},
+      undefined,
+      undefined,
+      undefined,
+      "leagues_cup",
+      [],
+      onSecondaryGap,
+    );
+
+    expect(onSecondaryGap).toHaveBeenCalledWith("no-candidate");
+    expect(ingestEvent).not.toHaveBeenCalled();
+    expect(persisted.events).toBe(0);
+  });
+
   it("attaches a split that abbreviates a club the schedule feed spells out", async () => {
     // Real provider behaviour: /splits says "Athletics", /events says
     // "Oakland Athletics".
