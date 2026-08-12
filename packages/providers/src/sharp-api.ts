@@ -269,7 +269,10 @@ export interface SharpApiSchedulePage {
 export interface SharpApiScheduleExclusion {
   readonly providerEventId: string;
   readonly reason:
-    "participant-out-of-scope" | "same-club-matchup" | "catalogue-derivative";
+    | "participant-out-of-scope"
+    | "same-club-matchup"
+    | "catalogue-derivative"
+    | "not-upcoming";
   readonly auditId: string;
 }
 
@@ -1179,10 +1182,12 @@ export function parseSharpApiSchedulePage(
       )
     )
       continue;
+    // Shape only. A row whose lifecycle we do not want is handled below as an
+    // exclusion — a malformed row is a different thing and still throws.
     if (
       !instant(value["start_time"]) ||
-      value["status"] !== "upcoming" ||
-      value["is_live"] !== false ||
+      typeof value["status"] !== "string" ||
+      typeof value["is_live"] !== "boolean" ||
       (value["away_team"] !== null &&
         !["string", "undefined"].includes(typeof value["away_team"])) ||
       (value["home_team"] !== null &&
@@ -1197,6 +1202,22 @@ export function parseSharpApiSchedulePage(
     const homeTeam = value["home_team"];
     if (ids.has(value["id"])) throw invalid("duplicate-event");
     ids.add(value["id"]);
+    // A row we do not want is not evidence that the response is corrupt. The
+    // provider flips a listing to in-play at first pitch and can leave it in
+    // the league's own catalogue, so throwing here would fail the whole page
+    // and take the league's schedule — and the odds run that schedule gates —
+    // down with it. That is exactly what 02c1a67 had to be reverted around:
+    // the league filter above happened to skip foreign live rows first, which
+    // hid this from every league except the one whose own catalogue carried
+    // them. Cost the row, never the page.
+    if (value["status"] !== "upcoming" || value["is_live"]) {
+      exclusions.push({
+        providerEventId: value["id"],
+        reason: "not-upcoming",
+        auditId: auditId(value["id"]),
+      });
+      continue;
+    }
     // Sharp includes futures/binary propositions in this catalogue. Those
     // records intentionally have a missing participant and are not games.
     if (

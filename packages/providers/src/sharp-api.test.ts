@@ -450,26 +450,33 @@ describe("SharpAPI activation boundary", () => {
         status: "scheduled",
       },
     ]);
-    expect(() =>
-      parseSharpApiSchedulePage(
-        {
-          data: [
-            {
-              id: "mlb-event-1",
-              league: "mlb",
-              away_team: "Boston Red Sox",
-              home_team: "New York Yankees",
-              start_time: "2026-08-03T19:00:00Z",
-              status: "live",
-              is_live: true,
-            },
-          ],
-          pagination: { has_more: false },
-        },
-        sharpApiLeagues[0]!,
-        retrievedAt,
-      ),
-    ).toThrow("invalid-response");
+    // This used to assert a throw. FTE-090: a started row is a lifecycle we
+    // do not want, not a corrupt response, and throwing cost the whole page.
+    const started = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "mlb-event-1",
+            league: "mlb",
+            away_team: "Boston Red Sox",
+            home_team: "New York Yankees",
+            start_time: "2026-08-03T19:00:00Z",
+            status: "live",
+            is_live: true,
+          },
+        ],
+        pagination: { has_more: false },
+      },
+      sharpApiLeagues[0]!,
+      retrievedAt,
+    );
+    expect(started.events).toEqual([]);
+    expect(started.exclusions).toEqual([
+      expect.objectContaining({
+        providerEventId: "mlb-event-1",
+        reason: "not-upcoming",
+      }),
+    ]);
   });
   it("filters MLB catalogue contamination while retaining valid siblings", () => {
     const row = (
@@ -568,6 +575,78 @@ describe("SharpAPI activation boundary", () => {
         reason: "catalogue-derivative",
       }),
     );
+  });
+
+  describe("a lifecycle we do not want costs the row, never the page", () => {
+    const scheduleRow = (
+      id: string,
+      overrides: Record<string, unknown> = {},
+    ) => ({
+      id,
+      league: "mls",
+      away_team: "Away Club",
+      home_team: "Home Club",
+      start_time: "2026-08-12T23:30:00Z",
+      status: "upcoming",
+      is_live: false,
+      ...overrides,
+    });
+    const parse = (data: readonly unknown[]) =>
+      parseSharpApiSchedulePage(
+        { data, pagination: { has_more: false, next_offset: null } },
+        sharpApiLeagueByKey("mls"),
+        "2026-08-12T22:00:00.000Z" as never,
+      );
+
+    it("keeps the surviving rows and counts the started ones", () => {
+      // 02c1a67: a live row inside the league's OWN catalogue reaches the
+      // shape check, which threw — so one started game failed the whole page
+      // and took MLS's schedule, and the odds run that schedule gates, down.
+      const page = parse([
+        scheduleRow("live-now", { status: "live", is_live: true }),
+        scheduleRow("already-final", { status: "final" }),
+        scheduleRow("still-upcoming"),
+      ]);
+
+      expect(page.events.map(({ providerEventId }) => providerEventId)).toEqual(
+        ["still-upcoming"],
+      );
+      expect(page.exclusions).toEqual([
+        expect.objectContaining({
+          providerEventId: "live-now",
+          reason: "not-upcoming",
+        }),
+        expect.objectContaining({
+          providerEventId: "already-final",
+          reason: "not-upcoming",
+        }),
+      ]);
+    });
+
+    it("survives a page whose every row has started", () => {
+      const page = parse([
+        scheduleRow("live-a", { status: "live", is_live: true }),
+        scheduleRow("live-b", { status: "live", is_live: true }),
+      ]);
+
+      expect(page.events).toEqual([]);
+      expect(page.exclusions).toHaveLength(2);
+      expect(page.hasMore).toBe(false);
+    });
+
+    it("still throws when the lifecycle fields are malformed rather than unwanted", () => {
+      // A status we do not recognise is a provider behaviour; a status that is
+      // not a string at all is a defect, and the page is not to be trusted.
+      expect(() => parse([scheduleRow("bad-status", { status: 7 })])).toThrow(
+        "invalid-response",
+      );
+      expect(() =>
+        parse([scheduleRow("bad-live", { is_live: "yes" })]),
+      ).toThrow("invalid-response");
+      expect(() =>
+        parse([scheduleRow("bad-start", { start_time: "not-a-time" })]),
+      ).toThrow("invalid-response");
+    });
   });
 
   it("defensively excludes contaminated MLB odds identities", () => {

@@ -1759,6 +1759,9 @@ export async function runProductionOddsControlPlane(input: {
             "participant-out-of-scope",
             "same-club-matchup",
             "catalogue-derivative",
+            // Counted separately from the derivative reasons: this one is a
+            // provider behaviour we tolerate, not a row we judged unfit.
+            "not-upcoming",
           ] as const) {
             const count =
               page.exclusions?.filter((item) => item.reason === reason)

@@ -27,6 +27,7 @@ export type OddsEvidenceGapReason =
   | "participant-out-of-scope"
   | "same-club-matchup"
   | "catalogue-derivative"
+  | "not-upcoming"
   | "schedule-mapping-unresolved"
   | "canonical-candidate-conflict"
   | "identity-claim-conflict"
