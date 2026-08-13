@@ -999,3 +999,39 @@ Worth re-checking after it lands: whether keeping every absentee on a
 splitless far-future board also readmits the `06:50Z` placeholder orphans.
 The vouched-sibling rule runs before the witness and should still catch
 them, but it has not been observed under these conditions.
+
+## Two flaky suites are training us to re-run the gate (found 2026-08-13)
+
+Both surfaced while landing the FTE-084 batch, and both cost a red main.
+
+- `apps/web/src/watchlist.test.tsx` — "puts the row back and says so when the
+  removal fails" fails intermittently under the **coverage** step with
+  "Unable to find role=listitem". Passes locally at 327/327 under
+  `pnpm coverage`, and passed on a plain gate re-run. 2cc5e66 already fixed
+  this once by switching to `findByRole`; the async find is still losing the
+  race under coverage instrumentation, which slows renders. The test's own
+  comment says the row is restored in a later render than the failure
+  message, so the timing dependency is known and unbounded.
+- `tests/e2e/games.spec.ts` — three mobile-chromium cases failed in a full
+  `pnpm test:e2e` run and all three passed in isolation and on re-run.
+  Parallel worker contention.
+
+Neither is a product defect, and that is the problem. A gate that fails
+randomly is a gate people re-run without reading, and this repo has already
+paid for that: `FixtureOddsProjection` failed 100% of its invocations for six
+days behind an alarm that was already red, and `OddsSplitFailureAlarm` has
+sat latched in ALARM since 2026-08-09 across all three environments. The
+same habit applied to CI will hide a real break.
+
+Worth fixing properly rather than by raising timeouts — a longer timeout on
+the watchlist assertion would mask a genuine render race if one exists,
+and nothing currently proves one does not.
+
+## Note on how the gate was verified overnight
+
+Several commits in this batch were reported as "full gate green" on the
+strength of running typecheck, unit tests, lint, format, boundaries and
+build individually. `pnpm check` also runs `pnpm test:e2e` and the coverage
+step, and neither was run. The e2e suite still pinned the old freshness copy
+from 6d28382, so the gate caught a real break that the narrower local check
+could not have. Run `pnpm check` rather than assembling a subset.
