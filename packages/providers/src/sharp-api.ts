@@ -576,6 +576,43 @@ export function parseSharpApiAccount(input: unknown): SharpApiAccount {
   };
 }
 
+/**
+ * Whether a moneyline is two-way or three-way is a property of the MARKET, but
+ * `market_type` reports it per price and reports it wrong: SharpAPI publishes
+ * soccer's three-way moneyline as `moneyline` with a separate `draw`
+ * selection, not as `moneyline_3-way`. Read one price at a time that is
+ * indistinguishable from a two-way market.
+ *
+ * The cost was total. A moneyline labelled two-way is expected to hold exactly
+ * away and home, so a three-selection group failed the completeness check and
+ * every soccer moneyline was rejected whole — which is why no soccer fixture
+ * has ever carried a price, in any competition, while the odds sat in the
+ * table. It would also have mis-valued the no-vig consensus, since removing
+ * vig from three outcomes as though there were two is simply a different sum.
+ *
+ * So the structure is decided once, here, where the book's prices are grouped
+ * and the draw is actually visible. A moneyline carrying a main-line draw is
+ * three-way. Nothing else is touched: no other sport quotes a draw.
+ */
+const withResolvedMoneylineStructure = (
+  prices: readonly SharpApiPrice[],
+): readonly SharpApiPrice[] => {
+  const threeWay = prices.some(
+    (price) =>
+      price.marketKey === "moneyline" &&
+      price.selectionKey === "draw" &&
+      price.isMainLine &&
+      !price.isAlternateLine,
+  );
+  return threeWay
+    ? prices.map((price) =>
+        price.marketKey === "moneyline"
+          ? { ...price, outcomeStructure: "three-way" as const }
+          : price,
+      )
+    : prices;
+};
+
 const selection = (
   raw: Record<string, unknown>,
   league: SharpApiLeague,
@@ -1132,7 +1169,7 @@ export function parseSharpApiOddsPage(
         ]
           .sort()
           .slice(0, 16),
-        prices,
+        prices: withResolvedMoneylineStructure(prices),
       })),
     })),
     rejections,

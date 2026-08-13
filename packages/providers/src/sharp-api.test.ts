@@ -253,6 +253,85 @@ describe("SharpAPI activation boundary", () => {
     ]);
   });
 
+  /**
+   * SharpAPI publishes soccer's three-way moneyline as `moneyline` with a
+   * separate draw selection, not as `moneyline_3-way`. Believing `market_type`
+   * per price labelled every one of them two-way, so a three-selection
+   * moneyline failed the completeness check and was rejected whole — no soccer
+   * fixture in any competition had ever carried a price, while the odds sat in
+   * the table. It would have mis-valued the no-vig consensus too.
+   */
+  it("reads a moneyline carrying a draw as three-way, whatever market_type says", () => {
+    const page = parseSharpApiOddsPage(
+      {
+        data: [
+          oddsRow({
+            id: "ml-home",
+            market_type: "moneyline",
+            selection_type: "home",
+            selection: "Home Club",
+          }),
+          oddsRow({
+            id: "ml-away",
+            market_type: "moneyline",
+            selection_type: "away",
+            selection: "Away Club",
+          }),
+          oddsRow({
+            id: "ml-draw",
+            market_type: "moneyline",
+            selection_type: "draw",
+            selection: "Draw",
+          }),
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagueByKey("mls"),
+      "2026-08-04T20:00:01.000Z" as never,
+    );
+    const prices = page.events[0]?.bookmakers[0]?.prices ?? [];
+    expect(prices).toHaveLength(3);
+    // Every price in the market, not just the draw: the structure belongs to
+    // the market, and a mixed group would not survive completeness grouping.
+    expect(prices.map((price) => price.outcomeStructure)).toEqual([
+      "three-way",
+      "three-way",
+      "three-way",
+    ]);
+    expect(page.rejections ?? []).toHaveLength(0);
+  });
+
+  it("leaves a genuine two-way moneyline alone", () => {
+    const page = parseSharpApiOddsPage(
+      {
+        data: [
+          oddsRow({
+            id: "ml-home",
+            event_id: "mlb-away-home-2026-08-04",
+            market_type: "moneyline",
+            selection_type: "home",
+            selection: "Home Club",
+          }),
+          oddsRow({
+            id: "ml-away",
+            event_id: "mlb-away-home-2026-08-04",
+            market_type: "moneyline",
+            selection_type: "away",
+            selection: "Away Club",
+          }),
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      sharpApiLeagueByKey("mls"),
+      "2026-08-04T20:00:01.000Z" as never,
+    );
+    expect(
+      (page.events[0]?.bookmakers[0]?.prices ?? []).map(
+        (price) => price.outcomeStructure,
+      ),
+    ).toEqual(["two-way", "two-way"]);
+  });
+
   it("accepts an unambiguous soccer Draw label outside MLS", () => {
     const page = parseSharpApiOddsPage(
       {
