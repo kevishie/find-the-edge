@@ -271,9 +271,17 @@ const validateCurrent = (
   return {
     marketKey: normalized.marketKey,
     selectionKey: normalized.selectionKey,
-    ...(normalized.selectionLabel
-      ? { selectionLabel: normalized.selectionLabel }
-      : {}),
+    // A participant's label is the club's name and belongs to the event. The
+    // draw belongs to nobody, so its label is ours to choose — and taking the
+    // book's text means the same fixture reads "Draw" or "DRAW" depending on
+    // which sportsbook happened to win the row. Circa publishes it uppercase
+    // and DraftKings does not, so two MLS games rendered nothing at all on
+    // 2026-08-13 while their siblings rendered fine.
+    ...(normalized.selectionKey === "draw"
+      ? { selectionLabel: "Draw" }
+      : normalized.selectionLabel
+        ? { selectionLabel: normalized.selectionLabel }
+        : {}),
     sportsbookId: normalized.sportsbookId,
     ...(normalized.sportsbookLabel
       ? { sportsbookLabel: normalized.sportsbookLabel }
