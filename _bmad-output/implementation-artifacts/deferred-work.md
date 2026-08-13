@@ -1238,3 +1238,46 @@ Note also the envelope: `evaluationState: "complete"` and
 `hasMoreUnknown: false` alongside a cursor. The client tolerates that
 combination, but "complete" plus a continuation is worth a second look on its
 own.
+
+## RESOLVED: the whole soccer-blank chain, end to end (2026-08-13)
+
+Five links, each measured rather than inferred. Two are fixed; the last is
+the one still worth acting on.
+
+1. **The soccer partition holds more physical rows than the board limit.**
+   `EVENTS#SPORT#soccer#LEAGUE#mls#STATUS#scheduled#DAY#2026-08-13` carries
+   **64 rows** for roughly 9 real fixtures; MLB's equivalent carries 29. The
+   projection sort key is `startsAt#id#version`, so every canonical version of
+   an event is its own row and soccer churns versions far harder — about
+   seven rows per fixture against MLB's two or three.
+2. **So the page always needs a cursor.** `materializationTargets` uses
+   `limit: 50`, and 64 > 50.
+3. **So the board is never materialised.** `materializeBoards` skips any
+   board whose page needs a cursor. The stored body froze at 12:44Z and was
+   377 minutes old when found — while every other board was 3 minutes old.
+4. **So every request falls through to the live path**, because
+   `validateStoredBoard` discards anything past `BOARD_MAX_AGE_MS` (10 min).
+5. **And the live path served an invalid page.**
+   `JoinedGamesRepository.list` built `{ ...first, items }`, inheriting the
+   event repository's freshness while replacing the items — so a page its own
+   participant-boundary filter emptied went out as 0 items with a non-null
+   freshness. The browser rejects that as invalid and shows nothing.
+
+Fixed: link 5 (recompute freshness from the returned items) and the
+64-character selection-key bound that was blocking soccer independently of
+all of this. Link 3 now emits `BoardMaterializationSkipped` with the board
+partition and reason, so a board that stops materialising says so.
+
+**Not fixed, and the real lever: link 1.** Nothing prevents a partition from
+outgrowing the board limit, and when it does the board silently leaves the
+fast path forever. Two directions, and they are not exclusive:
+
+- Reduce the rows. 64 rows for 9 fixtures is version churn, and the
+  2026-08-08 entry on provider-id churn is the same underlying disease.
+- Stop making it fatal. A board that needs a cursor could be materialised
+  from the first page rather than skipped outright, or the limit could be
+  raised above any plausible partition size. Skipping is the harshest option
+  and it fails silently.
+
+Worth noting how invisible this was: the fast path stopped existing for one
+board and the only symptom was a slow path bug on a different sport's screen.
