@@ -922,3 +922,35 @@ left the catalogue minutes earlier and the board has not rebuilt — but if it
 is still on the board after a materialisation cycle with no splits, then the
 witness path is not being reached for far-future games and that needs
 chasing. Re-check before treating FTE-091 as fully correct.
+
+### Caveat on the FTE-091 verification (2026-08-13T13:15Z)
+
+The White Sox @ Tigers case is **not** materialisation lag. It left the
+catalogue at 11:35Z, was still absent at 12:56Z across three samples, is
+still on the stored board at 13:14Z, and the Aug-14 splits board shows it
+with **zero** split observations. Under FTE-091 an MLB future absentee with
+no witness should be dropped. It is not.
+
+The likely reason exposes a flaw in how BOTH cases were verified. The
+sampler and the verification script decide "absent from the catalogue" by
+**provider event id** (base, `_bN` stripped). `withoutWithdrawnListings`
+decides it by **participants plus start instant within 15 minutes**
+(`listingMatchesGame`). Those are not the same question. A row whose id base
+churned — and the 2026-08-08 entry above records that the base wording does
+churn, not just the suffix — is absent by id and present by participants. It
+would be vouched by the schedule branch and never reach the witness at all.
+
+That explains the Tigers row without any defect in the fix, and it means the
+Reds @ White Sox conclusion is **weaker than stated**: it shows no row shared
+that id base, not that no listing matched. The claim that the pre-FTE-091
+rule would have deleted it needs the participant-and-start check to have
+failed too, which was not tested.
+
+To close it: re-run the comparison keyed on participants + start instant
+with the 15-minute tolerance, mirroring `listingMatchesGame`, rather than on
+ids. Blocked right now — the AWS session expired, so the provider key cannot
+be read (the running sampler still works; it cached the key at startup).
+
+FTE-091 remains deployed and safe — the ghost regressions still hold — but
+"verified saving a real game" should be read as "consistent with saving a
+real game, by an id-based test that does not match the rule under test".
