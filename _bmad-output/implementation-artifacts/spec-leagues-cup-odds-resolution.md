@@ -251,7 +251,42 @@ completes.
 3. **Page-count explosion.** 19-20 pages became however many 200-row pages
    166+34 rows require, against a 100-page guard and a per-pass cadence.
 
-## SOLVED 2026-08-13 02:30Z: why soccer had odds in the table and none on the board
+## ROOT CAUSE 2026-08-13 03:15Z: every soccer moneyline was rejected as incomplete
+
+Everything below this section is real and is fixed, and **none of it was why
+soccer had no prices**. The cause is one line in the odds parser.
+
+Whether a moneyline is two-way or three-way is a property of the MARKET, but
+`market_type` reports it per price and reports it wrong. SharpAPI publishes
+soccer's three-way moneyline as `market_type: "moneyline"` with a separate
+`draw` selection, not as `moneyline_3-way`. Read one price at a time that is
+indistinguishable from a two-way market, so `outcomeStructure` came out
+`two-way`; `completeMainPrices` then expects exactly `["away","home"]`, the
+three-selection group fails on length, and **the whole market is rejected**.
+
+Measured against the live feed through the real ingestion path:
+
+| listing | before | after |
+|---|---|---|
+| `leagues_cup_necaxa_nycfc` (circa, draftkings) | 4 obs, 2 markets rejected | **10 obs, 0 rejected** |
+| `usa_-_major_league_soccer_necaxa_newyorkcity` (fliff) | rejected | **3 obs, clean** |
+
+It would also have mis-valued the consensus: removing vig from three outcomes
+as though there were two is a different sum. So this was not only suppressing
+soccer, it would have priced it wrong the moment it stopped.
+
+**How long, and whose fault — unresolved.** Every soccer league sampled (mls,
+leagues_cup, epl) currently publishes `moneyline`; **none** publishes
+`moneyline_3-way`. The only occurrence of `moneyline_3-way` anywhere is our
+own test fixture, written 2026-08-04 in `3a19bae`. So either the provider used
+that shape then and changed it, or the fixture encoded an assumption that never
+matched the feed and the bug shipped with the original normalization. The
+distinction matters — feed volatility versus a defect we wrote — and it cannot
+be settled from the retained logs, which only reach back about a day and show
+soccer at 0 priced throughout. `bb81e53`'s commit message asserts the stronger
+"has never carried a price"; that is unproven and this note is the correction.
+
+## Why soccer had odds in the table and none on the board (2026-08-13 02:30Z)
 
 The design below is **not inert and never was** — the secondary request, the
 per-row tagging and the resolve-or-skip alias binding are all live, and they
