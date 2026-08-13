@@ -1338,12 +1338,25 @@ export function planReleaseRollback(snapshot, current) {
 /**
  * Whether a failed launch should restore the previous web release.
  *
- * Deliberately opt-in. The rollback is correct for an environment with real
- * users and self-defeating for one whose smoke is failing on a client bug,
- * because it deletes the bundle that fixes it.
+ * ON for prod, OFF for every other stage, and overridable either way.
+ *
+ * The rollback protects readers from a bad release. It also deadlocks any
+ * client-side fix the smoke is failing on, because it deletes the bundle
+ * carrying that fix — measured on staging 2026-08-13, where three deploys in
+ * a row uploaded the correct bundle and restored the previous one about a
+ * minute later.
+ *
+ * Those two facts point opposite ways, so the default follows who is
+ * watching. Production serves real readers and keeps the protection; staging
+ * exists to find bugs and keeps the bundle. It was briefly off everywhere on
+ * the understanding that nobody used production yet — that was wrong, and a
+ * live environment must not inherit a convenience chosen for an empty one.
  */
 export function rollbackOnFailureEnabled(environment = process.env) {
-  return environment.FTE_ROLLBACK_WEB_ON_FAILURE === "1";
+  const override = environment.FTE_ROLLBACK_WEB_ON_FAILURE;
+  if (override === "1") return true;
+  if (override === "0") return false;
+  return environment.FTE_AWS_STAGE === "prod";
 }
 
 function restoreRelease(snapshot, outputs, environment) {

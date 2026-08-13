@@ -1323,6 +1323,31 @@ test("deployed output bindings require exact physical resources and distribution
   );
 });
 
+test("web release rollback protects prod and not staging", () => {
+  // Production serves real readers, so a bad release must be rolled back.
+  assert.equal(rollbackOnFailureEnabled({ FTE_AWS_STAGE: "prod" }), true);
+  // Staging exists to find bugs; rolling back there deletes the bundle that
+  // fixes whatever the smoke is failing on.
+  assert.equal(rollbackOnFailureEnabled({ FTE_AWS_STAGE: "staging" }), false);
+  assert.equal(rollbackOnFailureEnabled({}), false);
+  // Either default can be overridden explicitly, including turning prod off
+  // deliberately to land a fix the smoke itself gates on.
+  assert.equal(
+    rollbackOnFailureEnabled({
+      FTE_AWS_STAGE: "prod",
+      FTE_ROLLBACK_WEB_ON_FAILURE: "0",
+    }),
+    false,
+  );
+  assert.equal(
+    rollbackOnFailureEnabled({
+      FTE_AWS_STAGE: "staging",
+      FTE_ROLLBACK_WEB_ON_FAILURE: "1",
+    }),
+    true,
+  );
+});
+
 test("web release rollback is opt-in", () => {
   // A failed smoke used to restore the previous web release, which deletes the
   // very bundle that fixes whatever the smoke is failing on. Measured on

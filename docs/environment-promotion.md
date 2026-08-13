@@ -93,18 +93,25 @@ Do not promote a revision to `production` until staging proves the exact custom 
 
 ## Rollback
 
-**Automatic web rollback is currently OFF.** A failed launch used to restore
-the prior S3 release, which deadlocks any client-side fix the smoke is
-failing on: the bundle carrying the fix uploads, the smoke fails because the
-bug is still live, and the rollback deletes the fix. Measured on 2026-08-13 —
-the correct bundle went up at 19:45:15 and was replaced by the previous
-release at 19:46:18, across three consecutive deploys, so no client fix could
-reach staging at all. The CDK stack is not rolled back, which is why
-server-side changes landed while client-side ones silently did not.
+**Automatic web rollback is ON for `prod` and OFF for `staging`.**
 
-Re-enable it before production carries real traffic by setting
-`FTE_ROLLBACK_WEB_ON_FAILURE=1` in the deploy environment. With it on, a fix
-that the smoke itself gates on needs a deliberate override to ship.
+The rollback protects readers from a bad release, and it also deadlocks any
+client-side fix the smoke is failing on, because it deletes the bundle
+carrying that fix. Measured on staging 2026-08-13: the correct bundle went up
+at 19:45:15 and the previous release replaced it at 19:46:18, three deploys
+running, so no client fix reached staging at all. The CDK stack is not rolled
+back, which is why server-side changes landed in those same deploys while
+client-side ones silently did not — and why checking `ReleaseSha` to confirm
+a deploy says nothing about the browser bundle.
+
+Those two facts point opposite ways, so the default follows who is watching.
+Production serves real readers and keeps the protection. Staging exists to
+find bugs and keeps the bundle.
+
+Override with `FTE_ROLLBACK_WEB_ON_FAILURE`: `1` forces the rollback on, `0`
+forces it off. Turning it off for a single prod deploy is the deliberate way
+to land a fix that the smoke itself gates on — do it knowingly, and turn it
+back on.
 
 Application rollback restores the prior versioned S3 release, waits for CloudFront invalidation, and leaves retained data untouched. Infrastructure rollback uses a reviewed CDK/CloudFormation change and must pass the retained-resource guard.
 
