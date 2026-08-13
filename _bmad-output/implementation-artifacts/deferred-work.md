@@ -1035,3 +1035,39 @@ build individually. `pnpm check` also runs `pnpm test:e2e` and the coverage
 step, and neither was run. The e2e suite still pinned the old freshness copy
 from 6d28382, so the gate caught a real break that the narrower local check
 could not have. Run `pnpm check` rather than assembling a subset.
+
+## FTE-084 verified on staging: four games back, no ghosts (2026-08-13T15:25Z)
+
+Deployed in 6826149. Measured immediately after:
+
+| | before | after |
+| --- | --- | --- |
+| Aug-14 stored board | 9 | **14** |
+| Aug-14 live projection | 13 | 14 |
+
+All four games named in the earlier entry are back: Red Sox @ Pirates,
+Nationals @ Mets, Yankees @ Blue Jays, Diamondbacks @ Braves. That is the
+reported symptom — real games and their lines deleted from the board —
+fixed for the far-future case FTE-091 could not reach, because splits do not
+exist 33 hours out and the witness had nothing to say about anyone.
+
+**The ghost risk did not materialise.** The concern was that keeping every
+absentee on a splitless board would readmit the placeholder-kickoff orphans.
+It did not: no implausible-kickoff row appears on the Aug-14 stored board,
+and on Aug-13 the filter is still running and still dropping both `06:50Z`
+orphans (Red Sox/Blue Jays, Cubs/Nationals). The vouched-sibling rule runs
+before the witness and continues to catch that class, which is exactly the
+argument the change was built on — now observed rather than assumed.
+
+### Unrelated but worth a look: no game has a full board
+
+The deploy smoke reports `Provider-backed games visible: 118 (0 with a full
+board, 118 with an unexpected board)`. That line is explicitly "reported,
+never enforced" (`phase1-environment-smoke.mjs:760`) and did not fail the
+deploy, and `assertLiveGame` is confined to that script — it is not the
+web client's filter, so it is NOT the cause of the soccer rendering bug.
+
+But zero of 118 is still a statement: by the smoke's definition, not one
+served game currently carries a complete market board. Whether that is a
+recent regression or long-standing is unknown; the metric is only printed,
+never trended.
