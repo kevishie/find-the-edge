@@ -770,3 +770,38 @@ rule stable overnight so the sampler measures FTE-091 alone.
   `withoutWithdrawnListings` runs only during materialization. They agree on
   the 2026-08-12 case now, but nothing enforces that they agree in general.
 - Why the original report counted 7 has never been established.
+
+### Catalogue churn is real, and the offset walk is not the cause
+
+The rotation sampler reported MLB rows leaving and returning the `/events`
+catalogue between ten-minute samples. Two instrument faults had to be ruled
+out first, and both were real:
+
+1. Membership was keyed on the start instant alone, so both 22:40Z games
+   flipped together whenever any clean row existed at that instant. Now
+   matched on participants, tolerating the catalogue's truncated and
+   abbreviated club labels ("Chicago C", "ARI Cardinals").
+2. The completeness check reported foreign fixtures forever. The NFL row
+   declares `league: "mlb"` and `sport: "baseball"`, so no league filter
+   reaches it — the product rejects it on club resolution, which the sampler
+   cannot replicate. It now requires both clubs to be ones the board
+   resolves elsewhere, and ignores matchups already on the board at another
+   time (the placeholder-kickoff orphans).
+
+The third candidate was the walk itself: offset pagination over a mutating
+collection can skip or duplicate rows, so a row could appear to vanish while
+present throughout. **It does not.** Three back-to-back full walks returned
+347 rows over 2 pages, 347 unique ids, zero duplicates, byte-identical id
+sets, with the provider reporting `total: 347` each time.
+
+That result matters beyond the sampler: `fetchSharpApiSchedulePage` walks
+the same offsets the same way, so ingestion is not silently losing rows to
+pagination either. Worth re-running if that assumption is ever load-bearing
+again — `pagination-stability.py` in the session scratchpad.
+
+So the churn is genuine provider behaviour. The catalogue also shrank from
+416 rows to 347 within the hour as finished games and their derivatives were
+culled. Every transition observed so far is on a STARTED game, where leaving
+a `live=false` catalogue is ordinary; the discriminating case for FTE-091 is
+a PREGAME row leaving, and none has been seen yet. The sampler tags phase
+explicitly so those are not buried in post-start churn.
