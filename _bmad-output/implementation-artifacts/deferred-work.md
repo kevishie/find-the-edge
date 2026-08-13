@@ -1281,3 +1281,36 @@ fast path forever. Two directions, and they are not exclusive:
 
 Worth noting how invisible this was: the fast path stopped existing for one
 board and the only symptom was a slow path bug on a different sport's screen.
+
+## RESOLVED end to end: the soccer board renders (2026-08-13T20:30Z)
+
+Verified on the rendered page, not the API: `/events?sport=soccer&day=2026-08-13`
+shows rows, the Soccer pill is non-zero, and the "The games response was
+invalid." banner is gone. Bundle confirmed as `index-CrEYgZ-e.js`.
+
+It took four defects, and each one hid the next:
+
+1. **`selectionKey` bounded at 64 characters** (`apps/web/src/api.ts`). A
+   participant key is `participant:` + an encoded participant id, and ids are
+   bounded at 512 in the same validator — 64 could never hold it. It held for
+   MLB by accident because those club keys are single words; soccer clubs have
+   spaces, each double-encodes to `%2520`, and 6 of 23 keys exceeded the
+   bound. Fixed in 3974097.
+2. **A page emptied by its own filter kept an inherited freshness.**
+   `JoinedGamesRepository.list` spread the event repository's page and
+   replaced its items. Fixed in e2193df, then again properly in e3b2486 —
+   the first attempt recomputed before the odds join and the phantom cutoff,
+   both of which remove more items.
+3. **A failed smoke rolled the web bundle back.** Every client-side fix above
+   was uploaded and then deleted about a minute later, across three deploys.
+   Gated off in b6c403f.
+4. **The board that started it was never materialised at all**, because its
+   partition holds 64 rows against a limit of 50 so its page always needs a
+   cursor. Now reported as `BoardMaterializationSkipped`; the underlying
+   version churn is still open.
+
+The thing worth remembering is (3). It made (1) and (2) unobservable: the
+fixes were live in the CDK stack and absent from the bundle, so every check
+of "is the fix deployed" that looked at `ReleaseSha` said yes while the
+browser ran the old code. I reasoned from that false premise repeatedly and
+reported two fixes as complete on the strength of it.
