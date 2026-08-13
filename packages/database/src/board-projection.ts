@@ -34,6 +34,12 @@ const START_TOLERANCE_MS = 15 * 60_000;
 
 /** How early the provider may flip a listing to in-play before first pitch. */
 const PRE_START_IN_PLAY_GRACE_MS = 15 * 60_000;
+/**
+ * How old the newest split observation may be and still count as evidence.
+ * Splits ingest on a fifteen-minute cadence, so this tolerates several missed
+ * passes while still refusing the twenty-hour freeze of 2026-08-12.
+ */
+const SPLIT_WITNESS_MAX_AGE_MS = 90 * 60_000;
 
 const listingMatchesGame = (
   listing: ScheduleListing,
@@ -112,7 +118,15 @@ export const withoutWithdrawnListings = async <
     readonly now: Date;
     /** Whether every real game in this league carries split observations. */
     readonly splitsExpected: boolean;
-    readonly hasSplitEvidence: (canonicalEventId: string) => Promise<boolean>;
+    /**
+     * Newest split observation for an event, or null if it has none. A
+     * timestamp rather than a boolean because "this game has no splits" and
+     * "the splits feed stopped" are different facts and only the first is
+     * evidence about the game.
+     */
+    readonly splitWitnessAt: (
+      canonicalEventId: string,
+    ) => Promise<string | null>;
   },
 ) => {
   if (!options.schedule) return page;
@@ -135,6 +149,40 @@ export const withoutWithdrawnListings = async <
       )
       .map(participantIdentity),
   );
+  // The witness can only condemn a game if the witness is actually speaking.
+  // On 2026-08-12 production's MLB splits feed froze for nearly twenty hours
+  // while every stored observation sat there looking like evidence: splits
+  // are never expired and `listCurrent` returns whatever was last persisted,
+  // so a dead feed is indistinguishable from a quiet game unless the age is
+  // read. Liveness is therefore judged across the whole board — if ANY game
+  // on it carries a fresh observation the feed is up, and a game that is
+  // silent against that backdrop is genuinely silent. If nothing on the board
+  // is fresh the feed is down, and a down feed has no opinion about anyone.
+  const witnessCache = new Map<string, number | null>();
+  const witnessAt = async (id: string) => {
+    if (!witnessCache.has(id)) {
+      const at = await options.splitWitnessAt(id).catch(() => null);
+      const parsed = at === null ? null : Date.parse(at);
+      witnessCache.set(
+        id,
+        parsed === null || Number.isNaN(parsed) ? null : parsed,
+      );
+    }
+    return witnessCache.get(id) ?? null;
+  };
+  const isFresh = (at: number | null) =>
+    at !== null && options.now.getTime() - at <= SPLIT_WITNESS_MAX_AGE_MS;
+
+  let witnessUsable = false;
+  if (options.splitsExpected) {
+    for (const game of page.items) {
+      if (isFresh(await witnessAt(game.id))) {
+        witnessUsable = true;
+        break;
+      }
+    }
+  }
+
   const items: T[] = [];
   for (const game of page.items) {
     if (game.status !== "scheduled") {
@@ -172,7 +220,13 @@ export const withoutWithdrawnListings = async <
       items.push(game);
       continue;
     }
-    if (await options.hasSplitEvidence(game.id)) items.push(game);
+    if (!witnessUsable) {
+      // The feed is down, not the game. An absent witness is an absent
+      // opinion, and a board must never shrink because a provider went quiet.
+      items.push(game);
+      continue;
+    }
+    if (isFresh(await witnessAt(game.id))) items.push(game);
   }
   if (items.length === page.items.length) return page;
   return {
@@ -443,17 +497,25 @@ export const materializeBoards = async (input: {
       );
     return scheduleCache.get(sportKey) ?? null;
   };
-  const splitEvidence = new Map<string, boolean>();
-  const hasSplitEvidence = async (canonicalEventId: string) => {
+  const splitEvidence = new Map<string, string | null>();
+  const splitWitnessAt = async (canonicalEventId: string) => {
     if (!splitEvidence.has(canonicalEventId))
       splitEvidence.set(
         canonicalEventId,
         await input.splits
           .listCurrent(canonicalEventId)
-          .then((observations) => observations.length > 0)
-          .catch(() => true),
+          .then((observations) =>
+            observations.reduce<string | null>(
+              (newest, observation) =>
+                newest === null || observation.providerTimestamp > newest
+                  ? observation.providerTimestamp
+                  : newest,
+              null,
+            ),
+          )
+          .catch(() => null),
       );
-    return splitEvidence.get(canonicalEventId)!;
+    return splitEvidence.get(canonicalEventId) ?? null;
   };
   for (const key of materializationTargets(input.now)) {
     const rawPage = await input.games.list(
@@ -471,7 +533,7 @@ export const materializeBoards = async (input: {
       // Verified against the live feed: the provider publishes splits for
       // every real MLB game and for no soccer game.
       splitsExpected: key.sportKey === "mlb",
-      hasSplitEvidence,
+      splitWitnessAt,
     })) as typeof rawPage;
     withdrawnDropped += rawPage.items.length - page.items.length;
     if (page.nextCursor !== null || page.projectionState !== "ready") {

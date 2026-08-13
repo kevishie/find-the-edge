@@ -259,7 +259,7 @@ describe("schedule-orphaned duplicates", () => {
       ],
       now: NOW,
       splitsExpected: true,
-      hasSplitEvidence: () => Promise.resolve(true),
+      splitWitnessAt: () => Promise.resolve("2026-08-08T11:30:00.000Z"),
     });
     expect(result.items.map(({ id }) => id)).toEqual(["event:real"]);
   });
@@ -289,7 +289,7 @@ describe("schedule-orphaned duplicates", () => {
       ],
       now: NOW,
       splitsExpected: true,
-      hasSplitEvidence: () => Promise.resolve(true),
+      splitWitnessAt: () => Promise.resolve("2026-08-08T11:30:00.000Z"),
     });
     expect(result.items.map(({ id }) => id)).toEqual([
       "event:game-1",
@@ -308,7 +308,7 @@ describe("schedule-orphaned duplicates", () => {
       schedule: [],
       now: NOW,
       splitsExpected: true,
-      hasSplitEvidence: () => Promise.resolve(true),
+      splitWitnessAt: () => Promise.resolve("2026-08-08T11:30:00.000Z"),
     });
     expect(result.items.map(({ id }) => id)).toEqual(["event:in-play"]);
   });
@@ -334,8 +334,13 @@ describe("withdrawn listings", () => {
     homeTeam,
     startsAt,
   });
-  const noSplits = () => Promise.resolve(false);
-  const withSplits = () => Promise.resolve(true);
+  // A witness reading is a timestamp now, not a boolean: "no splits" and "the
+  // splits feed stopped" are different facts. FRESH is inside the ninety
+  // minute window from NOON; ANCIENT is the 2026-08-12 twenty-hour freeze.
+  const FRESH = "2026-08-08T15:30:00.000Z";
+  const ANCIENT = "2026-08-07T20:00:00.000Z";
+  const noSplits = () => Promise.resolve(null);
+  const withSplits = () => Promise.resolve(FRESH);
 
   it("keeps a real game whose provider id churned entirely", async () => {
     // Observed live: canonical mlb_chicagows_guardians_..., schedule
@@ -360,7 +365,7 @@ describe("withdrawn listings", () => {
       ],
       now: NOON,
       splitsExpected: true,
-      hasSplitEvidence: noSplits,
+      splitWitnessAt: noSplits,
     });
     expect(filtered.items).toHaveLength(1);
   });
@@ -382,7 +387,7 @@ describe("withdrawn listings", () => {
       ],
       now: NOON,
       splitsExpected: true,
-      hasSplitEvidence: noSplits,
+      splitWitnessAt: noSplits,
     });
     expect(filtered.items).toHaveLength(1);
   });
@@ -411,7 +416,7 @@ describe("withdrawn listings", () => {
       ],
       now: NOON,
       splitsExpected: true,
-      hasSplitEvidence: noSplits,
+      splitWitnessAt: noSplits,
     });
     expect(filtered.items.map(({ id }) => id)).toEqual([
       "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b2",
@@ -434,7 +439,7 @@ describe("withdrawn listings", () => {
       schedule: [],
       now: NOON,
       splitsExpected: true,
-      hasSplitEvidence: withSplits,
+      splitWitnessAt: withSplits,
     });
     expect(filtered.items).toHaveLength(1);
   });
@@ -456,7 +461,7 @@ describe("withdrawn listings", () => {
       schedule: [],
       now: new Date("2026-08-08T20:07:00.000Z"),
       splitsExpected: true,
-      hasSplitEvidence: withSplits,
+      splitWitnessAt: withSplits,
     });
     expect(filtered.items).toHaveLength(1);
   });
@@ -466,8 +471,18 @@ describe("withdrawn listings", () => {
     // pinned an unconditional rule which, on 2026-08-12, deleted two real
     // games three hours before first pitch. A future absentee is now judged
     // by the same witness as a started one; with no witness it still goes.
+    //
+    // The board carries a live game too, and it has to: on a page where
+    // nothing is fresh, "this game has no splits" and "the splits feed is
+    // down" are the same observation. The live game is what proves the feed
+    // is up, which is what earns the phantom its verdict.
     const page = {
       items: [
+        game(
+          "event:mlb%3Amlb:mlb_real_2026-08-08_b1",
+          "2026-08-08T23:00:00.000Z",
+          ["Boston Red Sox", "New York Yankees"],
+        ),
         game(
           "event:mlb%3Amlb:mlb_future_phantom_2026-08-08_b1",
           "2026-08-08T23:59:00.000Z",
@@ -477,12 +492,46 @@ describe("withdrawn listings", () => {
       freshness: null as string | null,
     };
     const filtered = await withoutWithdrawnListings(page, {
+      schedule: [
+        listing("Boston Red Sox", "New York Yankees", "2026-08-08T23:00:00Z"),
+      ],
+      now: NOON,
+      splitsExpected: true,
+      splitWitnessAt: (id) =>
+        Promise.resolve(id.includes("phantom") ? null : FRESH),
+    });
+    expect(filtered.items.map(({ id }) => id)).toEqual([
+      "event:mlb%3Amlb:mlb_real_2026-08-08_b1",
+    ]);
+  });
+
+  it("keeps every absentee when the splits feed itself has gone quiet", async () => {
+    // Production 2026-08-12: MLB splits froze for nearly twenty hours while
+    // every stored observation kept looking like evidence. A board must not
+    // shrink because a provider went quiet, so a witness this stale is not
+    // consulted at all — in either direction.
+    const page = {
+      items: [
+        game(
+          "event:mlb%3Amlb:mlb_started_2026-08-08_b1",
+          "2026-08-08T15:00:00.000Z",
+          ["Chicago Cubs", "Washington Nationals"],
+        ),
+        game(
+          "event:mlb%3Amlb:mlb_future_2026-08-08_b1",
+          "2026-08-08T23:59:00.000Z",
+          ["Texas Rangers", "Los Angeles Angels"],
+        ),
+      ],
+      freshness: null as string | null,
+    };
+    const filtered = await withoutWithdrawnListings(page, {
       schedule: [],
       now: NOON,
       splitsExpected: true,
-      hasSplitEvidence: noSplits,
+      splitWitnessAt: () => Promise.resolve(ANCIENT),
     });
-    expect(filtered.items).toHaveLength(0);
+    expect(filtered.items).toHaveLength(2);
   });
 
   it("keeps a future game the catalogue rotated out while splits still carry it", async () => {
@@ -512,7 +561,7 @@ describe("withdrawn listings", () => {
       ],
       now: NOON,
       splitsExpected: true,
-      hasSplitEvidence: withSplits,
+      splitWitnessAt: withSplits,
     });
     expect(filtered.items.map(({ id }) => id)).toEqual([
       "event:mlb%3Amlb:mlb_rangers_angels_2026-08-08_b3",
@@ -544,7 +593,7 @@ describe("withdrawn listings", () => {
       ],
       now: NOON,
       splitsExpected: true,
-      hasSplitEvidence: withSplits,
+      splitWitnessAt: withSplits,
     });
     expect(filtered.items.map(({ id }) => id)).toEqual([
       "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b2",
@@ -566,7 +615,7 @@ describe("withdrawn listings", () => {
       schedule: [],
       now: NOON,
       splitsExpected: false,
-      hasSplitEvidence: noSplits,
+      splitWitnessAt: noSplits,
     });
     expect(filtered.items).toHaveLength(0);
   });
@@ -586,7 +635,7 @@ describe("withdrawn listings", () => {
       schedule: [],
       now: NOON,
       splitsExpected: false,
-      hasSplitEvidence: noSplits,
+      splitWitnessAt: noSplits,
     });
     expect(filtered.items).toHaveLength(1);
   });
@@ -606,7 +655,7 @@ describe("withdrawn listings", () => {
         schedule: null,
         now: NOON,
         splitsExpected: true,
-        hasSplitEvidence: noSplits,
+        splitWitnessAt: noSplits,
       }),
     ).toBe(page);
     // Rows without both clubs never enter the usable schedule.
