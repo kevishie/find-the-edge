@@ -698,6 +698,29 @@ const runLiveOddsHandler = async (event?: unknown) => {
             ScheduledBoardOddsAgeSeconds: boards.scheduledOddsAgeSeconds,
           })}\n`,
         );
+      // Dropping a listing is the most consequential thing the board does and
+      // it was counted, then discarded unread — so a reader reporting a short
+      // board on 2026-08-12 could not be answered from telemetry at all. Split
+      // by rule, because the total cannot tell four correctly-rejected churn
+      // orphans from four deleted real games.
+      for (const [reason, count] of Object.entries(boards.withdrawnByReason))
+        if (count > 0)
+          process.stdout.write(
+            `${JSON.stringify({
+              _aws: {
+                Timestamp: Date.now(),
+                CloudWatchMetrics: [
+                  {
+                    Namespace: "FindTheEdge/Boards",
+                    Dimensions: [["reason"]],
+                    Metrics: [{ Name: "BoardListingsDropped", Unit: "Count" }],
+                  },
+                ],
+              },
+              reason,
+              BoardListingsDropped: count,
+            })}\n`,
+          );
       // The share of upcoming games in a sport that carry a price. Board
       // freshness is blind to a sport with no prices at all — there is
       // nothing to be stale — and that is exactly how soccer sat priceless

@@ -41,6 +41,18 @@ const PRE_START_IN_PLAY_GRACE_MS = 15 * 60_000;
  */
 const SPLIT_WITNESS_MAX_AGE_MS = 90 * 60_000;
 
+/** Why a listing was dropped. Counted separately on purpose: these rules
+ * fail in different directions and merging them into one number hides
+ * which one is doing the damage. */
+export type WithdrawnDropReason =
+  /** A sibling with the same participants that the provider still vouches
+   * for — the churned-id orphan. */
+  | "vouched-sibling"
+  /** Future, absent from the schedule, in a league with no split witness. */
+  | "future-no-witness"
+  /** The witness is live and says nothing about this game. */
+  | "witness-silent";
+
 const listingMatchesGame = (
   listing: ScheduleListing,
   game: {
@@ -127,6 +139,14 @@ export const withoutWithdrawnListings = async <
     readonly splitWitnessAt: (
       canonicalEventId: string,
     ) => Promise<string | null>;
+    /**
+     * Called once per dropped listing with the rule that dropped it. Deleting
+     * a game is the most consequential thing this function does and it left
+     * no record: the count existed but was discarded unread, so when a reader
+     * reported a short board on 2026-08-12 there was no telemetry to say
+     * whether anything had been dropped, let alone why.
+     */
+    readonly onDrop?: (reason: WithdrawnDropReason) => void;
   },
 ) => {
   if (!options.schedule) return page;
@@ -193,7 +213,10 @@ export const withoutWithdrawnListings = async <
       items.push(game);
       continue;
     }
-    if (vouchedParticipants.has(participantIdentity(game))) continue;
+    if (vouchedParticipants.has(participantIdentity(game))) {
+      options.onDrop?.("vouched-sibling");
+      continue;
+    }
     // The provider flips a listing to in-play minutes before first pitch, so
     // a game inside the pre-start window is judged like a started game — by
     // its splits witness — rather than as a withdrawn future listing.
@@ -213,7 +236,10 @@ export const withoutWithdrawnListings = async <
     // both games on the same pass as every retained game, so where a witness
     // exists a future absentee is judged by it, exactly like a started one.
     // Leagues without split coverage have no witness and are unchanged.
-    if (startsInFuture && !options.splitsExpected) continue;
+    if (startsInFuture && !options.splitsExpected) {
+      options.onDrop?.("future-no-witness");
+      continue;
+    }
     if (!options.splitsExpected) {
       // In-play games leave the schedule feed; without a splits witness this
       // league cannot distinguish them from a withdrawn listing, so keep.
@@ -227,6 +253,7 @@ export const withoutWithdrawnListings = async <
       continue;
     }
     if (isFresh(await witnessAt(game.id))) items.push(game);
+    else options.onDrop?.("witness-silent");
   }
   if (items.length === page.items.length) return page;
   return {
@@ -455,6 +482,12 @@ export interface BoardMaterializationResult {
    */
   readonly withdrawnDropped: number;
   /**
+   * The same removals split by the rule that made them. The total alone
+   * cannot distinguish "we correctly rejected four churned orphans" from "we
+   * deleted four real games", and those need opposite responses.
+   */
+  readonly withdrawnByReason: Partial<Record<WithdrawnDropReason, number>>;
+  /**
    * Per sport, how many upcoming scheduled games carry a price and how many
    * do not. A sport where every upcoming game is priceless is the shape both
    * of the 2026-08-11 soccer faults took — a latched ambiguity marker and a
@@ -485,6 +518,7 @@ export const materializeBoards = async (input: {
   let skipped = 0;
   let scheduledOddsAgeSeconds: number | null = null;
   let withdrawnDropped = 0;
+  const withdrawnByReason: Partial<Record<WithdrawnDropReason, number>> = {};
   const pricedBySport: Record<string, { upcoming: number; priced: number }> =
     {};
   const scheduleCache = new Map<string, readonly ScheduleListing[] | null>();
@@ -534,6 +568,9 @@ export const materializeBoards = async (input: {
       // every real MLB game and for no soccer game.
       splitsExpected: key.sportKey === "mlb",
       splitWitnessAt,
+      onDrop: (reason) => {
+        withdrawnByReason[reason] = (withdrawnByReason[reason] ?? 0) + 1;
+      },
     })) as typeof rawPage;
     withdrawnDropped += rawPage.items.length - page.items.length;
     if (page.nextCursor !== null || page.projectionState !== "ready") {
@@ -602,6 +639,7 @@ export const materializeBoards = async (input: {
     skipped,
     scheduledOddsAgeSeconds,
     withdrawnDropped,
+    withdrawnByReason,
     pricedBySport,
   };
 };

@@ -121,6 +121,7 @@ describe("materialization", () => {
       skipped: 0,
       scheduledOddsAgeSeconds: null,
       withdrawnDropped: 0,
+      withdrawnByReason: {},
       pricedBySport: expect.any(Object) as Record<string, unknown>,
     });
     const splitBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#splits#"));
@@ -218,6 +219,7 @@ describe("materialization", () => {
       skipped: 10,
       scheduledOddsAgeSeconds: null,
       withdrawnDropped: 0,
+      withdrawnByReason: {},
       pricedBySport: expect.any(Object) as Record<string, unknown>,
     });
     expect(puts).toHaveLength(0);
@@ -503,6 +505,51 @@ describe("withdrawn listings", () => {
     expect(filtered.items.map(({ id }) => id)).toEqual([
       "event:mlb%3Amlb:mlb_real_2026-08-08_b1",
     ]);
+  });
+
+  it("names the rule that dropped each listing", async () => {
+    // A single total cannot tell a correctly-rejected churn orphan from a
+    // deleted real game, and those need opposite responses. On 2026-08-12 the
+    // count was computed and discarded unread, so a reader reporting a short
+    // board could not be answered from telemetry at all.
+    const reasons: string[] = [];
+    const page = {
+      items: [
+        game(
+          "event:mlb%3Amlb:mlb_real_2026-08-08_b2",
+          "2026-08-08T23:00:00.000Z",
+          ["Boston Red Sox", "New York Yankees"],
+        ),
+        // Same participants as the vouched game, placeholder kickoff.
+        game(
+          "event:mlb%3Amlb:mlb_orphan_2026-08-08_b0",
+          "2026-08-08T21:00:00.000Z",
+          ["Boston Red Sox", "New York Yankees"],
+        ),
+        // Past start, feed is live, nothing to say about this one.
+        game(
+          "event:mlb%3Amlb:mlb_silent_2026-08-08_b1",
+          "2026-08-08T15:00:00.000Z",
+          ["Chicago Cubs", "Washington Nationals"],
+        ),
+      ],
+      freshness: null as string | null,
+    };
+    const filtered = await withoutWithdrawnListings(page, {
+      schedule: [
+        listing("Boston Red Sox", "New York Yankees", "2026-08-08T23:00:00Z"),
+      ],
+      now: NOON,
+      splitsExpected: true,
+      splitWitnessAt: (id) =>
+        Promise.resolve(id.includes("real") ? FRESH : null),
+      onDrop: (reason) => reasons.push(reason),
+    });
+
+    expect(filtered.items.map(({ id }) => id)).toEqual([
+      "event:mlb%3Amlb:mlb_real_2026-08-08_b2",
+    ]);
+    expect(reasons.sort()).toEqual(["vouched-sibling", "witness-silent"]);
   });
 
   it("keeps every absentee when the splits feed itself has gone quiet", async () => {
