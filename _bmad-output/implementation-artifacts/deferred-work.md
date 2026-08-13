@@ -1195,11 +1195,34 @@ paths (`dynamodb-event-repository.ts:180-186` and `:316-322`) reduce over
 accepted rows and should also yield null with none. Worth reading the stored
 board materialisation path, which serves a pre-rendered body.
 
-### And the soccer board is empty at all, which it was not this morning
+### Correction: the board is not empty, it is paginated
 
-At 13:00Z the Aug-13 soccer board had 7 rows (2 `mls+` pollution rows and 5
-priced Leagues Cup fixtures). At 17:41Z it has none, and the **unfiltered**
-live projection returns none either — so this is not the withdrawn-listing
-filter, it is the events themselves. Those fixtures start at 23:00Z and had
-not begun. That is a separate ingestion question and probably the more
-important of the two.
+I wrote above that the soccer events had disappeared. They had not — I read
+only the first page. Walking the cursor chain the way the client does:
+
+| page | items | freshness | cursor |
+| --- | --- | --- | --- |
+| 1 | **0** | `2026-08-13T03:59:51.249Z` | yes |
+| 2 | **5** | `2026-08-12T13:05:33.513Z` | none |
+
+All five priced Leagues Cup fixtures are on page 2. There is no ingestion
+problem and no data loss.
+
+So the defect is sharper than stated: **the first page is empty, carries a
+non-null freshness, and the client rejects it before it ever follows the
+cursor to the games.** `exhaustPages` parses each page as it arrives, and
+`parsePage` refuses an empty page with a non-null freshness — verified by
+replaying that page alone.
+
+Page 1 is served by `loadStoredBoard` (it has no cursor); page 2 has a cursor
+and falls through to the live repository. Both repository reducers
+(`dynamodb-event-repository.ts:180-186`, `:316-322`) correctly yield `null`
+freshness on an empty result, and `withoutWithdrawnListings` recomputes to
+`null` when it empties a page — so neither obvious path explains a stored
+board body holding 0 items and a non-null freshness. Reading the `BOARD#`
+partition body directly would settle it; blocked on expired AWS credentials.
+
+Note also the envelope: `evaluationState: "complete"` and
+`hasMoreUnknown: false` alongside a cursor. The client tolerates that
+combination, but "complete" plus a continuation is worth a second look on its
+own.
