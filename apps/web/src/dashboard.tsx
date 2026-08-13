@@ -27,7 +27,11 @@ export type DashboardClientResult =
     }
   | { readonly ok: false; readonly error: { readonly message: string } };
 
-const sportLabels: Record<GamesSport, string> = { mlb: "MLB", soccer: "MLS" };
+const sportLabels: Record<GamesSport, string> = {
+  mlb: "MLB",
+  football: "NFL",
+  soccer: "MLS",
+};
 const POLL_INTERVAL_MS = 15_000;
 const MAX_TIMER_MS = 2_147_000_000;
 

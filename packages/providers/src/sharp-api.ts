@@ -42,7 +42,7 @@ export interface SharpApiActivationConfig {
 export interface SharpApiLeague {
   readonly sportKey: SportKey;
   readonly leagueKey:
-    "mlb" | "mls" | "epl" | "liga-mx" | "uefa-champions-league";
+    "mlb" | "nfl" | "mls" | "epl" | "liga-mx" | "uefa-champions-league";
   /** Exact, catalog-verified SharpAPI league identity. Never fuzzy matched. */
   readonly providerLeague: string;
   /**
@@ -77,6 +77,17 @@ export const sharpApiLeagues: readonly SharpApiLeague[] = [
     // Every MLS fixture on the board through August is Leagues Cup, and none
     // of them can be priced from the MLS catalogue alone.
     secondaryOddsProviderLeagues: ["leagues_cup"],
+    moneylineMarket: "moneyline",
+  },
+  {
+    // Football's moneyline is two-way: a tie is rare enough that books price
+    // it as a push rather than a third outcome, so this takes the MLB shape
+    // rather than soccer's. It is also the largest league the provider
+    // carries — 1,358 events against MLB's 431 — which is exactly why the
+    // pricing horizon had to land before it did.
+    sportKey: "football" as SportKey,
+    leagueKey: "nfl",
+    providerLeague: "nfl",
     moneylineMarket: "moneyline",
   },
   {

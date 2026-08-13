@@ -80,7 +80,11 @@ const marketSpecifications = (event: EventPage["items"][number]) => {
     .slice(0, 2)
     .map(({ id }) => participantSelectionKey(id as EntityId));
   const sportKey = event.sportKey;
-  if (sportKey === "mlb")
+  // Two-way moneyline plus spread and total. Baseball and football differ in
+  // everything except the shape of these three markets: neither prices a tie
+  // as an outcome, so both read as away/home. Any further two-way sport —
+  // basketball, hockey — belongs on this branch rather than a new one.
+  if (sportKey === "mlb" || sportKey === "football")
     return [
       {
         marketKey: "moneyline",

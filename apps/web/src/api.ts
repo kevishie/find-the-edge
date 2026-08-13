@@ -46,7 +46,7 @@ import type {
 const encodeCanonicalEventPathSegment = (eventId: string) =>
   encodeURIComponent(eventId);
 
-export type GamesSport = "mlb" | "soccer";
+export type GamesSport = "mlb" | "football" | "soccer";
 
 export interface RankedOpportunityPageDto {
   readonly schemaVersion: "ranked-opportunity-page-v1";
@@ -2945,7 +2945,12 @@ async function exhaustPages<T extends GameDisplayDto>(options: {
   const { endpoint, filter, signal, apiBase, fetcher, parse } = options;
   const baseQuery = {
     sport: filter.sport,
-    league: filter.sport === "mlb" ? "mlb" : "mls",
+    league:
+      filter.sport === "mlb"
+        ? "mlb"
+        : filter.sport === "football"
+          ? "nfl"
+          : "mls",
     // The games endpoint merges every lifecycle server-side; splits is
     // scheduled-only by contract.
     status:

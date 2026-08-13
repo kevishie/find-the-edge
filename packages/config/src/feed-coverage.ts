@@ -25,7 +25,7 @@ export interface OddsProviderPolicy {
 }
 export interface LeagueOddsCollectionPolicy {
   readonly leagueKey:
-    "mlb" | "mls" | "epl" | "liga-mx" | "uefa-champions-league";
+    "mlb" | "nfl" | "mls" | "epl" | "liga-mx" | "uefa-champions-league";
   readonly baseCadenceSeconds: number;
   readonly nearStart: {
     readonly windowSeconds: number;
@@ -98,6 +98,7 @@ export const productionOddsCollectionPolicies: readonly LeagueOddsCollectionPoli
   deepFreeze([
     providerPolicy("mlb"),
     providerPolicy("mls"),
+    providerPolicy("nfl"),
     providerPolicy("epl"),
     providerPolicy("liga-mx"),
     providerPolicy("uefa-champions-league"),
@@ -108,7 +109,7 @@ export interface ProductionProviderStatusScope {
   readonly healthKey: string;
   readonly providerId: "sharpapi";
   readonly providerName: "Odds Feed";
-  readonly sportKey: "mlb" | "soccer" | null;
+  readonly sportKey: "mlb" | "football" | "soccer" | null;
   readonly leagueKey: string;
   readonly capability: ProviderStatusCapability;
   readonly purpose: string;
@@ -118,7 +119,14 @@ export interface ProductionProviderStatusScope {
 }
 
 const providerStatusLeague = (leagueKey: string) => ({
-  sportKey: leagueKey === "mlb" ? ("mlb" as const) : ("soccer" as const),
+  // The sport a league belongs to. Everything that is not baseball or football
+  // is soccer today; a new sport adds a case here rather than changing shape.
+  sportKey:
+    leagueKey === "mlb"
+      ? ("mlb" as const)
+      : leagueKey === "nfl"
+        ? ("football" as const)
+        : ("soccer" as const),
   leagueKey,
 });
 

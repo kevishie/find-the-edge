@@ -114,10 +114,18 @@ describe("SharpAPI activation boundary", () => {
     expect(sharpApiLeagues.map(({ leagueKey }) => leagueKey)).toEqual([
       "mlb",
       "mls",
+      "nfl",
       "epl",
       "liga-mx",
       "uefa-champions-league",
     ]);
+    // Football takes the two-way shape, and its sport key is what the board's
+    // market specifications switch on.
+    expect(sharpApiLeagueByKey("nfl")).toMatchObject({
+      sportKey: "football",
+      providerLeague: "nfl",
+      moneylineMarket: "moneyline",
+    });
     expect(sharpApiLeagueByKey("epl").providerLeague).toBe(
       "england_-_premier_league",
     );

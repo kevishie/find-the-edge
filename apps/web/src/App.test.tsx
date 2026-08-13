@@ -1847,8 +1847,9 @@ describe("Games", () => {
     // prices refresh every minute — fresh odds must never read "stale".
     expect(price.closest(".event-card")?.textContent).not.toContain("stale");
     fireEvent.click(screen.getByRole("button", { name: "MLB" }));
-    // Both sports load per poll so the rail can size and hide its pills.
-    expect(list).toHaveBeenCalledTimes(2);
+    // Every sport loads per poll so the rail can size and hide its pills:
+    // the selected slate plus one request for each of the others.
+    expect(list).toHaveBeenCalledTimes(3);
     expect(screen.queryByText("Loading games…")).not.toBeInTheDocument();
     // A sport with no slate for the day earns no pill.
     expect(

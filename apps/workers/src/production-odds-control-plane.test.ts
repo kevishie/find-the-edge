@@ -181,7 +181,7 @@ describe("production odds control-plane composition", () => {
     const scheduleAttempts = [...control.attempts.values()].filter(
       (attempt) => attempt.capability === "schedule",
     );
-    expect(scheduleAttempts).toHaveLength(5);
+    expect(scheduleAttempts).toHaveLength(6);
     expect(scheduleAttempts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -377,7 +377,10 @@ describe("production odds control-plane composition", () => {
       rateWindow: { limit: 1_000, remaining: 810 },
     });
     expect(await control.getHealth("sharpapi:account:account")).toMatchObject({
-      rateWindow: { limit: 1_000, remaining: 800 },
+      // One fewer than the split response reports: the account window
+      // tracks what this pass actually spent, and a sixth league spends one
+      // more request.
+      rateWindow: { limit: 1_000, remaining: 799 },
     });
     expect(await control.getHealth("sharpapi:mlb:splits")).toMatchObject({
       rateWindow: { limit: 1_000, remaining: 800 },
@@ -1579,9 +1582,10 @@ describe("production odds control-plane composition", () => {
       "sharpapi",
       "sharpapi",
       "sharpapi",
+      "sharpapi",
     ]);
-    expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
+    expect(fetchSharpSchedule).toHaveBeenCalledTimes(6);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(7);
     expect(options.metrics.emit).toHaveBeenCalledWith(
       "OddsNormalizedObservation",
       2,
@@ -1630,7 +1634,7 @@ describe("production odds control-plane composition", () => {
     ).toMatchObject({ sourceState: "missing", sportsbookId: "draftkings" });
     expect(
       [...control.gaps.values()].filter((gap) => gap.reason === "unsupported"),
-    ).toHaveLength(5);
+    ).toHaveLength(6);
 
     // Inside every cadence: nothing is due five seconds after the run.
     const gated = await runProductionOddsControlPlane({
@@ -1643,8 +1647,9 @@ describe("production odds control-plane composition", () => {
       "skipped",
       "skipped",
       "skipped",
+      "skipped",
     ]);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(7);
 
     // Twenty seconds in, the base cadence is still not due; only the
     // durable 12:45 scheduled start puts every league in its ten-second
@@ -1660,9 +1665,10 @@ describe("production odds control-plane composition", () => {
       "completed",
       "completed",
       "completed",
+      "completed",
     ]);
-    expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(12);
+    expect(fetchSharpSchedule).toHaveBeenCalledTimes(6);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(14);
   });
 
   it("keeps an approved book active when the same event continues on another page", async () => {
@@ -2255,7 +2261,7 @@ describe("production odds control-plane composition", () => {
     });
 
     expect(fetchSharpOdds).not.toHaveBeenCalled();
-    expect(results).toHaveLength(5);
+    expect(results).toHaveLength(6);
     expect(results.every(({ pages }) => pages === 0)).toBe(true);
   });
   it("fails closed without a secondary schedule and isolates account setup failure", async () => {
@@ -2312,12 +2318,13 @@ describe("production odds control-plane composition", () => {
       "sharpapi",
       "sharpapi",
       "sharpapi",
+      "sharpapi",
     ]);
     expect(result[0]).toMatchObject({
       status: "failed",
       reason: "schedule-provider-unavailable",
     });
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(5);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
     expect(fetchSharpOdds.mock.calls[0]?.[0].leagueKey).toBe("mls");
     expect(
       [...control.runs.values()].some(
@@ -2985,8 +2992,9 @@ describe("production odds control-plane composition", () => {
       ["sharpapi", "completed"],
       ["sharpapi", "completed"],
       ["sharpapi", "completed"],
+      ["sharpapi", "completed"],
     ]);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(12);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(14);
   });
 
   it("does not poison provider health when another schedule worker owns the lease", async () => {

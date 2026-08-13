@@ -481,7 +481,7 @@ describe("local SharpAPI ingestion end to end", () => {
     );
 
     expect(summary).toMatchObject({
-      leagues: 5,
+      leagues: 6,
       events: 1,
       observations: 6,
       splits: 2,
@@ -491,6 +491,7 @@ describe("local SharpAPI ingestion end to end", () => {
       "mlb:0",
       "mlb:1",
       "mls:0",
+      "nfl:0",
       "epl:0",
       "liga-mx:0",
       "uefa-champions-league:0",
@@ -499,6 +500,7 @@ describe("local SharpAPI ingestion end to end", () => {
       "mlb:first",
       "mlb:odds-next",
       "mls:first",
+      "nfl:first",
       "epl:first",
       "liga-mx:first",
       "uefa-champions-league:first",
@@ -507,6 +509,7 @@ describe("local SharpAPI ingestion end to end", () => {
       "mlb:0",
       "mlb:1",
       "mls:0",
+      "nfl:0",
       "epl:0",
       "liga-mx:0",
       "uefa-champions-league:0",
