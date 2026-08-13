@@ -1124,3 +1124,41 @@ The smoke's soccer leg is skipped entirely when `findProviderGame` finds no
 priced soccer day, which is why this failed intermittently rather than every
 run. A check that silently skips is a check that cannot be trusted to have
 run — worth making the skip visible in the smoke output.
+
+## A bounded window is the wrong shape for catalogue absence (measured 2026-08-13)
+
+FTE-091 left open how long a full-game row stays out of the catalogue and
+whether the drop tracks first pitch. Five pregame absence spells, sampled
+every ten minutes and excluding anything inside the fifteen-minute pre-start
+grace:
+
+| game | absent | outcome |
+| --- | --- | --- |
+| Cincinnati Reds / Chicago White Sox | 361 min | still absent at lead +33 |
+| Chicago White Sox / Detroit Tigers | 361 min | still absent |
+| Texas Rangers / Athletics | 257 min | still absent |
+| Colorado Rockies / San Francisco Giants | 79 min | returned |
+| Seattle Mariners / Houston Astros | 20 min | returned |
+
+Two conclusions.
+
+**Rotation is not reliably transient.** An earlier note called it transient
+on the strength of rows returning; three of five spells never recovered.
+
+**No bounded window would work.** Absences run from 20 minutes to over six
+hours, and the Reds row is still missing thirty-three minutes before first
+pitch after six hours out of the catalogue — the game FTE-091 was observed
+saving. A time-based rule would have to tolerate six hours to avoid deleting
+it, by which point it is not a rule. This is the argument for the shape both
+FTE-091 and FTE-084 actually took: judge on evidence about the game, not on
+elapsed time. The open question in the story can be closed as "do not add a
+window".
+
+**Caveat on the measurement.** The running sampler joins on provider event id
+base, not on participants plus start instant, and those are different
+questions — a row whose id base churned is absent by id and present by
+listing. The listing-keyed version is written but could not be started; the
+sampler caches its provider key at startup and the AWS session has expired,
+so restarting it would break it. These spells are therefore id-absences and
+bound the problem from one side only. The `byId`/`byListing` split is in the
+script and will record both on the next run with working credentials.
