@@ -618,13 +618,17 @@ on both participants. On 2026-08-12 six `mls+_*` listings — "Rapids +",
 "Earthquakes +" — passed the filter, were bootstrapped as canonical events,
 and sat on the MLS board beside the real fixtures.
 
-They are gone now: the catalogue no longer appears in the odds feed and the
-rows aged past the withdrawn-listing cutoff, so this was transient and
-self-correcting rather than an outage. Recorded because the filter gap is
-real and the provider has re-published pollution catalogues before. The
-cheap fix is a `+`-suffix rule; the better one is to reject a schedule row
-whose provider league is not the one we asked for, since `mls+` is a
-catalogue name, not a team name.
+**Correction 2026-08-13 04:20Z: this recurs, it did not self-correct.** An
+earlier revision of this note said the rows had aged out and the catalogue
+had stopped appearing. `mls%2B_dynamo_inter_2026-08-13_b0` is on the board
+now. The rows age past the withdrawn-listing cutoff individually, so any one
+of them disappears and the class looks resolved; the schedule feed keeps
+minting new ones.
+
+The cheap fix is a `+`-suffix rule. The better one is to reject a schedule
+row whose provider league is not the one we asked for, since `mls+` is a
+catalogue name and not a team name — and that shape generalises to the next
+pollution catalogue, which this provider will publish.
 
 ## Alarms latch and never clear, so the alarm panel does not mean anything (found 2026-08-13)
 
@@ -639,3 +643,30 @@ where a four-day-old transient looks identical to a live outage is a panel
 nobody reads, which is how a lambda failed 100% of its invocations for six
 days with its own alarm already red. Worth an explicit look at
 `treatMissingData` and the evaluation windows.
+
+## The odds projection is a repair path, and its DLQ is unreplayable (measured 2026-08-13)
+
+Asked whether the projection is still needed after it spent six days failing
+every invocation, the measurements say: yes, but not for anything it is
+currently doing.
+
+- Ingestion writes the CURRENT row inline (`fixture-odds-adapter.ts:704`).
+  The projector is a second writer of the same row, fed by the table stream.
+- Since it was repaired it has processed 13 snapshots and **advanced CURRENT
+  zero times** — every one retained, meaning CURRENT was already at or ahead
+  of the snapshot. The inline write always got there first.
+- Sampling 82 odds partitions across soccer and MLB: **82 in sync, 0 stale,
+  0 missing CURRENT**. Six days without the projector left no observable
+  damage.
+
+So its value is the failure it guards, not the traffic it carries: a snapshot
+that commits while the inline `putCurrent` does not would otherwise leave
+CURRENT stale forever, with nothing to notice. That did not happen in this
+window. It is a backstop and should be kept as one.
+
+**The 1,195,083 DLQ messages cannot be re-driven.** They carry no records —
+only `DDBStreamBatchInfo` naming a shard and a sequence range. DynamoDB
+Streams retain 24 hours, and these point at 08-07. Their only remaining value
+is forensic: they record that the failure happened and when. Purging is safe
+for data integrity; it costs the audit trail, which is a judgement call and
+not one to make silently.
