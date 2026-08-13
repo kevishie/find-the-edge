@@ -1162,3 +1162,44 @@ sampler caches its provider key at startup and the AWS session has expired,
 so restarting it would break it. These spells are therefore id-absences and
 bound the problem from one side only. The `byId`/`byListing` split is in the
 script and will record both on the next run with working credentials.
+
+## An empty board page carries a stale freshness, and the client refuses it (OPEN)
+
+Found while verifying the 64-char fix (3974097). That fix is real and
+necessary, but it is **not the only cause** of the blank soccer board, and
+the deploy smoke still fails on the soccer leg because of this second one.
+
+Staging now serves, for `sport=soccer&league=mls&status=all&day=2026-08-13`:
+
+```
+items: 0
+freshness: "2026-08-13T03:59:51.249Z"
+projectionState: "ready", evaluationState: "complete", unavailableReason: null
+```
+
+Page freshness is defined as the oldest item freshness — `board-projection.ts`
+recomputes it exactly that way when it drops rows, reducing to `null` on an
+empty list. An empty page carrying a non-null freshness is therefore
+self-contradictory, and the browser enforces the contract: replaying this
+exact payload through the real client throws `invalid-response`, and the same
+payload with `freshness: null` validates and returns 0 items.
+
+That is what the "The games response was invalid." banner on the soccer
+explorer is now reporting. Two independent defects produced the same blank
+screen, which is why the first fix did not clear it.
+
+Not yet established: where the non-null freshness on an empty page comes
+from. `withoutWithdrawnListings` cannot be the source — it only recomputes
+when it drops something, and dropping everything yields null. The repository
+paths (`dynamodb-event-repository.ts:180-186` and `:316-322`) reduce over
+accepted rows and should also yield null with none. Worth reading the stored
+board materialisation path, which serves a pre-rendered body.
+
+### And the soccer board is empty at all, which it was not this morning
+
+At 13:00Z the Aug-13 soccer board had 7 rows (2 `mls+` pollution rows and 5
+priced Leagues Cup fixtures). At 17:41Z it has none, and the **unfiltered**
+live projection returns none either — so this is not the withdrawn-listing
+filter, it is the events themselves. Those fixtures start at 23:00Z and had
+not begun. That is a separate ingestion question and probably the more
+important of the two.
