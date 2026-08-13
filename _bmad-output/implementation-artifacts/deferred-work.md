@@ -869,11 +869,20 @@ So `hasLines` (`odds.state === "available" && selections.length > 0`) is
 returning false for items that satisfy it in the response body. That is a
 contradiction and it is not resolved.
 
-The most promising untested explanation: **the deployed bundle may be older
-than the source.** The last two deploys FAILED, and a failed run can still
-have deployed infrastructure while the smoke verdict fails the job — so the
-web bundle on staging may not correspond to main. Check the deployed
-`ReleaseSha` against `origin/main` before reading any more source.
+**Tested and disproven:** the deployed bundle is not stale. The staging
+stack's `ReleaseSha` output is
+`1a7f8ae88090c404cf75b499d807b8a99cb9c7af`, exactly `origin/main`. The
+failed deploys still shipped the release — the smoke verdict fails the job
+after the deploy step — so the running client does correspond to the source
+being read. The contradiction is real and remains open.
+
+Next thing to try, cheapest first: put a breakpoint-equivalent in
+`hasLines` by rendering the parsed `odds.state` for a soccer item, or run
+`parsePage` directly against the captured `soc.json` fixture the way
+`collapseNearDuplicateGames` was tested. If `parsePage` returns 5 priced
+items in isolation, the loss is between the client and React state — the
+`requestId.current` guard and the `otherSportItems` race are the only
+candidates left in that stretch.
 
 Worth noting for the product record: soccer has been written up repeatedly
 as "unpriced". On this evidence the API is serving prices and the client is
