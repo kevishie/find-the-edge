@@ -1,3 +1,4 @@
+import { collapseNearDuplicateGames } from "@find-the-edge/domain";
 import type { GamesPage, GamesRepository } from "./games-repository";
 import type { BettingSplitRepository } from "./betting-split-repository";
 
@@ -47,7 +48,14 @@ const SPLIT_WITNESS_MAX_AGE_MS = 90 * 60_000;
 /** Why a board was not materialised. A board that always needs a cursor is
  * never stored at all, so it silently serves from the live path forever. */
 export type BoardSkipReason =
-  "needs-cursor" | "projection-not-ready" | "body-too-big";
+  | "needs-cursor"
+  | "pagination-invalid"
+  | "repository-read-failed"
+  | "projection-not-ready"
+  | "body-too-big"
+  | "split-enrichment-failed"
+  | "serialization-failed"
+  | "store-failed";
 
 export type WithdrawnDropReason =
   /** A sibling with the same participants that the provider still vouches
@@ -314,6 +322,11 @@ export const BOARD_MAX_AGE_MS = 10 * 60_000;
 
 const BOARD_BODY_LIMIT_BYTES = 380_000;
 
+/** The public page limit stays at fifty. This separate worker-only bound
+ * prevents a corrupt or unexpectedly deep cursor chain from turning one
+ * board refresh into an unbounded projection walk. */
+const BOARD_INTERNAL_PAGE_LIMIT = 50;
+
 export const boardPartition = (key: BoardKey) =>
   `BOARD#${key.route}#${key.sportKey}#${key.leagueKey}#${key.status}#${key.day}#${String(key.limit)}`;
 
@@ -333,7 +346,8 @@ export const validateStoredBoard = (
     !Number.isFinite(Date.parse(record["generatedAt"])) ||
     typeof record["body"] !== "string" ||
     record["body"].length === 0 ||
-    record["body"].length > BOARD_BODY_LIMIT_BYTES ||
+    new TextEncoder().encode(record["body"]).byteLength >
+      BOARD_BODY_LIMIT_BYTES ||
     !counts ||
     typeof counts !== "object" ||
     !finiteCount(counts["stale"]) ||
@@ -517,6 +531,113 @@ export interface BoardMaterializationResult {
   >;
 }
 
+const pageFreshness = (items: GamesPage["items"]): string | null =>
+  items.reduce<string | null>(
+    (oldest, item) =>
+      item.freshness === null
+        ? oldest
+        : oldest === null || item.freshness < oldest
+          ? item.freshness
+          : oldest,
+    null,
+  );
+
+type CollectedBoard =
+  | { readonly state: "complete"; readonly page: GamesPage }
+  | { readonly state: "invalid" }
+  | { readonly state: "read-failed" };
+
+const validPaginationEnvelope = (page: GamesPage) =>
+  page.evaluationState === "partial"
+    ? page.hasMoreUnknown && page.nextCursor !== null
+    : !page.hasMoreUnknown;
+
+/**
+ * Cursor traversal is private to the materializer. Every page is read through
+ * the repository's signed-cursor boundary, under the snapshot established by
+ * the first call. Only after the terminal page do we normalize across page
+ * boundaries and synthesize the cursor-free envelope that may be persisted.
+ */
+const collectBoard = async (
+  games: GamesRepository,
+  filter: Parameters<GamesRepository["list"]>[0],
+  limit: number,
+): Promise<CollectedBoard> => {
+  let first: GamesPage;
+  try {
+    first = await games.list(filter, limit);
+  } catch {
+    return { state: "read-failed" };
+  }
+  if (!validPaginationEnvelope(first)) return { state: "invalid" };
+  // An uninitialized terminal page is a valid repository response, not a
+  // malformed cursor chain. Preserve it so the existing materialization gate
+  // reports the truthful projection-not-ready reason.
+  if (first.projectionState !== "ready" && first.nextCursor === null)
+    return { state: "complete", page: first };
+  if (
+    first.snapshotAt === null ||
+    !Number.isFinite(Date.parse(first.snapshotAt))
+  )
+    return { state: "invalid" };
+  const itemIds = new Set(first.items.map(({ id }) => id));
+  if (itemIds.size !== first.items.length) return { state: "invalid" };
+  if (first.nextCursor === null) {
+    const normalized = collapseNearDuplicateGames(first.items);
+    return {
+      state: "complete",
+      page: {
+        ...first,
+        items: normalized,
+        freshness: pageFreshness(normalized),
+      },
+    };
+  }
+
+  const items = [...first.items];
+  const seen = new Set<string>();
+  let nextCursor: string | null = first.nextCursor;
+  let pages = 1;
+  while (nextCursor !== null) {
+    if (pages >= BOARD_INTERNAL_PAGE_LIMIT || seen.has(nextCursor))
+      return { state: "invalid" };
+    seen.add(nextCursor);
+    let following: GamesPage;
+    try {
+      following = await games.list(filter, limit, nextCursor);
+    } catch {
+      return { state: "read-failed" };
+    }
+    if (
+      !validPaginationEnvelope(following) ||
+      following.snapshotAt !== first.snapshotAt ||
+      following.projectionState !== first.projectionState ||
+      following.unavailableReason !== first.unavailableReason
+    )
+      return { state: "invalid" };
+    for (const item of following.items) {
+      if (itemIds.has(item.id)) return { state: "invalid" };
+      itemIds.add(item.id);
+    }
+    items.push(...following.items);
+    nextCursor = following.nextCursor;
+    pages += 1;
+  }
+
+  const normalized = collapseNearDuplicateGames(items);
+  return {
+    state: "complete",
+    page: {
+      ...first,
+      items: normalized,
+      nextCursor: null,
+      evaluationState: "complete",
+      hasMoreUnknown: false,
+      freshness: pageFreshness(normalized),
+    },
+  };
+};
+
 export const materializeBoards = async (input: {
   readonly games: GamesRepository;
   readonly splits: BettingSplitRepository;
@@ -570,7 +691,8 @@ export const materializeBoards = async (input: {
     return splitEvidence.get(canonicalEventId) ?? null;
   };
   for (const key of materializationTargets(input.now)) {
-    const rawPage = await input.games.list(
+    const collected = await collectBoard(
+      input.games,
       {
         sportKey: key.sportKey,
         leagueKey: key.leagueKey,
@@ -579,6 +701,18 @@ export const materializeBoards = async (input: {
       },
       key.limit,
     );
+    if (collected.state !== "complete") {
+      skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason:
+          collected.state === "invalid"
+            ? "pagination-invalid"
+            : "repository-read-failed",
+      });
+      continue;
+    }
+    const rawPage = collected.page;
     const page = (await withoutWithdrawnListings(rawPage, {
       schedule: await scheduleFor(key.sportKey),
       now: input.now,
@@ -591,12 +725,14 @@ export const materializeBoards = async (input: {
       },
     })) as typeof rawPage;
     withdrawnDropped += rawPage.items.length - page.items.length;
-    if (page.nextCursor !== null || page.projectionState !== "ready") {
+    if (page.items.length > key.limit || page.projectionState !== "ready") {
       skipped += 1;
       skippedBoards.push({
         board: boardPartition(key),
         reason:
-          page.nextCursor !== null ? "needs-cursor" : "projection-not-ready",
+          page.items.length > key.limit
+            ? "needs-cursor"
+            : "projection-not-ready",
       });
       continue;
     }
@@ -638,10 +774,31 @@ export const materializeBoards = async (input: {
         (game) => game.odds.state === "available",
       ).length;
     }
-    const body = JSON.stringify(
-      key.route === "splits" ? await attachSplits(page, input.splits) : page,
-    );
-    if (body.length > BOARD_BODY_LIMIT_BYTES) {
+    let bodyPage: GamesPage | Awaited<ReturnType<typeof attachSplits>> = page;
+    if (key.route === "splits") {
+      try {
+        bodyPage = await attachSplits(page, input.splits);
+      } catch {
+        skipped += 1;
+        skippedBoards.push({
+          board: boardPartition(key),
+          reason: "split-enrichment-failed",
+        });
+        continue;
+      }
+    }
+    let body: string;
+    try {
+      body = JSON.stringify(bodyPage);
+    } catch {
+      skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason: "serialization-failed",
+      });
+      continue;
+    }
+    if (new TextEncoder().encode(body).byteLength > BOARD_BODY_LIMIT_BYTES) {
       skipped += 1;
       skippedBoards.push({
         board: boardPartition(key),
@@ -649,16 +806,25 @@ export const materializeBoards = async (input: {
       });
       continue;
     }
-    await input.put({
-      pk: boardPartition(key),
-      sk: "CURRENT",
-      value: {
-        schemaVersion: 1,
-        generatedAt: input.now.toISOString(),
-        body,
-        counts: boardCounts(page),
-      },
-    });
+    try {
+      await input.put({
+        pk: boardPartition(key),
+        sk: "CURRENT",
+        value: {
+          schemaVersion: 1,
+          generatedAt: input.now.toISOString(),
+          body,
+          counts: boardCounts(page),
+        },
+      });
+    } catch {
+      skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason: "store-failed",
+      });
+      continue;
+    }
     stored += 1;
   }
   return {

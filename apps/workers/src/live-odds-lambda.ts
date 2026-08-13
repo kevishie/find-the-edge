@@ -621,9 +621,9 @@ const runLiveOddsHandler = async (event?: unknown) => {
       const boardGateway = new AwsDynamoGateway(client, tableName);
       const boardEvents = new DynamoEventRepository(
         boardGateway,
-        // The worker never returns a cursor from a fifty-game page; a page
-        // that would need one is skipped, so this codec never signs anything
-        // a client will see.
+        // The worker exhausts a bounded cursor chain under one snapshot, then
+        // persists only a terminal board that still fits the public fifty-game
+        // contract. These signatures remain internal and never reach a client.
         new EventCursorCodec({
           current: { id: "board-materializer", secret: randomBytes(32) },
         }),

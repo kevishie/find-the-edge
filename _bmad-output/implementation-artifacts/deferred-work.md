@@ -1314,3 +1314,6 @@ fixes were live in the CDK stack and absent from the bundle, so every check
 of "is the fix deployed" that looked at `ReleaseSha` said yes while the
 browser ran the old code. I reasoned from that false premise repeatedly and
 reported two fixes as complete on the strength of it.
+- source_spec: `_bmad-output/implementation-artifacts/spec-board-materialization-pagination.md`
+  summary: Bound each internal board-materialization repository read with the project's worker timeout policy.
+  evidence: Edge-case review found that a games repository promise that never settles can still prevent later boards and worker completion; this story has no existing timeout value or cancellation policy to apply without inventing an operational contract.
