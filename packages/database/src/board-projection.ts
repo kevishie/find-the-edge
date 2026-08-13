@@ -44,6 +44,11 @@ const SPLIT_WITNESS_MAX_AGE_MS = 90 * 60_000;
 /** Why a listing was dropped. Counted separately on purpose: these rules
  * fail in different directions and merging them into one number hides
  * which one is doing the damage. */
+/** Why a board was not materialised. A board that always needs a cursor is
+ * never stored at all, so it silently serves from the live path forever. */
+export type BoardSkipReason =
+  "needs-cursor" | "projection-not-ready" | "body-too-big";
+
 export type WithdrawnDropReason =
   /** A sibling with the same participants that the provider still vouches
    * for — the churned-id orphan. */
@@ -488,6 +493,18 @@ export interface BoardMaterializationResult {
    */
   readonly withdrawnByReason: Partial<Record<WithdrawnDropReason, number>>;
   /**
+   * Which boards were not stored, and why. `skipped` alone is a number nobody
+   * reads: on 2026-08-13 the soccer board for one Eastern day stopped being
+   * materialised for over six hours while every other board refreshed on the
+   * three-minute cadence, and nothing reported it. Its stored body aged past
+   * BOARD_MAX_AGE_MS, so every request fell through to the live path — which
+   * is a slower path and, that day, a broken one.
+   */
+  readonly skippedBoards: readonly {
+    readonly board: string;
+    readonly reason: BoardSkipReason;
+  }[];
+  /**
    * Per sport, how many upcoming scheduled games carry a price and how many
    * do not. A sport where every upcoming game is priceless is the shape both
    * of the 2026-08-11 soccer faults took — a latched ambiguity marker and a
@@ -519,6 +536,7 @@ export const materializeBoards = async (input: {
   let scheduledOddsAgeSeconds: number | null = null;
   let withdrawnDropped = 0;
   const withdrawnByReason: Partial<Record<WithdrawnDropReason, number>> = {};
+  const skippedBoards: { board: string; reason: BoardSkipReason }[] = [];
   const pricedBySport: Record<string, { upcoming: number; priced: number }> =
     {};
   const scheduleCache = new Map<string, readonly ScheduleListing[] | null>();
@@ -575,6 +593,11 @@ export const materializeBoards = async (input: {
     withdrawnDropped += rawPage.items.length - page.items.length;
     if (page.nextCursor !== null || page.projectionState !== "ready") {
       skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason:
+          page.nextCursor !== null ? "needs-cursor" : "projection-not-ready",
+      });
       continue;
     }
     if (key.route === "games" && key.status === "scheduled") {
@@ -620,6 +643,10 @@ export const materializeBoards = async (input: {
     );
     if (body.length > BOARD_BODY_LIMIT_BYTES) {
       skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason: "body-too-big",
+      });
       continue;
     }
     await input.put({
@@ -640,6 +667,7 @@ export const materializeBoards = async (input: {
     scheduledOddsAgeSeconds,
     withdrawnDropped,
     withdrawnByReason,
+    skippedBoards,
     pricedBySport,
   };
 };

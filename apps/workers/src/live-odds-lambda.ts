@@ -721,6 +721,31 @@ const runLiveOddsHandler = async (event?: unknown) => {
               BoardListingsDropped: count,
             })}\n`,
           );
+      // A board that is never materialised serves from the live path forever
+      // and nobody is told. On 2026-08-13 one Eastern day's soccer board went
+      // six hours without being stored while every other board refreshed on
+      // the three-minute cadence; the count existed and was returned unread,
+      // exactly as the withdrawn-listing count had been.
+      for (const { board, reason } of boards.skippedBoards)
+        process.stdout.write(
+          `${JSON.stringify({
+            _aws: {
+              Timestamp: Date.now(),
+              CloudWatchMetrics: [
+                {
+                  Namespace: "FindTheEdge/Boards",
+                  Dimensions: [["reason"]],
+                  Metrics: [
+                    { Name: "BoardMaterializationSkipped", Unit: "Count" },
+                  ],
+                },
+              ],
+            },
+            reason,
+            board,
+            BoardMaterializationSkipped: 1,
+          })}\n`,
+        );
       // The share of upcoming games in a sport that carry a price. Board
       // freshness is blind to a sport with no prices at all — there is
       // nothing to be stale — and that is exactly how soccer sat priceless

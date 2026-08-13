@@ -122,6 +122,7 @@ describe("materialization", () => {
       scheduledOddsAgeSeconds: null,
       withdrawnDropped: 0,
       withdrawnByReason: {},
+      skippedBoards: expect.any(Array) as unknown[],
       pricedBySport: expect.any(Object) as Record<string, unknown>,
     });
     const splitBoards = puts.filter(({ pk }) => pk.startsWith("BOARD#splits#"));
@@ -220,9 +221,22 @@ describe("materialization", () => {
       scheduledOddsAgeSeconds: null,
       withdrawnDropped: 0,
       withdrawnByReason: {},
+      skippedBoards: expect.any(Array) as unknown[],
       pricedBySport: expect.any(Object) as Record<string, unknown>,
     });
     expect(puts).toHaveLength(0);
+    // The count alone is what let this hide. On 2026-08-13 one Eastern day's
+    // soccer board went unstored for over six hours while every other board
+    // refreshed every three minutes, and `skipped` was returned unread — so
+    // the skip has to name the board and the rule.
+    expect(result.skippedBoards).toHaveLength(10);
+    expect(result.skippedBoards[0]).toEqual({
+      board: expect.stringContaining("BOARD#") as string,
+      reason: "needs-cursor",
+    });
+    expect(new Set(result.skippedBoards.map(({ board }) => board)).size).toBe(
+      10,
+    );
   });
 });
 
