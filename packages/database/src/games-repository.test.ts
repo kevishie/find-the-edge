@@ -1143,6 +1143,31 @@ describe("joined games repository", () => {
     expect(page.freshness).toBeNull();
   });
 
+  it("reports no freshness when the phantom cutoff empties the page after the join", async () => {
+    // The first fix recomputed freshness before the odds join, which covered
+    // a page emptied by the participant boundary but NOT one emptied after
+    // it. The phantom cutoff drops a long-started scheduled game with no odds
+    // evidence, and the final return spread the pre-join page — so the board
+    // went out as zero items still carrying a non-null freshness. Staging kept
+    // serving exactly that after the first fix shipped, which is how the gap
+    // surfaced.
+    const longStarted = {
+      ...event,
+      id: "event-phantom",
+      startsAt: "2026-07-01T00:00:00.000Z",
+      eastern: { ...event.eastern, calendarDay: "2026-07-01" },
+    };
+    const page = await new JoinedGamesRepository(
+      events([longStarted], { cursor: undefined }, null),
+      { batchGet: () => Promise.resolve([]) },
+      ["hardrock"],
+      () => new Date("2026-08-01T12:30:00.000Z"),
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-07-01" }, 50);
+
+    expect(page.items).toEqual([]);
+    expect(page.freshness).toBeNull();
+  });
+
   it("uses unavailable only when the whole market is absent", async () => {
     const page = await new JoinedGamesRepository(events(), {
       batchGet: () => Promise.resolve([]),

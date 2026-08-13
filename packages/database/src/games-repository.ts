@@ -52,6 +52,29 @@ export interface GameDetailSportsbook {
   readonly label: string;
 }
 
+/**
+ * Page freshness is the OLDEST item freshness, so it only means anything when
+ * it is derived from the items being returned. Spreading an upstream page
+ * inherits a value computed over rows that later filtering removed: a page
+ * emptied by its own filters then goes out as zero items carrying a non-null
+ * freshness, which contradicts the definition and which the browser client
+ * refuses outright — the reader gets "The games response was invalid."
+ * instead of an empty board. `withoutWithdrawnListings` recomputes for the
+ * same reason.
+ */
+const oldestFreshness = (
+  items: readonly { readonly freshness: string | null }[],
+): string | null =>
+  items.reduce<string | null>(
+    (oldest, item) =>
+      item.freshness === null
+        ? oldest
+        : oldest === null || item.freshness < oldest
+          ? item.freshness
+          : oldest,
+    null,
+  );
+
 const marketSpecifications = (event: EventPage["items"][number]) => {
   const sides = event.participants
     .slice(0, 2)
@@ -681,31 +704,13 @@ export class JoinedGamesRepository implements GamesRepository {
       nextCursor = following.nextCursor;
     }
     items = items.slice(0, limit);
-    // Page freshness is the OLDEST item freshness, so it has to be recomputed
-    // from the items actually returned. Spreading `first` inherited the event
-    // repository's value, computed over the rows it accepted — and this method
-    // then filters those rows. When the filter emptied the list the page went
-    // out as zero items carrying a non-null freshness, which contradicts the
-    // definition and which the browser client refuses outright: the whole
-    // response is rejected as invalid, so a reader saw a blank board rather
-    // than an empty one. `withoutWithdrawnListings` already recomputes this
-    // way for the same reason.
-    const pageFreshness = items.reduce<string | null>(
-      (oldest, game) =>
-        game.freshness === null
-          ? oldest
-          : oldest === null || game.freshness < oldest
-            ? game.freshness
-            : oldest,
-      null,
-    );
     const page: EventPage = {
       ...first,
       items,
-      freshness: pageFreshness,
+      freshness: oldestFreshness(items),
       nextCursor: nextCursor ?? null,
     };
-    if (!page.items.length) return { ...page, items: [] };
+    if (!page.items.length) return { ...page, items: [], freshness: null };
     // Provider id churn advances canonical versions faster than the odds
     // persist path follows, so fresh rows can sit one version behind the
     // event. Each selection reads both versions and the newer row wins.
@@ -899,9 +904,16 @@ export class JoinedGamesRepository implements GamesRepository {
         game.odds.state !== "unavailable" ||
         Date.parse(game.startsAt) > phantomCutoff,
     );
+    // Recomputed HERE, against what is actually returned, not against the
+    // rows this method started with. Everything between those two points can
+    // remove items — the participant boundary, the phantom cutoff above, and
+    // the near-duplicate collapse below — and each one leaves the inherited
+    // freshness describing rows that are no longer in the page.
+    const finalItems = collapseNearDuplicateGames(surviving);
     return {
       ...page,
-      items: collapseNearDuplicateGames(surviving),
+      items: finalItems,
+      freshness: oldestFreshness(finalItems),
     };
   }
 }
