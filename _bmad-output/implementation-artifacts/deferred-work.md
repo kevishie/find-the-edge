@@ -733,9 +733,33 @@ Verification status, stated honestly:
   board, so the new branch is inert. A sampler is recording catalogue
   membership against the served board every ten minutes
   (`rotation-sampler.py`, log `rotation-log.jsonl`) to catch the next
-  pregame rotation. First observations already show rows both leaving AND
-  **returning** to the catalogue, so rotation is transient — which is direct
-  input to the bounded-window question FTE-091 left open.
+  pregame rotation.
+
+  **No valid pregame observation exists yet, and the first three rounds of
+  sampler output were all instrument error.** Recorded because the pattern
+  matters more than the data: every one produced confident, wrong findings.
+
+  1. Membership keyed on the start instant alone, so a single clean row at
+     22:40Z marked both 22:40Z games present and they flapped in lockstep.
+  2. The completeness check could not model club resolution, so the NFL row
+     declaring `league: "mlb"` reported as a missing game every pass.
+  3. Club matching by prefix-or-last-token missed the catalogue's
+     abbreviations — "Chicago White Sox" against "Chicago WS", "Athletics"
+     against "A's" — and reported two games as absent from the catalogue for
+     four consecutive samples. They were present the whole time. That very
+     nearly became a claim that FTE-091 was saving real games.
+
+  Now joined on the provider event id with its `_bN` churn suffix stripped,
+  which our canonical ids embed as their last colon-separated segment. Ids do
+  not abbreviate. The earlier logs are archived under
+  `rotation-log-startmatched.jsonl` and `rotation-log-labelmatched.jsonl` and
+  should not be used for anything.
+
+  Established independently and still good: the catalogue reaches 78 days
+  ahead, so a game absent from it is genuinely absent rather than beyond the
+  horizon; and three back-to-back offset walks returned identical 347-row
+  sets, so neither the sampler nor `fetchSharpApiSchedulePage` loses rows to
+  pagination.
 
 ### Held back deliberately (committed, not pushed)
 
