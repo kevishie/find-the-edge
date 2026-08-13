@@ -887,3 +887,38 @@ candidates left in that stretch.
 Worth noting for the product record: soccer has been written up repeatedly
 as "unpriced". On this evidence the API is serving prices and the client is
 discarding them, which is a different problem with a different fix.
+
+## FTE-091 verified saving a real game (2026-08-13T11:36Z)
+
+The discriminating case finally occurred: a PREGAME full-game row leaving the
+provider catalogue. Verified independently of the sampler.
+
+**Cincinnati Reds @ Chicago White Sox, 2026-08-13T18:10Z**
+
+| check | result |
+| --- | --- |
+| on the stored (filtered) board | yes — `mlb_chicagows_reds_2026-08-13_b2` |
+| clean full-game row in `/events` | **no** |
+| lead time | **+394 min** (6.5 h before first pitch) |
+| split witness | 2 stamps, newest **6 minutes old** |
+
+Every condition of the fix holds at once: a real game, hours from first
+pitch, whose catalogue row rotated out, with a live witness proving it
+exists. The pre-FTE-091 rule was `if (startsInFuture) continue` — it
+consulted nothing — so it would have deleted this row from the board along
+with its lines. That is the reported symptom, reproduced in the wild and
+prevented.
+
+Note the lead time: 394 minutes. The fifteen-minute pre-start grace window
+that 9b98b3f bought was never going to cover this, which is the point the
+story made and this measures.
+
+**Chicago White Sox @ Detroit Tigers, 2026-08-14T22:40Z — inconclusive, and
+possibly a defect in the fix.** It is on the stored board, has no clean
+catalogue row, and has **no split evidence at all**. Under FTE-091 an MLB
+future absentee with no witness should be DROPPED, so its presence is not
+explained by the change. The likely answer is materialisation lag — the row
+left the catalogue minutes earlier and the board has not rebuilt — but if it
+is still on the board after a materialisation cycle with no splits, then the
+witness path is not being reached for far-future games and that needs
+chasing. Re-check before treating FTE-091 as fully correct.
