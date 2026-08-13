@@ -29,12 +29,15 @@ describe("event metadata presentation", () => {
       expect(result.ariaLabel).toBeTruthy();
     },
   );
+  // Every reason must name the LISTING. This state is the provider's
+  // schedule-revision age and says nothing about the odds on the same screen;
+  // the old copy said "Evidence", which read as though it did.
   it.each([
-    ["current", "2026-08-04T11:00:00.000Z", "within the two-hour"],
-    ["stale", "2026-08-04T09:00:00.000Z", "older than the two-hour"],
-    ["missing", null, "is missing"],
-    ["malformed", "bad-time", "is malformed"],
-    ["future", "2026-08-04T13:00:00.000Z", "in the future"],
+    ["current", "2026-08-04T11:00:00.000Z", "confirmed this listing"],
+    ["stale", "2026-08-04T09:00:00.000Z", "not revised this listing"],
+    ["missing", null, "no revision time for this listing"],
+    ["malformed", "bad-time", "revision time for this listing is malformed"],
+    ["future", "2026-08-04T13:00:00.000Z", "is in the future"],
   ])("explains %s freshness", (_case, evidence, text) => {
     const assessment = assessEventMetadata(
       "scheduled",

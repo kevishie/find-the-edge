@@ -203,8 +203,7 @@ export function EventMetadataBadges({
       {game.metadata.freshness.state !== "unavailable" &&
         game.metadata.freshness.evidenceAt && (
           <time dateTime={game.metadata.freshness.evidenceAt}>
-            Evidence {easternDisplay(game.metadata.freshness.evidenceAt)}{" "}
-            Eastern
+            Listing {easternDisplay(game.metadata.freshness.evidenceAt)} Eastern
           </time>
         )}
       {reasons.map((reason) => (
