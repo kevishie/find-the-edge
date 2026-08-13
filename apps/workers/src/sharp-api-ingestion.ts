@@ -65,6 +65,28 @@ export interface SharpApiIngestionSummary {
  */
 export const ODDS_START_DRIFT_TOLERANCE_MS = 15 * 60_000;
 
+/**
+ * The same tolerance for a secondary-catalogue row, which is wider because the
+ * drift check is doing a different job there.
+ *
+ * On the primary catalogue the start time is corroborating evidence that we
+ * bound odds to the right game. A secondary row is not bound that way at all:
+ * it is aliased onto a canonical event by a unique participant match inside
+ * the same run, so the start time contributes nothing to the binding and a
+ * disagreement says only that the two catalogues disagree.
+ *
+ * They do. On 2026-08-13 SharpAPI published this fixture twice —
+ * `leagues_cup_necaxa_nycfc` at 23:00Z with a complete three-way market from
+ * circa and draftkings, and `leagues_cup_necaxa_newyorkcity` at 23:30Z with a
+ * two-way market from prophetx. Our schedule says 23:30. The narrow tolerance
+ * therefore dropped the only listing that could price the game and kept the
+ * one that could not, and the board read `unavailable` with odds in the table.
+ *
+ * Still bounded: a participant match plus a start within two hours is a game,
+ * not a coincidence, and a genuinely different fixture stays out.
+ */
+export const SECONDARY_ODDS_START_DRIFT_TOLERANCE_MS = 2 * 60 * 60_000;
+
 const providerEvent = (
   league: SharpApiLeague,
   event: SharpApiOddsPage["events"][number],
@@ -656,6 +678,12 @@ export async function persistSharpApiOddsPage(
     // proves nothing and is never trusted through.
     const trustedThroughDrift =
       Number.isFinite(startDrift) && exactMapping?.bindingKind === "source";
+    // A secondary row was aliased by participants, not by time; see the
+    // constant for why that earns a wider bound.
+    const driftTolerance =
+      rowSecondary === undefined
+        ? ODDS_START_DRIFT_TOLERANCE_MS
+        : SECONDARY_ODDS_START_DRIFT_TOLERANCE_MS;
     // A listing whose start disagrees past the tolerance describes a game we
     // cannot price confidently. That is ONE row's problem, so it is omitted
     // and counted — it must never abort the league's run. Throwing here left
@@ -665,8 +693,7 @@ export async function persistSharpApiOddsPage(
     // would otherwise have abandoned it. One unpriceable fixture is not a
     // reason to stop pricing a league.
     if (
-      (!Number.isFinite(startDrift) ||
-        startDrift > ODDS_START_DRIFT_TOLERANCE_MS) &&
+      (!Number.isFinite(startDrift) || startDrift > driftTolerance) &&
       !trustedThroughDrift
     ) {
       rejectionCounts["start-time-conflict"] =
@@ -677,7 +704,7 @@ export async function persistSharpApiOddsPage(
     const providerParticipantIndexes = participantIndexes(
       raw,
       canonical,
-      trustedThroughDrift && startDrift > ODDS_START_DRIFT_TOLERANCE_MS,
+      startDrift > ODDS_START_DRIFT_TOLERANCE_MS,
     );
     let eventObservations = 0;
     for (const book of raw.bookmakers) {

@@ -251,6 +251,56 @@ completes.
 3. **Page-count explosion.** 19-20 pages became however many 200-row pages
    166+34 rows require, against a 100-page guard and a per-pass cadence.
 
+## SOLVED 2026-08-13 02:30Z: why soccer had odds in the table and none on the board
+
+The design below is **not inert and never was** — the secondary request, the
+per-row tagging and the resolve-or-skip alias binding are all live, and they
+work. Staging over two hours: `OddsSecondaryObservation` 476,
+`OddsSecondaryUnresolved` 10. Leagues Cup odds were being ingested and
+aliased onto the right canonical events the whole time. A census of the live
+`leagues_cup` catalogue through the real ingestion path confirms
+**`reconcileScheduledEvent: 0`** — the duplicate-minting hazard this spec was
+written to prevent does not occur. (An earlier census claimed two mints; that
+was a harness defect — it omitted `secondaryOddsProviderLeagues`, so the rows
+never took the secondary path at all.)
+
+Board materialization told the real story:
+
+```
+"pricedBySport":{"mlb":{"upcoming":11,"priced":11},"soccer":{"upcoming":9,"priced":0}}
+```
+
+Probing storage for one fixture found exactly two odds rows — prophetx home
+and away, **no draw**. Soccer moneyline is three-way, and the board requires
+every selection of a required market from one book in one observation window,
+so an incomplete market yields `unavailable`.
+
+The cause is that **SharpAPI publishes each Leagues Cup fixture twice**:
+
+| listing | start | books | moneyline |
+|---|---|---|---|
+| `leagues_cup_necaxa_nycfc_…` | 23:00Z | circa, draftkings | **complete** (away/draw/home) |
+| `leagues_cup_necaxa_newyorkcity_…` | 23:30Z | prophetx, betano | two-way, **no draw** |
+
+Our schedule says 23:30. So the 15-minute start tolerance dropped the only
+listing that could price the fixture and kept the one that could not. Nine
+soccer games, no lines, odds sitting in the table.
+
+**Fix:** a secondary row gets a two-hour tolerance, because it is aliased onto
+a canonical event by a unique participant match inside the run — the start
+time contributes nothing to that binding, so a disagreement says only that the
+two catalogues disagree. Still bounded: a fixture a day out is still dropped.
+Re-censused after the change, `necaxa_nycfc` prices instead of being omitted.
+
+Note this also identifies the row that wedged MLS for seven hours on
+2026-08-12: a 30-minute drift on a secondary listing, which threw before
+f28696d and aborted the league.
+
+**Still open:** two listings now resolve to one canonical event and write
+competing price streams. Step 4 of the design below — keep only the
+highest-market-count listing per resolved event — is the remaining piece, and
+is not yet implemented.
+
 ## The problem
 
 Soccer fixtures render on the board with `odds.state: "unavailable"`. They

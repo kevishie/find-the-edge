@@ -19,7 +19,10 @@
 import { readFileSync } from "node:fs";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { parseSharpApiOddsPage } from "../packages/providers/src/sharp-api.ts";
+import {
+  parseSharpApiOddsPage,
+  sharpApiLeagues,
+} from "../packages/providers/src/sharp-api.ts";
 import {
   AwsDynamoGateway,
   DynamoEventIngestionStore,
@@ -32,11 +35,8 @@ const tableName = process.env["FTE_EVENT_TABLE"];
 if (!capturePath || !tableName)
   throw new Error("usage: FTE_EVENT_TABLE=<table> node replay.mjs <capture>");
 
-const league = {
-  sportKey: "soccer",
-  leagueKey,
-  providerLeague: "MLS,leagues_cup",
-};
+const league = sharpApiLeagues.find((l) => l.leagueKey === leagueKey);
+if (!league) throw new Error(`unknown league `);
 
 // The real entitled-book roles for this league. A stubbed role map would
 // reject every price as an unknown bookmaker and make the census meaningless.

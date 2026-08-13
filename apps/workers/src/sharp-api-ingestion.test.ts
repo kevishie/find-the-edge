@@ -1425,6 +1425,146 @@ describe("SharpAPI primary ingestion", () => {
     expect(persisted.events).toBe(0);
   });
 
+  /**
+   * The 2026-08-13 unpriced-soccer case, exactly as the feed published it.
+   * SharpAPI listed Necaxa v NYCFC twice: `..._necaxa_nycfc` at 23:00Z with a
+   * complete three-way market from circa and draftkings, and
+   * `..._necaxa_newyorkcity` at 23:30Z carrying only two of the three
+   * selections. Our schedule says 23:30, so the primary 15-minute tolerance
+   * dropped the only listing that could price the fixture and kept the one
+   * that could not — nine soccer games, no lines, odds sitting in the table.
+   *
+   * A secondary row is aliased by participants, not by time, so it gets the
+   * wider bound and this listing survives.
+   */
+  it("keeps a secondary listing whose start disagrees by half an hour", async () => {
+    const canonical = {
+      id: "event:soccer%3Amls:usa_-_major_league_soccer_necaxa_newyorkcity_2026-08-13_b3",
+      version: 2,
+      sportKey: "soccer",
+      leagueKey: "mls",
+      status: "scheduled",
+      startsAt: "2026-08-13T23:30:00.000Z",
+      participantLabels: ["Necaxa", "New York City FC"],
+      candidateIdentity: "necaxa-nycfc",
+    } as unknown as CanonicalEvent;
+    let bound = false;
+    const ingestEvent = vi.fn(() => {
+      bound = true;
+      return Promise.resolve({ kind: "exact" as const });
+    });
+    const onSecondaryGap = vi.fn();
+
+    const persisted = await persistSharpApiOddsPage(
+      {
+        getExactMapping: vi.fn(() => Promise.resolve(null)),
+        resolveExactCanonicalBinding: vi.fn(() =>
+          Promise.resolve(bound ? canonical : null),
+        ),
+        ingestEvent,
+        reconcileScheduledEvent: vi.fn(() => {
+          throw new Error("secondary catalogue must never bootstrap");
+        }),
+      } as unknown as EventIngestionStore,
+      { persist: vi.fn(() => Promise.resolve({})) } as never,
+      {
+        sportKey: "soccer",
+        leagueKey: "mls",
+        providerLeague: "MLS",
+        secondaryOddsProviderLeagues: ["leagues_cup"],
+        moneylineMarket: "moneyline",
+      } as unknown as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-13T22:00:00.000Z" as IsoTimestamp,
+        events: [
+          {
+            providerEventId: "leagues_cup_necaxa_nycfc_2026-08-13_b3",
+            providerEventUuid: "aaaa",
+            awayTeam: "Necaxa",
+            homeTeam: "New York City FC",
+            // Half an hour before the canonical start: past the primary
+            // tolerance, inside the secondary one.
+            startsAt: "2026-08-13T23:00:00.000Z" as IsoTimestamp,
+            bookmakers: [],
+          },
+        ],
+      },
+      {},
+      undefined,
+      undefined,
+      undefined,
+      "leagues_cup",
+      [{ canonical }],
+      onSecondaryGap,
+    );
+
+    expect(persisted.rejectionCounts["start-time-conflict"]).toBeUndefined();
+    expect(ingestEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ mappingKind: "alias" }),
+    );
+    expect(onSecondaryGap).not.toHaveBeenCalled();
+  });
+
+  it("still drops a secondary listing a whole day out", async () => {
+    // The wider bound is not "no bound": a participant pair that repeats on
+    // another date is a different fixture and must not take these prices.
+    const canonical = {
+      id: "event:soccer%3Amls:usa_-_major_league_soccer_necaxa_newyorkcity_2026-08-13_b3",
+      version: 2,
+      sportKey: "soccer",
+      leagueKey: "mls",
+      status: "scheduled",
+      startsAt: "2026-08-13T23:30:00.000Z",
+      participantLabels: ["Necaxa", "New York City FC"],
+      candidateIdentity: "necaxa-nycfc",
+    } as unknown as CanonicalEvent;
+    let bound = false;
+    const persisted = await persistSharpApiOddsPage(
+      {
+        getExactMapping: vi.fn(() => Promise.resolve(null)),
+        resolveExactCanonicalBinding: vi.fn(() =>
+          Promise.resolve(bound ? canonical : null),
+        ),
+        ingestEvent: vi.fn(() => {
+          bound = true;
+          return Promise.resolve({ kind: "exact" as const });
+        }),
+        reconcileScheduledEvent: vi.fn(() => {
+          throw new Error("secondary catalogue must never bootstrap");
+        }),
+      } as unknown as EventIngestionStore,
+      { persist: vi.fn(() => Promise.resolve({})) } as never,
+      {
+        sportKey: "soccer",
+        leagueKey: "mls",
+        providerLeague: "MLS",
+        secondaryOddsProviderLeagues: ["leagues_cup"],
+        moneylineMarket: "moneyline",
+      } as unknown as SharpApiLeague,
+      {
+        retrievedAt: "2026-08-13T22:00:00.000Z" as IsoTimestamp,
+        events: [
+          {
+            providerEventId: "leagues_cup_necaxa_nycfc_2026-08-14_b3",
+            providerEventUuid: "bbbb",
+            awayTeam: "Necaxa",
+            homeTeam: "New York City FC",
+            startsAt: "2026-08-14T23:30:00.000Z" as IsoTimestamp,
+            bookmakers: [],
+          },
+        ],
+      },
+      {},
+      undefined,
+      undefined,
+      undefined,
+      "leagues_cup",
+      [{ canonical }],
+      vi.fn(),
+    );
+    expect(persisted.rejectionCounts["start-time-conflict"]).toBe(1);
+  });
+
   it("drops a secondary row that matches no scheduled fixture", async () => {
     // Label drift between two catalogues is the failure mode that keeps
     // costing this product hours, so an unmatched row is counted rather than
