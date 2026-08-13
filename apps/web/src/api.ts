@@ -2147,14 +2147,16 @@ const validOddsComparison = (
         return false;
     }
   }
+  // Mirrors the server rule in `games-repository.ts` and must keep mirroring
+  // it: a disagreement here rejects the whole response. The freshness term
+  // was dropped on both sides together — it measured schedule-revision age,
+  // not price age, and price age is already enforced per cell.
   const eventEligible =
     status === "scheduled" &&
     plain(metadata) &&
     metadata["availability"] === "complete" &&
     plain(metadata["lifecycle"]) &&
-    metadata["lifecycle"]["state"] === "scheduled" &&
-    plain(metadata["freshness"]) &&
-    metadata["freshness"]["state"] === "current";
+    metadata["lifecycle"]["state"] === "scheduled";
   const computedQualified =
     eventEligible &&
     markets.every((market) => {

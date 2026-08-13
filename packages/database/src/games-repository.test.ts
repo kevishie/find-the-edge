@@ -765,19 +765,32 @@ describe("joined games repository", () => {
     expect(reads).toBe(2);
   });
 
-  it("requires scheduled, complete, current event metadata for target qualification", async () => {
+  it("requires a scheduled, complete event for target qualification", async () => {
     const prices = completeDetailPrices(event);
     const rows = [...prices.map(row), ...activeEvidence(prices)];
-    for (const ineligibleEvent of [
-      {
-        ...event,
-        metadata: assessEventMetadata(
-          "scheduled",
-          "2026-08-01T09:00:00.000Z",
-          "2026-08-01T12:30:00.000Z",
-        ),
-      },
-      {
+    const qualify = async (
+      item: typeof event,
+      readAt = "2026-08-01T12:30:00.000Z",
+    ) => {
+      const eventRepository = events();
+      eventRepository.detail = () =>
+        Promise.resolve({
+          projectionState: "ready",
+          item,
+          unavailableReason: null,
+        });
+      const detail = await new JoinedGamesRepository(
+        eventRepository,
+        { batchGet: () => Promise.resolve(rows) },
+        ["hardrock"],
+        () => new Date(readAt),
+      ).detail(event.id);
+      return detail.item?.oddsComparison.targetQualified;
+    };
+
+    // A started game is never a qualified comparison.
+    expect(
+      await qualify({
         ...event,
         status: "started" as const,
         metadata: assessEventMetadata(
@@ -785,23 +798,28 @@ describe("joined games repository", () => {
           "2026-08-01T12:00:00.000Z",
           "2026-08-01T12:30:00.000Z",
         ),
-      },
-    ]) {
-      const eventRepository = events();
-      eventRepository.detail = () =>
-        Promise.resolve({
-          projectionState: "ready",
-          item: ineligibleEvent,
-          unavailableReason: null,
-        });
-      const detail = await new JoinedGamesRepository(
-        eventRepository,
-        { batchGet: () => Promise.resolve(rows) },
-        ["hardrock"],
-        () => new Date("2026-08-01T12:30:00.000Z"),
-      ).detail(event.id);
-      expect(detail.item?.oddsComparison.targetQualified).toBe(false);
-    }
+      }),
+    ).toBe(false);
+
+    // Stale event METADATA no longer disqualifies. It measures how long since
+    // the provider revised the schedule listing, which for an uncorrected
+    // game only ever grows — it said nothing about these prices, which are
+    // current. This assertion was inverted on 2026-08-13, when every MLB game
+    // on staging read "coverage is incomplete" on a 2.2-day metadata age.
+    expect(
+      await qualify({
+        ...event,
+        metadata: assessEventMetadata(
+          "scheduled",
+          "2026-08-01T09:00:00.000Z",
+          "2026-08-01T12:30:00.000Z",
+        ),
+      }),
+    ).toBe(true);
+
+    // Stale PRICES still disqualify, per cell, which is where the real
+    // freshness rule lives: read four hours past a two-hour window.
+    expect(await qualify(event, "2026-08-01T16:30:00.000Z")).toBe(false);
   });
 
   it("gives the memory repository a valid default target sportsbook", async () => {

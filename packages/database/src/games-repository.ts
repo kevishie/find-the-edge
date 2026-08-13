@@ -597,11 +597,23 @@ export class JoinedGamesRepository implements GamesRepository {
         ...event,
         oddsComparison: {
           targetSportsbookId,
+          // Deliberately NOT gated on `metadata.freshness`. That field is
+          // `canonicalFreshness`, which is the canonical event row's
+          // `updatedAt` — it advances only when the provider publishes a
+          // REVISED schedule listing, so a game listed once and never
+          // corrected goes "stale" two hours later and stays there. On
+          // 2026-08-13 every MLB game on staging reported a freshness age of
+          // 2.2 days against a 7,200s threshold while carrying prices minutes
+          // old, and the detail page told every reader the target book's
+          // "coverage is incomplete" — blaming the sportsbook for a schedule
+          // clock. Price freshness is already enforced where it belongs, per
+          // cell: a price older than `freshnessWindowMs` is marked
+          // `price-stale` and `eligible: false`, and every required market's
+          // target cell must be eligible below.
           targetQualified:
             event.status === "scheduled" &&
             event.metadata.lifecycle.state === "scheduled" &&
             event.metadata.availability === "complete" &&
-            event.metadata.freshness.state === "current" &&
             markets.every((market) => {
               const required = ["moneyline", "spread", "total"].includes(
                 market.marketKey,
