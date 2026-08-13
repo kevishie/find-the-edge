@@ -293,6 +293,15 @@ const derivativeLabelKind = (value: string) => {
     )
   )
     return "award";
+  // A trailing "+" marks the provider's secondary catalogue, not a club.
+  // SharpAPI publishes an `mls+` catalogue whose participants are labelled
+  // "Rapids +", "Earthquakes +" and whose fixtures are USL sides — Charleston
+  // against Hartford, Charlotte against Tampa Bay. Twenty-one of them were
+  // bootstrapped as canonical events for 2026-08-13 alone, and that partition
+  // reaching 61 events against a board limit of 50 is what stopped the soccer
+  // board being materialised at all: its page always needed a cursor, and
+  // `materializeBoards` skips any board that does.
+  if (/\s\+$/.test(label)) return "plus-catalogue";
   return null;
 };
 

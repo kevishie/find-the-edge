@@ -656,6 +656,52 @@ describe("SharpAPI activation boundary", () => {
     );
   });
 
+  it("rejects the provider's plus-suffixed secondary catalogue", () => {
+    // Captured from the mls+ catalogue: participants labelled with a trailing
+    // "+" and fixtures that are USL sides, not MLS. Twenty-one of these were
+    // bootstrapped as canonical events for 2026-08-13, pushing the soccer
+    // partition to 61 events against a board limit of 50 — which is what
+    // stopped that board being materialised at all.
+    const page = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "mls+_charleston_hartford_2026-08-13_b2",
+            league: "mls",
+            away_team: "Charleston +",
+            home_team: "Hartford +",
+            start_time: "2026-08-13T23:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+          {
+            id: "mls_real_2026-08-13_b2",
+            league: "mls",
+            away_team: "Away Club",
+            home_team: "Home Club",
+            start_time: "2026-08-13T23:30:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagueByKey("mls"),
+      "2026-08-13T12:00:00.000Z" as never,
+    );
+
+    expect(page.events.map(({ providerEventId }) => providerEventId)).toEqual([
+      "mls_real_2026-08-13_b2",
+    ]);
+  });
+
+  it("keeps a club whose real name merely contains a plus sign", () => {
+    // The rule is a trailing " +" only. Nothing legitimate should match it,
+    // but a bare "+" inside a name must not be swept up with the catalogue.
+    expect(isSharpDerivativeMatchup("A+ United", "B+ City")).toBe(false);
+    expect(isSharpDerivativeMatchup("Rapids +", "Earthquakes +")).toBe(true);
+  });
+
   it("rejects a foreign-sport fixture wearing the league's own label", () => {
     // Captured live from /events?league=mlb on 2026-08-13. An NFL game, but
     // the provider labelled it league "mlb", sport "baseball", and gave it a
