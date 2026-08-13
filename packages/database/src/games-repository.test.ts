@@ -1117,6 +1117,32 @@ describe("joined games repository", () => {
     });
   });
 
+  it("reports no freshness when its own filtering empties the page", async () => {
+    // Page freshness is the oldest ITEM freshness. This method spread the
+    // inner event page and then replaced its items, so a page emptied by the
+    // participant boundary went out as zero items still carrying the event
+    // repository's freshness. That contradicts the definition, and the browser
+    // client rejects the whole response rather than rendering an empty board —
+    // which is how a reader got "The games response was invalid." instead of a
+    // day with no games. Observed on staging 2026-08-13: items 0 with
+    // freshness 2026-08-13T03:59:51.249Z.
+    const unresolvable = {
+      ...event,
+      id: "event-unresolvable",
+      participants: [
+        { id: "ghost-a", label: "Ghost A" },
+        { id: "ghost-b", label: "Ghost B" },
+      ],
+    };
+    const page = await new JoinedGamesRepository(
+      events([unresolvable], { cursor: undefined }, null),
+      { batchGet: () => Promise.resolve([]) },
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 50);
+
+    expect(page.items).toEqual([]);
+    expect(page.freshness).toBeNull();
+  });
+
   it("uses unavailable only when the whole market is absent", async () => {
     const page = await new JoinedGamesRepository(events(), {
       batchGet: () => Promise.resolve([]),

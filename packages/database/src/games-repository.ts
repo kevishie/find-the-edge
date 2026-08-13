@@ -681,7 +681,30 @@ export class JoinedGamesRepository implements GamesRepository {
       nextCursor = following.nextCursor;
     }
     items = items.slice(0, limit);
-    const page: EventPage = { ...first, items, nextCursor: nextCursor ?? null };
+    // Page freshness is the OLDEST item freshness, so it has to be recomputed
+    // from the items actually returned. Spreading `first` inherited the event
+    // repository's value, computed over the rows it accepted — and this method
+    // then filters those rows. When the filter emptied the list the page went
+    // out as zero items carrying a non-null freshness, which contradicts the
+    // definition and which the browser client refuses outright: the whole
+    // response is rejected as invalid, so a reader saw a blank board rather
+    // than an empty one. `withoutWithdrawnListings` already recomputes this
+    // way for the same reason.
+    const pageFreshness = items.reduce<string | null>(
+      (oldest, game) =>
+        game.freshness === null
+          ? oldest
+          : oldest === null || game.freshness < oldest
+            ? game.freshness
+            : oldest,
+      null,
+    );
+    const page: EventPage = {
+      ...first,
+      items,
+      freshness: pageFreshness,
+      nextCursor: nextCursor ?? null,
+    };
     if (!page.items.length) return { ...page, items: [] };
     // Provider id churn advances canonical versions faster than the odds
     // persist path follows, so fresh rows can sit one version behind the
