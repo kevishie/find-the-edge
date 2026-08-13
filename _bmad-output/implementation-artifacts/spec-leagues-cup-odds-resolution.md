@@ -180,14 +180,59 @@ each fixture against the canonical start our own board serves:
 | …8 more | | | 0 |
 
 **12 of 12 matched, 0 beyond the 15-minute tolerance**, worst case 10
-minutes. The two catalogues agree on kickoff. Whatever the combined request
-broke, it was not this, and the blocker to re-enabling is NOT removed.
+minutes.
 
-Four suspects are now eliminated: quota, `expectedProviderEvents`,
-page-count explosion, and start drift. The next attempt should instrument
-the combined path itself rather than reason about it — the lesson of this
-spec is that every theory tested so far has been wrong, and the only
-progress came from reading run rows and measuring feeds directly.
+**That refutation was too strong — see the census below.** It compared the
+fixture pairs I could match by name between two catalogues. The real
+resolution path matches differently, and it does find a drifting row.
+
+## Census: replaying the combined request offline (2026-08-13 01:30Z)
+
+`scripts/replay-odds-capture.mjs` replays a captured payload through the
+real ingestion code against the real table, with `ingestEvent` and
+`reconcileScheduledEvent` recorded and refused so nothing is written. Each
+event replays on its own single-event page, so one failure cannot mask the
+rest — a census of every row, not the first throw.
+
+Captured `league=MLS,leagues_cup`, 6 pages, 1,200 price rows, 48 distinct
+events (20 `leagues_cup`, 25 `usa_-_major_league_soccer`, 5 `mls`), replayed
+with the real 24-book role map:
+
+| outcome | n | reading |
+|---|---|---|
+| priced, clean | 9 | mostly `leagues_cup_*` — **this is the payoff** |
+| priced, incomplete-market | 5 | also mostly `leagues_cup_*` |
+| no observations | 31 | started fixtures and unapproved books |
+| **WOULD MINT a canonical event** | **2** | the duplicate hazard, confirmed |
+| **start-time-conflict** | **1** | real drift, `leagues_cup_necaxa_nycfc` |
+
+Three things follow.
+
+1. **The combined request does deliver the goal.** 14 fixtures would price,
+   most of them Leagues Cup. This is no longer theoretical.
+2. **The duplicate-minting hazard is real and small.** Exactly two rows
+   reach `reconcileScheduledEvent`:
+   `leagues_cup_atleticosanluis_orlandocity_2026-08-12_b3` and
+   `leagues_cup_guadalajarachivas_seattlesounders_2026-08-13_b0`. This is
+   precisely what step 5 of the design below exists to prevent — resolve or
+   skip, never reconcile a tagged row.
+3. **Start drift does occur**, on one row, and it is exactly the condition
+   that aborted the league before 61dbdd0. That makes drift a live candidate
+   for what broke MLS on 2026-08-12 after all, and it means the fix removes
+   a real blocker rather than a hypothetical one.
+
+**Harness caveat.** The `schedule-event-conflict` label on the two minting
+rows is an artifact of the stub: `reconcileScheduledProviderEvent` throws
+that whenever the store returns unresolved, which is what the refusing stub
+returns. The real outcome for those rows is a *mint* — a second canonical
+event for a fixture that already has one — not a throw. Do not read that
+label as a production failure mode. The census is also a snapshot: at
+01:30Z many of the day's fixtures had started, which is most of the 31.
+
+**Where this leaves re-enabling.** The remaining blocker is the two minting
+rows, and the design below already answers them. Re-enabling still needs an
+assertion that MLS completes, but the path is now concrete rather than
+speculative.
 
 Do not re-enable the combined request without an assertion that MLS still
 completes.
