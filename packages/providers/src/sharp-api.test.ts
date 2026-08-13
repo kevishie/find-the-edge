@@ -656,6 +656,44 @@ describe("SharpAPI activation boundary", () => {
     );
   });
 
+  it("rejects a foreign-sport fixture wearing the league's own label", () => {
+    // Captured live from /events?league=mlb on 2026-08-13. An NFL game, but
+    // the provider labelled it league "mlb", sport "baseball", and gave it a
+    // run_line — so it clears the league check, the shape check, and the MLB
+    // derivative check, which requires only that markets include moneyline
+    // or total_runs. Club resolution is the ONLY thing that rejects it, and
+    // it is closer than it looks: "ARI Cardinals" shares its last token with
+    // the St. Louis Cardinals, so a resolver that matched on nickname alone
+    // would mint a phantom MLB game against the Raiders.
+    const page = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "mlb_cardinals_lvraiders_2026-08-13_b3",
+            league: "mlb",
+            away_team: "ARI Cardinals",
+            home_team: "Las Vegas Raiders",
+            start_time: "2026-08-14T00:00:00Z",
+            status: "upcoming",
+            is_live: false,
+            markets: ["moneyline", "run_line"],
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagueByKey("mlb"),
+      "2026-08-13T02:00:00.000Z" as never,
+    );
+
+    expect(page.events).toEqual([]);
+    expect(page.exclusions).toEqual([
+      expect.objectContaining({
+        providerEventId: "mlb_cardinals_lvraiders_2026-08-13_b3",
+        reason: "participant-out-of-scope",
+      }),
+    ]);
+  });
+
   describe("a lifecycle we do not want costs the row, never the page", () => {
     const scheduleRow = (
       id: string,

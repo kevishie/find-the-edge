@@ -670,3 +670,94 @@ Streams retain 24 hours, and these point at 08-07. Their only remaining value
 is forensic: they record that the failure happened and when. Purging is safe
 for data integrity; it costs the audit trail, which is a judgement call and
 not one to make silently.
+## 2026-08-13 overnight: what shipped, what is held, what is proven
+
+### Production unwedged by hand (splits dark 19.8h)
+
+Prod MLB splits had been dead since 2026-08-12T06:28Z — the same
+self-poisoning as 2026-08-10, recurring because its fix (3d8424e) is on main
+and production is still on c62fafa (2026-08-07). Promotion is blocked (see
+below), so the documented recovery was applied instead: deleted
+`ODDS_CONTROL#CONTINUATION#splits:mlb` and
+`ODDS_CONTROL#HEALTH#sharpapi:mlb:splits`. Both rows were captured first —
+`backup-continuation.json` / `backup-health.json` in the session scratchpad.
+
+Result: `sharpapi:mlb:splits` went healthy within ~5 minutes (lastOk
+2026-08-13T02:18:11Z). **This is a hand recovery, not a fix.** Production
+still lacks the aged-run abandonment, so it will re-poison. The permanent
+fix is the promotion.
+
+### Promotion is still blocked, and CI would not have caught it
+
+`find-the-edge/prod/identity` and `find-the-edge/prod/stripe` do not exist.
+`docs/phase1-deployment.md:24` — "The identity routes return `500` until this
+secret exists." Since main gates the whole app behind sign-in (03721b3),
+promoting now makes kevishie.com unusable.
+
+CDK uses `Secret.fromSecretNameV2`, a lazy name reference, so synth and
+deploy both succeed against a secret that is not there. The hosted smoke's
+sign-in test (`tests/phase1-e2e/environment.spec.ts:158`) only asserts a
+signed-out visitor reaches our own `/login`; it never completes an OTP round
+trip. **A green deploy would not have meant a working production.**
+
+Also unset, contrary to `docs/environment-promotion.md`: neither `main` nor
+`production` has branch protection, and both GitHub Environments have
+`deployment_branch_policy: null`.
+
+### Shipped to staging (main @ 201ac2b)
+
+- FTE-090 — a non-upcoming schedule row is a counted `not-upcoming`
+  exclusion instead of throwing away the whole page.
+- FTE-091 — a future absentee is judged by the splits witness instead of
+  dropped on lead time alone.
+
+Verification status, stated honestly:
+
+- **Safe: proven.** On the 2026-08-13 board the filter still drops all four
+  `_b0` churn orphans at their placeholder `06:50Z` kickoff, two of which
+  carry splits — so the vouched-sibling rule, not the witness, is what
+  rejects that class. That was the premise of the change and it holds on
+  live data.
+- **Effective: NOT yet proven.** By deploy time the two 22:10 Eastern games
+  had started, so they are judged by the past-start branch, which is
+  unchanged. At the time of writing the catalogue carries every game on the
+  board, so the new branch is inert. A sampler is recording catalogue
+  membership against the served board every ten minutes
+  (`rotation-sampler.py`, log `rotation-log.jsonl`) to catch the next
+  pregame rotation. First observations already show rows both leaving AND
+  **returning** to the catalogue, so rotation is transient — which is direct
+  input to the bounded-window question FTE-091 left open.
+
+### Held back deliberately (committed, not pushed)
+
+Two changes are on the worktree branch only. Holding them keeps the board
+rule stable overnight so the sampler measures FTE-091 alone.
+
+- **FTE-084 partial — a quiet witness gets no vote.** The witness now
+  returns the newest observation instant rather than a boolean, judges feed
+  liveness across the whole board, and keeps every absentee when nothing on
+  the board is fresh. It also no longer fails OPEN on a repository error.
+  Needed because FTE-091 made the witness load-bearing for future games too,
+  and splits are never expired or age-checked anywhere.
+- **`targetQualified` no longer gates on `metadata.freshness`.** That field
+  is `canonicalFreshness` = the event row's `updatedAt`, which advances only
+  on a REVISED provider listing — so an uncorrected game goes stale two
+  hours after ingestion and stays there. Measured on staging: every MLB game
+  at ~189,000s against a 7,200s threshold while carrying minute-old prices,
+  so every detail page said the target book's "coverage is incomplete". The
+  server and browser rules had to move together, because
+  `apps/web/src/api.ts` recomputes this and rejects the response on
+  disagreement.
+
+### Still open
+
+- The "Metadata stale · Evidence <date>" badge still renders from
+  `canonicalFreshness`, so a row can read "odds 1m old" beside "Evidence Aug
+  10". Wider blast radius: the browser validator treats `metadata` as a pure
+  function of that field, so server, browser, and
+  `packages/domain/src/event-metadata.ts` must move together.
+- `StaleEventMetadata` is emitted but has no alarm.
+- The stored board and the live projection remain different code paths;
+  `withoutWithdrawnListings` runs only during materialization. They agree on
+  the 2026-08-12 case now, but nothing enforces that they agree in general.
+- Why the original report counted 7 has never been established.
