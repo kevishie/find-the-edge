@@ -20,6 +20,7 @@ import {
   scheduleCapabilityFailure,
   evidenceGaps,
   fetchSharpOddsPageWithRetry,
+  opensBeyondPricingHorizon,
   runFocusedSharpOddsIngestion,
   runProductionOddsControlPlane,
   reconstructSharpOddsRun,
@@ -78,6 +79,53 @@ describe("production odds control-plane composition", () => {
       .mockRejectedValueOnce(second);
     await expect(fetchSharpOddsPageWithRetry(fetchPage)).rejects.toBe(second);
     expect(sharpOddsFailureRequestCost(second)).toBe(2);
+  });
+
+  describe("pricing horizon", () => {
+    const now = new Date("2026-08-13T12:00:00.000Z");
+    const at = (days: number, hours = 0) =>
+      new Date(
+        now.getTime() + days * 86_400_000 + hours * 3_600_000,
+      ).toISOString();
+
+    it("keeps walking while a page still opens inside the horizon", () => {
+      // Page straddles the boundary: its first game is tomorrow, its last is
+      // three weeks out. Judged on the latest it would stop here and drop
+      // tomorrow's game, so it must be judged on the earliest.
+      expect(
+        opensBeyondPricingHorizon(
+          [{ startsAt: at(1) }, { startsAt: at(21) }],
+          now,
+        ),
+      ).toBe(false);
+    });
+
+    it("stops once a page opens past the horizon", () => {
+      // Non-decreasing order means everything behind this page is later still,
+      // so the rest of the season costs nothing.
+      expect(
+        opensBeyondPricingHorizon(
+          [{ startsAt: at(13 * 7) }, { startsAt: at(14 * 7) }],
+          now,
+        ),
+      ).toBe(true);
+    });
+
+    it("holds the boundary itself", () => {
+      expect(opensBeyondPricingHorizon([{ startsAt: at(7) }], now)).toBe(false);
+      expect(opensBeyondPricingHorizon([{ startsAt: at(7, 1) }], now)).toBe(
+        true,
+      );
+    });
+
+    it("never truncates a league on unreadable or absent starts", () => {
+      // A malformed timestamp must not end the walk: silently dropping the
+      // rest of a league is far worse than one wasted page.
+      expect(opensBeyondPricingHorizon([{ startsAt: "not-a-date" }], now)).toBe(
+        false,
+      );
+      expect(opensBeyondPricingHorizon([], now)).toBe(false);
+    });
   });
 
   it("does not retry non-contract SharpAPI failures", async () => {
