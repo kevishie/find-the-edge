@@ -954,3 +954,48 @@ be read (the running sampler still works; it cached the key at startup).
 FTE-091 remains deployed and safe — the ghost regressions still hold — but
 "verified saving a real game" should be read as "consistent with saving a
 real game, by an id-based test that does not match the rule under test".
+
+## Four real games are missing from tomorrow's board (2026-08-13T13:25Z)
+
+Chasing the unexplained retention resolved it and turned up something worse.
+
+**The retention was not a defect.** On the 2026-08-14 board every one of the
+13 games has ZERO split observations, yet 9 are kept and 4 dropped. The
+witness cannot be the discriminator when nobody has one — the kept rows are
+matched by a schedule LISTING (participants + start instant), which is
+exactly the id-vs-listing distinction the previous entry predicted. White Sox
+@ Tigers is vouched by a listing despite being absent by provider id.
+
+**The dropped four are real MLB games**, all ~33 hours out:
+
+| matchup | splits | lead |
+| --- | --- | --- |
+| Boston Red Sox @ Pittsburgh Pirates | 0 | 33.3 h |
+| Washington Nationals @ New York Mets | 0 | 33.8 h |
+| New York Yankees @ Toronto Blue Jays | 0 | 33.9 h |
+| Arizona Diamondbacks @ Atlanta Braves | 0 | 33.9 h |
+
+They are absent from the schedule listings and have no splits, so they fall
+to `witness-silent` and are deleted from the board along with their lines.
+Boston @ Pittsburgh was observed as a clean catalogue row at 04:40Z, so this
+is a row that rotated out, not a game that never existed.
+
+**FTE-091 does not cover this class.** The witness is betting splits, and
+splits do not exist 33 hours before first pitch — the provider publishes them
+much closer to the game. So the fix rescues a catalogue-absent game only
+inside the splits window (the Reds case, 6.5 h out, worked). Beyond that
+window the board still deletes real games on catalogue absence alone, which
+is the original reported symptom surviving one day further out.
+
+**The held FTE-084 commit already fixes this.** It judges witness liveness
+across the whole board: if nothing on the board carries a fresh observation
+the feed has no opinion and every absentee is kept. On this Aug-14 board no
+game has any split at all, so `witnessUsable` is false and all 13 rows
+survive. That change is committed on the worktree branch and unpushed — it
+was held overnight to keep the board rule stable while FTE-091 was measured,
+and this is the strongest argument yet for landing it.
+
+Worth re-checking after it lands: whether keeping every absentee on a
+splitless far-future board also readmits the `06:50Z` placeholder orphans.
+The vouched-sibling rule runs before the witness and should still catch
+them, but it has not been observed under these conditions.
