@@ -25,6 +25,22 @@ type Game = {
   };
 };
 
+/**
+ * The board the UI actually renders.
+ *
+ * The API serves a pre-materialized board when the request key matches one
+ * (route + sport + league + status + day + limit) and otherwise falls through
+ * to the live projection — and only the materialized path runs the
+ * withdrawn-listing filter. A day-finding query missing `league` therefore
+ * reads a DIFFERENT, unfiltered board from the one the page will render, and
+ * on 2026-08-13 those differed by 2 rows for soccer and 4 for MLB. When the
+ * divergence reaches the whole slate the smoke fails on the release under
+ * test, which is not where the fault is.
+ */
+const boardQuery = (sport: "mlb" | "soccer", day: string) =>
+  `${apiBase}/games?sport=${sport}&league=${sport === "mlb" ? "mlb" : "mls"}` +
+  `&status=scheduled&day=${day}&limit=50`;
+
 async function findProviderGame(
   request: APIRequestContext,
   sport: "mlb" | "soccer",
@@ -32,9 +48,7 @@ async function findProviderGame(
 ) {
   for (let offset = 0; offset <= 21; offset += 1) {
     const day = easternDay(offset);
-    const response = await request.get(
-      `${apiBase}/games?sport=${sport}&status=scheduled&day=${day}`,
-    );
+    const response = await request.get(boardQuery(sport, day));
     expect(response.ok()).toBe(true);
     const body = (await response.json()) as { items?: Game[] };
     const game = body.items?.find(
@@ -55,9 +69,11 @@ async function findEmptyDay(
 ) {
   for (let offset = 30; offset <= 365; offset += 15) {
     const day = easternDay(offset);
-    const response = await request.get(
-      `${apiBase}/games?sport=${sport}&status=scheduled&day=${day}`,
-    );
+    // Same board the page renders, for the same reason as above. The stored
+    // board is a subset of the live projection, so this cannot turn an empty
+    // day into a populated one — but reading one board throughout is what
+    // makes the assertion mean what it says.
+    const response = await request.get(boardQuery(sport, day));
     expect(response.ok()).toBe(true);
     const body = (await response.json()) as { items?: Game[] };
     if ((body.items?.length ?? 0) === 0) return day;
