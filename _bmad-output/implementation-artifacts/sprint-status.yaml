@@ -1,6 +1,6 @@
 project: FIND THE EDGE
 created: "2026-07-15"
-updated: "2026-08-07"
+updated: "2026-08-13"
 source: "_bmad-output/planning-artifacts/epics-and-stories.md"
 statusValues:
   - backlog
@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-070
+nextReadyStory: FTE-075
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -187,10 +187,10 @@ stories:
     league: [mlb, mls]
     module: games-explorer
     priority: P0
-    status: blocked
+    status: done
     dependencies: [FTE-DATA-002, FTE-016]
     validationCommands: [pnpm check, pnpm synth, "pnpm test:e2e"]
-    blockerReason:
+    blockerReason: superseded-by-FTE-MVP-001A1-through-FTE-MVP-001E
     risk: High
     approvalRequiredBeforeMerge: false
   - id: FTE-MVP-001A
@@ -200,10 +200,10 @@ stories:
     league: [mlb, mls]
     module: fixture-odds-store
     priority: P0
-    status: blocked
+    status: done
     dependencies: [FTE-DATA-002]
     validationCommands: [pnpm check, pnpm synth]
-    blockerReason:
+    blockerReason: superseded-by-FTE-MVP-001A1-through-FTE-MVP-001A3
     risk: High
     approvalRequiredBeforeMerge: false
   - id: FTE-MVP-001A1
@@ -485,59 +485,67 @@ stories:
   - id: FTE-008
     title: Cognito Private Authentication Infrastructure
     epic: Authentication and application shell
-    status: backlog
+    status: done
     dependencies: [FTE-007]
     risk: Medium
     approvalRequiredBeforeMerge: true
+    blockerReason: superseded-by-FTE-070-through-FTE-074
   - id: FTE-009
     title: Login, Logout, Session Refresh, and Protected Routes
     epic: Authentication and application shell
-    status: backlog
+    status: done
     dependencies: [FTE-002, FTE-008]
     risk: Medium
     approvalRequiredBeforeMerge: false
+    blockerReason: superseded-by-FTE-070-through-FTE-074
   - id: FTE-010
     title: Password Reset and Session-Expired States
     epic: Authentication and application shell
-    status: backlog
+    status: done
     dependencies: [FTE-009]
     risk: Medium
     approvalRequiredBeforeMerge: false
+    blockerReason: superseded-by-FTE-070-through-FTE-074
   - id: FTE-011
     title: Navigation Shell, Sidebar, Header, and Mobile Nav
     epic: Authentication and application shell
-    status: backlog
+    status: done
     dependencies: [FTE-009]
     risk: Low
     approvalRequiredBeforeMerge: false
+    blockerReason: superseded-by-FTE-070-through-FTE-074
   - id: FTE-012
     title: Authentication Audit Events
     epic: Authentication and application shell
-    status: backlog
+    status: done
     dependencies: [FTE-008, FTE-009]
     risk: Medium
     approvalRequiredBeforeMerge: false
+    blockerReason: superseded-by-FTE-070-through-FTE-074
   - id: FTE-013
     title: Soccer Domain Models and Event Lifecycle
     epic: Sports catalog and event ingestion
-    status: backlog
+    status: done
     dependencies: [FTE-003]
     risk: Medium
     approvalRequiredBeforeMerge: false
+    blockerReason: superseded-and-completed-by-FTE-SPORT-001-FTE-DATA-001-and-FTE-DATA-002
   - id: FTE-014
     title: The Odds API Adapter Foundation and Request Logging
     epic: Sports catalog and event ingestion
-    status: backlog
+    status: done
     dependencies: [FTE-006, FTE-013]
     risk: Medium
     approvalRequiredBeforeMerge: false
+    blockerReason: superseded-and-completed-by-FTE-SPORT-003-and-FTE-DATA-003B-through-FTE-DATA-003D
   - id: FTE-015
     title: Upcoming Soccer Event Ingestion Worker
     epic: Sports catalog and event ingestion
-    status: backlog
+    status: done
     dependencies: [FTE-013, FTE-014, FTE-019]
     risk: High
     approvalRequiredBeforeMerge: false
+    blockerReason: superseded-and-completed-by-FTE-DATA-002
   - id: FTE-016
     title: Event Repository, API, and Pagination
     epic: Sports catalog and event ingestion
@@ -751,14 +759,14 @@ stories:
   - id: FTE-045
     title: Watchlist API Add and Remove
     epic: Watchlist and change tracking
-    status: backlog
+    status: done
     dependencies: [FTE-016]
     risk: Medium
     approvalRequiredBeforeMerge: false
   - id: FTE-046
     title: Watchlist Screen and Empty State
     epic: Watchlist and change tracking
-    status: backlog
+    status: done
     dependencies: [FTE-018, FTE-045]
     risk: Medium
     approvalRequiredBeforeMerge: false
@@ -776,6 +784,7 @@ stories:
     dependencies: [FTE-025, FTE-035, FTE-044]
     risk: High
     approvalRequiredBeforeMerge: false
+    blockerReason: domain-and-storage-core-shipped; API-and-user-flow-remain
   - id: FTE-049
     title: Bet Tracker Screen and Status Filters
     epic: Bet tracker and settlement
@@ -790,6 +799,7 @@ stories:
     dependencies: [FTE-049, FTE-027]
     risk: High
     approvalRequiredBeforeMerge: false
+    blockerReason: settlement-and-audit-storage-core-shipped; API-and-user-flow-remain
   - id: FTE-051
     title: Closing Odds and CLV Integration
     epic: Bet tracker and settlement
@@ -797,6 +807,7 @@ stories:
     dependencies: [FTE-026, FTE-030, FTE-050, FTE-032]
     risk: High
     approvalRequiredBeforeMerge: false
+    blockerReason: platform-closing-lines-and-CLV-shipped; personal-bet-integration-remains
   - id: FTE-052
     title: Performance Aggregates and Screen
     epic: Performance and settings
@@ -849,12 +860,10 @@ stories:
   - id: FTE-059
     title: Production and Staging Environments, Custom Domains, and Branch Deployments
     epic: Reliability, security, and production readiness
-    status: in-progress
+    status: done
     dependencies: [FTE-MVP-001D, FTE-MVP-001E]
     validationCommands: [pnpm check, "pnpm phase1:test", "pnpm phase1:preflight"]
-    blockerReason: >-
-      Tasks 1-4 are complete and staging deploys from main. Task 5 remains:
-      production cutover is approval-gated on live DNS and certificate work.
+    blockerReason:
     risk: High
     approvalRequiredBeforeMerge: true
   - id: FTE-060
@@ -871,7 +880,7 @@ stories:
     league: all
     module: authentication
     priority: P0
-    status: ready
+    status: done
     dependencies: [FTE-001]
     validationCommands: [pnpm check]
     blockerReason:
@@ -883,7 +892,7 @@ stories:
     league: all
     module: authentication
     priority: P0
-    status: backlog
+    status: done
     dependencies: [FTE-070]
     validationCommands: [pnpm check]
     blockerReason:
@@ -895,7 +904,7 @@ stories:
     league: all
     module: billing
     priority: P0
-    status: backlog
+    status: done
     dependencies: [FTE-070]
     validationCommands: [pnpm check]
     blockerReason:
@@ -907,7 +916,7 @@ stories:
     league: all
     module: authentication
     priority: P0
-    status: backlog
+    status: done
     dependencies: [FTE-071, FTE-072]
     validationCommands: [pnpm check]
     blockerReason:
@@ -921,6 +930,176 @@ stories:
     priority: P0
     status: backlog
     dependencies: [FTE-070, FTE-073]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-075
+    title: Cost Attribution Baseline for the Ingestion Table
+    epic: Ingestion cost, measurement, and streaming
+    priority: P0
+    status: ready
+    dependencies: []
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-076
+    title: Collapse Per-Run Control-Plane Bookkeeping
+    epic: Ingestion cost, measurement, and streaming
+    priority: P0
+    status: backlog
+    dependencies: [FTE-075]
+    validationCommands: [pnpm check]
+    blockerReason: per-page-run-read-removal-shipped; remaining-story-acceptance-criteria-open
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-077
+    title: Right-Size Read Consistency in the Control Plane
+    epic: Ingestion cost, measurement, and streaming
+    priority: P0
+    status: backlog
+    dependencies: [FTE-075]
+    validationCommands: [pnpm check]
+    blockerReason: readiness-cache-consistency-relaxed; full-control-plane-audit-remains
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-078
+    title: Verified Cost Reduction Re-Measurement
+    epic: Ingestion cost, measurement, and streaming
+    priority: P0
+    status: backlog
+    dependencies: [FTE-075, FTE-076, FTE-077]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-079
+    title: Spike - SharpAPI Streaming Against the Evidence Contract
+    epic: Ingestion cost, measurement, and streaming
+    priority: P1
+    status: backlog
+    dependencies: [FTE-075]
+    validationCommands: [pnpm check]
+    blockerReason: entitlement-and-single-connection-constraint-confirmed; evidence-contract-spike-remains
+    risk: Low
+    approvalRequiredBeforeMerge: true
+  - id: FTE-080
+    title: Streaming Ingestion Behind a Flag, Polling as Reconciliation
+    epic: Ingestion cost, measurement, and streaming
+    priority: P1
+    status: backlog
+    dependencies: [FTE-079]
+    validationCommands: [pnpm check, "pnpm phase1:preflight"]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-081
+    title: Streaming Cutover and Polling Cadence Reduction
+    epic: Ingestion cost, measurement, and streaming
+    priority: P1
+    status: backlog
+    dependencies: [FTE-080]
+    validationCommands: [pnpm check, "pnpm phase1:preflight"]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-082
+    title: Spike - Game State Feed Shape and Trustworthiness
+    epic: Live game state
+    priority: P0
+    status: backlog
+    dependencies: []
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Low
+    approvalRequiredBeforeMerge: true
+  - id: FTE-083
+    title: Game State Domain Model and Ingestion
+    epic: Live game state
+    priority: P0
+    status: backlog
+    dependencies: [FTE-082]
+    validationCommands: [pnpm check, "pnpm phase1:preflight"]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-084
+    title: Game State as the Lifecycle Witness
+    epic: Live game state
+    priority: P0
+    status: backlog
+    dependencies: [FTE-083]
+    validationCommands: [pnpm check]
+    blockerReason: partial-splits-witness-liveness-fix-shipped; game-state-witness-remains
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-085
+    title: Live Score, Period, Clock, and Possession on the Product
+    epic: Live game state
+    priority: P1
+    status: backlog
+    dependencies: [FTE-083]
+    validationCommands: [pnpm check, "pnpm test:e2e"]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: false
+  - id: FTE-086
+    title: Assisted Bet Settlement from Final Game State
+    epic: Live game state
+    priority: P1
+    status: backlog
+    dependencies: [FTE-083, FTE-050]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-087
+    title: Board Completeness Reconciliation and the Missing-Game Alarm
+    epic: Live game state
+    priority: P0
+    status: backlog
+    dependencies: [FTE-082, FTE-083]
+    validationCommands: [pnpm check, "pnpm phase1:preflight"]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: true
+  - id: FTE-088
+    title: Admit a Game First Seen In Play
+    epic: Live game state
+    priority: P1
+    status: backlog
+    dependencies: [FTE-083, FTE-087]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-089
+    title: Retire the Splits Witness on Evidence
+    epic: Live game state
+    priority: P1
+    status: backlog
+    dependencies: [FTE-084]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Medium
+    approvalRequiredBeforeMerge: true
+  - id: FTE-090
+    title: A Live Row Must Not Fail a Schedule Page
+    epic: Live game state
+    priority: P0
+    status: done
+    dependencies: []
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: Low
+    approvalRequiredBeforeMerge: false
+  - id: FTE-091
+    title: A Future Game Is Not Withdrawn Just Because Its Row Rotated Out
+    epic: Live game state
+    priority: P0
+    status: done
+    dependencies: []
     validationCommands: [pnpm check]
     blockerReason:
     risk: High
