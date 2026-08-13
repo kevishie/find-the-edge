@@ -93,9 +93,49 @@ not the class. Any run that commits evidence and then fails repeatably is
 still exempt from the staleness ceiling forever. Recorded in
 `deferred-work.md`.
 
+## CORRECTION: the fix did not end the outage (2026-08-13 01:20Z)
+
+An earlier revision of this section claimed the wedge "self-healed exactly
+as predicted" after f28696d. **That attribution was wrong**, and the fix's
+own instrumentation is what disproves it: `start-time-conflict` has never
+been emitted in production, so the new omission branch has never executed.
+`OddsNormalizationRejected` is definitely wired — mls reports
+`incomplete-market: 268` over the same window — so the absence is real, not
+a plumbing gap.
+
+The pass timeline across the deploy (cold start with the new code at
+23:15:00Z):
+
+| time | code | outcome |
+|---|---|---|
+| 23:13:36Z | old | failed, start-mismatch, 23 pages |
+| 23:15:00Z | — | INIT_START, new code |
+| 23:15:39, 23:17:54 | new | skipped, provider-recovering (lease) |
+| 23:21:07Z onward | new | **completed**, 23 pages |
+
+So on new code the run completed while omitting nothing. The offending row
+had stopped drifting between 23:13:36 and 23:21:07 — the data changed, not
+the code. The likeliest mechanism is the pre-existing started-guard
+(`pageRetrievedAt >= canonicalStartsAt`) skipping the fixture once its
+canonical start passed, which sits ahead of the drift check.
+
+**What this does and does not change.** The mechanism diagnosis stands —
+throw, retryable, continuation kept, evidence-committed exemption, immortal
+run — and is evidenced by the run/continuation rows and 3,287 writes. The
+fix is still correct and would have prevented a seven-hour outage. But it is
+unproven in production, resting on unit tests alone, and the outage would
+have ended when it did regardless.
+
+**Second throw site, now also fixed.** The first fix covered the two drift
+throws and left a third: an unparseable `canonical.startsAt` still aborted
+the league. That is the same defect class and is now an omit-and-count too.
+An unparseable *page* timestamp still throws, because every event on that
+page would be unjudgeable.
+
 ## Verified on staging after the fix (2026-08-12 23:20Z)
 
-The outage is over and the wedge self-healed, exactly as predicted:
+MLS ingestion did recover, and these observations are accurate — only the
+causal attribution above was wrong:
 
 - the wedged continuation (`…16:05:08.918Z`, version 3431) is **gone**,
   replaced by a fresh run `mls:sharpapi:2026-08-12T23:19:49.106Z` at
@@ -124,14 +164,30 @@ is `odds.state: "unavailable"`:
   reach a board. Not yet investigated; recorded here because it is a
   separate defect from either of the above.
 
-**A likely explanation for why the combined request broke MLS.** The
-combined call adds 166 Leagues Cup rows whose start times come from a
-different catalogue than the canonical events they resolve onto. Any one of
-them drifting past the tolerance would have hit the throw that has now been
-removed — aborting the league on the first such row, keeping the
-continuation, and wedging exactly as observed. That is a hypothesis, not a
-demonstrated cause, but it fits the evidence better than the three suspects
-above and it means the blocker to re-enabling may already be gone.
+**REFUTED 2026-08-13: start drift is not why the combined request broke
+MLS.** The hypothesis was that the combined call's Leagues Cup rows carry
+start times disagreeing with the canonical events they resolve onto, and
+that one drifting past tolerance hit the throw. Measured directly by
+capturing the live `leagues_cup` catalogue (390 rows, 2 pages) and comparing
+each fixture against the canonical start our own board serves:
+
+| fixture | canonical | leagues_cup | drift |
+|---|---|---|---|
+| intermiami_leon | 23:30:00Z | 23:30:00Z | 0 |
+| orlandocity_sanluis | 23:30:00Z | 23:30:00Z | 0 |
+| monterrey_nashville | 00:10:00Z | 00:00:00Z | 10 min |
+| puebla_sandiego | 02:25:00Z | 02:15:00Z | 10 min |
+| …8 more | | | 0 |
+
+**12 of 12 matched, 0 beyond the 15-minute tolerance**, worst case 10
+minutes. The two catalogues agree on kickoff. Whatever the combined request
+broke, it was not this, and the blocker to re-enabling is NOT removed.
+
+Four suspects are now eliminated: quota, `expectedProviderEvents`,
+page-count explosion, and start drift. The next attempt should instrument
+the combined path itself rather than reason about it — the lesson of this
+spec is that every theory tested so far has been wrong, and the only
+progress came from reading run rows and measuring feeds directly.
 
 Do not re-enable the combined request without an assertion that MLS still
 completes.

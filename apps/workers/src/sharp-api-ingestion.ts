@@ -626,11 +626,17 @@ export async function persistSharpApiOddsPage(
     if (!canonical) throw new Error("sharpapi-event-binding-unavailable");
     const canonicalStartsAt = Date.parse(canonical.startsAt);
     const pageRetrievedAt = Date.parse(eventRetrievedAt);
-    if (
-      !Number.isFinite(canonicalStartsAt) ||
-      !Number.isFinite(pageRetrievedAt)
-    )
+    // An unreadable page timestamp is the page's problem and fails it: every
+    // event on the page would be unjudgeable. An unreadable canonical start is
+    // one corrupt event, so it is omitted and counted on the same reasoning as
+    // the drift check below — a single bad row must never abort a league.
+    if (!Number.isFinite(pageRetrievedAt))
       throw new Error("sharpapi-odds-mapping-start-mismatch");
+    if (!Number.isFinite(canonicalStartsAt)) {
+      rejectionCounts["start-time-conflict"] =
+        (rejectionCounts["start-time-conflict"] ?? 0) + 1;
+      continue;
+    }
     // SharpAPI's featured endpoint can retain a completed game's final
     // pregame board after first pitch/kickoff. The immutable odds adapter is
     // intentionally fenced to scheduled pregame evidence, so omit the whole
