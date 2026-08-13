@@ -829,3 +829,52 @@ culled. Every transition observed so far is on a STARTED game, where leaving
 a `live=false` catalogue is ordinary; the discriminating case for FTE-091 is
 a PREGAME row leaving, and none has been seen yet. The sampler tags phase
 explicitly so those are not buried in post-start churn.
+
+## The soccer explorer shows zero priced games while the API serves five (OPEN, 2026-08-13)
+
+The staging deploy has failed twice on the same smoke assertion — the soccer
+leg of `real hosted bundle loads provider MLB and MLS games by day`. Runs
+31663922673 (69a77da) and 31668997041 (1a7f8ae), the first of them a
+docs-only commit.
+
+**Not caused by FTE-090/FTE-091.** Both are server-side, and bb81e53
+deployed green after they were already live. The failing behaviour is in the
+web client.
+
+Reproduced locally against staging with the hosted smoke, then narrowed with
+a browser probe. For `2026-08-13`:
+
+- The page requests exactly the right URL —
+  `/games?sport=soccer&league=mls&status=all&day=2026-08-13&limit=50` — and
+  the browser receives **7 items, 5 of them `odds.state: "available"` with
+  3–7 selections each** (Leagues Cup: Santos Laguna, Necaxa, Club América,
+  Cruz Azul, Tijuana). The other two are the `mls+` pollution rows.
+- The explorer renders **0 rows** and the Soccer pill reads **0**.
+- Selecting MLB instead, the Soccer pill is **absent entirely**, which the
+  rail does only when the other sport has zero priced items. Both the
+  `baseItems` and `otherSportItems` paths therefore see zero.
+- No console error, no page error, no error banner. MLB renders 9 on the
+  same page load.
+
+Eliminated:
+
+- `collapseNearDuplicateGames` — run directly against the captured payload,
+  it returns all 7 items with all 5 priced.
+- A parse rejection — `parsePage` throws rather than dropping, and a throw
+  would surface the error banner, which is absent.
+- The query key — the browser's own request is the full materialized-board
+  key, verified by interception.
+
+So `hasLines` (`odds.state === "available" && selections.length > 0`) is
+returning false for items that satisfy it in the response body. That is a
+contradiction and it is not resolved.
+
+The most promising untested explanation: **the deployed bundle may be older
+than the source.** The last two deploys FAILED, and a failed run can still
+have deployed infrastructure while the smoke verdict fails the job — so the
+web bundle on staging may not correspond to main. Check the deployed
+`ReleaseSha` against `origin/main` before reading any more source.
+
+Worth noting for the product record: soccer has been written up repeatedly
+as "unpriced". On this evidence the API is serving prices and the client is
+discarding them, which is a different problem with a different fix.
