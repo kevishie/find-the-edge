@@ -1335,6 +1335,17 @@ export function planReleaseRollback(snapshot, current) {
   };
 }
 
+/**
+ * Whether a failed launch should restore the previous web release.
+ *
+ * Deliberately opt-in. The rollback is correct for an environment with real
+ * users and self-defeating for one whose smoke is failing on a client bug,
+ * because it deletes the bundle that fixes it.
+ */
+export function rollbackOnFailureEnabled(environment = process.env) {
+  return environment.FTE_ROLLBACK_WEB_ON_FAILURE === "1";
+}
+
 function restoreRelease(snapshot, outputs, environment) {
   const current = releaseSnapshot(outputs.WebAssetsBucketName, environment);
   const plan = planReleaseRollback(snapshot, current);
@@ -1810,10 +1821,30 @@ export async function phase1Launch(environment = process.env) {
     });
     return { webOrigin: outputs.WebOrigin, outputs };
   } catch (primaryFailure) {
-    try {
-      restoreRelease(snapshot, outputs, deployEnvironment);
-    } catch (rollbackFailure) {
-      throw combineLaunchAndRollbackFailures(primaryFailure, rollbackFailure);
+    // Rolling the web bundle back on a failed smoke deadlocks any fix the
+    // smoke itself is failing on: the bundle carrying the fix is uploaded,
+    // the smoke fails because the fix is not yet live everywhere it checks,
+    // and the rollback then deletes the fix. Observed 2026-08-13 — the
+    // correct bundle went up at 19:45:15 and was replaced by the previous
+    // release at 19:46:18, three deploys running, so no client-side fix could
+    // ever reach staging.
+    //
+    // Off by default while no one is using production. Turn it on before real
+    // traffic by setting FTE_ROLLBACK_WEB_ON_FAILURE=1 — a failed smoke will
+    // then restore the previous release, and a fix the smoke gates on will
+    // need a deliberate override.
+    if (rollbackOnFailureEnabled(deployEnvironment)) {
+      try {
+        restoreRelease(snapshot, outputs, deployEnvironment);
+      } catch (rollbackFailure) {
+        throw combineLaunchAndRollbackFailures(primaryFailure, rollbackFailure);
+      }
+    } else {
+      process.stdout.write(
+        "Web release rollback is DISABLED " +
+          "(FTE_ROLLBACK_WEB_ON_FAILURE is not 1). The uploaded bundle stays " +
+          "live despite the failure above.\n",
+      );
     }
     throw primaryFailure;
   }

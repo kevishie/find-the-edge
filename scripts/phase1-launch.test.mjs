@@ -9,6 +9,7 @@ import {
   assertDeployedOutputBindings,
   combineLaunchAndCleanupFailures,
   combineLaunchAndRollbackFailures,
+  rollbackOnFailureEnabled,
   classifyReleaseVerificationFailure,
   cleanupTemporaryLaunch,
   deployStagedDynamoGsiUpdates,
@@ -1319,5 +1320,26 @@ test("deployed output bindings require exact physical resources and distribution
       ...distribution,
       DomainName: "wrong.cloudfront.net",
     }),
+  );
+});
+
+test("web release rollback is opt-in", () => {
+  // A failed smoke used to restore the previous web release, which deletes the
+  // very bundle that fixes whatever the smoke is failing on. Measured on
+  // 2026-08-13: the correct bundle was uploaded at 19:45:15 and replaced by
+  // the previous release at 19:46:18, so no client-side fix could reach
+  // staging across three consecutive deploys.
+  assert.equal(rollbackOnFailureEnabled({}), false);
+  assert.equal(
+    rollbackOnFailureEnabled({ FTE_ROLLBACK_WEB_ON_FAILURE: "0" }),
+    false,
+  );
+  assert.equal(
+    rollbackOnFailureEnabled({ FTE_ROLLBACK_WEB_ON_FAILURE: "true" }),
+    false,
+  );
+  assert.equal(
+    rollbackOnFailureEnabled({ FTE_ROLLBACK_WEB_ON_FAILURE: "1" }),
+    true,
   );
 });

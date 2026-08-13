@@ -93,6 +93,19 @@ Do not promote a revision to `production` until staging proves the exact custom 
 
 ## Rollback
 
+**Automatic web rollback is currently OFF.** A failed launch used to restore
+the prior S3 release, which deadlocks any client-side fix the smoke is
+failing on: the bundle carrying the fix uploads, the smoke fails because the
+bug is still live, and the rollback deletes the fix. Measured on 2026-08-13 —
+the correct bundle went up at 19:45:15 and was replaced by the previous
+release at 19:46:18, across three consecutive deploys, so no client fix could
+reach staging at all. The CDK stack is not rolled back, which is why
+server-side changes landed while client-side ones silently did not.
+
+Re-enable it before production carries real traffic by setting
+`FTE_ROLLBACK_WEB_ON_FAILURE=1` in the deploy environment. With it on, a fix
+that the smoke itself gates on needs a deliberate override to ship.
+
 Application rollback restores the prior versioned S3 release, waits for CloudFront invalidation, and leaves retained data untouched. Infrastructure rollback uses a reviewed CDK/CloudFormation change and must pass the retained-resource guard.
 
 DNS rollback restores the captured prior apex and API records with their prior values and TTLs. If authoritative name servers were migrated, restore the prior registrar delegation only from the approved snapshot and confirm all unrelated records still resolve. A failed production smoke is not permission to delete DynamoDB, Cognito, S3, logs, secrets, queues, or immutable odds history.
