@@ -1214,13 +1214,25 @@ cursor to the games.** `exhaustPages` parses each page as it arrives, and
 `parsePage` refuses an empty page with a non-null freshness — verified by
 replaying that page alone.
 
-Page 1 is served by `loadStoredBoard` (it has no cursor); page 2 has a cursor
-and falls through to the live repository. Both repository reducers
-(`dynamodb-event-repository.ts:180-186`, `:316-322`) correctly yield `null`
-freshness on an empty result, and `withoutWithdrawnListings` recomputes to
-`null` when it empties a page — so neither obvious path explains a stored
-board body holding 0 items and a non-null freshness. Reading the `BOARD#`
-partition body directly would settle it; blocked on expired AWS credentials.
+Where it is NOT coming from, each ruled out by evidence rather than reading:
+
+- **The stored board and the whole-response cache.** Both are keyed on
+  `limit`. Requesting the same day at `limit` 50, 49, 48 and 25 returns a
+  byte-identical envelope — same 0 items, same
+  `freshness: 2026-08-13T03:59:51.249Z`, same cursor. A stored board
+  materialised at limit 50 cannot serve limit 25, so this is computed live.
+- **Both repository reducers.** `dynamodb-event-repository.ts:180-186` and
+  `:316-322` build `items` and `freshness` from the same array
+  (`accepted.map(...)` / `taken.map(...)`, then
+  `accepted.length ? ... : null`). They are structurally incapable of
+  returning 0 items with a non-null freshness.
+- **`withoutWithdrawnListings`.** It recomputes to `null` when it empties a
+  page, and it does not run on the API read path at all.
+
+So something between the repository and the served response is unaccounted
+for, and black-box probing has run out of room. The decisive evidence is
+server-side: the `BOARD#` partition body, or a log of what `list` actually
+returned for this key. Blocked on expired AWS credentials.
 
 Note also the envelope: `evaluationState: "complete"` and
 `hasMoreUnknown: false` alongside a cursor. The client tolerates that
