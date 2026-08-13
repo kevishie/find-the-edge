@@ -683,9 +683,18 @@ below), so the documented recovery was applied instead: deleted
 `backup-continuation.json` / `backup-health.json` in the session scratchpad.
 
 Result: `sharpapi:mlb:splits` went healthy within ~5 minutes (lastOk
-2026-08-13T02:18:11Z). **This is a hand recovery, not a fix.** Production
-still lacks the aged-run abandonment, so it will re-poison. The permanent
-fix is the promotion.
+2026-08-13T02:18:11Z), and the **2026-08-13** board was serving observations
+five minutes old shortly after, across 8 of its 14 games.
+
+Read the right day when checking this. The 2026-08-12 board still showed
+06:27Z evidence and looked unrecovered, but every game on it had finished
+and the splits feed only publishes for upcoming games — those observations
+are the closing splits and correctly never move again. Confirmed directly:
+`BETTING_SPLIT#…orioles_twins…` holds 24 CURRENT rows, newest 06:31Z, for a
+game that started at 17:40Z. A finished day is not a frozen feed.
+
+**This is a hand recovery, not a fix.** Production still lacks the aged-run
+abandonment, so it will re-poison. The permanent fix is the promotion.
 
 ### Promotion is still blocked, and CI would not have caught it
 
