@@ -461,7 +461,11 @@ describe("withdrawn listings", () => {
     expect(filtered.items).toHaveLength(1);
   });
 
-  it("drops a future listing the provider no longer has", async () => {
+  it("drops a future listing the provider no longer has and nothing vouches for", async () => {
+    // This case previously used withSplits and still expected a drop. That
+    // pinned an unconditional rule which, on 2026-08-12, deleted two real
+    // games three hours before first pitch. A future absentee is now judged
+    // by the same witness as a started one; with no witness it still goes.
     const page = {
       items: [
         game(
@@ -476,7 +480,93 @@ describe("withdrawn listings", () => {
       schedule: [],
       now: NOON,
       splitsExpected: true,
+      hasSplitEvidence: noSplits,
+    });
+    expect(filtered.items).toHaveLength(0);
+  });
+
+  it("keeps a future game the catalogue rotated out while splits still carry it", async () => {
+    // 2026-08-12: SharpAPI's MLB /events catalogue returned 416 rows for the
+    // day and not one clean full-game row for either 22:10 Eastern game —
+    // only Player Props, Kalshi binaries, and empty-participant rows, all of
+    // which the parser correctly refuses. The splits feed published for both
+    // on the same pass as every retained game.
+    const page = {
+      items: [
+        game(
+          "event:mlb%3Amlb:mlb_rangers_angels_2026-08-08_b3",
+          "2026-08-08T23:10:00.000Z",
+          ["Texas Rangers", "Los Angeles Angels"],
+        ),
+        game(
+          "event:mlb%3Amlb:mlb_royals_dodgers_2026-08-08_b3",
+          "2026-08-08T23:10:00.000Z",
+          ["Kansas City Royals", "Los Angeles Dodgers"],
+        ),
+      ],
+      freshness: null as string | null,
+    };
+    const filtered = await withoutWithdrawnListings(page, {
+      schedule: [
+        listing("Chicago Cubs", "Washington Nationals", "2026-08-08T22:45:00Z"),
+      ],
+      now: NOON,
+      splitsExpected: true,
       hasSplitEvidence: withSplits,
+    });
+    expect(filtered.items.map(({ id }) => id)).toEqual([
+      "event:mlb%3Amlb:mlb_rangers_angels_2026-08-08_b3",
+      "event:mlb%3Amlb:mlb_royals_dodgers_2026-08-08_b3",
+    ]);
+  });
+
+  it("still drops a churned future orphan whose sibling the provider vouches for", async () => {
+    // The witness cannot save this one: splits attach by participants and day,
+    // so the orphan inherits the real game's. The vouched sibling decides.
+    const page = {
+      items: [
+        game(
+          "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b0",
+          "2026-08-08T22:50:00.000Z",
+          ["Athletics", "Boston Red Sox"],
+        ),
+        game(
+          "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b2",
+          "2026-08-08T23:10:00.000Z",
+          ["Athletics", "Boston Red Sox"],
+        ),
+      ],
+      freshness: null as string | null,
+    };
+    const filtered = await withoutWithdrawnListings(page, {
+      schedule: [
+        listing("Oakland Athletics", "Boston Red Sox", "2026-08-08T23:10:00Z"),
+      ],
+      now: NOON,
+      splitsExpected: true,
+      hasSplitEvidence: withSplits,
+    });
+    expect(filtered.items.map(({ id }) => id)).toEqual([
+      "event:mlb%3Amlb:mlb_athletics_redsox_2026-08-08_b2",
+    ]);
+  });
+
+  it("leaves a future absentee dropped in a league with no split witness", async () => {
+    const page = {
+      items: [
+        game(
+          "event:soccer%3Amls:mls_future_phantom_2026-08-08_b1",
+          "2026-08-08T23:59:00.000Z",
+          ["Inter Miami", "LA Galaxy"],
+        ),
+      ],
+      freshness: null as string | null,
+    };
+    const filtered = await withoutWithdrawnListings(page, {
+      schedule: [],
+      now: NOON,
+      splitsExpected: false,
+      hasSplitEvidence: noSplits,
     });
     expect(filtered.items).toHaveLength(0);
   });

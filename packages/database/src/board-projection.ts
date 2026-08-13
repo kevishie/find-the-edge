@@ -152,7 +152,20 @@ export const withoutWithdrawnListings = async <
     const startsInFuture =
       Date.parse(game.startsAt) >
       options.now.getTime() + PRE_START_IN_PLAY_GRACE_MS;
-    if (startsInFuture) continue; // a future listing the provider no longer has
+    // A future absentee used to be dropped here outright, on no evidence at
+    // all. That rule has hidden real games twice: 9b98b3f caught it three
+    // minutes before first pitch and bought a fifteen-minute grace window,
+    // and on 2026-08-12 it deleted both 22:10 Eastern games more than three
+    // hours out. The grace window was sized to a symptom. The cause is that
+    // the provider rotates full-game rows out of its /events catalogue at
+    // arbitrary lead times and leaves the props and binaries behind, so
+    // absence from that catalogue is not evidence of withdrawal — and odds
+    // cannot arbitrate, because they are collected from the same catalogue
+    // and freeze with it. The splits feed is separate and kept publishing for
+    // both games on the same pass as every retained game, so where a witness
+    // exists a future absentee is judged by it, exactly like a started one.
+    // Leagues without split coverage have no witness and are unchanged.
+    if (startsInFuture && !options.splitsExpected) continue;
     if (!options.splitsExpected) {
       // In-play games leave the schedule feed; without a splits witness this
       // league cannot distinguish them from a withdrawn listing, so keep.
