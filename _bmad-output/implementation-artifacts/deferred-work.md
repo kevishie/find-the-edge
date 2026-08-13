@@ -609,3 +609,33 @@ Not yet established: how long a full-game row stays out of the catalogue,
 and whether the rotation correlates with first pitch approaching. Both
 matter for choosing the bounded window in FTE-091 and are worth sampling
 across a full day before that story is written into code.
+
+## The derivative-label filter does not catch a "+" catalogue (found 2026-08-13)
+
+`derivativeLabelKind` (`packages/providers/src/sharp-api.ts:279`) recognises
+player props, period markets, team totals and awards, but not a trailing `+`
+on both participants. On 2026-08-12 six `mls+_*` listings — "Rapids +",
+"Earthquakes +" — passed the filter, were bootstrapped as canonical events,
+and sat on the MLS board beside the real fixtures.
+
+They are gone now: the catalogue no longer appears in the odds feed and the
+rows aged past the withdrawn-listing cutoff, so this was transient and
+self-correcting rather than an outage. Recorded because the filter gap is
+real and the provider has re-published pollution catalogues before. The
+cheap fix is a `+`-suffix rule; the better one is to reject a schedule row
+whose provider league is not the one we asked for, since `mls+` is a
+catalogue name, not a team name.
+
+## Alarms latch and never clear, so the alarm panel does not mean anything (found 2026-08-13)
+
+Thirteen alarms were in ALARM across dev, staging and prod at 02:40Z. Several
+are genuine and were: FixtureOddsProjection errors and DLQ on both staging and
+prod, and SportPricelessBoardAlarm[soccer], which had correctly caught the
+unpriced board since 08-12 07:59.
+
+But `OddsSplitFailureAlarm` sits in ALARM on all three environments off a
+single datapoint at 2026-08-09 17:37 and has never returned to OK. A panel
+where a four-day-old transient looks identical to a live outage is a panel
+nobody reads, which is how a lambda failed 100% of its invocations for six
+days with its own alarm already red. Worth an explicit look at
+`treatMissingData` and the evaluation windows.
