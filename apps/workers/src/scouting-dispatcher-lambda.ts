@@ -207,7 +207,9 @@ export const createScoutingDispatcherHandler = (
 };
 
 let runtime: SQSHandler | undefined;
-export const handler: SQSHandler = (event, context, callback) => {
+// Two parameters, never three: Lambda reads the declared arity and Node 24
+// refuses a callback-style handler outright. See fixture-odds-projection-lambda.
+export const handler: SQSHandler = async (event) => {
   if (!runtime) {
     const stateMachineArn = process.env["FTE_SCOUTING_STATE_MACHINE_ARN"] ?? "";
     const tableName = process.env["FTE_EVENT_TABLE"] ?? "";
@@ -222,5 +224,5 @@ export const handler: SQSHandler = (event, context, callback) => {
       ),
     );
   }
-  return runtime(event, context, callback);
+  return runtime(event, undefined as never, undefined as never);
 };

@@ -18,13 +18,23 @@ import {
   type ScoutingWorkflowResult,
 } from "./scouting-workflow";
 
+/**
+ * What the factory actually returns: a plain async function of the event.
+ * Declaring it as `Handler` was a lie that mattered — `Handler`'s call
+ * signature carries the callback parameters, which pushed the exported
+ * handler to an arity Lambda refuses to boot under Node 24.
+ */
+export type ScoutingWorkflowRuntime = (
+  event: unknown,
+) => Promise<ScoutingWorkflowResult>;
+
 export const createScoutingWorkflowHandler = (
   repository: Pick<ScoutingJobRepository, "claimAttempt" | "finishAttempt">,
   reports: ScoutingWorkflowReportStore,
   fixture?: ScoutingFixtureWorkflow,
   now?: () => string,
   metricSink: ScoutingWorkflowMetricSink = scoutingWorkflowMetrics,
-): Handler<unknown, ScoutingWorkflowResult> => {
+): ScoutingWorkflowRuntime => {
   const run = createScoutingWorkflow(
     repository,
     reports,
@@ -98,11 +108,11 @@ const parseFailureFinalizer = (
   return Object.freeze(value as unknown as ScoutingFailureFinalizer);
 };
 
-let runtime: Handler<unknown, ScoutingWorkflowResult> | undefined;
-export const handler: Handler<unknown, ScoutingWorkflowResult> = (
+let runtime: ScoutingWorkflowRuntime | undefined;
+// Two parameters, never three: Lambda reads the declared arity and Node 24
+// refuses a callback-style handler outright. See fixture-odds-projection-lambda.
+export const handler: Handler<unknown, ScoutingWorkflowResult> = async (
   event,
-  context,
-  callback,
 ) => {
   if (!runtime) {
     const tableName = process.env["FTE_EVENT_TABLE"] ?? "";
@@ -113,5 +123,5 @@ export const handler: Handler<unknown, ScoutingWorkflowResult> = (
       new DynamoScoutingReportRepository(client, tableName),
     );
   }
-  return runtime(event, context, callback);
+  return runtime(event);
 };

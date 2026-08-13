@@ -144,10 +144,19 @@ const runtimeHandler = tableName
     )
   : undefined;
 
-export const handler: DynamoDBStreamHandler = (event, context, callback) => {
+/**
+ * Two parameters, never three. Lambda decides a handler is callback-based by
+ * how many parameters it DECLARES, and Node 24 removed callback support — so a
+ * third parameter here stops the function booting at all, on every invocation,
+ * with `Runtime.CallbackHandlerDeprecated` before any of this code runs.
+ *
+ * That is not hypothetical: this function failed 2,312,637 of 2,312,637
+ * invocations over the two days to 2026-08-13, with its errors and DLQ alarms
+ * in ALARM since 08-07, because the parameter below was declared and unused.
+ * The inner handler is async and ignores both context and callback.
+ */
+export const handler: DynamoDBStreamHandler = async (event) => {
   if (!runtimeHandler)
-    return Promise.reject(
-      new Error("fixture-odds-projection-configuration-invalid"),
-    );
-  return runtimeHandler(event, context, callback);
+    throw new Error("fixture-odds-projection-configuration-invalid");
+  return runtimeHandler(event, undefined as never, undefined as never);
 };
