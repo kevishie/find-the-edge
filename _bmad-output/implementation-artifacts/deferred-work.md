@@ -1071,3 +1071,56 @@ But zero of 118 is still a statement: by the smoke's definition, not one
 served game currently carries a complete market board. Whether that is a
 recent regression or long-standing is unknown; the metric is only printed,
 never trended.
+
+## RESOLVED: the soccer board was thrown away by a 64-character bound
+
+Root cause of the entry above ("The soccer explorer shows zero priced games
+while the API serves five"), and of the intermittent hosted-smoke failures.
+
+`validGame` bounded `selectionKey` at 64 characters
+(`apps/web/src/api.ts`). A participant selection key is `participant:` +
+`encodeURIComponent(participant id)`, and participant ids are bounded at 512
+in the same validator — encoding can triple a string, so 64 could never hold
+what the field is defined to contain. It held for MLB by accident: those club
+keys are single words. Soccer club ids contain spaces, each space
+double-encodes to `%2520`.
+
+Measured on staging 2026-08-13:
+
+| | selection keys over 64 chars |
+| --- | --- |
+| soccer | **6 of 23** — "Philadelphia Union" 65, "New York City FC" 71 |
+| MLB | **0 of 54** |
+
+One over-length key failed `validSelection`, which failed `validGame`, which
+made `parsePage` throw the entire page. Hence zero rows, a Soccer pill of 0,
+and no error naming a cause. Fixed in 3974097; the bound now derives from the
+id bound it carries.
+
+Two dead ends worth recording so nobody repeats them. Double-encoding is NOT
+the bug — MLB keys are double-encoded too and validate fine, it is the normal
+convention. And substituting individual fields between a good MLB row and a
+bad soccer row proves nothing, because the validator cross-checks fields:
+every substitution fails for a manufactured reason. The MLB control payload
+through the identical harness is what made the result trustworthy.
+
+### Two earlier claims this corrects
+
+- The previous entry concluded with an unresolved contradiction — "hasLines
+  is false for items that satisfy it in the response body" — and said no
+  error banner was present. **That was wrong.** The page did render "The
+  games response was invalid."; the probe searched for the generic
+  "temporarily unavailable" string and for `role=status`, and this error uses
+  neither. The contradiction was an artefact of looking for the wrong text.
+- Soccer has been recorded repeatedly as "unpriced" — 2026-08-11 and
+  2026-08-12 entries both frame it that way, and the MLS work chased
+  ingestion. **The prices were arriving.** The client discarded them. Any
+  conclusion drawn from "soccer is unpriced" between those dates deserves
+  re-examination.
+
+### Still open
+
+The smoke's soccer leg is skipped entirely when `findProviderGame` finds no
+priced soccer day, which is why this failed intermittently rather than every
+run. A check that silently skips is a check that cannot be trusted to have
+run — worth making the skip visible in the smoke output.
