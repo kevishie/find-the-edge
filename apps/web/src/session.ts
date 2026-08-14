@@ -5,7 +5,12 @@ import {
   useSyncExternalStore,
 } from "react";
 
-import { GamesClientError, isAccountId, isSessionToken } from "./api";
+import {
+  GamesClientError,
+  isAccountId,
+  isSessionToken,
+  type OwnedSessionAuthorization,
+} from "./api";
 
 /**
  * The client half of our own identity (FTE-071). The token is persisted in
@@ -164,6 +169,49 @@ export interface SessionStore {
   readonly authorize: () => Promise<string | null>;
 }
 
+export type ProductAccessRefusal = "authentication" | "payment-required";
+
+/**
+ * Authentication refusals belong to an exact token. Payment refusals belong
+ * to an account, because routine token refresh must not erase an entitlement
+ * decision while an account switch must not leak it to the next reader.
+ */
+export const createProductRefusalHandler =
+  (
+    store: SessionStore,
+    navigation: {
+      readonly currentPath: () => string;
+      readonly navigate: (path: string) => void;
+    },
+  ) =>
+  (
+    rejectedSession: OwnedSessionAuthorization | null,
+    reason: ProductAccessRefusal,
+  ): void => {
+    const current = store.getSnapshot();
+    if (reason === "authentication") {
+      if (
+        rejectedSession === null
+          ? current !== null
+          : current?.token !== rejectedSession.token
+      )
+        return;
+      const returnPath = safeReturnPath(navigation.currentPath());
+      store.signOut();
+      navigation.navigate(
+        `${LOGIN_PATH}?returnUrl=${encodeURIComponent(returnPath)}`,
+      );
+      return;
+    }
+    if (
+      rejectedSession === null ||
+      current?.accountId !== rejectedSession.accountId ||
+      navigation.currentPath().split(/[?#]/u, 1)[0] === SUBSCRIBE_PATH
+    )
+      return;
+    navigation.navigate(SUBSCRIBE_PATH);
+  };
+
 const readStorage = (storage: Storage | null): string | null => {
   try {
     return storage?.getItem(SESSION_STORAGE_KEY) ?? null;
@@ -200,7 +248,10 @@ export function createSessionStore(
   const now = options.now ?? (() => Date.now());
   let refresher: SessionRefresher | null = options.refresh ?? null;
   let current: Session | null = null;
-  let inFlight: Promise<string | null> | null = null;
+  let inFlight: {
+    readonly sourceToken: string;
+    readonly promise: Promise<string | null>;
+  } | null = null;
   const listeners = new Set<() => void>();
 
   const notify = () => {
@@ -288,12 +339,17 @@ export function createSessionStore(
   const renew = async (session: Session): Promise<string | null> => {
     const refresh = refresher;
     if (!refresh) return session.token;
+    const isStillCurrent = () => current?.token === session.token;
     const controller = new AbortController();
     try {
       const renewed = await refresh(session.token, controller.signal);
+      if (!isStillCurrent()) return null;
       save(renewed);
       return current?.token ?? null;
     } catch (error) {
+      // Sign-in or cross-tab replacement owns the store now. The old request
+      // may settle, but it has no authority to save, clear, or authorize.
+      if (!isStillCurrent()) return null;
       // A refused refresh is terminal: the session is cleared once and the
       // reader is signed out. Retrying a rejection is the loop this story
       // forbids.
@@ -308,7 +364,7 @@ export function createSessionStore(
       // valid for now; the next attempt is the caller's own.
       return session.token;
     } finally {
-      inFlight = null;
+      if (inFlight?.sourceToken === session.token) inFlight = null;
     }
   };
 
@@ -343,9 +399,11 @@ export function createSessionStore(
       }
       if (remaining > SESSION_REFRESH_LEAD_MS)
         return Promise.resolve(session.token);
-      // Concurrent callers share one renewal rather than racing the server.
-      inFlight ??= renew(session);
-      return inFlight;
+      // Concurrent callers for one token share renewal. A replacement token
+      // starts its own request instead of inheriting the previous account's.
+      if (inFlight?.sourceToken !== session.token)
+        inFlight = { sourceToken: session.token, promise: renew(session) };
+      return inFlight.promise;
     },
   };
 }
