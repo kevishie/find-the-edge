@@ -65,5 +65,6 @@ export * from "./board-projection";
 export * from "./bet-repository.js";
 export * from "./watchlist-repository";
 export * from "./identity-repository";
+export * from "./identity-authorization-repository.js";
 export * from "./entitlement-repository";
 export * from "./dynamo-capacity-attribution";

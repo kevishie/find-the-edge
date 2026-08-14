@@ -557,6 +557,7 @@ describe("foundation CDK app", () => {
       "POST /auth/otp/request",
       "POST /auth/otp/verify",
       "POST /auth/session/refresh",
+      "GET /auth/session/capabilities",
       "POST /billing/webhook",
       "GET /billing/entitlement",
       "POST /billing/checkout",
@@ -574,6 +575,47 @@ describe("foundation CDK app", () => {
       expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
       expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
+    // The owned capabilities projection is additive. The four elevated write
+    // routes remain on their exact Cognito scopes until the later cutover.
+    for (const [routeKey, scope] of [
+      [
+        "POST /retrospectives/{eventId}/review",
+        "events/retrospectives:approve",
+      ],
+      [
+        "POST /strategy-experiments/{eventId}/approve",
+        "events/strategies:promote",
+      ],
+      [
+        "POST /strategy-experiments/{eventId}/promote",
+        "events/strategies:promote",
+      ],
+      [
+        "POST /strategy-experiments/{eventId}/rollback",
+        "events/strategies:promote",
+      ],
+    ]) {
+      const matches = Object.values(resources).filter(
+        (resource) =>
+          resource.Type === "AWS::ApiGatewayV2::Route" &&
+          resource.Properties?.["RouteKey"] === routeKey,
+      );
+      expect(matches).toHaveLength(1);
+      expect(matches[0]?.Properties).toEqual(
+        expect.objectContaining({
+          AuthorizationType: "JWT",
+          AuthorizationScopes: [scope],
+        }),
+      );
+      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeDefined();
+    }
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({
+          FTE_PRODUCT_ACCESS_ENFORCED: "false",
+        }),
+      },
+    });
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
         Statement: Match.arrayWith([

@@ -6,6 +6,7 @@ export * from "./clv.js";
 export * from "./entitlement.js";
 export * from "./fixture-odds.js";
 export * from "./identity.js";
+export * from "./identity-authorization.js";
 export * from "./stripe-signature.js";
 export * from "./odds-history.js";
 export * from "./paper-evaluation.js";

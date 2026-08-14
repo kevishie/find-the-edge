@@ -1,9 +1,14 @@
 import {
+  IDENTITY_AUTHORIZATION_CAPABILITIES,
+  identityAuthorizationCapabilities,
   SESSION_TOKEN_MAX_LENGTH,
   verifySessionToken,
   type SessionKeyRing,
 } from "@find-the-edge/domain";
-import type { IdentityRepository } from "@find-the-edge/database";
+import type {
+  IdentityAuthorizationRepository,
+  IdentityRepository,
+} from "@find-the-edge/database";
 
 /**
  * The shape the HTTP adapter already supplies to product handlers. Keeping
@@ -18,7 +23,7 @@ export interface HandlerAuthorizationContext {
 }
 
 /** Product scopes an ordinary signed-in account owns. Elevated workflow
- * scopes are deliberately absent and need a future server-owned role model. */
+ * scopes stay absent until a server-owned role record is requested. */
 export const OWNED_SESSION_SCOPES = Object.freeze([
   "events/events:read",
   "events/scouting:read",
@@ -124,6 +129,12 @@ export interface OwnedSessionAuthorizationInput {
   readonly authorization?: string;
   readonly signingKeys: SessionKeyRing;
   readonly identity: Pick<IdentityRepository, "getAccount">;
+  /**
+   * Elevated authority has a separate server-owned source. Ordinary product
+   * routes omit this flag and therefore do not pay for or trust a role read.
+   */
+  readonly includeElevatedAuthorization?: boolean;
+  readonly identityAuthorization?: Pick<IdentityAuthorizationRepository, "get">;
   readonly now: Date;
 }
 
@@ -157,10 +168,50 @@ export async function resolveOwnedSessionAuthorization(
     account.tokenVersion !== verification.payload.tokenVersion
   )
     return null;
+  if (!input.includeElevatedAuthorization)
+    return {
+      subject: account.accountId,
+      scopes: OWNED_SESSION_SCOPES,
+      reviewerAuthorized: false,
+      strategyPromoterAuthorized: false,
+    };
+  if (!input.identityAuthorization)
+    throw new Error("owned-session-authorization-unavailable");
+  let authorizationRecord: Awaited<
+    ReturnType<IdentityAuthorizationRepository["get"]>
+  >;
+  try {
+    authorizationRecord = await input.identityAuthorization.get(
+      account.accountId,
+    );
+  } catch {
+    // Keep malformed rows, Dynamo keys, and SDK details behind the same safe
+    // adapter error used for an unreadable account authority.
+    throw new Error("owned-session-authorization-unavailable");
+  }
+  if (
+    authorizationRecord &&
+    authorizationRecord.accountId !== account.accountId
+  )
+    throw new Error("owned-session-authorization-unavailable");
+  let elevatedScopes: ReturnType<typeof identityAuthorizationCapabilities>;
+  try {
+    elevatedScopes = identityAuthorizationCapabilities(
+      authorizationRecord?.roles ?? [],
+    );
+  } catch {
+    // Defend the boundary even when a non-Dynamo repository violates its
+    // declared contract. A malformed role set must never become authority.
+    throw new Error("owned-session-authorization-unavailable");
+  }
   return {
     subject: account.accountId,
-    scopes: OWNED_SESSION_SCOPES,
-    reviewerAuthorized: false,
-    strategyPromoterAuthorized: false,
+    scopes: Object.freeze([...OWNED_SESSION_SCOPES, ...elevatedScopes]),
+    reviewerAuthorized: elevatedScopes.includes(
+      IDENTITY_AUTHORIZATION_CAPABILITIES[0],
+    ),
+    strategyPromoterAuthorized: elevatedScopes.includes(
+      IDENTITY_AUTHORIZATION_CAPABILITIES[1],
+    ),
   };
 }

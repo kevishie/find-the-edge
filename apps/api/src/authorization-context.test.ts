@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createIdentityAuthorization,
   createIdentityAccount,
   createSessionToken,
   type SessionKeyRing,
   type SessionSigningKey,
 } from "@find-the-edge/domain";
-import type { IdentityRepository } from "@find-the-edge/database";
+import type {
+  IdentityAuthorizationRepository,
+  IdentityRepository,
+} from "@find-the-edge/database";
 import {
   authorizationContextFromGateway,
   isOwnedSessionAuthorization,
@@ -13,6 +17,7 @@ import {
   OWNED_SESSION_SCOPES,
   resolveOwnedSessionAuthorization,
 } from "./authorization-context";
+import { withEventApiLambdaBoundary } from "./lambda-boundary";
 
 const NOW = new Date("2026-08-13T21:00:00.000Z");
 const ACCOUNT_ID = `account:${"ab12cd34".repeat(8)}`;
@@ -54,11 +59,21 @@ const resolve = (
   authorization: string,
   identity: Pick<IdentityRepository, "getAccount"> = identityOf(ACCOUNT),
   signingKeys: SessionKeyRing = RING,
+  elevated: {
+    readonly include?: boolean;
+    readonly repository?: Pick<IdentityAuthorizationRepository, "get">;
+  } = {},
 ) =>
   resolveOwnedSessionAuthorization({
     authorization,
     signingKeys,
     identity,
+    ...(elevated.include
+      ? { includeElevatedAuthorization: true as const }
+      : {}),
+    ...(elevated.repository
+      ? { identityAuthorization: elevated.repository }
+      : {}),
     now: NOW,
   });
 
@@ -77,8 +92,8 @@ describe("owned session authorization", () => {
       "events/scouting:read",
       "events/scouting:write",
     ]);
-    expect(OWNED_SESSION_SCOPES).not.toContain("retrospectives:approve");
-    expect(OWNED_SESSION_SCOPES).not.toContain("strategies:promote");
+    expect(OWNED_SESSION_SCOPES).not.toContain("events/retrospectives:approve");
+    expect(OWNED_SESSION_SCOPES).not.toContain("events/strategies:promote");
   });
 
   it("rejects malformed, tampered, expired, and foreign-key tokens before storage", async () => {
@@ -111,6 +126,25 @@ describe("owned session authorization", () => {
     await expect(
       resolve(`Bearer ${session({ tokenVersion: 2 })}`, identityOf(ACCOUNT)),
     ).resolves.toBeNull();
+  });
+
+  it("never reads roles for an invalid or revoked owned session", async () => {
+    const get = vi.fn();
+    await expect(
+      resolve("Bearer fte1.invalid", identityOf(ACCOUNT), RING, {
+        include: true,
+        repository: { get },
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      resolve(
+        `Bearer ${session({ tokenVersion: ACCOUNT.tokenVersion - 1 })}`,
+        identityOf(ACCOUNT),
+        RING,
+        { include: true, repository: { get } },
+      ),
+    ).resolves.toBeNull();
+    expect(get).not.toHaveBeenCalled();
   });
 
   it("rejects a mismatched stored account id", async () => {
@@ -162,6 +196,129 @@ describe("owned session authorization", () => {
     expect(identity.getAccount).toHaveBeenCalledTimes(1);
   });
 
+  it("does not read elevated authority for an ordinary product route", async () => {
+    const get = vi.fn();
+    await expect(
+      resolve(`Bearer ${session()}`, identityOf(ACCOUNT), RING, {
+        repository: { get },
+      }),
+    ).resolves.toMatchObject({
+      scopes: OWNED_SESSION_SCOPES,
+      reviewerAuthorized: false,
+      strategyPromoterAuthorized: false,
+    });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("defaults a missing server-owned authorization row to no elevated capability", async () => {
+    const get = vi.fn().mockResolvedValue(null);
+    await expect(
+      resolve(`Bearer ${session()}`, identityOf(ACCOUNT), RING, {
+        include: true,
+        repository: { get },
+      }),
+    ).resolves.toEqual({
+      subject: ACCOUNT_ID,
+      scopes: OWNED_SESSION_SCOPES,
+      reviewerAuthorized: false,
+      strategyPromoterAuthorized: false,
+    });
+    expect(get).toHaveBeenCalledWith(ACCOUNT_ID);
+  });
+
+  it("projects canonical full capabilities from server-owned roles", async () => {
+    const record = createIdentityAuthorization({
+      accountId: ACCOUNT_ID,
+      // Deliberately reverse input order: the domain owns canonical order.
+      roles: ["strategy-promoter", "retrospective-reviewer"],
+      updatedAt: NOW.toISOString(),
+      operatorId: "operator:release",
+    });
+    await expect(
+      resolve(`Bearer ${session()}`, identityOf(ACCOUNT), RING, {
+        include: true,
+        repository: { get: vi.fn().mockResolvedValue(record) },
+      }),
+    ).resolves.toEqual({
+      subject: ACCOUNT_ID,
+      scopes: [
+        ...OWNED_SESSION_SCOPES,
+        "events/retrospectives:approve",
+        "events/strategies:promote",
+      ],
+      reviewerAuthorized: true,
+      strategyPromoterAuthorized: true,
+    });
+  });
+
+  it("sanitizes missing, failed, mismatched, and malformed elevated authority", async () => {
+    await expect(
+      resolve(`Bearer ${session()}`, identityOf(ACCOUNT), RING, {
+        include: true,
+      }),
+    ).rejects.toThrow("owned-session-authorization-unavailable");
+    const cases: readonly Pick<IdentityAuthorizationRepository, "get">[] = [
+      { get: vi.fn().mockRejectedValue(new Error(`failed ${ACCOUNT_ID}`)) },
+      {
+        get: vi.fn().mockResolvedValue({
+          ...createIdentityAuthorization({
+            accountId: ACCOUNT_ID,
+            roles: [],
+            updatedAt: NOW.toISOString(),
+            operatorId: "operator:release",
+          }),
+          accountId: `account:${"ef90ab12".repeat(8)}`,
+        }),
+      },
+      {
+        get: vi.fn().mockResolvedValue({
+          accountId: ACCOUNT_ID,
+          roles: ["client-supplied-admin"],
+        }),
+      },
+    ];
+    for (const repository of cases) {
+      const failure = await resolve(
+        `Bearer ${session()}`,
+        identityOf(ACCOUNT),
+        RING,
+        { include: true, repository },
+      ).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe(
+        "owned-session-authorization-unavailable",
+      );
+      expect((failure as Error).message).not.toContain(ACCOUNT_ID);
+      expect((failure as Error & { cause?: unknown }).cause).toBeUndefined();
+    }
+  });
+
+  it("maps an unreadable elevated record to the safe no-store adapter response", async () => {
+    const token = session();
+    const log = vi.fn();
+    const result = await withEventApiLambdaBoundary(async () => {
+      await resolve(`Bearer ${token}`, identityOf(ACCOUNT), RING, {
+        include: true,
+        repository: {
+          get: vi
+            .fn()
+            .mockRejectedValue(new Error(`storage ${ACCOUNT_ID} ${token}`)),
+        },
+      });
+      throw new Error("unreachable");
+    }, log);
+    expect(result).toEqual({
+      statusCode: 500,
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+      },
+      body: JSON.stringify({ error: "internal-error" }),
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toContain(ACCOUNT_ID);
+    expect(JSON.stringify(log.mock.calls)).not.toContain(token);
+  });
+
   it("classifies malformed fte1 credentials so they fail closed", () => {
     for (const authorization of [
       "Bearer fte1",
@@ -176,7 +333,7 @@ describe("owned session authorization", () => {
 
 describe("legacy gateway authorization", () => {
   it("preserves authorizer scopes and string-group permissions", () => {
-    const scopes = ["events/events:read", "retrospectives:approve"];
+    const scopes = ["events/events:read", "events/retrospectives:approve"];
     expect(
       authorizationContextFromGateway({
         scopes,

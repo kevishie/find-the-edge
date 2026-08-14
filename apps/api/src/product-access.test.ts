@@ -82,6 +82,8 @@ describe("which routes are paid", () => {
       "auth-otp-request",
       "auth-otp-verify",
       "auth-session-refresh",
+      "auth-session-revoke",
+      "auth-session-capabilities",
       "billing-webhook",
       "billing-entitlement",
       "billing-checkout",
