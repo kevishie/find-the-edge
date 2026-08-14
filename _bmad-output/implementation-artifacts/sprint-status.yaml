@@ -928,7 +928,7 @@ stories:
     league: all
     module: authentication
     priority: P0
-    status: backlog
+    status: review
     dependencies: [FTE-070, FTE-073]
     validationCommands: [pnpm check]
     blockerReason:

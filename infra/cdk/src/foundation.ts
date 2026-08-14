@@ -1493,8 +1493,6 @@ export class FoundationStack extends Stack {
       path: "/events",
       methods: [HttpMethod.GET],
       integration,
-      authorizer,
-      authorizationScopes: ["events/events:read"],
     });
     api.addRoutes({
       path: "/events/{eventId}",
@@ -1505,22 +1503,16 @@ export class FoundationStack extends Stack {
       path: "/events/{eventId}/scout",
       methods: [HttpMethod.POST],
       integration,
-      authorizer,
-      authorizationScopes: ["events/scouting:write"],
     });
     api.addRoutes({
       path: "/scout-jobs/{jobId}",
       methods: [HttpMethod.GET],
       integration,
-      authorizer,
-      authorizationScopes: ["events/scouting:read"],
     });
     api.addRoutes({
       path: "/scout-jobs/{jobId}/retry",
       methods: [HttpMethod.POST],
       integration,
-      authorizer,
-      authorizationScopes: ["events/scouting:write"],
     });
     for (const path of [
       "/scout-jobs/{jobId}/report",
@@ -1531,24 +1523,19 @@ export class FoundationStack extends Stack {
         path,
         methods: [HttpMethod.GET],
         integration,
-        authorizer,
-        authorizationScopes: ["events/scouting:read"],
       });
-    // The watchlist is per-user data, so every route is authenticated. It
-    // carries no dedicated Cognito scope: the requester is the token subject
-    // and the storage partition is derived from it, so a scope would add a
-    // re-consent step without adding an authorization decision.
+    // These ordinary account-owned routes authenticate the fte1 bearer in the
+    // Lambda. API Gateway keeps Cognito only for the four elevated mutations
+    // below while the transition rollback window remains open.
     api.addRoutes({
       path: "/watchlist",
       methods: [HttpMethod.GET, HttpMethod.POST],
       integration,
-      authorizer,
     });
     api.addRoutes({
       path: "/watchlist/{eventId}",
       methods: [HttpMethod.DELETE],
       integration,
-      authorizer,
     });
     for (const path of [
       "/sports/{sportKey}/opportunities",

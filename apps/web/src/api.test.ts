@@ -147,6 +147,25 @@ const createGamesClient = (
   session: OwnedSessionTransport = ownedSession(),
 ) => createGamesClientWithTransport(runtime, fetcher, session);
 
+const deferredJsonResponse = <T>(body: T, status = 200) => {
+  let release!: () => void;
+  let started!: () => void;
+  const bodyStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const response = new Response(null, { status });
+  Object.defineProperty(response, "json", {
+    value: vi.fn(
+      () =>
+        new Promise<T>((resolve) => {
+          started();
+          release = () => resolve(body);
+        }),
+    ),
+  });
+  return { response, bodyStarted, release: () => release() };
+};
+
 describe("scouting browser client", () => {
   const job = {
     schemaVersion: 1 as const,
@@ -160,35 +179,6 @@ describe("scouting browser client", () => {
     createdAt: "2026-08-07T13:00:00.000Z",
     updatedAt: "2026-08-07T13:00:00.000Z",
   };
-  const token = (
-    scopes = [
-      "events/events:read",
-      "events/scouting:read",
-      "events/scouting:write",
-    ],
-    overrides: Readonly<Record<string, unknown>> = {},
-  ) =>
-    `x.${btoa(
-      JSON.stringify({
-        iss: "https://issuer.example.test",
-        client_id: "client-id",
-        token_use: "access",
-        exp: Math.floor(Date.now() / 1000) + 3_600,
-        scope: scopes.join(" "),
-        ...overrides,
-      }),
-    )
-      .replaceAll("+", "-")
-      .replaceAll("/", "_")
-      .replace(/=+$/, "")}.x`;
-
-  const installProvider = (value = token()) => {
-    Object.defineProperty(globalThis, "__FTE_TOKEN_PROVIDERS__", {
-      configurable: true,
-      value: { session: vi.fn(() => Promise.resolve(value)) },
-    });
-  };
-
   afterEach(() => {
     Reflect.deleteProperty(globalThis, "__FTE_TOKEN_PROVIDERS__");
     Reflect.deleteProperty(globalThis, "__FTE_TOKEN_INVALIDATORS__");
@@ -228,8 +218,6 @@ describe("scouting browser client", () => {
   it.each([200, 202])(
     "creates from an authoritative %s convergence response with exact headers",
     async (status) => {
-      const accessToken = token();
-      installProvider(accessToken);
       const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
         new Response(JSON.stringify(job), {
           status,
@@ -258,14 +246,13 @@ describe("scouting browser client", () => {
         body: "{}",
       });
       const headers = new Headers(request?.headers);
-      expect(headers.get("authorization")).toBe(`Bearer ${accessToken}`);
+      expect(headers.get("authorization")).toBe(`Bearer ${ownedToken}`);
       expect(headers.get("content-type")).toBe("application/json");
       expect(headers.get("idempotency-key")).toBe("create-key-1");
     },
   );
 
-  it("rejects a mismatched status location and never accepts missing scopes", async () => {
-    installProvider();
+  it("rejects a mismatched status location and fails closed without owned authority", async () => {
     const mismatch = createGamesClient(
       { ok: true, value: bootstrap() },
       vi.fn<typeof fetch>().mockResolvedValue(
@@ -284,39 +271,42 @@ describe("scouting browser client", () => {
       ),
     ).rejects.toMatchObject({ code: "invalid-response" });
 
-    installProvider(token(["events/events:read"]));
     const fetcher = vi.fn<typeof fetch>();
     const forbidden = createGamesClient(
       { ok: true, value: bootstrap() },
       fetcher,
+      {
+        authorize: vi.fn(() => Promise.resolve(null)),
+        refuse: vi.fn(),
+      },
     );
     if (!forbidden.ok) throw forbidden.error;
     await expect(
       forbidden.value.getScoutingJob?.(job.jobId, new AbortController().signal),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({ code: "authentication" });
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { iss: "https://foreign.example.test" },
-    { client_id: "other-client" },
-    { token_use: "id" },
-    { exp: 1 },
-  ])("rejects invalid access-token claims locally", async (overrides) => {
-    installProvider(token(undefined, overrides));
-    const fetcher = vi.fn<typeof fetch>();
-    const result = createGamesClientWithTransport(
+  it("never consults the legacy token provider for ordinary scouting", async () => {
+    const provider = vi.fn(() => Promise.reject(new Error("legacy-called")));
+    Object.defineProperty(globalThis, "__FTE_TOKEN_PROVIDERS__", {
+      configurable: true,
+      value: { session: provider },
+    });
+    const result = createGamesClient(
       { ok: true, value: bootstrap() },
-      fetcher,
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 401 })),
     );
     if (!result.ok) throw result.error;
     await expect(
       result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
-    ).rejects.toBeInstanceOf(GamesClientError);
-    expect(fetcher).not.toHaveBeenCalled();
+    ).rejects.toMatchObject({ code: "authentication" });
+    expect(provider).not.toHaveBeenCalled();
   });
 
-  it("omits protected scouting methods without complete launch auth configuration", () => {
+  it("exposes owned scouting methods without Cognito launch configuration", () => {
     const result = createGamesClient({
       ok: true,
       value: {
@@ -328,13 +318,13 @@ describe("scouting browser client", () => {
       },
     });
     if (!result.ok) throw result.error;
-    expect("createScoutingJob" in result.value).toBe(false);
-    expect("getScoutingJob" in result.value).toBe(false);
-    expect("retryScoutingJob" in result.value).toBe(false);
+    expect("createScoutingJob" in result.value).toBe(true);
+    expect("getScoutingJob" in result.value).toBe(true);
+    expect("retryScoutingJob" in result.value).toBe(true);
+    expect("getScoutReportByJob" in result.value).toBe(true);
   });
 
   it("reads owner status and sends a fenced retry", async () => {
-    installProvider();
     const failed = {
       ...job,
       status: "failed_retryable" as const,
@@ -389,7 +379,6 @@ describe("scouting browser client", () => {
     [422, "retry-limit"],
     [503, "request-failed"],
   ] as const)("maps retry HTTP %s to safe %s failure", async (status, code) => {
-    installProvider();
     const result = createGamesClient(
       { ok: true, value: bootstrap() },
       vi
@@ -407,51 +396,43 @@ describe("scouting browser client", () => {
     ).rejects.toMatchObject({ code });
   });
 
-  it("invalidates a cached provider session after an authoritative 401", async () => {
-    installProvider();
-    const invalidate = vi.fn();
-    Object.defineProperty(globalThis, "__FTE_TOKEN_INVALIDATORS__", {
-      configurable: true,
-      value: { session: invalidate },
-    });
+  it("refuses only the exact owned session after an authoritative 401", async () => {
+    const session = ownedSession();
     const result = createGamesClient(
       { ok: true, value: bootstrap() },
       vi
         .fn<typeof fetch>()
         .mockResolvedValue(new Response(null, { status: 401 })),
+      session,
     );
     if (!result.ok) throw result.error;
     await expect(
       result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
     ).rejects.toMatchObject({ code: "authentication" });
-    expect(invalidate).toHaveBeenCalledOnce();
+    expect(session.refuse).toHaveBeenCalledWith(
+      authorization(),
+      "authentication",
+    );
   });
 
-  it("aborts while token acquisition is still pending", async () => {
-    let providerCalled = false;
-    Object.defineProperty(globalThis, "__FTE_TOKEN_PROVIDERS__", {
-      configurable: true,
-      value: {
-        session: () => {
-          providerCalled = true;
-          return new Promise<string>(() => {});
-        },
-      },
-    });
+  it("aborts while owned authorization is still pending", async () => {
+    const authorize = vi.fn(
+      () => new Promise<ReturnType<typeof authorization>>(() => {}),
+    );
     const result = createGamesClient(
       { ok: true, value: bootstrap() },
       vi.fn<typeof fetch>(),
+      { authorize, refuse: vi.fn() },
     );
     if (!result.ok) throw result.error;
     const controller = new AbortController();
     const request = result.value.getScoutingJob?.(job.jobId, controller.signal);
     controller.abort();
-    expect(providerCalled).toBe(true);
+    expect(authorize).toHaveBeenCalledOnce();
     await expect(request).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("times out a hung scouting fetch with a safe failure", async () => {
-    installProvider();
     const timeout = new AbortController();
     const timeoutSpy = vi
       .spyOn(AbortSignal, "timeout")
@@ -471,22 +452,381 @@ describe("scouting browser client", () => {
     timeoutSpy.mockRestore();
   });
 
+  it("resolves a fresh owned token for every ordinary physical request", async () => {
+    const requestTokens = Array.from(
+      { length: 9 },
+      (_, index) =>
+        `fte1.${String(index + 1).repeat(40)}.${String(index + 1).repeat(64)}`,
+    );
+    const authorize = vi.fn<OwnedSessionTransport["authorize"]>();
+    for (const requestToken of requestTokens) {
+      authorize.mockResolvedValueOnce(authorization(requestToken));
+      authorize.mockResolvedValueOnce(authorization(requestToken));
+    }
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 401 }));
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      fetcher,
+      { authorize, refuse: vi.fn() },
+    );
+    if (!result.ok) throw result.error;
+    const reportId = `scout-report:${"b".repeat(64)}`;
+    const calls = [
+      () =>
+        result.value.createScoutingJob?.(
+          job.eventId,
+          "create-key",
+          new AbortController().signal,
+        ),
+      () =>
+        result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
+      () =>
+        result.value.retryScoutingJob?.(
+          job.jobId,
+          1,
+          "retry-key",
+          new AbortController().signal,
+        ),
+      () =>
+        result.value.getScoutReportByJob?.(
+          job.jobId,
+          new AbortController().signal,
+        ),
+      () =>
+        result.value.getScoutReportVersion?.(
+          reportId,
+          1,
+          new AbortController().signal,
+        ),
+      () =>
+        result.value.listScoutReportVersions?.(
+          reportId,
+          new AbortController().signal,
+        ),
+      () => result.value.listWatchlist?.(new AbortController().signal),
+      () =>
+        result.value.addToWatchlist?.(
+          job.eventId,
+          new AbortController().signal,
+        ),
+      () =>
+        result.value.removeFromWatchlist?.(
+          job.eventId,
+          new AbortController().signal,
+        ),
+    ];
+    for (const call of calls)
+      await expect(call()).rejects.toMatchObject({ code: "authentication" });
+    expect(authorize).toHaveBeenCalledTimes(18);
+    expect(
+      fetcher.mock.calls.map(([, init]) =>
+        new Headers(init?.headers).get("authorization"),
+      ),
+    ).toEqual(requestTokens.map((requestToken) => `Bearer ${requestToken}`));
+  });
+
+  it("rejects a successful response after the owned session changes", async () => {
+    const replacementToken = `fte1.${"z".repeat(40)}.${"z".repeat(64)}`;
+    const authorize = vi
+      .fn<OwnedSessionTransport["authorize"]>()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(authorization(replacementToken));
+    const refuse = vi.fn();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(job))),
+      { authorize, refuse },
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(refuse).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "scouting 403",
+      status: 403,
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.getScoutingJob?.(job.jobId, signal),
+    },
+    {
+      label: "report 404",
+      status: 404,
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.getScoutReportByJob?.(job.jobId, signal),
+    },
+    {
+      label: "scouting 409",
+      status: 409,
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.retryScoutingJob?.(job.jobId, 1, "retry-key", signal),
+    },
+    {
+      label: "scouting 422",
+      status: 422,
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.createScoutingJob?.(job.eventId, "create-key", signal),
+    },
+  ])(
+    "cancels a stale $label terminal error before it reaches the replacement session",
+    async ({ status, call }) => {
+      const replacement = authorization(
+        `fte1.${"e".repeat(40)}.${"e".repeat(64)}`,
+      );
+      const authorize = vi
+        .fn<OwnedSessionTransport["authorize"]>()
+        .mockResolvedValueOnce(authorization())
+        .mockResolvedValueOnce(replacement);
+      const refuse = vi.fn();
+      const result = createGamesClient(
+        { ok: true, value: bootstrap() },
+        vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status })),
+        { authorize, refuse },
+      );
+      if (!result.ok) throw result.error;
+      await expect(
+        call(result.value, new AbortController().signal),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(refuse).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {
+      label: "scouting",
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.getScoutingJob?.(job.jobId, signal),
+    },
+    {
+      label: "report",
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.getScoutReportByJob?.(job.jobId, signal),
+    },
+    {
+      label: "watchlist",
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.listWatchlist?.(signal),
+    },
+  ])(
+    "cancels a stale malformed $label body before surfacing parser failure",
+    async ({ call }) => {
+      const authorize = vi
+        .fn<OwnedSessionTransport["authorize"]>()
+        .mockResolvedValueOnce(authorization())
+        .mockResolvedValueOnce(
+          authorization(`fte1.${"m".repeat(40)}.${"m".repeat(64)}`),
+        );
+      const refuse = vi.fn();
+      const result = createGamesClient(
+        { ok: true, value: bootstrap() },
+        vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(new Response(JSON.stringify({ malformed: true }))),
+        { authorize, refuse },
+      );
+      if (!result.ok) throw result.error;
+      await expect(
+        call(result.value, new AbortController().signal),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(refuse).not.toHaveBeenCalled();
+    },
+  );
+
+  it("cancels a stale 401 without refusing a replacement token", async () => {
+    const authorize = vi
+      .fn<OwnedSessionTransport["authorize"]>()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(
+        authorization(`fte1.${"n".repeat(40)}.${"n".repeat(64)}`),
+      );
+    const refuse = vi.fn();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 401 })),
+      { authorize, refuse },
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(refuse).not.toHaveBeenCalled();
+  });
+
+  it("account-fences 402 while preserving same-account token refresh", async () => {
+    const refreshed = authorization(`fte1.${"p".repeat(40)}.${"p".repeat(64)}`);
+    const authorize = vi
+      .fn<OwnedSessionTransport["authorize"]>()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(refreshed);
+    const refuse = vi.fn();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 402 })),
+      { authorize, refuse },
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "payment-required" });
+    expect(refuse).toHaveBeenCalledWith(authorization(), "payment-required");
+  });
+
+  it("cancels a stale 402 after an account replacement", async () => {
+    const authorize = vi
+      .fn<OwnedSessionTransport["authorize"]>()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce({
+        token: `fte1.${"q".repeat(40)}.${"q".repeat(64)}`,
+        accountId: `account:${"d".repeat(64)}`,
+      });
+    const refuse = vi.fn();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 402 })),
+      { authorize, refuse },
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(refuse).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "scouting status token replacement",
+      body: job,
+      replacement: authorization(`fte1.${"s".repeat(40)}.${"s".repeat(64)}`),
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.getScoutingJob?.(job.jobId, signal),
+    },
+    {
+      label: "report account replacement",
+      body: {
+        schemaVersion: "scout-report-versions-v1",
+        reportId: `scout-report:${"b".repeat(64)}`,
+        eventId: job.eventId,
+        latestVersionNumber: 1,
+        updatedAt: "2026-08-07T13:02:00.000Z",
+        items: [
+          {
+            versionNumber: 1,
+            generatedAt: "2026-08-07T13:02:00.000Z",
+            validationOutcome: "complete",
+            changeSummary: { kind: "initial", changedFields: [] },
+            jobId: job.jobId,
+          },
+        ],
+      },
+      replacement: {
+        token: `fte1.${"r".repeat(40)}.${"r".repeat(64)}`,
+        accountId: `account:${"c".repeat(64)}`,
+      },
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.listScoutReportVersions?.(
+          `scout-report:${"b".repeat(64)}`,
+          signal,
+        ),
+    },
+    {
+      label: "watchlist token replacement",
+      body: { schemaVersion: "watchlist-page-v1", items: [] },
+      replacement: authorization(`fte1.${"w".repeat(40)}.${"w".repeat(64)}`),
+      call: (client: GamesClient, signal: AbortSignal) =>
+        client.listWatchlist?.(signal),
+    },
+  ])(
+    "ignores a deferred $label completion",
+    async ({ body, replacement, call }) => {
+      const deferred = deferredJsonResponse(body);
+      const authorize = vi
+        .fn<OwnedSessionTransport["authorize"]>()
+        .mockResolvedValueOnce(authorization())
+        .mockResolvedValueOnce(replacement);
+      const refuse = vi.fn();
+      const result = createGamesClient(
+        { ok: true, value: bootstrap() },
+        vi.fn<typeof fetch>().mockResolvedValue(deferred.response),
+        { authorize, refuse },
+      );
+      if (!result.ok) throw result.error;
+      const pending = call(result.value, new AbortController().signal);
+      await deferred.bodyStarted;
+      deferred.release();
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(refuse).not.toHaveBeenCalled();
+    },
+  );
+
+  it("bounds a deferred report body read with the request timeout", async () => {
+    const deferred = deferredJsonResponse({});
+    const timeout = new AbortController();
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(timeout.signal);
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>().mockResolvedValue(deferred.response),
+    );
+    if (!result.ok) throw result.error;
+    const pending = result.value.listScoutReportVersions?.(
+      `scout-report:${"b".repeat(64)}`,
+      new AbortController().signal,
+    );
+    await deferred.bodyStarted;
+    timeout.abort(new DOMException("Timed out", "TimeoutError"));
+    await expect(pending).rejects.toMatchObject({ code: "request-failed" });
+    deferred.release();
+    timeoutSpy.mockRestore();
+  });
+
+  it("aborts a deferred watchlist body read without a late session effect", async () => {
+    const deferred = deferredJsonResponse({
+      schemaVersion: "watchlist-page-v1",
+      items: [],
+    });
+    const session = ownedSession();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi.fn<typeof fetch>().mockResolvedValue(deferred.response),
+      session,
+    );
+    if (!result.ok) throw result.error;
+    const controller = new AbortController();
+    const pending = result.value.listWatchlist?.(controller.signal);
+    await deferred.bodyStarted;
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    deferred.release();
+    await Promise.resolve();
+    expect(session.refuse).not.toHaveBeenCalled();
+    expect(session.authorize).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects malformed job IDs before session acquisition", async () => {
-    installProvider();
+    const authorize = vi.fn<OwnedSessionTransport["authorize"]>();
     const result = createGamesClient(
       { ok: true, value: bootstrap() },
       vi.fn<typeof fetch>(),
+      { authorize, refuse: vi.fn() },
     );
     if (!result.ok) throw result.error;
     await expect(
       result.value.getScoutingJob?.("not-a-job", new AbortController().signal),
     ).rejects.toMatchObject({ code: "invalid-response" });
-    const registry = (
-      globalThis as unknown as {
-        __FTE_TOKEN_PROVIDERS__: { session: ReturnType<typeof vi.fn> };
-      }
-    ).__FTE_TOKEN_PROVIDERS__;
-    expect(registry.session).not.toHaveBeenCalled();
+    expect(authorize).not.toHaveBeenCalled();
   });
 });
 
@@ -667,6 +1007,98 @@ describe("provider status client", () => {
 });
 
 describe("owned product transport", () => {
+  it("does not refuse after cancellation wins a missing-authority race", async () => {
+    let resolveAuthorization!: (value: null) => void;
+    const refuse = vi.fn();
+    const fetcher = vi.fn<typeof fetch>();
+    const authorize = vi.fn(
+      () =>
+        new Promise<null>((resolve) => {
+          resolveAuthorization = resolve;
+        }),
+    );
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      fetcher,
+      {
+        authorize,
+        refuse,
+      },
+    );
+    if (!result.ok) throw result.error;
+    const controller = new AbortController();
+    const pending = result.value.getScoutingJob?.(
+      `scout-job:${"a".repeat(64)}`,
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(authorize).toHaveBeenCalledOnce());
+    controller.abort();
+    resolveAuthorization(null);
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(refuse).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("does not refuse when cancellation wins invalid-authority validation", async () => {
+    const controller = new AbortController();
+    const refuse = vi.fn();
+    const invalidAuthorization = {
+      get token() {
+        controller.abort();
+        return "invalid";
+      },
+      accountId: ownedAccount,
+    };
+    const fetcher = vi.fn<typeof fetch>();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      fetcher,
+      {
+        authorize: vi.fn(() => Promise.resolve(invalidAuthorization)),
+        refuse,
+      },
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getScoutingJob?.(
+        `scout-job:${"a".repeat(64)}`,
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(refuse).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 402])(
+    "does not refuse after cancellation wins a %s response race",
+    async (status) => {
+      let resolveFetch!: (response: Response) => void;
+      const refuse = vi.fn();
+      const fetcher = vi.fn<typeof fetch>(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      );
+      const result = createGamesClient(
+        { ok: true, value: bootstrap() },
+        fetcher,
+        { authorize: ownedSession().authorize, refuse },
+      );
+      if (!result.ok) throw result.error;
+      const controller = new AbortController();
+      const pending = result.value.getScoutingJob?.(
+        `scout-job:${"a".repeat(64)}`,
+        controller.signal,
+      );
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+      controller.abort();
+      resolveFetch(new Response(null, { status }));
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(refuse).not.toHaveBeenCalled();
+    },
+  );
+
   it("fails before a product fetch when no owned session is usable", async () => {
     const fetcher = vi.fn<typeof fetch>();
     const result = createGamesClientWithTransport(
@@ -3555,41 +3987,25 @@ describe("watchlist browser client", () => {
     eventId: "event:mlb%3Amlb:fixture-2",
     startsAt: "2026-08-02T23:05:00.000Z",
   };
-  // The watchlist authorises on the token subject, so no scouting scope is
-  // granted here: a session with only the base read scope must still work.
-  const watchlistToken = `x.${btoa(
-    JSON.stringify({
-      iss: "https://issuer.example.test",
-      client_id: "client-id",
-      token_use: "access",
-      exp: Math.floor(Date.now() / 1000) + 3_600,
-      scope: "events/events:read",
-    }),
-  )
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/, "")}.x`;
-
-  const installWatchlistProvider = () => {
-    Object.defineProperty(globalThis, "__FTE_TOKEN_PROVIDERS__", {
-      configurable: true,
-      value: { session: vi.fn(() => Promise.resolve(watchlistToken)) },
-    });
-  };
-
   afterEach(() => {
     Reflect.deleteProperty(globalThis, "__FTE_TOKEN_PROVIDERS__");
     Reflect.deleteProperty(globalThis, "__FTE_TOKEN_INVALIDATORS__");
   });
 
-  const client = (fetcher: typeof fetch) => {
-    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+  const client = (
+    fetcher: typeof fetch,
+    session: OwnedSessionTransport = ownedSession(),
+  ) => {
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      fetcher,
+      session,
+    );
     if (!result.ok) throw result.error;
     return result.value;
   };
 
   it("lists a watchlist without asking for a scouting scope", async () => {
-    installWatchlistProvider();
     const fetcher = vi.fn<typeof fetch>(() =>
       Promise.resolve(
         new Response(
@@ -3611,7 +4027,7 @@ describe("watchlist browser client", () => {
     expect(url).toBe("https://api.example.test/watchlist");
     expect(init?.method).toBe("GET");
     expect(new Headers(init?.headers).get("authorization")).toBe(
-      `Bearer ${watchlistToken}`,
+      `Bearer ${ownedToken}`,
     );
   });
 
@@ -3622,7 +4038,6 @@ describe("watchlist browser client", () => {
     ["a missing field", [{ ...entry, addedAt: undefined }]],
     ["an unexpected field", [{ ...entry, requesterId: "someone" }]],
   ])("fails closed on %s", async (_label, items) => {
-    installWatchlistProvider();
     const fetcher = vi.fn<typeof fetch>(() =>
       Promise.resolve(
         new Response(
@@ -3636,7 +4051,6 @@ describe("watchlist browser client", () => {
   });
 
   it("accepts a first add and a repeat add and keeps the stored addedAt", async () => {
-    installWatchlistProvider();
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -3661,7 +4075,6 @@ describe("watchlist browser client", () => {
   });
 
   it("treats an unknown event as a neutral not-found", async () => {
-    installWatchlistProvider();
     const fetcher = vi.fn<typeof fetch>(() =>
       Promise.resolve(new Response("", { status: 404 })),
     );
@@ -3674,7 +4087,6 @@ describe("watchlist browser client", () => {
   });
 
   it("removes with no content and rejects a removal that answers with a body", async () => {
-    installWatchlistProvider();
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
@@ -3700,23 +4112,21 @@ describe("watchlist browser client", () => {
     ).rejects.toBeInstanceOf(GamesClientError);
   });
 
-  it("clears the cached session when the API answers 401", async () => {
-    installWatchlistProvider();
-    const invalidate = vi.fn();
-    Object.defineProperty(globalThis, "__FTE_TOKEN_INVALIDATORS__", {
-      configurable: true,
-      value: { session: invalidate },
-    });
+  it("refuses the current owned session when the API answers 401", async () => {
+    const session = ownedSession();
     const fetcher = vi.fn<typeof fetch>(() =>
       Promise.resolve(new Response("", { status: 401 })),
     );
     await expect(
-      client(fetcher).listWatchlist?.(new AbortController().signal),
+      client(fetcher, session).listWatchlist?.(new AbortController().signal),
     ).rejects.toMatchObject({ code: "authentication" });
-    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(session.refuse).toHaveBeenCalledWith(
+      authorization(),
+      "authentication",
+    );
   });
 
-  it("omits watchlist methods without complete launch auth configuration", () => {
+  it("exposes owned watchlist methods without Cognito launch configuration", () => {
     const result = createGamesClient({
       ok: true,
       value: {
@@ -3728,9 +4138,9 @@ describe("watchlist browser client", () => {
       },
     });
     if (!result.ok) throw result.error;
-    expect("listWatchlist" in result.value).toBe(false);
-    expect("addToWatchlist" in result.value).toBe(false);
-    expect("removeFromWatchlist" in result.value).toBe(false);
+    expect("listWatchlist" in result.value).toBe(true);
+    expect("addToWatchlist" in result.value).toBe(true);
+    expect("removeFromWatchlist" in result.value).toBe(true);
   });
 });
 

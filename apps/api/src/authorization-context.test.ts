@@ -11,13 +11,24 @@ import type {
   IdentityRepository,
 } from "@find-the-edge/database";
 import {
+  MemoryScoutingJobRepository,
+  MemoryScoutingReportRepository,
+  MemoryWatchlistRepository,
+  type EventRepository,
+} from "@find-the-edge/database";
+import {
+  authorizationContextFromLambdaRequest,
   authorizationContextFromGateway,
+  handlerAuthorizationFields,
   isOwnedSessionAuthorization,
   memoizeIdentityAccountLookup,
+  ORDINARY_OWNED_ROUTE_KEYS,
   OWNED_SESSION_SCOPES,
   resolveOwnedSessionAuthorization,
 } from "./authorization-context";
 import { withEventApiLambdaBoundary } from "./lambda-boundary";
+import { createEventHandler } from "./handler";
+import { createScoutingHttpHandler } from "./scouting-handler";
 
 const NOW = new Date("2026-08-13T21:00:00.000Z");
 const ACCOUNT_ID = `account:${"ab12cd34".repeat(8)}`;
@@ -76,6 +87,278 @@ const resolve = (
       : {}),
     now: NOW,
   });
+
+describe("Lambda request authorization adapter", () => {
+  const adapter = (
+    routeKey: (typeof ORDINARY_OWNED_ROUTE_KEYS)[number],
+    authorization: string | undefined,
+    identity: Pick<IdentityRepository, "getAccount">,
+  ) =>
+    authorizationContextFromLambdaRequest({
+      routeKey,
+      ...(authorization ? { headers: { AUTHORIZATION: authorization } } : {}),
+      // A stale synthetic gateway context must never authorize a detached
+      // ordinary route.
+      gatewayJwt: {
+        claims: { sub: "legacy-cognito-user" },
+        scopes: ["events/events:read"],
+      },
+      productRoute: true,
+      capabilitiesRoute: false,
+      includeElevatedAuthorization: false,
+      ownedRuntime: { signingKeys: RING, identity, now: NOW },
+    });
+
+  it.each(ORDINARY_OWNED_ROUTE_KEYS)(
+    "projects raw owned authority into the handler input for %s",
+    async (routeKey) => {
+      const identity = identityOf(ACCOUNT);
+      const context = await adapter(routeKey, `Bearer ${session()}`, identity);
+      expect(handlerAuthorizationFields(context)).toEqual({
+        subject: ACCOUNT_ID,
+        scopes: OWNED_SESSION_SCOPES,
+        reviewerAuthorized: false,
+        strategyPromoterAuthorized: false,
+      });
+      expect(identity.getAccount).toHaveBeenCalledOnce();
+    },
+  );
+
+  const otherAccountId = `account:${"cd34ef56".repeat(8)}`;
+  const foreignAccountToken = createSessionToken({
+    accountId: otherAccountId,
+    tokenVersion: 1,
+    now: NOW.toISOString(),
+    key: CURRENT_KEY,
+  }).token;
+
+  const invokeActualProtectedHandler = async (
+    routeKey: (typeof ORDINARY_OWNED_ROUTE_KEYS)[number],
+    fields: ReturnType<typeof handlerAuthorizationFields>,
+  ) => {
+    const listEvents = vi.fn(() =>
+      Promise.resolve({
+        items: [],
+        nextCursor: null,
+        projectionState: "ready" as const,
+        evaluationState: "complete" as const,
+        hasMoreUnknown: false,
+        snapshotAt: NOW.toISOString(),
+        freshness: null,
+        unavailableReason: null,
+      }),
+    );
+    const detailEvent = vi.fn(() =>
+      Promise.resolve({
+        projectionState: "ready" as const,
+        item: null,
+        unavailableReason: null,
+      }),
+    );
+    const events: EventRepository = {
+      list: listEvents,
+      detail: detailEvent,
+    };
+    const calls: ReturnType<typeof vi.fn>[] = [listEvents, detailEvent];
+    if (routeKey === "GET /events") {
+      const log: (entry: Readonly<Record<string, unknown>>) => void = () =>
+        undefined;
+      const response = await createEventHandler(
+        events,
+        log,
+      )({
+        route: "list",
+        method: "GET",
+        ...fields,
+      });
+      return { response, calls };
+    }
+    if (
+      routeKey === "POST /events/{eventId}/scout" ||
+      routeKey === "GET /scout-jobs/{jobId}" ||
+      routeKey === "POST /scout-jobs/{jobId}/retry"
+    ) {
+      const jobs = new MemoryScoutingJobRepository();
+      calls.push(
+        vi.spyOn(jobs, "getCreateReplay"),
+        vi.spyOn(jobs, "createJob"),
+        vi.spyOn(jobs, "getJobForRequester"),
+        vi.spyOn(jobs, "retryJob"),
+      );
+      const request =
+        routeKey === "POST /events/{eventId}/scout"
+          ? {
+              route: "scout-create" as const,
+              method: "POST" as const,
+              eventId: "event:mlb:fixture-1",
+              idempotencyKey: "request-1",
+              contentType: "application/json",
+              body: "{}",
+            }
+          : routeKey === "GET /scout-jobs/{jobId}"
+            ? {
+                route: "scout-status" as const,
+                method: "GET" as const,
+                jobId: `scout-job:${"a".repeat(64)}`,
+              }
+            : {
+                route: "scout-retry" as const,
+                method: "POST" as const,
+                jobId: `scout-job:${"a".repeat(64)}`,
+                idempotencyKey: "request-1",
+                contentType: "application/json",
+                body: JSON.stringify({ expectedStateVersion: 1 }),
+              };
+      const response = await createScoutingHttpHandler(
+        events,
+        jobs,
+      )({
+        ...request,
+        ...fields,
+      });
+      return { response, calls };
+    }
+    if (routeKey.startsWith("GET /scout-")) {
+      const reports = new MemoryScoutingReportRepository();
+      calls.push(
+        vi.spyOn(reports, "getByJobBinding"),
+        vi.spyOn(reports, "getHead"),
+        vi.spyOn(reports, "getVersion"),
+        vi.spyOn(reports, "listVersions"),
+      );
+      const handler = createEventHandler(
+        events,
+        undefined,
+        vi.fn(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        reports,
+      );
+      const request =
+        routeKey === "GET /scout-jobs/{jobId}/report"
+          ? {
+              route: "scout-report-by-job" as const,
+              method: "GET" as const,
+              jobId: `scout-job:${"a".repeat(64)}`,
+            }
+          : routeKey === "GET /scout-reports/{reportId}/versions"
+            ? {
+                route: "scout-report-versions" as const,
+                method: "GET" as const,
+                reportId: `scout-report:${"b".repeat(64)}`,
+              }
+            : {
+                route: "scout-report-version" as const,
+                method: "GET" as const,
+                reportId: `scout-report:${"b".repeat(64)}`,
+                versionNumber: "1",
+              };
+      const response = await handler({ ...request, ...fields });
+      return { response, calls };
+    }
+    const watchlist = new MemoryWatchlistRepository();
+    calls.push(
+      vi.spyOn(watchlist, "list"),
+      vi.spyOn(watchlist, "add"),
+      vi.spyOn(watchlist, "remove"),
+    );
+    const handler = createEventHandler(
+      events,
+      undefined,
+      vi.fn(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      watchlist,
+    );
+    const request =
+      routeKey === "GET /watchlist"
+        ? { route: "watchlist-list" as const, method: "GET" as const }
+        : routeKey === "POST /watchlist"
+          ? {
+              route: "watchlist-add" as const,
+              method: "POST" as const,
+              contentType: "application/json",
+              body: JSON.stringify({ eventId: "event:mlb:fixture-1" }),
+            }
+          : {
+              route: "watchlist-remove" as const,
+              method: "DELETE" as const,
+              eventId: "event:mlb:fixture-1",
+            };
+    const response = await handler({ ...request, ...fields });
+    return { response, calls };
+  };
+  const invalidRequests = [
+    {
+      label: "absent",
+      authorization: undefined,
+      account: ACCOUNT,
+      identityRead: false,
+    },
+    {
+      label: "malformed",
+      authorization: "Bearer fte1.invalid",
+      account: ACCOUNT,
+      identityRead: false,
+    },
+    {
+      label: "revoked",
+      authorization: `Bearer ${session({ tokenVersion: 2 })}`,
+      account: ACCOUNT,
+      identityRead: true,
+    },
+    {
+      label: "foreign",
+      authorization: `Bearer ${foreignAccountToken}`,
+      account: null,
+      identityRead: true,
+    },
+  ] as const;
+
+  it.each(
+    ORDINARY_OWNED_ROUTE_KEYS.flatMap((routeKey) =>
+      invalidRequests.map((request) => ({ routeKey, ...request })),
+    ),
+  )(
+    "keeps $label authority out of $routeKey handler and protected storage",
+    async ({ routeKey, authorization, account, identityRead }) => {
+      const identity = identityOf(account);
+      const context = await adapter(routeKey, authorization, identity);
+      const handlerInput = handlerAuthorizationFields(context);
+      expect(handlerInput).toEqual({
+        reviewerAuthorized: false,
+        strategyPromoterAuthorized: false,
+      });
+      const { response, calls } = await invokeActualProtectedHandler(
+        routeKey,
+        handlerInput,
+      );
+      expect(response.statusCode).toBe(401);
+      for (const repositoryCall of calls)
+        expect(repositoryCall).not.toHaveBeenCalled();
+      expect(identity.getAccount).toHaveBeenCalledTimes(identityRead ? 1 : 0);
+    },
+  );
+});
 
 describe("owned session authorization", () => {
   it("projects a live stored account into ordinary product permissions", async () => {

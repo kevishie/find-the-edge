@@ -57,6 +57,8 @@ const deferred = <T,>() => {
   });
   return { promise, resolve, reject };
 };
+const staleCancellation = () =>
+  new DOMException("The signed-in account changed.", "AbortError");
 
 const entitlement = (hasAccess: boolean) => ({
   schemaVersion: "billing-entitlement-v1" as const,
@@ -2422,14 +2424,14 @@ describe("Games", () => {
       createdAt: "2026-08-07T13:00:00.000Z",
       updatedAt: "2026-08-07T13:00:00.000Z",
     };
+    const store = activeSession();
+    const accountId = store.getSnapshot()!.accountId;
+    const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(accountId)}.${encodeURIComponent(game.id)}`;
     const createScoutingJob = vi.fn(() => Promise.resolve(scoutingJob));
-    sessionStorage.setItem(
-      `fte.scouting.resume.create.${encodeURIComponent(game.id)}`,
-      "1",
-    );
+    sessionStorage.setItem(resumeKey, "1");
     render(
       <App
-        sessionStore={activeSession()}
+        sessionStore={store}
         initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
@@ -2445,11 +2447,223 @@ describe("Games", () => {
       await screen.findByRole("heading", { name: "Scouting is queued" }),
     ).toBeVisible();
     expect(createScoutingJob).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem(resumeKey)).toBeNull();
+  });
+
+  it("cancels a queued resume before replacement-account authority can dispatch it", async () => {
+    window.localStorage.setItem("fte.eventView", "cards");
+    const store = activeSession();
+    const priorAccountId = store.getSnapshot()!.accountId;
+    const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(priorAccountId)}.${encodeURIComponent(game.id)}`;
+    const createScoutingJob =
+      vi.fn<NonNullable<GamesClient["createScoutingJob"]>>();
+    const gamesClient = () => ({
+      ok: true as const,
+      value: {
+        list: vi.fn(() => Promise.resolve(page())),
+        createScoutingJob,
+      },
+    });
+    const { rerender } = render(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={gamesClient()}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: "Scout" })).toBeEnabled();
+    sessionStorage.setItem(resumeKey, "1");
+    const queued: VoidFunction[] = [];
+    const microtask = vi
+      .spyOn(globalThis, "queueMicrotask")
+      .mockImplementation((callback) => queued.push(callback));
+    rerender(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={gamesClient()}
+      />,
+    );
+    microtask.mockRestore();
+    expect(queued.length).toBeGreaterThan(0);
+
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"9".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"0".repeat(64)}`,
+      });
+    });
+    act(() => {
+      for (const callback of queued) callback();
+    });
+
+    expect(createScoutingJob).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(resumeKey)).toBe("1");
+  });
+
+  it("does not resume an uncertain create under a replacement account", async () => {
+    window.localStorage.setItem("fte.eventView", "cards");
+    const store = activeSession();
+    const scoutingJob = {
+      schemaVersion: 1 as const,
+      jobId: `scout-job:${"3".repeat(64)}`,
+      eventId: game.id,
+      eventVersion: 1,
+      workflowIntent: "fixture-v1" as const,
+      status: "queued" as const,
+      stateVersion: 1,
+      attemptNumber: 1,
+      createdAt: "2026-08-07T13:00:00.000Z",
+      updatedAt: "2026-08-07T13:00:00.000Z",
+    };
+    const createScoutingJob = vi
+      .fn<NonNullable<GamesClient["createScoutingJob"]>>()
+      .mockImplementationOnce(
+        (_eventId, _key, signal) =>
+          new Promise((_, reject) =>
+            signal.addEventListener(
+              "abort",
+              () =>
+                reject(
+                  new DOMException(
+                    "The signed-in account changed.",
+                    "AbortError",
+                  ),
+                ),
+              { once: true },
+            ),
+          ),
+      )
+      .mockResolvedValueOnce(scoutingJob);
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            createScoutingJob,
+            getScoutingJob: vi.fn(() => Promise.resolve(scoutingJob)),
+          },
+        }}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Scout" }));
     expect(
-      sessionStorage.getItem(
-        `fte.scouting.resume.create.${encodeURIComponent(game.id)}`,
-      ),
+      screen.getByRole("button", { name: "Opening scouting…" }),
+    ).toBeDisabled();
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"4".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"5".repeat(64)}`,
+      });
+    });
+    expect(
+      screen.queryByRole("button", { name: "Opening scouting…" }),
     ).toBeNull();
+    expect(await screen.findByRole("button", { name: "Scout" })).toBeEnabled();
+    expect(createScoutingJob).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/request outcome is not yet known/i)).toBeNull();
+  });
+
+  it("resumes an uncertain create with the same key after same-account token refresh", async () => {
+    window.localStorage.setItem("fte.eventView", "cards");
+    const store = activeSession();
+    const accountId = store.getSnapshot()!.accountId;
+    const scoutingJob = {
+      schemaVersion: 1 as const,
+      jobId: `scout-job:${"3".repeat(64)}`,
+      eventId: game.id,
+      eventVersion: 1,
+      workflowIntent: "fixture-v1" as const,
+      status: "queued" as const,
+      stateVersion: 1,
+      attemptNumber: 1,
+      createdAt: "2026-08-07T13:00:00.000Z",
+      updatedAt: "2026-08-07T13:00:00.000Z",
+    };
+    const keys: string[] = [];
+    const createScoutingJob = vi
+      .fn<NonNullable<GamesClient["createScoutingJob"]>>()
+      .mockImplementationOnce((_eventId, key, signal) => {
+        keys.push(key);
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(staleCancellation()), {
+            once: true,
+          }),
+        );
+      })
+      .mockImplementationOnce((_eventId, key) => {
+        keys.push(key);
+        return Promise.resolve(scoutingJob);
+      });
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            createScoutingJob,
+            getScoutingJob: vi.fn(() => Promise.resolve(scoutingJob)),
+          },
+        }}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Scout" }));
+    act(() => {
+      store.signIn({
+        token: `fte1.${"refreshed".padEnd(40, "x")}.${"6".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId,
+      });
+    });
+    expect(
+      screen.queryByRole("button", { name: "Opening scouting…" }),
+    ).toBeNull();
+    expect(
+      await screen.findByRole("heading", { name: "Scouting is queued" }),
+    ).toBeVisible();
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("masks a prior-session create error immediately on account replacement", async () => {
+    window.localStorage.setItem("fte.eventView", "cards");
+    const store = activeSession();
+    const createScoutingJob = vi.fn(() =>
+      Promise.reject(new GamesClientError("request-failed", "raw")),
+    );
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            createScoutingJob,
+          },
+        }}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Scout" }));
+    expect(
+      await screen.findByText(/request outcome is not yet known/i),
+    ).toBeVisible();
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"7".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"8".repeat(64)}`,
+      });
+    });
+    expect(screen.queryByText(/request outcome is not yet known/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Scout" })).toBeEnabled();
   });
 
   it("disables scouting with explicit lifecycle guidance for nonscheduled events", async () => {
@@ -2458,11 +2672,12 @@ describe("Games", () => {
     window.localStorage.setItem("fte.eventView", "cards");
     const completed = { ...game, status: "completed" as const };
     const createScoutingJob = vi.fn();
-    const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(game.id)}`;
+    const store = activeSession();
+    const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(store.getSnapshot()!.accountId)}.${encodeURIComponent(game.id)}`;
     sessionStorage.setItem(resumeKey, "1");
     render(
       <App
-        sessionStore={activeSession()}
+        sessionStore={store}
         initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
@@ -3513,6 +3728,209 @@ describe("events explorer watch toggle", () => {
       }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(listWatchlist).toHaveBeenCalledTimes(1);
+  });
+
+  it("masks a prior account's loaded watchlist before the replacement read settles", async () => {
+    const store = activeSession();
+    const replacementRead = deferred<{
+      readonly schemaVersion: "watchlist-page-v1";
+      readonly items: readonly (typeof watchEntry)[];
+    }>();
+    const addToWatchlist = vi.fn(() => Promise.resolve(watchEntry));
+    const removeFromWatchlist = vi.fn(() => Promise.resolve());
+    const listWatchlist = vi
+      .fn<NonNullable<GamesClient["listWatchlist"]>>()
+      .mockResolvedValueOnce({
+        schemaVersion: "watchlist-page-v1",
+        items: [watchEntry],
+      })
+      .mockImplementationOnce(() => replacementRead.promise);
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist,
+            addToWatchlist,
+            removeFromWatchlist,
+          },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeVisible();
+
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"a".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"3".repeat(64)}`,
+      });
+    });
+
+    expect(
+      screen.queryByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeNull();
+    expect(addToWatchlist).not.toHaveBeenCalled();
+    expect(removeFromWatchlist).not.toHaveBeenCalled();
+    expect(listWatchlist).toHaveBeenCalledTimes(2);
+
+    replacementRead.resolve({ schemaVersion: "watchlist-page-v1", items: [] });
+    expect(
+      await screen.findByRole("button", {
+        name: "Add Boston vs New York to watchlist",
+      }),
+    ).toBeVisible();
+  });
+
+  it("replaces an in-flight watchlist read without exposing its stale cancellation", async () => {
+    const store = activeSession();
+    const oldRead = deferred<{
+      readonly schemaVersion: "watchlist-page-v1";
+      readonly items: readonly (typeof watchEntry)[];
+    }>();
+    const listWatchlist = vi
+      .fn<NonNullable<GamesClient["listWatchlist"]>>()
+      .mockImplementationOnce(() => oldRead.promise)
+      .mockResolvedValueOnce({
+        schemaVersion: "watchlist-page-v1",
+        items: [watchEntry],
+      });
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist,
+            addToWatchlist: vi.fn(() => Promise.resolve(watchEntry)),
+            removeFromWatchlist: vi.fn(() => Promise.resolve()),
+          },
+        }}
+      />,
+    );
+    await waitFor(() => expect(listWatchlist).toHaveBeenCalledTimes(1));
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"d".repeat(64)}`,
+      });
+    });
+    expect(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeVisible();
+    oldRead.reject(staleCancellation());
+    await act(async () => Promise.resolve());
+    expect(
+      screen.getByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeVisible();
+    expect(screen.queryByRole("link", { name: "Sign in to watch" })).toBeNull();
+  });
+
+  it("ignores a stale add cancellation after the account is replaced", async () => {
+    const store = activeSession();
+    const oldAdd = deferred<typeof watchEntry>();
+    const listWatchlist = vi
+      .fn<NonNullable<GamesClient["listWatchlist"]>>()
+      .mockResolvedValue({ schemaVersion: "watchlist-page-v1", items: [] });
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist,
+            addToWatchlist: vi.fn(() => oldAdd.promise),
+            removeFromWatchlist: vi.fn(() => Promise.resolve()),
+          },
+        }}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Add Boston vs New York to watchlist",
+      }),
+    );
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"e".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"f".repeat(64)}`,
+      });
+    });
+    oldAdd.reject(staleCancellation());
+    expect(
+      await screen.findByRole("button", {
+        name: "Add Boston vs New York to watchlist",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("That event could not be added to the watchlist."),
+    ).toBeNull();
+  });
+
+  it("keeps the replacement account's watched row after a stale remove cancellation", async () => {
+    const store = activeSession();
+    const oldRemove = deferred<void>();
+    const listWatchlist = vi
+      .fn<NonNullable<GamesClient["listWatchlist"]>>()
+      .mockResolvedValue({
+        schemaVersion: "watchlist-page-v1",
+        items: [watchEntry],
+      });
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist,
+            addToWatchlist: vi.fn(() => Promise.resolve(watchEntry)),
+            removeFromWatchlist: vi.fn(() => oldRemove.promise),
+          },
+        }}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    );
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"1".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"2".repeat(64)}`,
+      });
+    });
+    oldRemove.reject(staleCancellation());
+    expect(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("That event could not be removed from the watchlist."),
+    ).toBeNull();
   });
 
   it("offers sign-in rather than an error on the public explorer", async () => {
