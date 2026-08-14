@@ -102,6 +102,107 @@ const requireSession = (
     replace: true,
   });
 };
+
+export const ROUTE_AUTHORIZATION_ABORTED = Symbol(
+  "route-authorization-aborted",
+);
+
+/** Stop an abandoned navigation without canceling a shared session refresh. */
+export const authorizeRouteSession = (
+  store: SessionStore,
+  signal: AbortSignal,
+): Promise<string | null | typeof ROUTE_AUTHORIZATION_ABORTED> => {
+  if (signal.aborted) return Promise.resolve(ROUTE_AUTHORIZATION_ABORTED);
+  return new Promise((resolve, reject) => {
+    const aborted = () => resolve(ROUTE_AUTHORIZATION_ABORTED);
+    signal.addEventListener("abort", aborted, { once: true });
+    void store
+      .authorize()
+      .then(resolve, reject)
+      .finally(() => {
+        signal.removeEventListener("abort", aborted);
+      });
+  });
+};
+
+const requireEntitledSession = async (
+  store: SessionStore,
+  resolveEntitlement: UiGamesClient["entitlement"],
+  pathname: string,
+  search: string,
+  signal: AbortSignal,
+) => {
+  if (!requiresSession(pathname)) return;
+  const login = (invalidate = false): never => {
+    if (invalidate) store.signOut();
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw redirect({
+      to: LOGIN_PATH,
+      search: { returnUrl: safeReturnPath(`${pathname}${search}`) },
+      replace: true,
+    });
+  };
+  // A refresh or account switch can land while entitlement is in flight.
+  // Retry once for the replacement token; repeated churn is uncertainty and
+  // therefore a closed route, never implicit access.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let token: string | null | typeof ROUTE_AUTHORIZATION_ABORTED;
+    try {
+      token = await authorizeRouteSession(store, signal);
+    } catch (error) {
+      if (signal.aborted) return;
+      if (
+        error instanceof GamesClientError &&
+        (error.code === "authentication" || error.code === "unauthorized")
+      )
+        login(true);
+      // A transport/storage failure proves neither identity nor entitlement.
+      // Let the route error boundary fail closed instead of guessing either.
+      throw error;
+    }
+    if (token === ROUTE_AUTHORIZATION_ABORTED || signal.aborted) return;
+    if (token === null) {
+      if (store.getSnapshot() !== null) continue;
+      return login();
+    }
+    if (store.getSnapshot()?.token !== token) continue;
+    if (!resolveEntitlement)
+      throw new GamesClientError(
+        "configuration",
+        "Product access could not be verified.",
+      );
+    let entitlement: Awaited<ReturnType<typeof resolveEntitlement>>;
+    try {
+      entitlement = await resolveEntitlement(token, signal);
+    } catch (error) {
+      if (signal.aborted) return;
+      if (store.getSnapshot()?.token !== token) continue;
+      if (
+        error instanceof GamesClientError &&
+        (error.code === "authentication" || error.code === "unauthorized")
+      )
+        login(true);
+      if (
+        error instanceof GamesClientError &&
+        error.code === "payment-required"
+      ) {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
+        throw redirect({ to: SUBSCRIBE_PATH, replace: true });
+      }
+      throw error;
+    }
+    if (store.getSnapshot()?.token !== token) continue;
+    if (!entitlement.hasAccess) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: SUBSCRIBE_PATH, replace: true });
+    }
+    return;
+  }
+  throw new GamesClientError(
+    "configuration",
+    "Product access changed while it was being verified.",
+  );
+};
 // Off-nav screens load on demand so the landing path never parses them.
 const Dashboard = lazy(() =>
   import("./dashboard").then((module) => ({ default: module.Dashboard })),
@@ -613,7 +714,6 @@ export function useWatchlistControl(
   // Mutations outlive the effect that started them, so they share one
   // controller that is aborted when the screen goes away.
   const mutations = useRef<AbortController | null>(null);
-  const entries = useRef<readonly WatchlistEntryDto[]>([]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -623,10 +723,6 @@ export function useWatchlistControl(
       mutations.current = null;
     };
   }, []);
-
-  useEffect(() => {
-    entries.current = state.kind === "ready" ? state.entries : [];
-  }, [state]);
 
   useEffect(() => {
     if (!listWatchlist) return;
@@ -709,9 +805,13 @@ export function useWatchlistControl(
     async (eventId: string): Promise<boolean> => {
       const signal = mutations.current?.signal;
       if (!removeFromWatchlist || !signal) return false;
-      const removed = entries.current.find(
-        (entry) => entry.eventId === eventId,
-      );
+      // Capture rollback data from the exact render that exposed the Remove
+      // button. Mirroring entries through an effect leaves a brief window in
+      // which the row is visible but its rollback snapshot is still stale.
+      const removed =
+        state.kind === "ready"
+          ? state.entries.find((entry) => entry.eventId === eventId)
+          : undefined;
       markPending(eventId, true);
       setMutationError(null);
       setState((current) =>
@@ -748,7 +848,7 @@ export function useWatchlistControl(
         markPending(eventId, false);
       }
     },
-    [markPending, removeFromWatchlist],
+    [markPending, removeFromWatchlist, state],
   );
 
   const watched = useMemo(
@@ -3052,7 +3152,16 @@ function RootLayout() {
 
 const rootRoute = createRootRouteWithContext<{
   readonly session: SessionStore;
+  readonly resolveEntitlement?: UiGamesClient["entitlement"];
 }>()({
+  beforeLoad: ({ context, location, abortController }) =>
+    requireEntitledSession(
+      context.session,
+      context.resolveEntitlement,
+      location.pathname,
+      location.searchStr,
+      abortController.signal,
+    ),
   component: RootLayout,
   errorComponent: AppError,
 });
@@ -3440,15 +3549,22 @@ export function App({
   initialPath,
   gamesClient,
   sessionStore = defaultSessionStore,
+  routeEntitlement,
+  sessionRefresherInstalled = false,
 }: {
   initialPath?: string;
   gamesClient?: GamesClientResult;
   sessionStore?: SessionStore;
+  routeEntitlement?: UiGamesClient["entitlement"];
+  sessionRefresherInstalled?: boolean;
 }) {
+  const client = gamesClient ?? defaultGamesClient;
+  const resolveEntitlement =
+    routeEntitlement ?? (client.ok ? client.value.entitlement : undefined);
   const [router] = useState(() =>
     createRouter({
       routeTree,
-      context: { session: sessionStore },
+      context: { session: sessionStore, resolveEntitlement },
       ...(initialPath
         ? {
             history: createMemoryHistory({
@@ -3464,19 +3580,20 @@ export function App({
         defaultOptions: { queries: { retry: false } },
       }),
   );
-  const client = gamesClient ?? defaultGamesClient;
   useEffect(() => {
     // Warm today's board while the reader is elsewhere so opening splits is a
     // cache read rather than a cold round trip.
-    if (client.ok) prefetchSplits(client.value, "mlb", currentEasternDay());
-  }, [client]);
+    if (client.ok && requiresSession(router.state.location.pathname))
+      prefetchSplits(client.value, "mlb", currentEasternDay());
+  }, [client, router]);
   const refreshSession = client.ok ? client.value.refreshSession : undefined;
   useEffect(() => {
+    if (sessionRefresherInstalled) return;
     // The store renews through whatever client this deployment has; without
     // one it simply lets the token run out and signs the reader out.
     sessionStore.setRefresher(refreshSession ?? null);
     return () => sessionStore.setRefresher(null);
-  }, [refreshSession, sessionStore]);
+  }, [refreshSession, sessionRefresherInstalled, sessionStore]);
   return (
     <QueryClientProvider client={queryClient}>
       <SessionContext.Provider value={sessionStore}>

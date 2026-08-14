@@ -6,10 +6,11 @@ import {
 } from "@find-the-edge/domain";
 
 import {
-  createGamesClient,
+  createGamesClient as createGamesClientWithTransport,
   GamesClientError,
   isCanonicalEventStatus,
   parsePublicScoutingJob,
+  type OwnedSessionTransport,
 } from "./api";
 import type { RuntimeBootstrap } from "./runtime-config";
 
@@ -126,6 +127,22 @@ const bootstrap = (): RuntimeBootstrap => ({
     cognitoClientId: "client-id",
   },
 });
+
+const ownedToken = `fte1.${"payload".padEnd(40, "x")}.${"a".repeat(64)}`;
+const ownedAccount = `account:${"b".repeat(64)}`;
+const authorization = (token = ownedToken) => ({
+  token,
+  accountId: ownedAccount,
+});
+const ownedSession = (): OwnedSessionTransport => ({
+  authorize: vi.fn(() => Promise.resolve(authorization())),
+  refuse: vi.fn(),
+});
+const createGamesClient = (
+  runtime: Parameters<typeof createGamesClientWithTransport>[0],
+  fetcher: typeof fetch = fetch,
+  session: OwnedSessionTransport = ownedSession(),
+) => createGamesClientWithTransport(runtime, fetcher, session);
 
 describe("scouting browser client", () => {
   const job = {
@@ -285,7 +302,10 @@ describe("scouting browser client", () => {
   ])("rejects invalid access-token claims locally", async (overrides) => {
     installProvider(token(undefined, overrides));
     const fetcher = vi.fn<typeof fetch>();
-    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    const result = createGamesClientWithTransport(
+      { ok: true, value: bootstrap() },
+      fetcher,
+    );
     if (!result.ok) throw result.error;
     await expect(
       result.value.getScoutingJob?.(job.jobId, new AbortController().signal),
@@ -643,8 +663,150 @@ describe("provider status client", () => {
   });
 });
 
+describe("owned product transport", () => {
+  it("fails before a product fetch when no owned session is usable", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const result = createGamesClientWithTransport(
+      { ok: true, value: bootstrap() },
+      fetcher,
+    );
+    if (!result.ok) throw result.error;
+
+    await expect(
+      result.value.listOpportunities!("mlb", new AbortController().signal),
+    ).rejects.toMatchObject({ code: "authentication" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("reports a session that disappears before the fetch", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const refuse = vi.fn();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      fetcher,
+      { authorize: () => Promise.resolve(null), refuse },
+    );
+    if (!result.ok) throw result.error;
+
+    await expect(
+      result.value.listOpportunities!("mlb", new AbortController().signal),
+    ).rejects.toMatchObject({ code: "authentication" });
+    expect(refuse).toHaveBeenCalledWith(null, "authentication");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("reports rejected owned sessions and preserves payment-required", async () => {
+    const refuse = vi.fn();
+    const session = {
+      authorize: vi.fn(() => Promise.resolve(authorization())),
+      refuse,
+    };
+    const unauthorized = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 401 })),
+      session,
+    );
+    if (!unauthorized.ok) throw unauthorized.error;
+    await expect(
+      unauthorized.value.listOpportunities!(
+        "mlb",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "authentication" });
+    expect(refuse).toHaveBeenLastCalledWith(authorization(), "authentication");
+
+    const paymentRequired = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 402 })),
+      session,
+    );
+    if (!paymentRequired.ok) throw paymentRequired.error;
+    await expect(
+      paymentRequired.value.listExperiments!(new AbortController().signal),
+    ).rejects.toMatchObject({ code: "payment-required" });
+    expect(refuse).toHaveBeenLastCalledWith(
+      authorization(),
+      "payment-required",
+    );
+    expect(refuse).toHaveBeenCalledTimes(2);
+  });
+
+  it("reauthorizes every page and sends the latest token", async () => {
+    const nextItem = {
+      ...payload.items[0]!,
+      id: "event:mlb%3Amlb:fixture-2",
+      startsAt: "2026-08-01T23:06:00.000Z",
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...payload, nextCursor: "next" })),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ...payload, items: [nextItem], nextCursor: null }),
+        ),
+      );
+    const authorize = vi
+      .fn<OwnedSessionTransport["authorize"]>()
+      .mockResolvedValueOnce(authorization(`${ownedToken}-page-1`))
+      .mockResolvedValueOnce(authorization(`${ownedToken}-page-2`));
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      fetcher,
+      { authorize, refuse: vi.fn() },
+    );
+    if (!result.ok) throw result.error;
+
+    await expect(
+      result.value.list(
+        { sport: "mlb", day: "2026-08-01" },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ items: [{ id: payload.items[0]!.id }] });
+    expect(authorize).toHaveBeenCalledTimes(2);
+    expect(
+      fetcher.mock.calls.map((call) =>
+        new Headers(call[1]?.headers).get("authorization"),
+      ),
+    ).toEqual([`Bearer ${ownedToken}-page-1`, `Bearer ${ownedToken}-page-2`]);
+  });
+
+  it("does not fetch when the caller aborts while authorization is pending", async () => {
+    let resolveAuthorization!: (
+      value: ReturnType<typeof authorization>,
+    ) => void;
+    const authorize = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof authorization>>((resolve) => {
+          resolveAuthorization = resolve;
+        }),
+    );
+    const fetcher = vi.fn<typeof fetch>();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      fetcher,
+      { authorize, refuse: vi.fn() },
+    );
+    if (!result.ok) throw result.error;
+    const controller = new AbortController();
+    const reason = new DOMException("Stopped", "AbortError");
+    const pending = result.value.listOpportunities!("mlb", controller.signal);
+    controller.abort(reason);
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetcher).not.toHaveBeenCalled();
+    // The shared refresh is not canceled; settling it later remains harmless.
+    resolveAuthorization(authorization());
+  });
+});
+
 describe("ranked opportunity client", () => {
-  it("keeps the public server order and sends no credentials", async () => {
+  it("keeps the server order and sends the owned session", async () => {
     const body = rankedPage([
       rankedOpportunity("a", 0.12),
       rankedOpportunity("b", 0.08),
@@ -667,7 +829,9 @@ describe("ranked opportunity client", () => {
       "https://api.example.test/sports/mlb/opportunities?limit=20",
     );
     expect(fetcher.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
-    expect(fetcher.mock.calls[0]?.[1]?.headers).toBeUndefined();
+    expect(
+      new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("authorization"),
+    ).toBe(`Bearer ${ownedToken}`);
     expect(fetcher.mock.calls[0]?.[1]?.credentials).toBeUndefined();
   });
 
@@ -2202,7 +2366,7 @@ describe("games client", () => {
     });
     Reflect.deleteProperty(globalThis, "session");
   });
-  it("uses the runtime API base without an authorization header", async () => {
+  it("uses the runtime API base with the owned authorization header", async () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify(payload)));
@@ -2218,7 +2382,9 @@ describe("games client", () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe(
       "https://api.example.test/games?sport=mlb&league=mlb&status=scheduled&day=2026-08-01&limit=50",
     );
-    expect(fetcher.mock.calls[0]?.[1]?.headers).toBeUndefined();
+    expect(
+      new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("authorization"),
+    ).toBe(`Bearer ${ownedToken}`);
   });
 
   it("accepts a complete ordered soccer three-way market", async () => {

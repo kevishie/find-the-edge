@@ -1,10 +1,20 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type Page,
+} from "@playwright/test";
 
 const expectedApiBase = process.env["FTE_PHASE1_API_BASE"];
 const expectedWebOrigin = process.env["FTE_WEB_ORIGIN"];
 if (!expectedApiBase) throw new Error("FTE_PHASE1_API_BASE is required");
 if (!expectedWebOrigin) throw new Error("FTE_WEB_ORIGIN is required");
 const apiBase = expectedApiBase.replace(/\/$/, "");
+const webOrigin = new URL(expectedWebOrigin).origin;
+const fixtureSession = {
+  token: `fte1.${"payload".padEnd(40, "x")}.${"a".repeat(64)}`,
+  accountId: `account:${"b".repeat(64)}`,
+};
 
 const easternDay = (offset: number) => {
   const date = new Date(Date.now() + offset * 86_400_000);
@@ -81,34 +91,80 @@ async function findEmptyDay(
   return null;
 }
 
-test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
+async function openEntitledExplorer(page: Page) {
+  // This hosted-data smoke is not an identity lifecycle test: it supplies a
+  // synthetic, client-only session and an explicit entitlement decision so
+  // the protected bundle can exercise real staging API data. The API's
+  // product-access flag remains off during this migration, and the separate
+  // signed-out test below still proves the live login boundary.
+  let entitlementChecks = 0;
+  await page.route(`${apiBase}/billing/entitlement`, async (route) => {
+    const corsHeaders = {
+      "access-control-allow-origin": webOrigin,
+      "access-control-allow-methods": "GET, OPTIONS",
+      "access-control-allow-headers": "authorization",
+      "cache-control": "no-store",
+      vary: "origin",
+    };
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: corsHeaders });
+      return;
+    }
+    if (route.request().method() !== "GET") {
+      await route.fulfill({ status: 405, headers: corsHeaders });
+      return;
+    }
+    if (
+      route.request().headers()["authorization"] !==
+      `Bearer ${fixtureSession.token}`
+    ) {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        headers: corsHeaders,
+        body: JSON.stringify({ error: "unauthorized" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: corsHeaders,
+      body: JSON.stringify({
+        schemaVersion: "billing-entitlement-v1",
+        state: "active",
+        accessUntil: null,
+        hasAccess: true,
+      }),
+    });
+    entitlementChecks += 1;
+  });
+  await page.addInitScript(({ token, accountId }) => {
     sessionStorage.removeItem("fte.oauth.session");
     sessionStorage.removeItem("fte.oauth.state");
     sessionStorage.removeItem("fte.oauth.verifier");
-    // Product routes require a session. This is a well-formed fixture, not a
-    // credential: the client guard asks only whether a live session exists,
-    // and the hosted API does not yet enforce entitlement. When enforcement
-    // is turned on, this smoke needs a real test account and these two data
-    // tests will fail loudly rather than silently pass — which is the point.
     localStorage.setItem(
       "fte.session.v1",
       JSON.stringify({
-        token: `fte1.${"payload".padEnd(40, "x")}.${"a".repeat(64)}`,
+        token,
         expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
-        accountId: `account:${"b".repeat(64)}`,
+        accountId,
       }),
     );
-  });
+  }, fixtureSession);
   await page.goto("/events");
   // The explorer fills its default search parameters, so the path is a prefix.
   await page.waitForURL(/\/events(\?|$)/);
-});
+  // A stale pre-guard bundle could otherwise render against the still-open
+  // migration API and falsely pass without exercising entitlement at all.
+  await expect.poll(() => entitlementChecks).toBeGreaterThan(0);
+}
 
 test("real hosted bundle loads provider MLB and MLS games by day", async ({
   page,
   request,
 }) => {
+  await openEntitledExplorer(page);
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -173,6 +229,7 @@ test("hosted event drill-in resolves a provider game through the gateway", async
   page,
   request,
 }) => {
+  await openEntitledExplorer(page);
   const mlb = await findProviderGame(request, "mlb", true);
   test.skip(mlb === null, "no provider-backed MLB evidence is ingested yet");
   // The gateway's path-parameter decoding has corrupted percent-embedded
@@ -196,13 +253,11 @@ test("a signed-out visitor reaches our own form, never a hosted login", async ({
   // real hosted bundle is where a signed-out visitor ends up: our own route,
   // on our own origin, with no OAuth material stored on the way.
   await context.clearCookies();
-  await page.addInitScript(() => {
-    localStorage.removeItem("fte.session.v1");
-  });
+  await page.addInitScript(() => localStorage.removeItem("fte.session.v1"));
   await page.goto("/splits");
 
   await page.waitForURL(/\/login(\?|$)/, { timeout: 20_000 });
-  expect(new URL(page.url()).origin).toBe(expectedWebOrigin);
+  expect(new URL(page.url()).origin).toBe(webOrigin);
   // The destination survived the trip, so signing in resumes the journey.
   expect(new URL(page.url()).searchParams.get("returnUrl")).toBe("/splits");
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();

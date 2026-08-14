@@ -421,6 +421,13 @@ it("says so plainly when the deployment has no identity API", () => {
 
 describe("the shell indicator", () => {
   const shellClient = { ok: true as const, value: { list: vi.fn() } };
+  const routeEntitlement = () =>
+    Promise.resolve({
+      schemaVersion: "billing-entitlement-v1" as const,
+      state: "active",
+      accessUntil: "2099-08-01T00:00:00.000Z",
+      hasAccess: true,
+    });
   const live = (): Session => ({
     token: TOKEN,
     expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
@@ -439,6 +446,7 @@ describe("the shell indicator", () => {
         initialPath="/performance"
         gamesClient={shellClient}
         sessionStore={sessionStore}
+        routeEntitlement={routeEntitlement}
       />,
     );
 
@@ -461,6 +469,7 @@ describe("the shell indicator", () => {
         initialPath="/performance"
         gamesClient={shellClient}
         sessionStore={store()}
+        routeEntitlement={routeEntitlement}
       />,
     );
 
@@ -486,6 +495,7 @@ describe("the shell indicator", () => {
           value: { ...shellClient.value, revokeSession },
         }}
         sessionStore={sessionStore}
+        routeEntitlement={routeEntitlement}
       />,
     );
 
@@ -521,6 +531,7 @@ describe("the shell indicator", () => {
           value: { ...shellClient.value, revokeSession },
         }}
         sessionStore={sessionStore}
+        routeEntitlement={routeEntitlement}
       />,
     );
 

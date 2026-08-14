@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { anonymousTest as test, expect } from "./session";
 
 import { startLocalGamesApi, type LocalGamesApi } from "./local-games-api";
 
@@ -176,10 +176,8 @@ test("signs in on our own form, lands where it started, survives a reload, and s
   // every request is about to fail. Nothing this app stored survives it.
   await page.evaluate(() => localStorage.setItem("fte.splitsView", "grid"));
   await page.getByRole("button", { name: "Sign out" }).click();
-  await page.waitForURL(/\/(\?|$)/, { timeout: 20_000 });
-  await expect(
-    page.getByRole("link", { name: "Start free trial" }).first(),
-  ).toBeVisible();
+  await page.waitForURL(/\/login\?returnUrl=%2F$/, { timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   await expect(
     page.evaluate(() => ({
       session: localStorage.getItem("fte.session.v1"),

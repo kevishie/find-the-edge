@@ -1,5 +1,4 @@
-import { expect, test } from "@playwright/test";
-import { seedSession } from "./session";
+import { expect, test } from "./session";
 
 const opportunity = (suffix: string, expectedValue: number) => ({
   schemaVersion: "ranked-opportunity-dto-v1",
@@ -64,10 +63,6 @@ const opportunity = (suffix: string, expectedValue: number) => ({
     sportModule: { id: "mlb", version: "1.0.0" },
     calculation: { id: "opportunity-qualification", version: "1.0.0" },
   },
-});
-
-test.beforeEach(async ({ page }) => {
-  await seedSession(page);
 });
 
 test("renders the ranked evidence dashboard without horizontal overflow", async ({
