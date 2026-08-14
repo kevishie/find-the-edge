@@ -308,6 +308,9 @@ type TransactAction = Readonly<
 
 class FakeReportTableClient {
   readonly transactWrites: Record<string, unknown>[] = [];
+  readonly queryInputs: Record<string, unknown>[] = [];
+  readonly getInputs: Record<string, unknown>[] = [];
+  readonly querySnapshots: Record<string, unknown>[][] = [];
   onBeforeTransact: (() => void) | null = null;
   private readonly items = new Map<string, Record<string, unknown>>();
 
@@ -379,12 +382,16 @@ class FakeReportTableClient {
     await Promise.resolve();
     const command = raw as CommandLike;
     if (command.constructor.name === "GetCommand") {
+      this.getInputs.push(structuredClone(command.input));
       const item = this.getItem(
         command.input["Key"] as { pk: string; sk: string },
       );
       return item === undefined ? {} : { Item: item };
     }
     if (command.constructor.name === "QueryCommand") {
+      this.queryInputs.push(structuredClone(command.input));
+      const snapshot = this.querySnapshots.shift();
+      if (snapshot !== undefined) return { Items: structuredClone(snapshot) };
       const values = command.input["ExpressionAttributeValues"] as Record<
         string,
         unknown
@@ -495,6 +502,45 @@ const completeFirst = async (harness: Harness) => {
     completedAt: T3,
   });
 };
+
+it("allows a stale version-list omission without weakening the authoritative version", async () => {
+  const harness = createDynamoHarness();
+  const completed = await completeFirst(harness);
+  const writes = harness.client.transactWrites.length;
+  const getIndex = harness.client.getInputs.length;
+  harness.client.querySnapshots.push([]);
+
+  await expect(
+    harness.repo.listVersions(reportId, requesterId),
+  ).resolves.toEqual([]);
+  await expect(
+    harness.repo.getVersion(reportId, 1, requesterId),
+  ).resolves.toEqual(completed.version);
+  await expect(
+    harness.repo.getVersion(reportId, 1, "requester-other"),
+  ).resolves.toBeNull();
+  await expect(
+    harness.repo.listVersions(reportId, requesterId),
+  ).resolves.toEqual([completed.version]);
+
+  expect(harness.client.queryInputs[0]).toMatchObject({
+    ConsistentRead: false,
+    ExpressionAttributeValues: {
+      ":pk": `SCOUT_REPORT#${reportId}`,
+      ":prefix": "V#",
+    },
+  });
+  expect(harness.client.getInputs[getIndex]).toMatchObject({
+    ConsistentRead: true,
+  });
+  expect(harness.client.getInputs[getIndex + 1]).toMatchObject({
+    ConsistentRead: true,
+  });
+  expect(harness.client.queryInputs[1]).toMatchObject({
+    ConsistentRead: false,
+  });
+  expect(harness.client.transactWrites).toHaveLength(writes);
+});
 
 const completeWinner = async (harness: Harness) => {
   harness.setEventVersion(eventId, 8);

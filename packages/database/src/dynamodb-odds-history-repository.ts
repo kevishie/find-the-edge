@@ -30,7 +30,9 @@ export class DynamoOddsHistoryRepository extends JoinedOddsHistoryRepository {
                 ":from": input.fromSk,
                 ":to": input.toSk,
               },
-              ConsistentRead: true,
+              // History rows are immutable and timestamped; a stale replica
+              // may omit a recent chart point but cannot change evidence.
+              ConsistentRead: false,
               ScanIndexForward: true,
               Limit: input.limit,
               ...(input.startSk

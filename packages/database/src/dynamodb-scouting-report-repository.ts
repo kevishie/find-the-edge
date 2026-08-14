@@ -124,6 +124,7 @@ export class DynamoScoutingReportRepository implements ScoutingReportRepository 
       new GetCommand({
         TableName: this.tableName,
         Key: key,
+        // Completion CAS, bindings, event fences, and replay share this read.
         ConsistentRead: true,
       }),
     );
@@ -657,7 +658,9 @@ export class DynamoScoutingReportRepository implements ScoutingReportRepository 
             ":pk": reportPartition(reportId),
             ":prefix": VERSION_SK_PREFIX,
           },
-          ConsistentRead: true,
+          // Version history is immutable requester-scoped presentation data;
+          // completion, replay, and head CAS use strong point reads.
+          ConsistentRead: false,
           ...(cursor ? { ExclusiveStartKey: cursor } : {}),
         }),
       );

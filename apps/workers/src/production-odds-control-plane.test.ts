@@ -2638,18 +2638,18 @@ describe("production odds control-plane composition", () => {
           retrievedAt: at,
         }),
       );
-      const commitEvidencePage = control.commitEvidencePage.bind(control);
+      const commitEvidencePages = control.commitEvidencePages.bind(control);
       let failConflictCommit = replayMode === "different-category";
       let liveTime = now.getTime();
-      vi.spyOn(control, "commitEvidencePage").mockImplementation(
-        (run, token, at) => {
-          if (token === "0:schedule-conflicts" && failConflictCommit) {
+      const compoundCommit = vi
+        .spyOn(control, "commitEvidencePages")
+        .mockImplementation((run, tokens, at) => {
+          if (tokens.includes("0:schedule-conflicts") && failConflictCommit) {
             failConflictCommit = false;
             return Promise.reject(new Error("conflict-page-commit-failed"));
           }
-          return commitEvidencePage(run, token, at);
-        },
-      );
+          return commitEvidencePages(run, tokens, at);
+        });
       const options = {
         events,
         odds: { persist: vi.fn() },
@@ -2706,6 +2706,14 @@ describe("production odds control-plane composition", () => {
           ([league]) => league.leagueKey === "mlb",
         ),
       ).toHaveLength(1);
+      const mlbCompoundCommits = compoundCommit.mock.calls.filter(
+        ([run]) => run === "schedule:mlb:2026-08-03T12:00:00.000Z",
+      );
+      expect(mlbCompoundCommits).toHaveLength(
+        replayMode === "resolved" ? 1 : 2,
+      );
+      for (const [, tokens] of mlbCompoundCommits)
+        expect(tokens).toEqual(["0", "0:schedule-conflicts"]);
       expect(conflictReconciliationCalls).toBe(1);
       const conflictGaps = [...control.gaps.values()].filter(
         ({ reason }) => reason === "mapping-provenance-conflict",

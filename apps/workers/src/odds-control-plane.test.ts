@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   approvedSportsbookCollection,
+  oddsCollectionPolicyVersion,
   productionOddsCollectionPolicies,
 } from "@find-the-edge/config";
-import { MemoryOddsControlPlaneStore } from "@find-the-edge/database";
+import {
+  MemoryOddsControlPlaneStore,
+  type OddsRunRecord,
+  type SealedOddsPage,
+} from "@find-the-edge/database";
 import {
   classifyOddsControlPlaneFailure,
   deduplicateProviderBookEvidence,
@@ -18,6 +23,29 @@ import {
   type ControlPlaneProvider,
 } from "./odds-control-plane";
 const now = new Date("2026-08-03T12:00:00.000Z");
+
+class CountingOddsControlPlaneStore extends MemoryOddsControlPlaneStore {
+  runAccesses = 0;
+  pageReads = 0;
+
+  override getRun(id: string) {
+    this.runAccesses += 1;
+    return super.getRun(id);
+  }
+
+  override transitionRun(previous: OddsRunRecord | null, value: OddsRunRecord) {
+    this.runAccesses += 1;
+    return super.transitionRun(previous, value);
+  }
+
+  override getPage(
+    runId: string,
+    token: string,
+  ): Promise<SealedOddsPage | null> {
+    this.pageReads += 1;
+    return super.getPage(runId, token);
+  }
+}
 
 it("preserves the last success when a later provider attempt fails", () => {
   const healthy = healthyOddsProviderState(null, {
@@ -104,6 +132,7 @@ const provider = (
 describe("odds collection control plane", () => {
   it("records an overlapping schedule owner as a recoverable skip", async () => {
     const store = new MemoryOddsControlPlaneStore();
+    const metrics = { emit: vi.fn() };
 
     await expect(
       runOddsLeague({
@@ -113,6 +142,7 @@ describe("odds collection control plane", () => {
         committer: { commit: vi.fn() },
         now,
         dependencyFailure: "schedule-provider-recovering",
+        metrics,
       }),
     ).resolves.toEqual({
       leagueKey: policy.leagueKey,
@@ -122,14 +152,13 @@ describe("odds collection control plane", () => {
       quotaCost: 0,
     });
 
-    expect(
-      [...store.runs.values()].find(
-        ({ runId }) =>
-          runId === `${policy.leagueKey}:odds:${now.toISOString()}`,
-      ),
-    ).toMatchObject({
+    expect(store.runs.size).toBe(0);
+    expect(metrics.emit).toHaveBeenCalledWith("OddsPassAudit", 1, {
       status: "skipped",
-      skipReason: "schedule-provider-recovering",
+      reason: "schedule-provider-recovering",
+      league: "mlb",
+      provider: "none",
+      policyVersion: oddsCollectionPolicyVersion,
     });
   });
 
@@ -343,6 +372,7 @@ describe("odds collection control plane", () => {
   });
   it("durably skips calls when cadence is not due", async () => {
     const store = new MemoryOddsControlPlaneStore();
+    const metrics = { emit: vi.fn() };
     await store.putCheckpoint({
       leagueKey: "mlb",
       providerId: "sharpapi",
@@ -357,10 +387,18 @@ describe("odds collection control plane", () => {
       providers: new Map([["sharpapi", provider("sharpapi", fetchPage)]]),
       committer: { commit: vi.fn() },
       now,
+      metrics,
     });
     expect(result.status).toBe("skipped");
     expect(fetchPage).not.toHaveBeenCalled();
-    expect([...store.runs.values()][0]?.skipReason).toBe("cadence-not-due");
+    expect(store.runs.size).toBe(0);
+    expect(metrics.emit).toHaveBeenCalledWith("OddsPassAudit", 1, {
+      status: "skipped",
+      reason: "cadence-not-due",
+      league: "mlb",
+      provider: "none",
+      policyVersion: oddsCollectionPolicyVersion,
+    });
   });
   it("honors an operator force refresh even when cadence is not due", async () => {
     const store = new MemoryOddsControlPlaneStore();
@@ -389,7 +427,7 @@ describe("odds collection control plane", () => {
     expect(fetchPage).toHaveBeenCalledOnce();
   });
   it("safely skips when another invocation owns the league before evidence", async () => {
-    const store = new MemoryOddsControlPlaneStore();
+    const store = new CountingOddsControlPlaneStore();
     await store.claimContinuation({
       leagueKey: policy.leagueKey,
       runId: "active-run",
@@ -402,6 +440,8 @@ describe("odds collection control plane", () => {
       ownerId: "other-owner",
       leaseUntil: "2026-08-03T12:05:00.000Z",
     });
+    store.runAccesses = 0;
+    store.pageReads = 0;
     const fetchPage = vi.fn();
     const result = await runOddsLeague({
       policy,
@@ -417,6 +457,42 @@ describe("odds collection control plane", () => {
       pages: 0,
     });
     expect(fetchPage).not.toHaveBeenCalled();
+    expect(store.runAccesses).toBe(0);
+    expect(store.pageReads).toBe(0);
+  });
+  it("reclaims an owned continuation whose lease timestamps are malformed", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    store.continuations.set(policy.leagueKey, {
+      leagueKey: policy.leagueKey,
+      runId: "malformed-lease-run",
+      providerId: "sharpapi",
+      updatedAt: "not-a-time",
+      startedAt: now.toISOString(),
+      capability: "odds",
+      evidenceCommitted: false,
+      quotaCost: 0,
+      ownerId: "vanished-owner",
+      leaseUntil: "also-not-a-time",
+      version: 1,
+    });
+    const fetchPage = vi.fn().mockResolvedValue({
+      items: [],
+      gaps: [],
+      quotaCost: 1,
+      digest: "reclaimed",
+    });
+
+    const result = await runOddsLeague({
+      policy,
+      store,
+      providers: new Map([["sharpapi", provider("sharpapi", fetchPage)]]),
+      committer: { commit: vi.fn().mockResolvedValue(false) },
+      now,
+      forceRefresh: true,
+    });
+
+    expect(result).toMatchObject({ status: "completed", pages: 1 });
+    expect(fetchPage).toHaveBeenCalledOnce();
   });
   it("starts a newly claimed lease from the live clock, not invocation time", async () => {
     const store = new MemoryOddsControlPlaneStore();
@@ -717,10 +793,17 @@ describe("odds collection control plane", () => {
       name: "recovered page evidence intent",
       runCommitted: false,
       pageIntent: true,
+      pageEvidenceCommit: false,
+    },
+    {
+      name: "recovered empty-page evidence commit",
+      runCommitted: false,
+      pageIntent: false,
+      pageEvidenceCommit: true,
     },
   ])(
     "never restarts a terminal cursor after $name",
-    async ({ runCommitted, pageIntent }) => {
+    async ({ runCommitted, pageIntent, pageEvidenceCommit = false }) => {
       const store = new MemoryOddsControlPlaneStore();
       const staleRunId = "mlb:sharpapi:committed-cursor-run";
       await store.putRun({
@@ -757,6 +840,9 @@ describe("odds collection control plane", () => {
         quotaCost: 1,
         sealedAt: "2026-08-03T10:01:00.000Z",
         ...(pageIntent ? { evidenceIntentAt: "2026-08-03T10:01:00.500Z" } : {}),
+        ...(pageEvidenceCommit
+          ? { evidenceCommittedAt: "2026-08-03T10:01:01.000Z" }
+          : {}),
         committedAt: "2026-08-03T10:01:01.000Z",
       });
       const fetchPage = vi.fn().mockResolvedValue({
@@ -1161,6 +1247,7 @@ describe("odds collection control plane", () => {
   });
   it("does not call a provider below reserve and durably records the skip", async () => {
     const store = new MemoryOddsControlPlaneStore();
+    const metrics = { emit: vi.fn() };
     await store.putHealth({
       providerId: "sharpapi",
       healthy: true,
@@ -1185,12 +1272,32 @@ describe("odds collection control plane", () => {
       ]),
       committer: { commit: vi.fn() },
       now,
+      metrics,
     });
     expect(result).toMatchObject({ status: "failed", reason: "quota-reserve" });
     expect(fetchPage).not.toHaveBeenCalled();
-    expect([...store.runs.values()].map((run) => run.skipReason)).toEqual([
-      "quota-reserve",
-      "quota-reserve",
+    expect(store.runs.size).toBe(0);
+    expect(
+      metrics.emit.mock.calls.filter(([name]) => name === "OddsPassAudit"),
+    ).toEqual([
+      [
+        "OddsPassAudit",
+        1,
+        expect.objectContaining({
+          status: "skipped",
+          reason: "quota-reserve",
+          provider: "sharpapi",
+        }),
+      ],
+      [
+        "OddsPassAudit",
+        1,
+        expect.objectContaining({
+          status: "skipped",
+          reason: "quota-reserve",
+          provider: "the-odds-api",
+        }),
+      ],
     ]);
   });
   it("persists explicit gaps and never falls back after a primary page commits", async () => {
@@ -1602,6 +1709,85 @@ describe("odds collection control plane", () => {
     });
     expect(result).toMatchObject({ status: "completed", pages: 2 });
     expect(fetchPage).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds a fresh 100-page pass to exactly two RUN accesses", async () => {
+    const store = new CountingOddsControlPlaneStore();
+    const commit = vi.fn().mockResolvedValue(true);
+    const fetchPage = vi.fn(({ pageToken }: { pageToken: string }) => {
+      const pageIndex = pageToken === "start" ? 0 : Number(pageToken.slice(5));
+      return Promise.resolve({
+        items: [{ pageIndex }],
+        gaps: [],
+        ...(pageIndex < 99 ? { nextPageToken: `page-${pageIndex + 1}` } : {}),
+        quotaCost: 1,
+        digest: `digest-${pageIndex}`,
+      });
+    });
+
+    const result = await runOddsLeague({
+      policy,
+      store,
+      providers: new Map([["sharpapi", provider("sharpapi", fetchPage)]]),
+      committer: { commit },
+      now,
+    });
+
+    expect(result).toMatchObject({ status: "completed", pages: 100 });
+    expect(fetchPage).toHaveBeenCalledTimes(100);
+    expect(commit).toHaveBeenCalledTimes(100);
+    expect(store.runAccesses).toBe(2);
+  });
+
+  it("bounds a resumed pass to three RUN accesses", async () => {
+    const store = new CountingOddsControlPlaneStore();
+    const runId = `mlb:sharpapi:${now.toISOString()}`;
+    await store.transitionRun(null, {
+      runId,
+      leagueKey: policy.leagueKey,
+      providerId: "sharpapi",
+      policyVersion: oddsCollectionPolicyVersion,
+      status: "running",
+      startedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      evidenceCommitted: false,
+      quotaCost: 0,
+    });
+    await store.claimContinuation({
+      leagueKey: policy.leagueKey,
+      runId,
+      providerId: "sharpapi",
+      updatedAt: now.toISOString(),
+      startedAt: now.toISOString(),
+      capability: "odds",
+      evidenceCommitted: false,
+      quotaCost: 0,
+    });
+    store.runAccesses = 0;
+
+    const result = await runOddsLeague({
+      policy,
+      store,
+      providers: new Map([
+        [
+          "sharpapi",
+          provider(
+            "sharpapi",
+            vi.fn().mockResolvedValue({
+              items: [],
+              gaps: [],
+              quotaCost: 1,
+              digest: "resumed",
+            }),
+          ),
+        ],
+      ]),
+      committer: { commit: vi.fn().mockResolvedValue(false) },
+      now,
+    });
+
+    expect(result).toMatchObject({ status: "completed", pages: 1 });
+    expect(store.runAccesses).toBe(3);
   });
 
   it("reconciles reserved quota to provider authoritative usage", async () => {

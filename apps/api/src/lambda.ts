@@ -26,6 +26,7 @@ import {
   DynamoWatchlistRepository,
   OpportunityCursorCodec,
   boardPartition,
+  readEventProjectionReadiness,
   validateStoredBoard,
   type BoardKey,
 } from "@find-the-edge/database";
@@ -154,11 +155,7 @@ let readinessCache: { readonly ready: boolean; readonly expiresAt: number } = {
 };
 const projectionReady = async () => {
   if (readinessCache.expiresAt > Date.now()) return readinessCache.ready;
-  const item = await gateway.get("EVENT_PROJECTIONS", "READINESS");
-  const ready =
-    !!item &&
-    JSON.stringify(item.value) ===
-      JSON.stringify({ schemaVersion: 1, state: "initialized" });
+  const ready = await readEventProjectionReadiness(gateway);
   readinessCache = {
     ready,
     expiresAt: Date.now() + (ready ? 60_000 : 5_000),

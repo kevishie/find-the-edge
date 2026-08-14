@@ -49,6 +49,7 @@ export class DynamoResultRepository implements ResultRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: key,
+          // Authority ordering must compare against the current winner.
           ConsistentRead: true,
         }),
       ),
@@ -80,6 +81,7 @@ export class DynamoResultRepository implements ResultRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: historyKey,
+          // Replay must verify the immutable authority-history record.
           ConsistentRead: true,
         }),
       );
@@ -111,6 +113,7 @@ export class DynamoResultRepository implements ResultRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: exactKey,
+          // Exact result replay must bind to the authoritative observation.
           ConsistentRead: true,
         }),
       );
@@ -181,6 +184,7 @@ export class DynamoResultRepository implements ResultRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: pk(eventId), sk: "CURRENT" },
+        // Grading requires the authoritative current result evidence.
         ConsistentRead: true,
       }),
     );
@@ -198,6 +202,7 @@ export class DynamoResultRepository implements ResultRepository {
           pk: `RESULT_EXACT#${eventId}`,
           sk: resultObservationId,
         },
+        // Evidence lookup must resolve the exact stored observation.
         ConsistentRead: true,
       }),
     );
@@ -230,6 +235,7 @@ export class DynamoResultRepository implements ResultRepository {
         ...(decoded
           ? { ExclusiveStartKey: { pk: pk(eventId), sk: decoded } }
           : {}),
+        // Grading history must not omit a newly committed correction.
         ConsistentRead: true,
       }),
     );
@@ -263,6 +269,7 @@ export class DynamoResultRepository implements ResultRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: key,
+          // Unresolved replay must observe the latest repair marker.
           ConsistentRead: true,
         }),
       );
@@ -313,6 +320,7 @@ export class DynamoResultRepository implements ResultRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: `RESULT_CHECKPOINT#${key}`, sk: "CURRENT" },
+        // Ingestion continuation must not replay from an older checkpoint.
         ConsistentRead: true,
       }),
     );

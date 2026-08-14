@@ -40,6 +40,7 @@ export class DynamoOpportunityLifecycleRepository implements OpportunityLifecycl
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: partition(logicalOpportunityId), sk: "HEAD" },
+        // State-version transitions and stale-index filtering require the head winner.
         ConsistentRead: true,
       }),
     );
@@ -197,7 +198,9 @@ export class DynamoOpportunityLifecycleRepository implements OpportunityLifecycl
             ":pk": partition(logicalOpportunityId),
             ":prefix": "TRANSITION#",
           },
-          ConsistentRead: true,
+          // Transition history is immutable diagnostic data; lifecycle head
+          // transitions, ranking, and sweep checkpoints remain strong.
+          ConsistentRead: false,
           ...(cursor ? { ExclusiveStartKey: cursor } : {}),
         }),
       );
@@ -326,6 +329,7 @@ export class DynamoOpportunityLifecycleRepository implements OpportunityLifecycl
           pk: `OPPORTUNITY_LIFECYCLE_SWEEP#${sportKey}`,
           sk: `CHECKPOINT#${mode}`,
         },
+        // Sweep continuation must not replay from an older checkpoint.
         ConsistentRead: true,
       }),
     );

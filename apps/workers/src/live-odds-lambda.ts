@@ -30,6 +30,7 @@ import {
   DynamoOddsControlPlaneStore,
   EventCursorCodec,
   materializeBoards,
+  readEventProjectionReadiness,
 } from "@find-the-edge/database";
 import {
   runFocusedSharpOddsIngestion,
@@ -168,6 +169,7 @@ export const assertLiveOddsMaintenanceOwnership = async (
     new GetCommand({
       TableName: tableName,
       Key: { pk: "ODDS_CONTROL#MAINTENANCE#feed-reset", sk: "CURRENT" },
+      // Maintenance ownership and expiry fence destructive feed resets.
       ConsistentRead: true,
     }),
   );
@@ -634,14 +636,7 @@ const runLiveOddsHandler = async (event?: unknown) => {
         new EventCursorCodec({
           current: { id: "board-materializer", secret: randomBytes(32) },
         }),
-        async () => {
-          const item = await boardGateway.get("EVENT_PROJECTIONS", "READINESS");
-          return (
-            !!item &&
-            JSON.stringify(item.value) ===
-              JSON.stringify({ schemaVersion: 1, state: "initialized" })
-          );
-        },
+        () => readEventProjectionReadiness(boardGateway),
       );
       const boardGames = new DynamoGamesRepository(
         boardEvents,

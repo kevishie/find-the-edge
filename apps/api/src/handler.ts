@@ -540,10 +540,9 @@ export const createEventHandler =
           });
           if (syntactic.length === 0)
             throw new EventInputError("watchlist-event-id-invalid");
-          const watched = await watchlistRepository.list(requesterId);
-          const match = syntactic.find((candidate) =>
-            watched.some((entry) => entry.canonicalEventId === candidate),
-          );
+          const match = (
+            await watchlistRepository.findFirst(requesterId, syntactic)
+          )?.canonicalEventId;
           if (match) await watchlistRepository.remove(requesterId, match);
           log({
             event: "watchlist-mutation",

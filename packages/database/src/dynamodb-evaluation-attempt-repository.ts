@@ -44,6 +44,7 @@ export class DynamoEvaluationAttemptRepository implements EvaluationAttemptRepos
         new GetCommand({
           TableName: this.tableName,
           Key: key,
+          // Attempt replay must observe the winning evaluation evidence.
           ConsistentRead: true,
         }),
       );
@@ -61,6 +62,7 @@ export class DynamoEvaluationAttemptRepository implements EvaluationAttemptRepos
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: `EVALUATION_ATTEMPT#${attemptId}`, sk: "RECORD" },
+        // Evaluation consumers must bind to the latest durable attempt.
         ConsistentRead: true,
       }),
     );

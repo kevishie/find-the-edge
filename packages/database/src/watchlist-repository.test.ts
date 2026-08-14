@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
   createWatchlistEntry,
@@ -246,6 +246,82 @@ it("keeps the stored key schema exact", () => {
     pk: "WATCHLIST#user-1",
     sk: PERCENT_EVENT_ID,
   });
+});
+
+it("keeps stale lists observational while exact candidate lookup stays strong", async () => {
+  const authoritative = entry();
+  const key = watchlistItemKey(
+    authoritative.requesterId,
+    authoritative.canonicalEventId,
+  );
+  let queryCount = 0;
+  const send = vi.fn(async (command: CommandLike) => {
+    await Promise.resolve();
+    if (command.constructor.name === "QueryCommand")
+      return queryCount++ === 0
+        ? { Items: [] }
+        : { Items: [{ ...key, value: authoritative }] };
+    if (command.constructor.name === "BatchGetCommand") {
+      const request = command.input["RequestItems"] as Record<
+        string,
+        { Keys: { pk: string; sk: string }[] }
+      >;
+      const [table, options] = Object.entries(request)[0]!;
+      return {
+        Responses: {
+          [table]: options.Keys.some(
+            (candidate) => candidate.pk === key.pk && candidate.sk === key.sk,
+          )
+            ? [{ ...key, value: authoritative }]
+            : [],
+        },
+      };
+    }
+    throw new Error(`unexpected-command:${command.constructor.name}`);
+  });
+  const repo = new DynamoWatchlistRepository(
+    { send } as unknown as DynamoDBDocumentClient,
+    "table",
+  );
+  await expect(repo.list("user-1")).resolves.toEqual([]);
+  await expect(
+    repo.findFirst("user-1", [
+      "event:mlb%3Amlb:missing",
+      authoritative.canonicalEventId,
+    ]),
+  ).resolves.toEqual(authoritative);
+  await expect(
+    repo.findFirst("user-2", [authoritative.canonicalEventId]),
+  ).resolves.toBeNull();
+  await expect(repo.list("user-1")).resolves.toEqual([authoritative]);
+  expect(
+    (send.mock.calls[0]?.[0] as { input: Record<string, unknown> }).input,
+  ).toMatchObject({
+    ConsistentRead: false,
+    ExpressionAttributeValues: { ":pk": "WATCHLIST#user-1" },
+  });
+  for (const index of [1, 2]) {
+    const input = (send.mock.calls[index]?.[0] as CommandLike).input;
+    const request = input["RequestItems"] as Record<
+      string,
+      { ConsistentRead?: boolean; Keys: { pk: string; sk: string }[] }
+    >;
+    expect(request["table"]?.ConsistentRead).toBe(true);
+    expect(request["table"]?.Keys).toSatisfy((keys: { pk: string }[]) =>
+      keys.every(({ pk }) =>
+        pk.startsWith(index === 1 ? "WATCHLIST#user-1" : "WATCHLIST#user-2"),
+      ),
+    );
+  }
+  expect(
+    (send.mock.calls[3]?.[0] as { input: Record<string, unknown> }).input,
+  ).toMatchObject({ ConsistentRead: false });
+  expect(send.mock.calls.map(([command]) => command.constructor.name)).toEqual([
+    "QueryCommand",
+    "BatchGetCommand",
+    "BatchGetCommand",
+    "QueryCommand",
+  ]);
 });
 
 it("re-adds after a concurrent remove drops the conflicting row", async () => {

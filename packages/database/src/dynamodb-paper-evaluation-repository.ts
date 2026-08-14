@@ -120,6 +120,7 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
                 pk: `PAPER_BETS_BY_EVENT#${pair.evaluation.manifest.eventId}`,
                 sk: pair.paperBet.paperBetId,
               },
+              // Transaction replay must see an existing event admission row.
               ConsistentRead: true,
             }),
           ),
@@ -130,6 +131,7 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
                 pk: `PAPER_BETS_BY_DAY#${pair.paperBet.createdAt.slice(0, 10)}`,
                 sk: pair.paperBet.paperBetId,
               },
+              // Transaction replay must see an existing daily admission row.
               ConsistentRead: true,
             }),
           ),
@@ -179,6 +181,7 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: partition(hash), sk },
+        // Evaluation replay must bind to the authoritative stored pair.
         ConsistentRead: true,
       }),
     );
@@ -205,6 +208,7 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
         new GetCommand({
           TableName: this.tableName,
           Key: { pk, sk: input.cursor },
+          // Cursor validation must not accept a stale or removed boundary row.
           ConsistentRead: true,
         }),
       );
@@ -230,6 +234,7 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
           ":pk": pk,
         },
         Limit: input.limit,
+        // Grading must not permanently skip a newly written paper bet.
         ConsistentRead: true,
         ...(input.cursor
           ? {
@@ -286,6 +291,7 @@ export class DynamoPaperEvaluationRepository implements PaperEvaluationRepositor
         KeyConditionExpression: "pk = :pk",
         ExpressionAttributeValues: { ":pk": pk },
         Limit: input.limit,
+        // Cohort sourcing must enumerate the complete authoritative set.
         ConsistentRead: true,
         ...(cursorId ? { ExclusiveStartKey: { pk, sk: cursorId } } : {}),
       }),

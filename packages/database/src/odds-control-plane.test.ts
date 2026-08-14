@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 /* eslint-disable @typescript-eslint/require-await -- fake AWS client implements the SDK's async send contract */
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
@@ -102,20 +102,63 @@ describe("control-plane read amplification", () => {
    * the change removed them.
    */
   class CountingClient {
-    readonly runReads: string[] = [];
+    readonly runAccesses: {
+      readonly operation: string;
+      readonly key: string;
+    }[] = [];
     readonly rows = new Map<string, Record<string, unknown>>();
     send(command: { input?: Record<string, unknown> }) {
       const input = command.input ?? {};
       const key = input["Key"] as { pk?: string; sk?: string } | undefined;
-      if (input["TransactItems"]) return Promise.resolve({});
+      const recordRun = (
+        operation: string,
+        candidate: { pk?: string } | undefined,
+      ) => {
+        if (candidate?.pk?.startsWith("ODDS_CONTROL#RUN#"))
+          this.runAccesses.push({ operation, key: candidate.pk });
+      };
+      if (input["TransactItems"]) {
+        for (const item of input["TransactItems"] as Record<
+          string,
+          { Key?: { pk?: string } }
+        >[])
+          for (const [operation, request] of Object.entries(item))
+            recordRun(operation.toLowerCase(), request.Key);
+        return Promise.resolve({});
+      }
       if (input["Item"]) {
-        const item = input["Item"] as { pk: string; sk: string };
+        const item = input["Item"] as {
+          pk: string;
+          sk: string;
+          value?: Record<string, unknown>;
+        };
+        recordRun("put", item);
+        const existing = this.rows.get(`${item.pk}|${item.sk}`);
+        const expected = (
+          input["ExpressionAttributeValues"] as
+            Record<string, unknown> | undefined
+        )?.[":expected"];
+        if (
+          input["ConditionExpression"] &&
+          ((expected === undefined && existing) ||
+            (expected !== undefined &&
+              (existing?.["value"] as Record<string, unknown> | undefined)?.[
+                "version"
+              ] !== expected))
+        ) {
+          const error = new Error("conditional");
+          error.name = "ConditionalCheckFailedException";
+          return Promise.reject(error);
+        }
         this.rows.set(`${item.pk}|${item.sk}`, item);
         return Promise.resolve({});
       }
-      if (key && input["UpdateExpression"]) return Promise.resolve({});
+      if (key && input["UpdateExpression"]) {
+        recordRun("update", key);
+        return Promise.resolve({});
+      }
       if (key) {
-        if (key.pk?.startsWith("ODDS_CONTROL#RUN#")) this.runReads.push(key.pk);
+        recordRun("get", key);
         return Promise.resolve({
           Item: structuredClone(this.rows.get(`${key.pk!}|${key.sk!}`)),
         });
@@ -134,13 +177,13 @@ describe("control-plane read amplification", () => {
     sealedAt: "2026-08-11T12:00:00.000Z",
   };
 
-  it("commits a page's evidence without reading the run row", async () => {
+  it("keeps one hundred PAGE transitions off the RUN partition", async () => {
     const client = new CountingClient();
     const store = new DynamoOddsControlPlaneStore(
       client as unknown as DynamoDBDocumentClient,
       "table",
     );
-    await store.putRun({
+    await store.transitionRun(null, {
       runId: sealed.runId,
       leagueKey: "mlb",
       providerId: "sharpapi",
@@ -151,32 +194,164 @@ describe("control-plane read amplification", () => {
       evidenceCommitted: false,
       quotaCost: 0,
     });
-    await store.sealPage(sealed);
-    client.runReads.length = 0;
+    for (let index = 0; index < 100; index += 1)
+      await store.sealPage({
+        ...sealed,
+        pageToken: `page-${index}`,
+        responseDigest: `digest-${index}`,
+      });
+    client.runAccesses.length = 0;
 
-    await store.markEvidenceIntent(
-      sealed.runId,
-      sealed.pageToken,
-      "2026-08-11T12:00:01.000Z",
-    );
-    await store.commitEvidencePage(
-      sealed.runId,
-      sealed.pageToken,
-      "2026-08-11T12:00:02.000Z",
-    );
+    for (let index = 0; index < 100; index += 1) {
+      await store.markEvidenceIntent(
+        sealed.runId,
+        `page-${index}`,
+        "2026-08-11T12:00:01.000Z",
+      );
+      await store.commitEvidencePage(
+        sealed.runId,
+        `page-${index}`,
+        "2026-08-11T12:00:02.000Z",
+      );
+    }
 
     // The exactly-once fence lives on the PAGE leg's conditions; the run row
     // only latches a monotonic flag, so neither step needs to read it.
-    expect(client.runReads).toEqual([]);
+    expect(client.runAccesses).toEqual([]);
     // And the counter is genuinely wired: a deliberate read shows up. Without
     // this the assertion above would pass just as happily against a probe
     // that was never connected to anything.
     await store.getRun(sealed.runId);
-    expect(client.runReads).toEqual([`ODDS_CONTROL#RUN#${sealed.runId}`]);
+    expect(client.runAccesses).toEqual([
+      { operation: "get", key: `ODDS_CONTROL#RUN#${sealed.runId}` },
+    ]);
+  });
+
+  it("writes known-new and known-prior RUN transitions without normal-path reads", async () => {
+    const client = new CountingClient();
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    const first = await store.transitionRun(null, {
+      runId: sealed.runId,
+      leagueKey: "mlb",
+      providerId: "sharpapi",
+      policyVersion: "test",
+      status: "running",
+      startedAt: sealed.sealedAt,
+      updatedAt: sealed.sealedAt,
+      evidenceCommitted: false,
+      quotaCost: 0,
+    });
+    expect(client.runAccesses.map(({ operation }) => operation)).toEqual([
+      "put",
+    ]);
+    client.runAccesses.length = 0;
+    const completed = await store.transitionRun(first, {
+      ...first,
+      status: "completed",
+    });
+    expect(completed.version).toBe(2);
+    expect(client.runAccesses.map(({ operation }) => operation)).toEqual([
+      "put",
+    ]);
+  });
+
+  it("compares the full stored value for a legacy versionless RUN", async () => {
+    let captured: Record<string, unknown> | undefined;
+    const client = {
+      send(command: { input: Record<string, unknown> }) {
+        captured = command.input;
+        return Promise.resolve({});
+      },
+    };
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    const previous = {
+      runId: "legacy-run",
+      leagueKey: "mlb",
+      providerId: "sharpapi",
+      policyVersion: "legacy",
+      status: "running" as const,
+      startedAt: sealed.sealedAt,
+      updatedAt: sealed.sealedAt,
+      evidenceCommitted: false,
+      quotaCost: 0,
+    };
+
+    await store.transitionRun(previous, {
+      ...previous,
+      status: "completed",
+    });
+
+    expect(captured?.["ConditionExpression"]).toBe("#v = :previous");
+    expect(captured?.["ExpressionAttributeNames"]).toEqual({ "#v": "value" });
+    expect(captured?.["ExpressionAttributeValues"]).toEqual({
+      ":previous": previous,
+    });
+  });
+
+  it("persists the explicit evidence classification in a Dynamo compound commit", async () => {
+    let captured: Record<string, unknown> | undefined;
+    const store = new DynamoOddsControlPlaneStore(
+      {
+        send(command: { input: Record<string, unknown> }) {
+          captured = command.input;
+          return Promise.resolve({});
+        },
+      } as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+
+    await store.commitEvidencePages(
+      "run-1",
+      ["source", "conflict"],
+      sealed.sealedAt,
+    );
+
+    const items = captured?.["TransactItems"] as
+      { Update?: Record<string, unknown> }[] | undefined;
+    expect(items).toHaveLength(2);
+    for (const item of items ?? [])
+      expect(item.Update).toMatchObject({
+        UpdateExpression: "SET #v.#c = :a, #v.#e = :a",
+        ExpressionAttributeNames: {
+          "#v": "value",
+          "#c": "committedAt",
+          "#e": "evidenceCommittedAt",
+        },
+      });
   });
 });
 
 describe("odds control plane store", () => {
+  it("keeps batch and single health reads strong", async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ Responses: { table: [] } })
+      .mockResolvedValueOnce({});
+    const store = new DynamoOddsControlPlaneStore(
+      { send } as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    await expect(store.getHealthMany(["stale-health"])).resolves.toEqual([
+      null,
+    ]);
+    await expect(store.getHealth("quota-health")).resolves.toBeNull();
+    const batch = send.mock.calls[0]?.[0] as {
+      input: {
+        RequestItems: Record<string, { ConsistentRead?: boolean }>;
+      };
+    };
+    expect(batch.input.RequestItems["table"]?.ConsistentRead).toBe(true);
+    expect(
+      (send.mock.calls[1]?.[0] as { input: Record<string, unknown> }).input,
+    ).toMatchObject({ ConsistentRead: true });
+  });
+
   it("reads bounded exact health keys in caller order", async () => {
     for (const store of stores()) {
       await store.putHealth({
@@ -864,7 +1039,7 @@ describe("atomic paid-call guards", () => {
     expect((await store.getHealth(key))?.quotaRemaining).toBe(98);
   });
 
-  it("commits page and durable run evidence as one operation", async () => {
+  it("keeps PAGE evidence authoritative until the bounded RUN transition", async () => {
     const store = new MemoryOddsControlPlaneStore();
     const at = "2026-08-03T00:00:00.000Z";
     await store.putRun({
@@ -888,12 +1063,105 @@ describe("atomic paid-call guards", () => {
       sealedAt: at,
     });
     await store.commitEvidencePage("run-1", "start", at);
-    expect((await store.getPage("run-1", "start"))?.committedAt).toBe(at);
-    expect((await store.getRun("run-1"))?.evidenceCommitted).toBe(true);
+    expect(await store.getPage("run-1", "start")).toMatchObject({
+      committedAt: at,
+      evidenceCommittedAt: at,
+    });
+    expect((await store.getRun("run-1"))?.evidenceCommitted).toBe(false);
+  });
+
+  it("commits one or two evidence pages atomically and rejects invalid sets", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const at = "2026-08-03T00:00:00.000Z";
+    for (const token of ["source", "conflict"])
+      await store.sealPage({
+        runId: "run-1",
+        pageToken: token,
+        responseDigest: token,
+        normalizedItems: [],
+        gaps: [],
+        quotaCost: 0,
+        sealedAt: at,
+      });
+    await store.commitEvidencePages("run-1", ["source", "conflict"], at);
+    expect(await store.getPage("run-1", "source")).toMatchObject({
+      committedAt: at,
+      evidenceCommittedAt: at,
+    });
+    expect(await store.getPage("run-1", "conflict")).toMatchObject({
+      committedAt: at,
+      evidenceCommittedAt: at,
+    });
+    await expect(
+      store.commitEvidencePages("run-1", ["source", "source"], at),
+    ).rejects.toThrow("evidence-transition-conflict");
+
+    const partial = new MemoryOddsControlPlaneStore();
+    for (const token of ["source", "conflict"])
+      await partial.sealPage({
+        runId: "run-2",
+        pageToken: token,
+        responseDigest: token,
+        normalizedItems: [],
+        gaps: [],
+        quotaCost: 0,
+        sealedAt: at,
+      });
+    await partial.commitEvidencePage("run-2", "source", at);
+    await partial.commitEvidencePages(
+      "run-2",
+      ["conflict"],
+      "2026-08-03T00:01:00.000Z",
+    );
+    expect((await partial.getPage("run-2", "source"))?.committedAt).toBe(at);
+    expect((await partial.getPage("run-2", "conflict"))?.committedAt).toBe(
+      "2026-08-03T00:01:00.000Z",
+    );
+
+    const atomic = new MemoryOddsControlPlaneStore();
+    await atomic.sealPage({
+      runId: "run-3",
+      pageToken: "source",
+      responseDigest: "source",
+      normalizedItems: [],
+      gaps: [],
+      quotaCost: 0,
+      sealedAt: at,
+    });
+    await expect(
+      atomic.commitEvidencePages("run-3", ["source", "missing"], at),
+    ).rejects.toThrow("evidence-transition-conflict");
+    expect(
+      (await atomic.getPage("run-3", "source"))?.committedAt,
+    ).toBeUndefined();
   });
 });
 
 describe("versioned compare-and-swap parity", () => {
+  for (const [index, store] of stores().entries())
+    it(`rejects an unchanged stale prior after the stored RUN advances (${index})`, async () => {
+      const at = "2026-08-03T00:00:00.000Z";
+      const first = await store.transitionRun(null, {
+        runId: `stale-replay-${index}`,
+        leagueKey: "mlb",
+        providerId: "sharpapi",
+        policyVersion: "v1",
+        status: "running",
+        startedAt: at,
+        updatedAt: at,
+        evidenceCommitted: false,
+        quotaCost: 0,
+      });
+      await store.transitionRun(first, {
+        ...first,
+        status: "completed",
+      });
+
+      await expect(store.transitionRun(first, first)).rejects.toThrow(
+        "run-transition-conflict",
+      );
+    });
+
   for (const [index, store] of stores().entries())
     it(`accepts exact replay and rejects equal-time material conflicts (${index})`, async () => {
       const at = "2026-08-03T00:00:00.000Z";

@@ -59,7 +59,11 @@ const sealedEvidenceIntent = async (
   for (let guard = 0; token && guard < 100; guard += 1) {
     const page = await store.getPage(runId, token);
     if (!page) return false;
-    if (page.evidenceIntentAt !== undefined) return true;
+    if (
+      page.evidenceIntentAt !== undefined ||
+      page.evidenceCommittedAt !== undefined
+    )
+      return true;
     token = page.nextPageToken;
   }
   return false;
@@ -550,6 +554,32 @@ const retryable = (error: unknown) =>
   decideOddsRetry({ error, attempt: 1, now: new Date(0), jitter: () => 0 })
     .class === "transient";
 
+const writePassAudit = (input: {
+  readonly status: "skipped" | "failed";
+  readonly reason: string;
+  readonly league: string;
+  readonly provider: string;
+  readonly occurredAt: string;
+  readonly metrics?: OddsControlPlaneMetrics;
+}) => {
+  const dimensions = {
+    status: input.status,
+    reason: input.reason,
+    league: input.league,
+    provider: input.provider,
+    policyVersion: oddsCollectionPolicyVersion,
+  };
+  input.metrics?.emit("OddsPassAudit", 1, dimensions);
+  if (!input.metrics)
+    console.info(
+      JSON.stringify({
+        event: "odds-pass-audit",
+        ...dimensions,
+        occurredAt: input.occurredAt,
+      }),
+    );
+};
+
 export async function runOddsLeague(input: {
   readonly policy: LeagueOddsCollectionPolicy;
   readonly store: OddsControlPlaneStore;
@@ -569,20 +599,13 @@ export async function runOddsLeague(input: {
   if (input.dependencyFailure) {
     const ownershipOverlap =
       input.dependencyFailure === "schedule-provider-recovering";
-    const runId = `${policy.leagueKey}:odds:${now.toISOString()}`;
-    await store.putRun({
-      runId,
-      leagueKey: policy.leagueKey,
-      providerId: "none",
-      policyVersion: oddsCollectionPolicyVersion,
+    writePassAudit({
       status: ownershipOverlap ? "skipped" : "failed",
-      startedAt: iso(now),
-      updatedAt: iso(now),
-      ...(ownershipOverlap
-        ? { skipReason: input.dependencyFailure }
-        : { failureReason: input.dependencyFailure }),
-      evidenceCommitted: false,
-      quotaCost: 0,
+      reason: input.dependencyFailure,
+      league: policy.leagueKey,
+      provider: "none",
+      occurredAt: iso(now),
+      ...(input.metrics ? { metrics: input.metrics } : {}),
     });
     return {
       leagueKey: policy.leagueKey,
@@ -599,8 +622,112 @@ export async function runOddsLeague(input: {
   // run: restarting one would re-walk pages whose evidence is already
   // committed, and no staleness is worth committing evidence twice.
   let continuationEvidenceCommitted = false;
+  let resumedDurableRun: OddsRunRecord | null = null;
+  if (continuation?.ambiguousUntil) {
+    const ambiguousFor =
+      clock().getTime() - Date.parse(continuation.ambiguousUntil);
+    if (
+      !Number.isFinite(ambiguousFor) ||
+      ambiguousFor <= ODDS_AMBIGUITY_MAX_AGE_MS
+    )
+      return {
+        leagueKey: policy.leagueKey,
+        status: "failed",
+        reason: "provider-request-ambiguous",
+        pages: 0,
+        quotaCost: continuation.quotaCost ?? 0,
+      };
+    // A lapsed ambiguity is legally claimable. Only its winner may inspect
+    // PAGE intent to decide whether the paid result is still beyond recall.
+    const reclaimNow = clock();
+    const claimed = await store.claimContinuation({
+      ...continuation,
+      leagueKey: policy.leagueKey,
+      updatedAt: iso(reclaimNow),
+      ownerId,
+      leaseUntil: attemptLeaseUntil(reclaimNow),
+    });
+    if (claimed.ownerId !== ownerId)
+      return {
+        leagueKey: policy.leagueKey,
+        status: "skipped",
+        reason: "provider-recovering",
+        pages: 0,
+        quotaCost: claimed.quotaCost ?? 0,
+      };
+    const ledgerEvidence = await sealedEvidenceIntent(store, claimed.runId);
+    if (!ledgerEvidence) {
+      await clearOwnedContinuation(
+        store,
+        policy.leagueKey,
+        claimed.runId,
+        ownerId,
+      );
+      input.metrics?.emit("OddsAmbiguityAbandoned", 1, {
+        league: policy.leagueKey,
+        provider: claimed.providerId,
+      });
+      return {
+        leagueKey: policy.leagueKey,
+        status: "skipped",
+        reason: "provider-recovering",
+        pages: 0,
+        quotaCost: claimed.quotaCost ?? 0,
+      };
+    }
+    const {
+      ownerId: releasedOwner,
+      leaseUntil: releasedLease,
+      ...unownedContinuation
+    } = claimed;
+    void releasedOwner;
+    void releasedLease;
+    await store.putContinuation(unownedContinuation);
+    return {
+      leagueKey: policy.leagueKey,
+      status: "failed",
+      reason: "provider-request-ambiguous",
+      pages: 0,
+      quotaCost: claimed.quotaCost ?? 0,
+    };
+  }
   if (continuation) {
-    let durableRun = await store.getRun(continuation.runId);
+    const explicitLeaseUntil = Date.parse(continuation.leaseUntil ?? "");
+    const continuationUpdatedAt = Date.parse(continuation.updatedAt);
+    const restartBoundary = Number.isFinite(explicitLeaseUntil)
+      ? explicitLeaseUntil
+      : Number.isFinite(continuationUpdatedAt)
+        ? continuationUpdatedAt + 300_000
+        : Number.NaN;
+    // A malformed legacy timestamp must be reclaimable; treating it as a live
+    // lease would wedge the league forever with no valid expiry boundary.
+    const leaseExpired =
+      !Number.isFinite(restartBoundary) || restartBoundary <= clock().getTime();
+    if (continuation.ownerId && !leaseExpired)
+      return {
+        leagueKey: policy.leagueKey,
+        status: "skipped",
+        reason: "provider-recovering",
+        pages: 0,
+        quotaCost: continuation.quotaCost ?? 0,
+      };
+    const claimNow = clock();
+    const claimed = await store.claimContinuation({
+      ...continuation,
+      updatedAt: iso(claimNow),
+      ownerId,
+      leaseUntil: attemptLeaseUntil(claimNow),
+    });
+    if (claimed.ownerId !== ownerId)
+      return {
+        leagueKey: policy.leagueKey,
+        status: "skipped",
+        reason: "provider-recovering",
+        pages: 0,
+        quotaCost: claimed.quotaCost ?? 0,
+      };
+    continuation = claimed;
+    let durableRun = await store.getRun(claimed.runId);
     let sealedFirstPage: Awaited<ReturnType<typeof store.getPage>> = null;
     if (durableRun && !durableRun.evidenceCommitted) {
       let token: string | undefined = "start";
@@ -609,29 +736,23 @@ export async function runOddsLeague(input: {
         const page = await store.getPage(continuation.runId, token);
         if (!page) break;
         if (token === "start") sealedFirstPage = page;
-        foundIntent ||= page.evidenceIntentAt !== undefined;
+        foundIntent ||=
+          page.evidenceIntentAt !== undefined ||
+          page.evidenceCommittedAt !== undefined;
         token = page.nextPageToken;
       }
       if (foundIntent) {
-        durableRun = {
+        const repairedRun = {
           ...durableRun,
           evidenceCommitted: true,
           updatedAt: iso(clock()),
         };
-        await store.putRun(durableRun);
+        durableRun = await store.transitionRun(durableRun, repairedRun);
       }
     }
+    resumedDurableRun = durableRun;
     continuationEvidenceCommitted = durableRun?.evidenceCommitted === true;
-    sealedFirstPage ??= await store.getPage(continuation.runId, "start");
-    const explicitLeaseUntil = Date.parse(continuation.leaseUntil ?? "");
-    const continuationUpdatedAt = Date.parse(continuation.updatedAt);
-    const restartBoundary = Number.isFinite(explicitLeaseUntil)
-      ? explicitLeaseUntil
-      : Number.isFinite(continuationUpdatedAt)
-        ? continuationUpdatedAt + 300_000
-        : Number.NaN;
-    const leaseExpired =
-      Number.isFinite(restartBoundary) && restartBoundary <= clock().getTime();
+    sealedFirstPage ??= await store.getPage(claimed.runId, "start");
     const continuationProvider = input.providers.get(continuation.providerId);
     if (
       leaseExpired &&
@@ -647,21 +768,6 @@ export async function runOddsLeague(input: {
       // Provider cursors are short-lived. A terminal cursor/page contract
       // failure cannot be resumed safely after its worker lease expires;
       // retain the failed run for audit and start the next attempt at page one.
-      const restartNow = clock();
-      const restartOwner = await store.claimContinuation({
-        ...continuation,
-        updatedAt: iso(restartNow),
-        ownerId,
-        leaseUntil: attemptLeaseUntil(restartNow),
-      });
-      if (restartOwner.ownerId !== ownerId)
-        return {
-          leagueKey: policy.leagueKey,
-          status: "skipped",
-          reason: "provider-recovering",
-          pages: 0,
-          quotaCost: restartOwner.quotaCost ?? 0,
-        };
       await clearOwnedContinuation(
         store,
         policy.leagueKey,
@@ -669,77 +775,8 @@ export async function runOddsLeague(input: {
         ownerId,
       );
       continuation = null;
+      resumedDurableRun = null;
     }
-  }
-  // An ambiguous paid request has an unknown provider-side outcome, so the
-  // league is fenced until it is resolved: it must never be blindly reissued.
-  // But the fence had no exit. This tests that the field EXISTS, not that its
-  // window is still open, and nothing clears it — putContinuationCas carries
-  // it forward on every write. MLS latched on a window that expired at 11:25
-  // on 2026-08-11 and answered "provider-request-ambiguous" on every pass for
-  // eleven hours, with games on the board and not one price. An operator
-  // deleting the row by hand was the only way out.
-  //
-  // The ceiling is that exit, and it deliberately does the same thing the
-  // operator did rather than anything cleverer. Below it, nothing changes.
-  if (continuation?.ambiguousUntil) {
-    const ambiguousFor =
-      clock().getTime() - Date.parse(continuation.ambiguousUntil);
-    // Evidence beyond recall is checked against the PAGE ledger, not against
-    // the continuation's own flag: the ambiguous write sets that flag from a
-    // local variable, which is exactly what put MLS out of reach of the age
-    // ceiling that already existed.
-    const ledgerEvidence = await sealedEvidenceIntent(
-      store,
-      continuation.runId,
-    );
-    if (
-      Number.isFinite(ambiguousFor) &&
-      ambiguousFor > ODDS_AMBIGUITY_MAX_AGE_MS &&
-      !ledgerEvidence
-    ) {
-      // The lease was renewed strictly before the ambiguity was written and
-      // both are five-minute windows, so a lapsed ambiguity implies a lapsed
-      // lease: this row is legally claimable.
-      const reclaimNow = clock();
-      const owner = await store.claimContinuation({
-        ...continuation,
-        leagueKey: policy.leagueKey,
-        updatedAt: iso(reclaimNow),
-        ownerId,
-        leaseUntil: attemptLeaseUntil(reclaimNow),
-      });
-      if (owner.ownerId === ownerId) {
-        await clearOwnedContinuation(
-          store,
-          policy.leagueKey,
-          continuation.runId,
-          ownerId,
-        );
-        input.metrics?.emit("OddsAmbiguityAbandoned", 1, {
-          league: policy.leagueKey,
-          provider: continuation.providerId,
-        });
-      }
-      // Still a skipped pass: the next one starts a fresh run from page one,
-      // far enough after the ambiguous request that a recall is accounted
-      // rather than blind — the reserved cost was never refunded, and the
-      // next response's quotaRemaining overwrites local with provider truth.
-      return {
-        leagueKey: policy.leagueKey,
-        status: "skipped",
-        reason: "provider-recovering",
-        pages: 0,
-        quotaCost: continuation.quotaCost ?? 0,
-      };
-    }
-    return {
-      leagueKey: policy.leagueKey,
-      status: "failed",
-      reason: "provider-request-ambiguous",
-      pages: 0,
-      quotaCost: continuation.quotaCost ?? 0,
-    };
   }
   const checkpoint = await store.getCheckpoint(policy.leagueKey);
   if (checkpoint)
@@ -754,18 +791,13 @@ export async function runOddsLeague(input: {
     checkpoint &&
     Date.parse(checkpoint.nextDueAt) > now.getTime()
   ) {
-    const runId = `${policy.leagueKey}:skip:${now.toISOString()}`;
-    await store.putRun({
-      runId,
-      leagueKey: policy.leagueKey,
-      providerId: "none",
-      policyVersion: oddsCollectionPolicyVersion,
+    writePassAudit({
       status: "skipped",
-      startedAt: iso(now),
-      updatedAt: iso(now),
-      skipReason: "cadence-not-due",
-      evidenceCommitted: false,
-      quotaCost: 0,
+      reason: "cadence-not-due",
+      league: policy.leagueKey,
+      provider: "none",
+      occurredAt: iso(now),
+      ...(input.metrics ? { metrics: input.metrics } : {}),
     });
     input.metrics?.emit("OddsCadenceSkip", 1, { league: policy.leagueKey });
     return {
@@ -1029,18 +1061,13 @@ export async function runOddsLeague(input: {
       effectiveQuotaRemaining.length > 0 &&
       Math.min(...effectiveQuotaRemaining) <= candidate.quotaReserve
     ) {
-      const runId = `${policy.leagueKey}:${candidate.providerId}:${now.toISOString()}`;
-      await store.putRun({
-        runId,
-        leagueKey: policy.leagueKey,
-        providerId: candidate.providerId,
-        policyVersion: oddsCollectionPolicyVersion,
+      writePassAudit({
         status: "skipped",
-        startedAt: iso(now),
-        updatedAt: iso(now),
-        skipReason: "quota-reserve",
-        evidenceCommitted: false,
-        quotaCost: 0,
+        reason: "quota-reserve",
+        league: policy.leagueKey,
+        provider: candidate.providerId,
+        occurredAt: iso(now),
+        ...(input.metrics ? { metrics: input.metrics } : {}),
       });
       input.metrics?.emit("OddsQuotaReserveSkip", 1, {
         league: policy.leagueKey,
@@ -1083,27 +1110,32 @@ export async function runOddsLeague(input: {
       });
     const { ambiguousUntil: lapsedAmbiguity, ...carried } = continuation ?? {};
     void lapsedAmbiguity;
-    const owner = await store.claimContinuation({
-      ...(staleRun ? carried : continuation),
-      leagueKey: policy.leagueKey,
-      runId:
-        continuation?.runId && !staleRun
-          ? continuation.runId
-          : `${runPrefix}${now.toISOString()}`,
-      providerId: candidate.providerId,
-      updatedAt: iso(claimNow),
-      startedAt: staleRun
-        ? iso(claimNow)
-        : (continuation?.startedAt ?? iso(claimNow)),
-      capability: "odds",
-      ...(staleRun ? { pageToken: undefined } : {}),
-      evidenceCommitted: staleRun
-        ? false
-        : (continuation?.evidenceCommitted ?? false),
-      quotaCost: staleRun ? 0 : (continuation?.quotaCost ?? 0),
-      ownerId,
-      leaseUntil: attemptLeaseUntil(claimNow),
-    });
+    const owner =
+      continuation?.ownerId === ownerId &&
+      continuation.providerId === candidate.providerId &&
+      !staleRun
+        ? continuation
+        : await store.claimContinuation({
+            ...(staleRun ? carried : continuation),
+            leagueKey: policy.leagueKey,
+            runId:
+              continuation?.runId && !staleRun
+                ? continuation.runId
+                : `${runPrefix}${now.toISOString()}`,
+            providerId: candidate.providerId,
+            updatedAt: iso(claimNow),
+            startedAt: staleRun
+              ? iso(claimNow)
+              : (continuation?.startedAt ?? iso(claimNow)),
+            capability: "odds",
+            ...(staleRun ? { pageToken: undefined } : {}),
+            evidenceCommitted: staleRun
+              ? false
+              : (continuation?.evidenceCommitted ?? false),
+            quotaCost: staleRun ? 0 : (continuation?.quotaCost ?? 0),
+            ownerId,
+            leaseUntil: attemptLeaseUntil(claimNow),
+          });
     if (owner.providerId !== candidate.providerId || owner.ownerId !== ownerId)
       return {
         leagueKey: policy.leagueKey,
@@ -1115,8 +1147,9 @@ export async function runOddsLeague(input: {
         quotaCost: owner.quotaCost ?? 0,
       };
     const runId = owner.runId;
-    const durableRun = await store.getRun(runId);
-    let run: OddsRunRecord = {
+    const durableRun =
+      resumedDurableRun?.runId === runId ? resumedDurableRun : null;
+    let run = await store.transitionRun(durableRun, {
       ...(durableRun ?? {}),
       runId,
       leagueKey: policy.leagueKey,
@@ -1128,8 +1161,7 @@ export async function runOddsLeague(input: {
       evidenceCommitted:
         durableRun?.evidenceCommitted ?? owner.evidenceCommitted ?? false,
       quotaCost: durableRun?.quotaCost ?? owner.quotaCost ?? 0,
-    };
-    await store.putRun(run);
+    });
     await putContinuationCas(store, {
       leagueKey: policy.leagueKey,
       runId,
@@ -1439,15 +1471,13 @@ export async function runOddsLeague(input: {
         partialEvidenceCount += gaps.length;
         evidenceCommitted ||= gaps.length > 0;
       }
-      run = {
+      run = await store.transitionRun(run, {
         ...run,
-        ...((await store.getRun(runId)) ?? {}),
         status: "completed",
         updatedAt: iso(now),
         evidenceCommitted,
         quotaCost,
-      };
-      await store.putRun(run);
+      });
       await store.putCheckpoint({
         ...checkpoint,
         leagueKey: policy.leagueKey,
@@ -1504,9 +1534,8 @@ export async function runOddsLeague(input: {
       const safelySkipped =
         !evidenceCommitted &&
         ["quota-reserve", "provider-recovering"].includes(reason);
-      await store.putRun({
+      run = await store.transitionRun(run, {
         ...run,
-        ...((await store.getRun(runId)) ?? {}),
         status: safelySkipped ? "skipped" : "failed",
         updatedAt: iso(now),
         ...(safelySkipped ? { skipReason: reason } : { failureReason: reason }),

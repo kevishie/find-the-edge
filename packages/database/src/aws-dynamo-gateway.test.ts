@@ -6,6 +6,24 @@ import {
   DynamoTransactionConflict,
 } from "./dynamodb-event-ingestion";
 describe("Dynamo gateway", () => {
+  it("keeps point reads strong unless an audited caller opts out", async () => {
+    const send = vi.fn().mockResolvedValue({});
+    const gateway = new AwsDynamoGateway(
+      { send } as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    await gateway.get("EVENT#one", "CURRENT");
+    await gateway.get("EVENT_PROJECTIONS", "READINESS", {
+      consistentRead: false,
+    });
+    expect(
+      (send.mock.calls[0]?.[0] as { input: Record<string, unknown> }).input,
+    ).toMatchObject({ ConsistentRead: true });
+    expect(
+      (send.mock.calls[1]?.[0] as { input: Record<string, unknown> }).input,
+    ).toMatchObject({ ConsistentRead: false });
+  });
+
   it("paginates strongly consistent primary queries", async () => {
     const send = vi
       .fn()

@@ -98,6 +98,7 @@ export class DynamoEntitlementRepository implements EntitlementRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: entitlementKey(accountId),
+        // Product authorization must observe the latest billing entitlement.
         ConsistentRead: true,
       }),
     );
@@ -113,6 +114,7 @@ export class DynamoEntitlementRepository implements EntitlementRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: stripeCustomerKey(customerId),
+        // Billing ownership requires a unique authoritative customer binding.
         ConsistentRead: true,
       }),
     );

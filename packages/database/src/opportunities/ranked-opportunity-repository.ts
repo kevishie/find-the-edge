@@ -252,6 +252,7 @@ export class DynamoRankedOpportunityRepository implements RankedOpportunityRepos
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: raw["pk"], sk: raw["sk"] },
+        // A strong base-row reread prevents stale GSI lifecycle results.
         ConsistentRead: true,
       }),
     );
@@ -473,6 +474,7 @@ export class DynamoRankedOpportunityRepository implements RankedOpportunityRepos
       new GetCommand({
         TableName: this.tableName,
         Key: rankItemKey(opportunityId),
+        // A strong base-row reread prevents stale GSI rank projections.
         ConsistentRead: true,
       }),
     );

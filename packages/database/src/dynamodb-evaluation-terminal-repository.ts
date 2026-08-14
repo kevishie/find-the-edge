@@ -38,6 +38,7 @@ export class DynamoEvaluationTerminalRepository implements EvaluationTerminalRep
         new GetCommand({
           TableName: this.tableName,
           Key: key,
+          // Exactly-once terminal claims must observe the winning record.
           ConsistentRead: true,
         }),
       );

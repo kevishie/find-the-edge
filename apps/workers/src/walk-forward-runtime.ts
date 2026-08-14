@@ -39,6 +39,7 @@ const get = async <T>(pk: string, sk = "RECORD"): Promise<T> => {
     new GetCommand({
       TableName: tableName,
       Key: { pk, sk },
+      // Experiment decisions must bind to authoritative stored evidence.
       ConsistentRead: true,
     }),
   );

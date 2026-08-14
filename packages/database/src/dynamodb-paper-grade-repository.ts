@@ -127,6 +127,7 @@ export class DynamoPaperGradeRepository implements PaperGradeRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: `PAPER_GRADE#${paperBetId}`, sk: "CURRENT" },
+        // Corrections must start from the authoritative current grade.
         ConsistentRead: true,
       }),
     );
@@ -144,6 +145,7 @@ export class DynamoPaperGradeRepository implements PaperGradeRepository {
           pk: `PAPER_GRADE#${grade.paperBetId}`,
           sk: `HISTORY#${String(grade.correctionOrdinal).padStart(8, "0")}#${grade.gradeId}`,
         },
+        // Replay must verify the exact immutable correction record.
         ConsistentRead: true,
       }),
     );
@@ -171,6 +173,7 @@ export class DynamoPaperGradeRepository implements PaperGradeRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: { pk, sk: cursor },
+          // Cursor validation must preserve current/history agreement.
           ConsistentRead: true,
         }),
       );
@@ -189,6 +192,7 @@ export class DynamoPaperGradeRepository implements PaperGradeRepository {
         KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
         ExpressionAttributeValues: { ":pk": pk, ":prefix": "HISTORY#" },
         Limit: limit,
+        // Performance evidence requires complete correction history.
         ConsistentRead: true,
         ...(cursor ? { ExclusiveStartKey: { pk, sk: cursor } } : {}),
       }),

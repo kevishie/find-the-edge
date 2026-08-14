@@ -10,6 +10,7 @@ export * from "./event-errors";
 export * from "./event-read-projection";
 export * from "./event-repository";
 export * from "./dynamodb-event-repository";
+export * from "./event-projection-readiness";
 export * from "./memory-event-repository";
 export * from "./fixture-odds-adapter";
 export * from "./fixture-odds-projector";

@@ -84,6 +84,7 @@ export class DynamoExactOddsSnapshotRepository implements ExactOddsSnapshotIndex
         new GetCommand({
           TableName: this.tableName,
           Key: { pk, sk },
+          // Immutable snapshot replay must verify the winning stored record.
           ConsistentRead: true,
         }),
       );
@@ -104,6 +105,7 @@ export class DynamoExactOddsSnapshotRepository implements ExactOddsSnapshotIndex
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: "ODDS_SNAPSHOTS_BY_ID", sk: snapshotId },
+        // Closing evidence must resolve the exact authoritative snapshot.
         ConsistentRead: true,
       }),
     );

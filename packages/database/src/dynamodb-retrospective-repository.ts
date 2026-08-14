@@ -192,6 +192,7 @@ export class DynamoRetrospectiveRepository implements RetrospectiveRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: `RETROSPECTIVE_VERSION#${id}`, sk: "RECORD" },
+        // Version lineage must resolve the authoritative immutable record.
         ConsistentRead: true,
       }),
     );
@@ -203,6 +204,7 @@ export class DynamoRetrospectiveRepository implements RetrospectiveRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: `RETROSPECTIVE#${id}`, sk: "CURRENT" },
+        // Current retrospective transitions must observe the latest head.
         ConsistentRead: true,
       }),
     );
@@ -216,6 +218,7 @@ export class DynamoRetrospectiveRepository implements RetrospectiveRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: `RETROSPECTIVE_REPORT#${retrospectiveId}`, sk: reportId },
+        // Report replay must verify the winning stored report.
         ConsistentRead: true,
       }),
     );
@@ -263,6 +266,7 @@ export class DynamoRetrospectiveRepository implements RetrospectiveRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: { pk, sk: key },
+          // Cursor validation must not accept a stale partition boundary.
           ConsistentRead: true,
         }),
       );
@@ -281,6 +285,7 @@ export class DynamoRetrospectiveRepository implements RetrospectiveRepository {
         },
         Limit: input.limit,
         ScanIndexForward: !reverse,
+        // Current-index agreement and review decisions need a complete list.
         ConsistentRead: true,
         ...(key ? { ExclusiveStartKey: { pk, sk: key } } : {}),
       }),
@@ -382,6 +387,7 @@ export class DynamoRetrospectiveRepository implements RetrospectiveRepository {
           pk: `RETROSPECTIVE_REPLAY#${input.versionId}`,
           sk: input.idempotencyKey,
         },
+        // Review replay must observe the latest idempotency winner.
         ConsistentRead: true,
       }),
     );
@@ -462,6 +468,7 @@ export class DynamoRetrospectiveRepository implements RetrospectiveRepository {
             pk: `RETROSPECTIVE_REPLAY#${input.versionId}`,
             sk: input.idempotencyKey,
           },
+          // Conflict recovery must resolve the authoritative replay record.
           ConsistentRead: true,
         }),
       );

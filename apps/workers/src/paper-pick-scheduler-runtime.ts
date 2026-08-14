@@ -17,6 +17,7 @@ import {
   EventCursorCodec,
   EventEvaluationCandidateRepository,
   DynamoDbStrategyExperimentRepository,
+  readEventProjectionReadinessStrong,
 } from "@find-the-edge/database";
 import { DisabledStructuredAnalysisModelAdapter } from "@find-the-edge/scouting";
 import { createPaperPickSchedulerHandler } from "./paper-pick-scheduler-lambda";
@@ -45,14 +46,7 @@ const events = new DynamoEventRepository(
   // Candidate pagination is internal to this cold-start instance. The random
   // key prevents these cursors from becoming a public or reusable capability.
   internalCursor,
-  async () => {
-    const readiness = await gateway.get("EVENT_PROJECTIONS", "READINESS");
-    return (
-      !!readiness &&
-      JSON.stringify(readiness.value) ===
-        JSON.stringify({ schemaVersion: 1, state: "initialized" })
-    );
-  },
+  () => readEventProjectionReadinessStrong(gateway),
 );
 const evaluator = new PickEvaluationService({
   evidence: new DynamoEvaluationEvidenceRepository(

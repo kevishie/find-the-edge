@@ -73,6 +73,7 @@ export class DynamoPaperPickRunRepository implements PaperPickRunRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: { pk: `PAPER_PICK_GENERATION#${generationId}`, sk: "META" },
+          // Generation replay must observe the winning stored metadata.
           ConsistentRead: true,
         }),
       );
@@ -209,6 +210,7 @@ export class DynamoPaperPickRunRepository implements PaperPickRunRepository {
           new GetCommand({
             TableName: this.tableName,
             Key: admissionKey,
+            // Event-admission limits must include the latest reservation.
             ConsistentRead: true,
           }),
         ),
@@ -216,6 +218,7 @@ export class DynamoPaperPickRunRepository implements PaperPickRunRepository {
           new GetCommand({
             TableName: this.tableName,
             Key: generationKey,
+            // Generation concurrency classification must use current state.
             ConsistentRead: true,
           }),
         ),
@@ -298,6 +301,7 @@ export class DynamoPaperPickRunRepository implements PaperPickRunRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: itemAddress(itemId),
+        // Item ownership and lease expiry fence scheduler work.
         ConsistentRead: true,
       }),
     );
@@ -528,6 +532,7 @@ export class DynamoPaperPickRunRepository implements PaperPickRunRepository {
           new GetCommand({
             TableName: this.tableName,
             Key: budgetKey,
+            // Budget classification must include the latest committed spend.
             ConsistentRead: true,
           }),
         );
@@ -709,6 +714,7 @@ export class DynamoPaperPickRunRepository implements PaperPickRunRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: `PAPER_PICK_RUN#${runId}`, sk: "META" },
+        // Run ownership and completion transitions require current metadata.
         ConsistentRead: true,
       }),
     );
@@ -783,6 +789,7 @@ export class DynamoPaperPickRunRepository implements PaperPickRunRepository {
             ":pk": `PAPER_PICK_RUN#${runId}`,
             ":item": "ITEM#",
           },
+          // Completion must see every item and cannot accept a stale omission.
           ConsistentRead: true,
           ExclusiveStartKey,
         }),

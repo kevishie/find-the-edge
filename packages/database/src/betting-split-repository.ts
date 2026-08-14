@@ -310,6 +310,7 @@ export class DynamoBettingSplitRepository implements BettingSplitRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: { pk, sk: historySk },
+          // Immutable replay must verify the winning stored observation.
           ConsistentRead: true,
         }),
       );
@@ -378,6 +379,7 @@ export class DynamoBettingSplitRepository implements BettingSplitRepository {
           pk: splitPk(key.canonicalEventId),
           sk: `CURRENT#${key.providerId}#V${key.canonicalEventVersion}#${key.marketKey}#${key.selectionKey}#${key.point ?? "none"}#${key.scope ?? "none"}`,
         },
+        // Evidence consumers require the exact current split observation.
         ConsistentRead: true,
       }),
     );

@@ -15,6 +15,7 @@ import {
   DynamoOpportunityLifecycleRepository,
   EventCursorCodec,
   EventEvaluationCandidateRepository,
+  readEventProjectionReadinessStrong,
   type ClvRepository,
   type GamesRepository,
 } from "@find-the-edge/database";
@@ -385,14 +386,7 @@ export const handler = (input: unknown) => {
       new EventCursorCodec({
         current: { id: "opportunity-generation", secret: randomBytes(32) },
       }),
-      async () => {
-        const item = await gateway.get("EVENT_PROJECTIONS", "READINESS");
-        return (
-          !!item &&
-          JSON.stringify(item.value) ===
-            JSON.stringify({ schemaVersion: 1, state: "initialized" })
-        );
-      },
+      () => readEventProjectionReadinessStrong(gateway),
     );
     const lifecycle = new DynamoOpportunityLifecycleRepository(
       client,

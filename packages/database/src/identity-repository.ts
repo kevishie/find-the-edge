@@ -240,6 +240,7 @@ export class DynamoIdentityRepository implements IdentityRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: otpChallengeKey(phone),
+        // OTP validation must observe the latest challenge consumption state.
         ConsistentRead: true,
       }),
     );
@@ -344,6 +345,7 @@ export class DynamoIdentityRepository implements IdentityRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: identityAccountKey(accountId),
+        // Authorization must observe the latest account token version.
         ConsistentRead: true,
       }),
     );

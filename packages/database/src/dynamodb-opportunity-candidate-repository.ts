@@ -45,6 +45,7 @@ export class DynamoOpportunityCandidateRepository implements OpportunityCandidat
         new GetCommand({
           TableName: this.tableName,
           Key: key,
+          // Candidate replay must observe the winning lifecycle input.
           ConsistentRead: true,
         }),
       );
@@ -64,6 +65,7 @@ export class DynamoOpportunityCandidateRepository implements OpportunityCandidat
           pk: `OPPORTUNITY_CANDIDATE#${occurrenceId}`,
           sk: "RECORD",
         },
+        // Rank projection must bind to the authoritative candidate record.
         ConsistentRead: true,
       }),
     );

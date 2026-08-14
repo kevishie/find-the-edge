@@ -33,6 +33,7 @@ export class DynamoClosingCandidateSource {
           ":to": `SNAPSHOT#${input.to}#~`,
         },
         Limit: input.limit,
+        // Closing-line selection becomes durable performance evidence.
         ConsistentRead: true,
         ScanIndexForward: false,
       }),

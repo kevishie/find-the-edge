@@ -190,10 +190,79 @@ describe("opportunity lifecycle repository", () => {
     expect(history.map(({ stateVersion }) => stateVersion)).toEqual([1, 2]);
     expect(send).toHaveBeenCalledTimes(2);
     expect(
+      (send.mock.calls[0]?.[0] as { input: Record<string, unknown> }).input,
+    ).toMatchObject({ ConsistentRead: false });
+    expect(
       (send.mock.calls[1]?.[0] as { input: Record<string, unknown> }).input,
     ).toMatchObject({
+      ConsistentRead: false,
       ExclusiveStartKey: { pk: "page-1", sk: "transition-1" },
     });
+  });
+
+  it("allows stale history to omit a transition without weakening the lifecycle head", async () => {
+    const memory = new MemoryOpportunityLifecycleRepository();
+    const first = await memory.apply(command(), fence);
+    const second = await memory.apply(
+      {
+        ...command(),
+        commandId: "stale-history-sweep",
+        cause: "sweep",
+        occurredAt: "2026-08-06T12:01:00.000Z",
+        eventEvidence: {
+          availability: "missing",
+          canonicalEventId: "event-1",
+          canonicalEventVersion: null,
+          sportKey: null,
+          status: null,
+          startsAt: null,
+          observedAt: null,
+          identity: "EVENT_DETAIL#event-1#CURRENT",
+          evidenceId: "event-1@missing",
+        },
+      },
+      { ...fence, expectedMaterialVersion: null },
+    );
+    if (!first.transition || !second.transition)
+      throw new Error("missing fixture transition");
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ Items: [{ value: first.transition }] })
+      .mockResolvedValueOnce({ Item: { value: second.head } })
+      .mockResolvedValueOnce({
+        Items: [{ value: first.transition }, { value: second.transition }],
+      });
+    const repository = new DynamoOpportunityLifecycleRepository(
+      { send } as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+
+    await expect(
+      repository.history(candidate().logicalOpportunityId),
+    ).resolves.toMatchObject([{ stateVersion: 1 }]);
+    await expect(
+      repository.get(candidate().logicalOpportunityId),
+    ).resolves.toMatchObject({ stateVersion: 2 });
+    await expect(
+      repository.history(candidate().logicalOpportunityId),
+    ).resolves.toMatchObject([{ stateVersion: 1 }, { stateVersion: 2 }]);
+
+    expect(
+      (send.mock.calls[0]?.[0] as { input: Record<string, unknown> }).input,
+    ).toMatchObject({ ConsistentRead: false });
+    expect(
+      (send.mock.calls[1]?.[0] as { input: Record<string, unknown> }).input,
+    ).toMatchObject({ ConsistentRead: true });
+    expect(
+      (send.mock.calls[2]?.[0] as { input: Record<string, unknown> }).input,
+    ).toMatchObject({ ConsistentRead: false });
+    expect(
+      (
+        send.mock.calls as unknown as readonly [
+          { readonly constructor: { readonly name: string } },
+        ][]
+      ).map(([request]) => request.constructor.name),
+    ).toEqual(["QueryCommand", "GetCommand", "QueryCommand"]);
   });
 
   it("does not wrap memory pagination when a cursor sorts after every row", async () => {

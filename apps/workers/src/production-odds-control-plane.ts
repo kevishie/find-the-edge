@@ -7,6 +7,7 @@ import type {
   OddsAttemptRecord,
   OddsProviderHealth,
   OddsRunContinuation,
+  OddsRunRecord,
   SealedOddsPage,
 } from "@find-the-edge/database";
 import { randomUUID } from "node:crypto";
@@ -1401,6 +1402,8 @@ export async function runProductionOddsControlPlane(input: {
   for (const sharpLeague of sharpApiLeagues) {
     let scheduleStage: ScheduleFailureStage = "initialize";
     let activeScheduleRunId: string | undefined;
+    let activeScheduleRun: OddsRunRecord | undefined;
+    let scheduleEvidenceCommitted = false;
     let scheduleQuotaCost = 0;
     let acceptedFutureScheduleEvents = 0;
     let quarantinedScheduleEvents = 0;
@@ -1495,18 +1498,25 @@ export async function runProductionOddsControlPlane(input: {
       const runId = continuation.runId;
       activeScheduleRunId = runId;
       scheduleStage = "run-start";
-      await input.control.putRun({
-        ...((await input.control.getRun(runId)) ?? {}),
-        runId,
-        leagueKey: sharpLeague.leagueKey,
-        providerId: SHARP_API_PROVIDER_ID,
-        policyVersion: oddsCollectionPolicyVersion,
-        status: "running",
-        startedAt: continuation?.startedAt ?? now.toISOString(),
-        updatedAt: now.toISOString(),
-        evidenceCommitted: continuation?.evidenceCommitted ?? false,
-        quotaCost: continuation?.quotaCost ?? 0,
-      });
+      const previousScheduleRun = existingContinuation
+        ? await input.control.getRun(runId)
+        : null;
+      activeScheduleRun = await input.control.transitionRun(
+        previousScheduleRun,
+        {
+          ...(previousScheduleRun ?? {}),
+          runId,
+          leagueKey: sharpLeague.leagueKey,
+          providerId: SHARP_API_PROVIDER_ID,
+          policyVersion: oddsCollectionPolicyVersion,
+          status: "running",
+          startedAt: continuation?.startedAt ?? now.toISOString(),
+          updatedAt: now.toISOString(),
+          evidenceCommitted: continuation?.evidenceCommitted ?? false,
+          quotaCost: continuation?.quotaCost ?? 0,
+        },
+      );
+      scheduleEvidenceCommitted = activeScheduleRun.evidenceCommitted;
       await putContinuationCas(input.control, {
         leagueKey: checkpointKey,
         runId,
@@ -1721,25 +1731,6 @@ export async function runProductionOddsControlPlane(input: {
           if (Date.parse(event.startsAt) > now.getTime())
             acceptedFutureScheduleEvents += 1;
         }
-        await assertAndRenewOwner(
-          input.control,
-          checkpointKey,
-          runId,
-          ownerId,
-          liveNow,
-        );
-        if (!sealed.committedAt) scheduleStage = "schedule-page-commit";
-        if (!sealed.committedAt)
-          await input.control.commitEvidencePage(
-            runId,
-            pageToken,
-            now.toISOString(),
-          );
-        const committedPage = await input.control.getPage(runId, pageToken);
-        if (!committedPage?.committedAt)
-          throw new Error("schedule-page-commit-missing");
-        for (const gap of committedPage.gaps) await input.control.putGap(gap);
-
         if (!existingConflictPage) {
           scheduleStage = "conflict-page-seal";
           const conflictEvidencePage: SealedOddsPage = {
@@ -1763,27 +1754,42 @@ export async function runProductionOddsControlPlane(input: {
         let committedConflictPage =
           existingConflictPage ??
           (await input.control.getPage(runId, conflictPageToken));
-        if (!committedConflictPage?.committedAt) {
-          scheduleStage = "conflict-page-commit";
-          await input.control.commitEvidencePage(
+        if (!committedConflictPage)
+          throw new Error("schedule-conflict-page-commit-missing");
+        const uncommittedTokens = [
+          ...(!sealed.committedAt ? [pageToken] : []),
+          ...(!committedConflictPage.committedAt ? [conflictPageToken] : []),
+        ];
+        if (uncommittedTokens.length > 0) {
+          scheduleStage =
+            uncommittedTokens.includes(pageToken) &&
+            uncommittedTokens.includes(conflictPageToken)
+              ? "schedule-page-commit"
+              : "conflict-page-commit";
+          await assertAndRenewOwner(
+            input.control,
+            checkpointKey,
             runId,
-            conflictPageToken,
+            ownerId,
+            liveNow,
+          );
+          await input.control.commitEvidencePages(
+            runId,
+            uncommittedTokens,
             now.toISOString(),
           );
-          committedConflictPage = await input.control.getPage(
-            runId,
-            conflictPageToken,
-          );
         }
+        const committedPage = await input.control.getPage(runId, pageToken);
+        committedConflictPage = await input.control.getPage(
+          runId,
+          conflictPageToken,
+        );
+        if (!committedPage?.committedAt)
+          throw new Error("schedule-page-commit-missing");
         if (!committedConflictPage?.committedAt)
           throw new Error("schedule-conflict-page-commit-missing");
-        await assertAndRenewOwner(
-          input.control,
-          checkpointKey,
-          runId,
-          ownerId,
-          liveNow,
-        );
+        scheduleEvidenceCommitted = true;
+        for (const gap of committedPage.gaps) await input.control.putGap(gap);
         for (const gap of committedConflictPage.gaps)
           await input.control.putGap(gap);
 
@@ -1917,8 +1923,8 @@ export async function runProductionOddsControlPlane(input: {
           ) ?? [],
         expectedProviderEvents: sharpBindings,
       });
-      await input.control.putRun({
-        ...(await input.control.getRun(runId))!,
+      activeScheduleRun = await input.control.transitionRun(activeScheduleRun, {
+        ...activeScheduleRun,
         status: "completed",
         updatedAt: now.toISOString(),
         evidenceCommitted: true,
@@ -1990,18 +1996,19 @@ export async function runProductionOddsControlPlane(input: {
           ),
         );
       scheduleFailures.set(sharpLeague.leagueKey, `schedule-${reason}`);
-      if (activeScheduleRunId) {
-        const run = await input.control.getRun(activeScheduleRunId);
-        if (run)
-          await input.control.putRun({
-            ...run,
+      if (activeScheduleRunId && activeScheduleRun)
+        activeScheduleRun = await input.control.transitionRun(
+          activeScheduleRun,
+          {
+            ...activeScheduleRun,
             status: "failed",
             updatedAt: now.toISOString(),
             failureReason: reason,
             ...(failureStage ? { failureStage } : {}),
+            evidenceCommitted: scheduleEvidenceCommitted,
             quotaCost: scheduleQuotaCost,
-          });
-      }
+          },
+        );
       if (reason === "stored-event-conflict" && activeScheduleRunId)
         await clearOwned(
           `schedule:${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
@@ -2489,6 +2496,7 @@ export async function runProductionOddsControlPlane(input: {
     splitCheckpoint === null ||
     Date.parse(splitCheckpoint.nextDueAt) <= now.getTime();
   if (splitsDue) {
+    const resumingAccountRun = splitContinuation !== null;
     const claimNow = liveNow();
     splitContinuation = await input.control.claimContinuation({
       ...splitContinuation,
@@ -2505,9 +2513,13 @@ export async function runProductionOddsControlPlane(input: {
     });
     if (splitContinuation.ownerId !== ownerId) return results;
     const accountRunId = splitContinuation.runId;
+    let accountRun: OddsRunRecord | undefined;
     try {
-      await input.control.putRun({
-        ...((await input.control.getRun(accountRunId)) ?? {}),
+      const previousAccountRun = resumingAccountRun
+        ? await input.control.getRun(accountRunId)
+        : null;
+      accountRun = await input.control.transitionRun(previousAccountRun, {
+        ...(previousAccountRun ?? {}),
         runId: accountRunId,
         leagueKey: "account",
         providerId: SHARP_API_PROVIDER_ID,
@@ -2690,6 +2702,7 @@ export async function runProductionOddsControlPlane(input: {
           });
       if (account.features.includes("splits"))
         for (const league of sharpApiLeagues) {
+          let activeSplitRun: OddsRunRecord | undefined;
           try {
             const continuationKey = `splits:${league.leagueKey}`;
             const claimNow = liveNow();
@@ -2735,18 +2748,25 @@ export async function runProductionOddsControlPlane(input: {
             });
             if (continuation.ownerId !== ownerId) continue;
             const runId = continuation.runId;
-            await input.control.putRun({
-              ...((await input.control.getRun(runId)) ?? {}),
-              runId,
-              leagueKey: league.leagueKey,
-              providerId: SHARP_API_PROVIDER_ID,
-              policyVersion: oddsCollectionPolicyVersion,
-              status: "running",
-              startedAt: continuation?.startedAt ?? now.toISOString(),
-              updatedAt: now.toISOString(),
-              evidenceCommitted: continuation?.evidenceCommitted ?? false,
-              quotaCost: continuation?.quotaCost ?? 0,
-            });
+            const previousSplitRun =
+              existingContinuation?.runId === runId && !staleRun
+                ? await input.control.getRun(runId)
+                : null;
+            activeSplitRun = await input.control.transitionRun(
+              previousSplitRun,
+              {
+                ...(previousSplitRun ?? {}),
+                runId,
+                leagueKey: league.leagueKey,
+                providerId: SHARP_API_PROVIDER_ID,
+                policyVersion: oddsCollectionPolicyVersion,
+                status: "running",
+                startedAt: continuation?.startedAt ?? now.toISOString(),
+                updatedAt: now.toISOString(),
+                evidenceCommitted: continuation?.evidenceCommitted ?? false,
+                quotaCost: continuation?.quotaCost ?? 0,
+              },
+            );
             await putContinuationCas(input.control, {
               leagueKey: continuationKey,
               runId,
@@ -3135,8 +3155,8 @@ export async function runProductionOddsControlPlane(input: {
                 );
               }
             }
-            await input.control.putRun({
-              ...(await input.control.getRun(runId))!,
+            activeSplitRun = await input.control.transitionRun(activeSplitRun, {
+              ...activeSplitRun,
               status: "completed",
               updatedAt: now.toISOString(),
               evidenceCommitted: true,
@@ -3190,21 +3210,22 @@ export async function runProductionOddsControlPlane(input: {
               ...(failureStage ? { failureStage } : {}),
             });
             input.metrics?.emit("OddsSplitFailure", 1, {});
-            const continuation = await input.control.getContinuation(
+            const failedContinuation = await input.control.getContinuation(
               `splits:${league.leagueKey}`,
             );
-            if (continuation) {
-              const run = await input.control.getRun(continuation.runId);
-              if (run)
-                await input.control.putRun({
-                  ...run,
+            if (failedContinuation && activeSplitRun)
+              activeSplitRun = await input.control.transitionRun(
+                activeSplitRun,
+                {
+                  ...activeSplitRun,
                   status: "failed",
                   updatedAt: now.toISOString(),
                   failureReason: reason,
                   ...(failureStage ? { failureStage } : {}),
-                  quotaCost: continuation.quotaCost ?? run.quotaCost,
-                });
-            }
+                  quotaCost:
+                    failedContinuation.quotaCost ?? activeSplitRun.quotaCost,
+                },
+              );
           }
         }
       await assertAndRenewOwner(
@@ -3220,8 +3241,8 @@ export async function runProductionOddsControlPlane(input: {
           "account",
           now.toISOString(),
         );
-      await input.control.putRun({
-        ...(await input.control.getRun(accountRunId))!,
+      accountRun = await input.control.transitionRun(accountRun, {
+        ...accountRun,
         status: "completed",
         updatedAt: now.toISOString(),
         evidenceCommitted: true,
@@ -3262,10 +3283,9 @@ export async function runProductionOddsControlPlane(input: {
           },
         ),
       );
-      const run = await input.control.getRun(accountRunId);
-      if (run)
-        await input.control.putRun({
-          ...run,
+      if (accountRun)
+        accountRun = await input.control.transitionRun(accountRun, {
+          ...accountRun,
           status: reason === "quota-reserve" ? "skipped" : "failed",
           updatedAt: now.toISOString(),
           ...(reason === "quota-reserve"
@@ -3274,7 +3294,7 @@ export async function runProductionOddsControlPlane(input: {
           ...(failureStage ? { failureStage } : {}),
           quotaCost:
             (await input.control.getContinuation(splitCheckpointKey))
-              ?.quotaCost ?? run.quotaCost,
+              ?.quotaCost ?? accountRun.quotaCost,
         });
       input.metrics?.emit("OddsAccountFailure", 1, {
         provider: SHARP_API_PROVIDER_ID,

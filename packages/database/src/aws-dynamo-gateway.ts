@@ -24,12 +24,18 @@ export class AwsDynamoGateway implements DynamoGateway {
     readonly client: DynamoDBDocumentClient,
     readonly tableName: string,
   ) {}
-  async get(pk: string, sk: string) {
+  async get(
+    pk: string,
+    sk: string,
+    options?: { readonly consistentRead?: boolean },
+  ) {
     const result = await this.client.send(
       new GetCommand({
         TableName: this.tableName,
         Key: { pk, sk },
-        ConsistentRead: true,
+        // Event-ingestion ownership, replay, and evidence callers require the
+        // strong default. Audited observational callers must opt out explicitly.
+        ConsistentRead: options?.consistentRead ?? true,
       }),
     );
     return (result.Item as DynamoItem | undefined) ?? null;
@@ -54,6 +60,8 @@ export class AwsDynamoGateway implements DynamoGateway {
               RequestItems: {
                 [this.tableName]: {
                   Keys: [...pending],
+                  // Provider-event fences and canonical joins require the
+                  // strong default; read projections opt out explicitly.
                   ConsistentRead: options?.consistentRead ?? true,
                   ProjectionExpression: "pk, sk, #value, expiresAt",
                   ExpressionAttributeNames: { "#value": "value" },
@@ -84,6 +92,7 @@ export class AwsDynamoGateway implements DynamoGateway {
           TableName: this.tableName,
           KeyConditionExpression: "pk = :pk",
           ExpressionAttributeValues: { ":pk": pk },
+          // Identity reconciliation cannot safely omit a newly claimed event.
           ConsistentRead: true,
           ScanIndexForward: true,
           Limit: Math.max(1, limit - items.length),
@@ -106,6 +115,8 @@ export class AwsDynamoGateway implements DynamoGateway {
         TableName: this.tableName,
         KeyConditionExpression: "pk = :pk",
         ExpressionAttributeValues: { ":pk": pk },
+        // Ingestion state is strong by default; display projections explicitly
+        // request eventual consistency at their repository call sites.
         ConsistentRead: options?.consistentRead ?? true,
         ScanIndexForward: true,
         Limit: limit,
@@ -142,6 +153,7 @@ export class AwsDynamoGateway implements DynamoGateway {
           TableName: this.tableName,
           KeyConditionExpression: "pk = :pk",
           ExpressionAttributeValues: { ":pk": pk },
+          // Near-canonical reconciliation needs the complete current partition.
           ConsistentRead: true,
           ...(cursor ? { ExclusiveStartKey: cursor } : {}),
         }),

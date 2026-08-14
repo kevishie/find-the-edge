@@ -36,6 +36,8 @@ export class DynamoDbStrategyExperimentRepository implements StrategyExperimentR
       new GetCommand({
         TableName: this.tableName,
         Key: { pk, sk },
+        // Approval, activation, replay, and consumed-evidence decisions share
+        // this point-read path and must observe the latest durable winner.
         ConsistentRead: true,
       }),
     );
@@ -513,6 +515,7 @@ export class DynamoDbStrategyExperimentRepository implements StrategyExperimentR
         },
         ScanIndexForward: false,
         Limit: 1,
+        // Scheduled execution must resolve the latest eligible activation.
         ConsistentRead: true,
       }),
     );
@@ -529,7 +532,9 @@ export class DynamoDbStrategyExperimentRepository implements StrategyExperimentR
           ":pk": `EXPERIMENT_AUDIT#${experimentId}`,
         },
         Limit: 100,
-        ConsistentRead: true,
+        // Audit rows are immutable presentation data; approval and activation
+        // decisions use the separate strong point-read path.
+        ConsistentRead: false,
       }),
     );
     return (result.Items ?? []).map(

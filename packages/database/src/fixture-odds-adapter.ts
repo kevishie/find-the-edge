@@ -117,6 +117,7 @@ export class AwsFixtureOddsGateway implements FixtureOddsDynamoGateway {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk, sk },
+        // Recovery and reconciliation require the exact current odds record.
         ConsistentRead: true,
       }),
     );
@@ -181,6 +182,7 @@ export class AwsFixtureOddsGateway implements FixtureOddsDynamoGateway {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: partitionKey, sk: "AVAILABILITY" },
+        // Evidence selection must observe current provider availability.
         ConsistentRead: true,
       }),
     );

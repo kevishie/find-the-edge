@@ -1,4 +1,5 @@
 import {
+  BatchGetCommand,
   DeleteCommand,
   GetCommand,
   PutCommand,
@@ -30,6 +31,11 @@ export interface WatchlistRepository {
   remove(requesterId: string, canonicalEventId: string): Promise<void>;
   /** The requester's own partition only, ordered by kickoff then event id. */
   list(requesterId: string): Promise<readonly WatchlistEntry[]>;
+  /** Resolve at most four decode candidates through authoritative exact keys. */
+  findFirst(
+    requesterId: string,
+    canonicalEventIds: readonly string[],
+  ): Promise<WatchlistEntry | null>;
 }
 
 /**
@@ -52,6 +58,35 @@ export const watchlistItemKey = (
 /** A stored row that survives re-derivation; a corrupt row throws. */
 const storedEntry = (value: unknown): WatchlistEntry =>
   normalizeWatchlistEntry(value as WatchlistEntry);
+
+const lookupKeys = (
+  requesterId: string,
+  canonicalEventIds: readonly string[],
+) => {
+  if (canonicalEventIds.length < 1 || canonicalEventIds.length > 4)
+    throw new Error("watchlist-candidates-invalid");
+  const pk = watchlistPartition(requesterId);
+  const keys = [...new Set(canonicalEventIds)].map((canonicalEventId) => ({
+    pk,
+    sk: assertWatchlistEventId(canonicalEventId),
+  }));
+  return { keys };
+};
+
+const storedEntryForKey = (
+  item: Record<string, unknown>,
+  key: { readonly pk: string; readonly sk: string },
+): WatchlistEntry => {
+  const entry = storedEntry(item["value"]);
+  if (
+    item["pk"] !== key.pk ||
+    item["sk"] !== key.sk ||
+    watchlistPartition(entry.requesterId) !== key.pk ||
+    entry.canonicalEventId !== key.sk
+  )
+    throw new Error("stored-watchlist-entry-invalid");
+  return entry;
+};
 
 const isConditionalCheckFailure = (error: unknown): boolean =>
   error instanceof Error && error.name === "ConditionalCheckFailedException";
@@ -88,13 +123,15 @@ export class DynamoWatchlistRepository implements WatchlistRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: key,
+          // A failed conditional add must distinguish an existing row from a
+          // concurrent remove before it retries the mutation.
           ConsistentRead: true,
         }),
       );
       if (existing.Item !== undefined)
         return {
           outcome: "exists",
-          entry: storedEntry(existing.Item["value"]),
+          entry: storedEntryForKey(existing.Item, key),
         };
     }
     throw new Error("watchlist-add-unresolved");
@@ -109,6 +146,37 @@ export class DynamoWatchlistRepository implements WatchlistRepository {
     );
   }
 
+  async findFirst(
+    requesterId: string,
+    canonicalEventIds: readonly string[],
+  ): Promise<WatchlistEntry | null> {
+    const { keys } = lookupKeys(requesterId, canonicalEventIds);
+    const result = await this.client.send(
+      new BatchGetCommand({
+        RequestItems: {
+          [this.tableName]: {
+            Keys: keys,
+            // DELETE resolution must not miss an authoritative watched row.
+            ConsistentRead: true,
+          },
+        },
+      }),
+    );
+    if ((result.UnprocessedKeys?.[this.tableName]?.Keys?.length ?? 0) > 0)
+      throw new Error("watchlist-read-partial");
+    const rows = new Map(
+      (result.Responses?.[this.tableName] ?? []).map((item) => [
+        `${String(item["pk"])}\0${String(item["sk"])}`,
+        item,
+      ]),
+    );
+    for (const key of keys) {
+      const item = rows.get(`${key.pk}\0${key.sk}`);
+      if (item) return storedEntryForKey(item, key);
+    }
+    return null;
+  }
+
   async list(requesterId: string): Promise<readonly WatchlistEntry[]> {
     const pk = watchlistPartition(requesterId);
     const entries: WatchlistEntry[] = [];
@@ -119,12 +187,22 @@ export class DynamoWatchlistRepository implements WatchlistRepository {
           TableName: this.tableName,
           KeyConditionExpression: "pk = :pk",
           ExpressionAttributeValues: { ":pk": pk },
-          ConsistentRead: true,
+          // A stale list can only lag this requester's UI; mutations remain
+          // conditionally authoritative and no other partition is queried.
+          ConsistentRead: false,
           ...(cursor ? { ExclusiveStartKey: cursor } : {}),
         }),
       );
-      for (const item of page.Items ?? [])
-        entries.push(storedEntry(item["value"]));
+      const items = (page.Items ?? []) as unknown as readonly Record<
+        string,
+        unknown
+      >[];
+      for (const item of items) {
+        const sk = item["sk"];
+        if (typeof sk !== "string")
+          throw new Error("stored-watchlist-entry-invalid");
+        entries.push(storedEntryForKey(item, { pk, sk }));
+      }
       cursor = page.LastEvaluatedKey;
     } while (cursor);
     return Object.freeze(entries.sort(compareWatchlistEntries));
@@ -160,6 +238,27 @@ export class MemoryWatchlistRepository implements WatchlistRepository {
     this.partition(requesterId).delete(
       assertWatchlistEventId(canonicalEventId),
     );
+  }
+
+  async findFirst(
+    requesterId: string,
+    canonicalEventIds: readonly string[],
+  ): Promise<WatchlistEntry | null> {
+    await Promise.resolve();
+    const { keys } = lookupKeys(requesterId, canonicalEventIds);
+    const partition = this.partition(requesterId);
+    for (const key of keys) {
+      const value = partition.get(key.sk);
+      if (!value) continue;
+      const entry = storedEntry(value);
+      if (
+        entry.requesterId !== requesterId ||
+        entry.canonicalEventId !== key.sk
+      )
+        throw new Error("stored-watchlist-entry-invalid");
+      return entry;
+    }
+    return null;
   }
 
   async list(requesterId: string): Promise<readonly WatchlistEntry[]> {

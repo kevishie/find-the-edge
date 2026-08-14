@@ -54,6 +54,8 @@ export interface SealedOddsPage {
   readonly sealedAt: string;
   readonly committedAt?: string;
   readonly evidenceIntentAt?: string;
+  /** Durable evidence classification for commits whose payload may be empty. */
+  readonly evidenceCommittedAt?: string;
   readonly metricDeliveredAt?: string;
 }
 export interface OddsLeagueCheckpoint {
@@ -138,6 +140,10 @@ export interface OddsRunContinuation {
 export interface OddsControlPlaneStore {
   getRun(runId: string): Promise<OddsRunRecord | null>;
   putRun(value: OddsRunRecord): Promise<void>;
+  transitionRun(
+    previous: OddsRunRecord | null,
+    value: OddsRunRecord,
+  ): Promise<OddsRunRecord>;
   reserveAttempt(value: OddsAttemptRecord): Promise<boolean>;
   reserveQuotaAttempt(
     healthKey: string,
@@ -158,6 +164,11 @@ export interface OddsControlPlaneStore {
   commitEvidencePage(
     runId: string,
     token: string,
+    committedAt: string,
+  ): Promise<void>;
+  commitEvidencePages(
+    runId: string,
+    tokens: readonly string[],
     committedAt: string,
   ): Promise<void>;
   markPageMetricDelivered(
@@ -238,6 +249,33 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
       v.runId,
       clone(nextVersioned(old, v, "run-transition-conflict")),
     );
+  }
+  async transitionRun(previous: OddsRunRecord | null, v: OddsRunRecord) {
+    const current = this.runs.get(v.runId);
+    if (current && equalReplay(current, v)) return clone(current);
+    if (
+      (previous === null && current !== undefined) ||
+      (previous !== null &&
+        (!current ||
+          (previous.version === undefined
+            ? !equalReplay(current, previous)
+            : current.version !== previous.version)))
+    )
+      throw new Error("run-transition-conflict");
+    const { version: ignoredVersion, ...material } = v;
+    void ignoredVersion;
+    const next = nextVersioned(
+      current,
+      {
+        ...material,
+        ...(previous?.version === undefined
+          ? {}
+          : { version: previous.version }),
+      },
+      "run-transition-conflict",
+    );
+    this.runs.set(v.runId, clone(next));
+    return clone(next);
   }
   async reserveAttempt(v: OddsAttemptRecord) {
     const old = this.attempts.get(v.attemptId);
@@ -361,33 +399,33 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
   async markEvidenceIntent(r: string, t: string, a: string) {
     const k = `${r}#${t}`;
     const page = this.pages.get(k);
-    const run = this.runs.get(r);
-    if (!page || !run) throw new Error("evidence-transition-conflict");
+    if (!page) throw new Error("evidence-transition-conflict");
     if (page.evidenceIntentAt && page.evidenceIntentAt !== a)
       throw new Error("evidence-transition-conflict");
     this.pages.set(k, { ...page, evidenceIntentAt: a });
-    this.runs.set(r, {
-      ...run,
-      version: (run.version ?? 0) + 1,
-      evidenceCommitted: true,
-      updatedAt: a,
-    });
   }
   async commitEvidencePage(r: string, t: string, a: string) {
-    const existing = await this.getPage(r, t);
-    if (existing?.committedAt) {
-      if (existing.committedAt === a) return;
+    await this.commitEvidencePages(r, [t], a);
+  }
+  async commitEvidencePages(r: string, tokens: readonly string[], a: string) {
+    if (
+      tokens.length < 1 ||
+      tokens.length > 2 ||
+      new Set(tokens).size !== tokens.length
+    )
       throw new Error("evidence-transition-conflict");
-    }
-    await this.commitPage(r, t, a);
-    const run = this.runs.get(r);
-    if (!run) throw new Error("run-transition-conflict");
-    this.runs.set(r, {
-      ...run,
-      version: (run.version ?? 0) + 1,
-      evidenceCommitted: true,
-      updatedAt: a,
+    const pages = tokens.map((token) => {
+      const page = this.pages.get(`${r}#${token}`);
+      if (!page || (page.committedAt && page.committedAt !== a))
+        throw new Error("evidence-transition-conflict");
+      return { token, page };
     });
+    for (const { token, page } of pages)
+      this.pages.set(`${r}#${token}`, {
+        ...page,
+        committedAt: a,
+        evidenceCommittedAt: a,
+      });
   }
   async markPageMetricDelivered(r: string, t: string, a: string) {
     const k = `${r}#${t}`;
@@ -558,6 +596,8 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       new GetCommand({
         TableName: this.tableName,
         Key: key(kind, id),
+        // Runs, attempts, pages, checkpoints, quota health, and continuation
+        // leases share this path and must observe the latest fenced state.
         ConsistentRead: true,
       }),
     );
@@ -669,6 +709,50 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
   }
   async putRun(v: OddsRunRecord) {
     await this.putVersioned("RUN", v.runId, v, "run-transition-conflict");
+  }
+  async transitionRun(previous: OddsRunRecord | null, v: OddsRunRecord) {
+    const { version: ignoredVersion, ...material } = v;
+    void ignoredVersion;
+    let next: OddsRunRecord;
+    try {
+      next = nextVersioned(
+        previous ?? undefined,
+        {
+          ...material,
+          ...(previous?.version === undefined
+            ? {}
+            : { version: previous.version }),
+        },
+        "run-transition-conflict",
+      );
+    } catch {
+      throw new Error("run-transition-conflict");
+    }
+    const previousHasVersion = previous?.version !== undefined;
+    const changed = await this.put(
+      "RUN",
+      v.runId,
+      next,
+      previous
+        ? previousHasVersion
+          ? "#v.#version = :expected"
+          : "#v = :previous"
+        : "attribute_not_exists(pk)",
+      previous
+        ? previousHasVersion
+          ? { "#v": "value", "#version": "version" }
+          : { "#v": "value" }
+        : undefined,
+      previousHasVersion
+        ? { ":expected": previous.version }
+        : previous
+          ? { ":previous": previous }
+          : undefined,
+    );
+    if (changed) return next;
+    const winner = await this.getRun(v.runId);
+    if (winner && equalReplay(winner, v)) return winner;
+    throw new Error("run-transition-conflict");
   }
   async reserveAttempt(v: OddsAttemptRecord) {
     const old = await this.getAttempt(v.attemptId);
@@ -879,133 +963,63 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       }),
     );
   }
-  /**
-   * The run row used to be READ here purely to learn its version number, so
-   * the transaction could fence on it. That read was the single largest
-   * amplifier on `ODDS_CONTROL#RUN#*`, which Contributor Insights measured at
-   * 10,000-13,500 accesses per run per twenty minutes — one item, hit from
-   * inside a hundred-iteration page loop.
-   *
-   * It is not load-bearing. Exactly-once evidence commitment is enforced by
-   * the PAGE leg's `attribute_not_exists(#v.#intent)`: two workers racing the
-   * same page, one wins and the other's whole transaction cancels. The RUN
-   * leg only latches a monotonic flag. Fencing it on `attribute_exists(pk)`
-   * and bumping the version blindly keeps a concurrent `putRun` honest — its
-   * own `#v.#version = :expected` still fails against the bumped value — and
-   * removes a consistent read per page.
-   */
+  /** PAGE intent is the pre-commit crash fence. RUN is a bounded audit row;
+   * resume repairs its monotonic latch from this ledger after taking ownership. */
   async markEvidenceIntent(r: string, t: string, a: string) {
-    const page = await this.getPage(r, t);
-    if (!page) throw new Error("evidence-transition-conflict");
-    if (page.evidenceIntentAt) {
-      // Intent and the run's latch are set in ONE transaction below, so a
-      // page already carrying this attempt's marker proves the latch went
-      // with it. Re-reading the run to confirm would be asking a question the
-      // atomicity already answered.
-      if (page.evidenceIntentAt === a) return;
-      throw new Error("evidence-transition-conflict");
-    }
     try {
       await this.client.send(
-        new TransactWriteCommand({
-          TransactItems: [
-            {
-              Update: {
-                TableName: this.tableName,
-                Key: key("PAGE", `${r}#${t}`),
-                UpdateExpression: "SET #v.#intent = :a",
-                ConditionExpression:
-                  "attribute_exists(pk) AND attribute_not_exists(#v.#intent)",
-                ExpressionAttributeNames: {
-                  "#v": "value",
-                  "#intent": "evidenceIntentAt",
-                },
-                ExpressionAttributeValues: { ":a": a },
-              },
-            },
-            {
-              Update: {
-                TableName: this.tableName,
-                Key: key("RUN", r),
-                UpdateExpression:
-                  "SET #v.#e = :yes, #v.#u = :a, #v.#version = if_not_exists(#v.#version, :zero) + :one",
-                ConditionExpression: "attribute_exists(pk)",
-                ExpressionAttributeNames: {
-                  "#v": "value",
-                  "#e": "evidenceCommitted",
-                  "#u": "updatedAt",
-                  "#version": "version",
-                },
-                ExpressionAttributeValues: {
-                  ":yes": true,
-                  ":a": a,
-                  ":one": 1,
-                  ":zero": 0,
-                },
-              },
-            },
-          ],
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: key("PAGE", `${r}#${t}`),
+          UpdateExpression: "SET #v.#intent = :a",
+          ConditionExpression:
+            "attribute_exists(pk) AND (attribute_not_exists(#v.#intent) OR #v.#intent = :a)",
+          ExpressionAttributeNames: {
+            "#v": "value",
+            "#intent": "evidenceIntentAt",
+          },
+          ExpressionAttributeValues: { ":a": a },
         }),
       );
     } catch (error) {
       if (
         error instanceof Error &&
-        error.name === "TransactionCanceledException"
+        error.name === "ConditionalCheckFailedException"
       )
         throw new Error("evidence-transition-conflict");
       throw error;
     }
   }
-  /** Same reasoning as markEvidenceIntent: the run read was only a version
-   * lookup, and it cost a consistent read per committed page. */
   async commitEvidencePage(r: string, t: string, a: string) {
-    const existing = await this.getPage(r, t);
-    if (existing?.committedAt) {
-      // The commit and the run's latch land in one transaction, so a page
-      // already stamped by this attempt carries the latch with it.
-      if (existing.committedAt === a) return;
+    await this.commitEvidencePages(r, [t], a);
+  }
+  async commitEvidencePages(r: string, tokens: readonly string[], a: string) {
+    if (
+      tokens.length < 1 ||
+      tokens.length > 2 ||
+      new Set(tokens).size !== tokens.length
+    )
       throw new Error("evidence-transition-conflict");
-    }
     try {
       await this.client.send(
         new TransactWriteCommand({
-          TransactItems: [
-            {
-              Update: {
-                TableName: this.tableName,
-                Key: key("PAGE", `${r}#${t}`),
-                UpdateExpression: "SET #v.#c = :a",
-                ConditionExpression:
-                  "attribute_exists(pk) AND (attribute_not_exists(#v.#c) OR #v.#c = :a)",
-                ExpressionAttributeNames: {
-                  "#v": "value",
-                  "#c": "committedAt",
-                },
-                ExpressionAttributeValues: { ":a": a },
+          TransactItems: tokens.map((token) => ({
+            Update: {
+              TableName: this.tableName,
+              Key: key("PAGE", `${r}#${token}`),
+              UpdateExpression: "SET #v.#c = :a, #v.#e = :a",
+              ConditionExpression:
+                "attribute_exists(pk) AND (attribute_not_exists(#v.#c) OR #v.#c = :a) AND (attribute_not_exists(#v.#e) OR #v.#e = :a)",
+              ExpressionAttributeNames: {
+                "#v": "value",
+                "#c": "committedAt",
+                "#e": "evidenceCommittedAt",
+              },
+              ExpressionAttributeValues: {
+                ":a": a,
               },
             },
-            {
-              Update: {
-                TableName: this.tableName,
-                Key: key("RUN", r),
-                UpdateExpression:
-                  "SET #v.#e = :yes, #v.#u = :a, #v.#version = if_not_exists(#v.#version, :zero) + :one",
-                ConditionExpression: "attribute_exists(pk)",
-                ExpressionAttributeNames: {
-                  "#v": "value",
-                  "#e": "evidenceCommitted",
-                  "#u": "updatedAt",
-                  "#version": "version",
-                },
-                ExpressionAttributeValues: {
-                  ":yes": true,
-                  ":a": a,
-                  ":one": 1,
-                  ":zero": 0,
-                },
-              },
-            },
-          ],
+          })),
         }),
       );
     } catch (error) {
@@ -1060,6 +1074,8 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
         RequestItems: {
           [this.tableName]: {
             Keys: keys.map((keyValue) => key("HEALTH", keyValue)),
+            // A stale healthy row can conceal a durable outage or exhausted
+            // capacity, so provider status must observe the latest health row.
             ConsistentRead: true,
           },
         },

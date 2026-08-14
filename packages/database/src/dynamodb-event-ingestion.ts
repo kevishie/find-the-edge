@@ -211,7 +211,11 @@ const boundedReconciliationExecutionFailures = new Set([
   "stale-identity-aggregate",
 ]);
 export interface DynamoGateway {
-  get(pk: string, sk: string): Promise<DynamoItem | null>;
+  get(
+    pk: string,
+    sk: string,
+    options?: { readonly consistentRead?: boolean },
+  ): Promise<DynamoItem | null>;
   batchGet(
     keys: readonly { readonly pk: string; readonly sk: string }[],
   ): Promise<readonly DynamoItem[]>;

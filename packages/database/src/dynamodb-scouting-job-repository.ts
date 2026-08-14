@@ -187,6 +187,7 @@ export class DynamoScoutingJobRepository implements ScoutingJobRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: key,
+        // Job ownership, leases, fencing, receipts, and outbox state share this read.
         ConsistentRead: true,
       }),
     );

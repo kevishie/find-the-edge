@@ -2500,6 +2500,34 @@ describe("watchlist", () => {
     }
   });
 
+  it("deletes through authoritative exact candidates even when the UI list is stale", async () => {
+    const watchlist = new MemoryWatchlistRepository();
+    const handler = watchlistHandler(watchlist);
+    await handler(addRequest(storedEventId));
+    const list = vi.spyOn(watchlist, "list").mockResolvedValue([]);
+    const findFirst = vi.spyOn(watchlist, "findFirst");
+    const remove = vi.spyOn(watchlist, "remove");
+
+    const result = await handler({
+      route: "watchlist-remove",
+      method: "DELETE",
+      subject,
+      eventId: overDecodedEventId,
+      eventIdAlternatives: [overDecodedEventId, storedEventId],
+    });
+
+    expect(result.statusCode).toBe(204);
+    expect(list).not.toHaveBeenCalled();
+    expect(findFirst).toHaveBeenCalledWith(subject, [
+      overDecodedEventId,
+      storedEventId,
+    ]);
+    expect(remove).toHaveBeenCalledWith(subject, storedEventId);
+    await expect(
+      watchlist.findFirst(subject, [storedEventId]),
+    ).resolves.toBeNull();
+  });
+
   it("round-trips a percent-encoded canonical id through add, list, and delete", async () => {
     const watchlist = new MemoryWatchlistRepository();
     const handler = watchlistHandler(watchlist);

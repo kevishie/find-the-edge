@@ -52,6 +52,7 @@ export class DynamoCohortRepository implements CohortRepository {
           new GetCommand({
             TableName: this.tableName,
             Key: { pk: cohortPk, sk },
+            // Immutable-row replay must observe the winning stored material.
             ConsistentRead: true,
           }),
         );
@@ -77,6 +78,8 @@ export class DynamoCohortRepository implements CohortRepository {
           TableName: this.tableName,
           KeyConditionExpression: "pk = :pk AND begins_with(sk, :member)",
           ExpressionAttributeValues: { ":pk": cohortPk, ":member": "MEMBER#" },
+          // Finalization must see every just-written member before sealing the
+          // immutable membership digest.
           ConsistentRead: true,
           ...(memberCursor ? { ExclusiveStartKey: memberCursor } : {}),
         }),
@@ -126,6 +129,7 @@ export class DynamoCohortRepository implements CohortRepository {
         new GetCommand({
           TableName: this.tableName,
           Key: finalizationKey,
+          // A cutoff may bind to only one immutable membership digest.
           ConsistentRead: true,
         }),
       );
@@ -156,6 +160,7 @@ export class DynamoCohortRepository implements CohortRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: "PERFORMANCE_COHORTS", sk: id },
+        // Report binding and replay must observe the durable cohort winner.
         ConsistentRead: true,
       }),
     );
@@ -203,7 +208,9 @@ export class DynamoCohortRepository implements CohortRepository {
           KeyConditionExpression: "pk = :pk",
           ExpressionAttributeValues: { ":pk": pk },
           Limit: input.limit,
-          ConsistentRead: true,
+          // Cohorts are immutable catalogue entries; report binding and
+          // scheduled revision decisions retain their strong reads.
+          ConsistentRead: false,
           ...(cursorKey ? { ExclusiveStartKey: { pk, sk: cursorKey } } : {}),
         }),
       );
@@ -278,6 +285,7 @@ export class DynamoCohortRepository implements CohortRepository {
       new GetCommand({
         TableName: this.tableName,
         Key: { pk: `PERFORMANCE_REPORT#${id}`, sk: "RECORD" },
+        // Report replay must observe the immutable winning report.
         ConsistentRead: true,
       }),
     );
@@ -318,6 +326,7 @@ export class DynamoCohortRepository implements CohortRepository {
           KeyConditionExpression: "pk = :pk",
           ExpressionAttributeValues: { ":pk": pk },
           Limit: input.limit,
+          // Scheduled revision and duplicate selection require a complete list.
           ConsistentRead: true,
           ScanIndexForward: false,
           ...(cursorKey ? { ExclusiveStartKey: { pk, sk: cursorKey } } : {}),
