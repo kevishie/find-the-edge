@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-075
+nextReadyStory: FTE-082
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -1008,7 +1008,7 @@ stories:
     title: Spike - Game State Feed Shape and Trustworthiness
     epic: Live game state
     priority: P0
-    status: backlog
+    status: in-progress
     dependencies: []
     validationCommands: [pnpm check]
     blockerReason:

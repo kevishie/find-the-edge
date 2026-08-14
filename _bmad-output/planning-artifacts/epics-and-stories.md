@@ -1637,7 +1637,7 @@ game's record. Nothing in this epic may present a consensus score as
 authoritative, and no money may move from it automatically.
 
 **Running order.** Story ids are allocation order, not execution order. The
-sequence is FTE-090 and FTE-087 first — neither depends on the add-on and
+sequence is FTE-090 and FTE-091 first — neither depends on the add-on and
 both address live board damage — then the spike FTE-082, then FTE-083, then
 FTE-084 and FTE-088 together, then FTE-085, FTE-086, and finally FTE-089
 once the two witnesses have been compared for long enough to justify
