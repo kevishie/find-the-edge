@@ -53,7 +53,15 @@ export const ORDINARY_OWNED_ROUTE_KEYS = Object.freeze([
   "DELETE /watchlist/{eventId}",
 ] as const);
 
+export const ELEVATED_OWNED_ROUTE_KEYS = Object.freeze([
+  "POST /retrospectives/{eventId}/review",
+  "POST /strategy-experiments/{eventId}/approve",
+  "POST /strategy-experiments/{eventId}/promote",
+  "POST /strategy-experiments/{eventId}/rollback",
+] as const);
+
 const ordinaryOwnedRouteKeys = new Set<string>(ORDINARY_OWNED_ROUTE_KEYS);
+const elevatedOwnedRouteKeys = new Set<string>(ELEVATED_OWNED_ROUTE_KEYS);
 
 export const authorizationHeaderFromLambdaHeaders = (
   headers: Readonly<Record<string, string | undefined>> | undefined,
@@ -87,6 +95,7 @@ export const shouldResolveOwnedLambdaAuthorization = (
   >,
 ): boolean =>
   (ordinaryOwnedRouteKeys.has(input.routeKey ?? "") ||
+    elevatedOwnedRouteKeys.has(input.routeKey ?? "") ||
     input.productRoute ||
     input.capabilitiesRoute) &&
   isOwnedSessionAuthorization(
@@ -103,6 +112,7 @@ export async function authorizationContextFromLambdaRequest(
   input: LambdaRequestAuthorizationInput,
 ): Promise<HandlerAuthorizationContext> {
   const ordinaryOwnedRoute = ordinaryOwnedRouteKeys.has(input.routeKey ?? "");
+  const elevatedOwnedRoute = elevatedOwnedRouteKeys.has(input.routeKey ?? "");
   const authorization = authorizationHeaderFromLambdaHeaders(input.headers);
   const resolveOwned = shouldResolveOwnedLambdaAuthorization(input);
   if (resolveOwned) {
@@ -127,7 +137,7 @@ export async function authorizationContextFromLambdaRequest(
       })) ?? UNAUTHORIZED_CONTEXT
     );
   }
-  if (ordinaryOwnedRoute || input.capabilitiesRoute)
+  if (ordinaryOwnedRoute || elevatedOwnedRoute || input.capabilitiesRoute)
     return UNAUTHORIZED_CONTEXT;
   return authorizationContextFromGateway(input.gatewayJwt);
 }
@@ -141,9 +151,9 @@ export const handlerAuthorizationFields = (
   strategyPromoterAuthorized: authorization.strategyPromoterAuthorized,
 });
 
-/** Preserve the legacy Cognito projection exactly while its authorizer is
- * still attached. This function is intentionally claim-aware; the owned
- * session path below never consults these client-adjacent values. */
+/** Preserve the legacy Cognito projection as a rollback seam. This function
+ * is intentionally claim-aware; every detached owned-session route is
+ * inventoried above and never consults these client-adjacent values. */
 export function authorizationContextFromGateway(
   jwt: GatewayJwtAuthorization | undefined,
 ): HandlerAuthorizationContext {

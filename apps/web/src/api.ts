@@ -1210,6 +1210,7 @@ const ownedProductFetch = async (
   session: OwnedSessionTransport,
   input: Parameters<typeof fetch>[0],
   init?: Parameters<typeof fetch>[1],
+  expectedAccountId?: string,
 ): Promise<{
   readonly response: Response;
   readonly authorization: OwnedSessionAuthorization;
@@ -1222,12 +1223,18 @@ const ownedProductFetch = async (
   const authorization = await authorizeProductRequest(session, signal);
   if (authorization === null) {
     if (signal?.aborted) throw abortReason(signal);
+    if (expectedAccountId !== undefined) throw staleSessionCancellation();
     session.refuse(null, "authentication");
     throw new GamesClientError(
       "authentication",
       "Sign in is required to use Find The Edge.",
     );
   }
+  if (
+    expectedAccountId !== undefined &&
+    authorization.accountId !== expectedAccountId
+  )
+    throw staleSessionCancellation();
   if (
     !isSessionToken(authorization.token) ||
     !isAccountId(authorization.accountId)
@@ -1242,7 +1249,19 @@ const ownedProductFetch = async (
   if (signal?.aborted) throw abortReason(signal);
   const headers = new Headers(init?.headers);
   headers.set("authorization", `Bearer ${authorization.token}`);
-  const response = await fetcher(input, { ...init, headers });
+  let response: Response;
+  try {
+    response = await fetcher(input, { ...init, headers });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    await assertProductRefusalAuthorityCurrent(
+      session,
+      authorization,
+      signal,
+      true,
+    );
+    throw error;
+  }
   if (response.status === 401) {
     await assertProductRefusalAuthorityCurrent(
       session,
@@ -3304,34 +3323,6 @@ function bootstrapFailure(failure: RuntimeConfigError): GamesClientError {
   return new GamesClientError("configuration", failure.message);
 }
 
-const legacyElevatedSession = async (
-  providerKey: string | undefined,
-  signal: AbortSignal,
-) => {
-  if (!providerKey) return null;
-  const provider = (globalThis as Record<string, unknown>)[providerKey];
-  if (!plain(provider) || typeof provider["getAccessToken"] !== "function")
-    return null;
-  let token: unknown;
-  try {
-    token = await awaitWithSignal(
-      (provider["getAccessToken"] as () => Promise<unknown>)(),
-      signal,
-    );
-  } catch {
-    if (signal.aborted) throw abortReason(signal);
-    return null;
-  }
-  if (
-    typeof token !== "string" ||
-    token.length < 10 ||
-    token.length > 16_384 ||
-    !/^[A-Za-z0-9._~+/-]+=*$/u.test(token)
-  )
-    return null;
-  return { token };
-};
-
 const SCOUTING_REQUEST_TIMEOUT_MS = 10_000;
 
 const awaitWithSignal = <T>(promise: Promise<T>, signal: AbortSignal) =>
@@ -3378,7 +3369,7 @@ const assertOwnedOrdinarySessionCurrent = async (
     throw staleSessionCancellation();
 };
 
-const completeOwnedOrdinaryRequest = async <T>(
+const completeOwnedRequest = async <T>(
   session: OwnedSessionTransport,
   authorization: OwnedSessionAuthorization,
   signal: AbortSignal,
@@ -3484,7 +3475,7 @@ const scoutingJobRequest = async ({
             ...(operation === "status" ? {} : { body: JSON.stringify(body) }),
           },
         );
-        return completeOwnedOrdinaryRequest(
+        return completeOwnedRequest(
           session,
           authorization,
           requestSignal,
@@ -3587,7 +3578,7 @@ const scoutReportRequest = async <T>({
             signal: requestSignal,
           },
         );
-        return completeOwnedOrdinaryRequest(
+        return completeOwnedRequest(
           session,
           authorization,
           requestSignal,
@@ -3679,7 +3670,7 @@ const watchlistRequest = async <T>({
             ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           },
         );
-        return completeOwnedOrdinaryRequest(
+        return completeOwnedRequest(
           session,
           authorization,
           requestSignal,
@@ -3730,31 +3721,39 @@ export function createGamesClient(
         signal,
       },
     );
-    if (!response.ok)
-      throw new GamesClientError(
-        "request-failed",
-        "Session capabilities are unavailable.",
+    const fenceCapabilityAccount = async () => {
+      const current = await authorizeProductRequest(
+        ownedSessionTransport,
+        signal,
       );
-    const payload: unknown = await response.json().catch(() => null);
-    const parsed = parseOwnedSessionCapabilities(
-      payload,
-      authorization.accountId,
-    );
-    const currentAuthorization = await authorizeProductRequest(
-      ownedSessionTransport,
-      signal,
-    );
-    if (signal.aborted) throw abortReason(signal);
-    if (
-      !currentAuthorization ||
-      !isSessionToken(currentAuthorization.token) ||
-      !isAccountId(currentAuthorization.accountId) ||
-      currentAuthorization.accountId !== authorization.accountId
-    )
-      throw new GamesClientError(
-        "authentication",
-        "The active account changed while capabilities were loading.",
-      );
+      if (signal.aborted) throw abortReason(signal);
+      if (
+        !current ||
+        !isSessionToken(current.token) ||
+        !isAccountId(current.accountId)
+      )
+        throw new GamesClientError(
+          "authentication",
+          "The active session is no longer valid.",
+        );
+      if (current.accountId !== authorization.accountId)
+        throw staleSessionCancellation();
+      return current;
+    };
+    let parsed: OwnedSessionCapabilitiesDto;
+    try {
+      if (!response.ok)
+        throw new GamesClientError(
+          "request-failed",
+          "Session capabilities are unavailable.",
+        );
+      const payload: unknown = await response.json().catch(() => null);
+      parsed = parseOwnedSessionCapabilities(payload, authorization.accountId);
+    } catch (error) {
+      await fenceCapabilityAccount();
+      throw error;
+    }
+    const currentAuthorization = await fenceCapabilityAccount();
     return { projection: parsed, authorization: currentAuthorization };
   };
   const resolveOwnedSessionCapability = async (
@@ -3766,24 +3765,6 @@ export function createGamesClient(
       allowed: resolution.projection.capabilities.includes(capability),
       authorization: resolution.authorization,
     };
-  };
-  const assertOwnedSessionUnchanged = async (
-    expected: OwnedSessionAuthorization,
-    signal: AbortSignal,
-  ): Promise<void> => {
-    const current = await authorizeProductRequest(
-      ownedSessionTransport,
-      signal,
-    );
-    if (
-      current === null ||
-      current.accountId !== expected.accountId ||
-      current.token !== expected.token
-    )
-      throw new GamesClientError(
-        "authentication",
-        "The active session changed while elevated access was being checked.",
-      );
   };
   return {
     ok: true,
@@ -4324,40 +4305,41 @@ export function createGamesClient(
             "forbidden",
             "Strategy promoter access is required.",
           );
-        const session = await legacyElevatedSession(
-          bootstrap.value.config.tokenProviderKey,
-          signal,
-        );
-        if (!session)
-          throw new GamesClientError(
-            "forbidden",
-            "A strategy promoter session is required.",
-          );
         if (signal.aborted) throw abortReason(signal);
-        await assertOwnedSessionUnchanged(authority.authorization, signal);
-        const response = await fetcher(
+        const { response, authorization } = await ownedProductFetch(
+          fetcher,
+          ownedSessionTransport,
           `${bootstrap.value.config.apiBase}/strategy-experiments/${encodeURIComponent(id)}/${action}`,
           {
             method: "POST",
+            credentials: "omit",
+            cache: "no-store",
             headers: {
-              authorization: `Bearer ${session.token}`,
               "content-type": "application/json",
             },
             body: JSON.stringify(body),
             signal,
           },
+          authority.authorization.accountId,
         );
-        if (response.status === 409)
-          throw new GamesClientError(
-            "conflict",
-            "The experiment changed. Reloading current evidence.",
-          );
-        if (!response.ok)
-          throw new GamesClientError(
-            response.status === 403 ? "forbidden" : "request-failed",
-            "The strategy action could not be saved.",
-          );
-        return response.json() as Promise<unknown>;
+        return completeOwnedRequest(
+          ownedSessionTransport,
+          authorization,
+          signal,
+          async () => {
+            if (response.status === 409)
+              throw new GamesClientError(
+                "conflict",
+                "The experiment changed. Reloading current evidence.",
+              );
+            if (!response.ok)
+              throw new GamesClientError(
+                response.status === 403 ? "forbidden" : "request-failed",
+                "The strategy action could not be saved.",
+              );
+            return response.json() as Promise<unknown>;
+          },
+        );
       },
       async list(filter, signal) {
         // Every lifecycle arrives in one server-merged request; the previous
@@ -4915,26 +4897,20 @@ export function createGamesClient(
             "forbidden",
             "Reviewer access is required.",
           );
-        const session = await legacyElevatedSession(
-          bootstrap.value.config.tokenProviderKey,
-          signal,
-        );
-        if (!session)
-          throw new GamesClientError(
-            "forbidden",
-            "Reviewer access is required.",
-          );
         if (signal.aborted) throw abortReason(signal);
-        await assertOwnedSessionUnchanged(authority.authorization, signal);
+        let authorization: OwnedSessionAuthorization;
         let response: Response;
         try {
-          response = await fetcher(
+          const result = await ownedProductFetch(
+            fetcher,
+            ownedSessionTransport,
             `${bootstrap.value.config.apiBase}/retrospectives/${encodeURIComponent(version.versionId)}/review`,
             {
               method: "POST",
+              credentials: "omit",
+              cache: "no-store",
               signal,
               headers: {
-                authorization: `Bearer ${session.token}`,
                 "content-type": "application/json",
               },
               body: JSON.stringify({
@@ -4945,69 +4921,84 @@ export function createGamesClient(
                 expectedStateVersion: version.stateVersion,
               }),
             },
+            authority.authorization.accountId,
           );
+          response = result.response;
+          authorization = result.authorization;
         } catch (error) {
-          if (signal.aborted) throw error;
+          if (
+            signal.aborted ||
+            isRequestCancellation(error) ||
+            error instanceof GamesClientError
+          )
+            throw error;
           throw new GamesClientError(
             "request-failed",
             "The review could not be saved.",
           );
         }
-        if (response.status === 409)
-          throw new GamesClientError(
-            "conflict",
-            "This retrospective changed while you were reviewing it.",
-          );
-        if (!response.ok)
-          throw new GamesClientError(
-            response.status === 403 ? "forbidden" : "request-failed",
-            "The review could not be saved.",
-          );
-        const body: unknown = await response.json();
-        if (
-          !plain(body) ||
-          !exact(body, ["version", "decision"]) ||
-          !validRetrospective(body["version"]) ||
-          !plain(body["decision"])
-        )
-          throw new GamesClientError(
-            "invalid-response",
-            "The review response was invalid.",
-          );
-        const reviewed = body["version"],
-          decision = body["decision"];
-        const expectedState =
-          input.reasonCode === "approve"
-            ? "approved"
-            : input.reasonCode === "reject"
-              ? "rejected"
-              : "changes-requested";
-        if (
-          !exact(decision, [
-            "decisionId",
-            "versionId",
-            "fromState",
-            "toState",
-            "reasonCode",
-            "decidedAt",
-          ]) ||
-          !/^retrospective-decision:[a-f0-9]{64}$/.test(
-            String(decision["decisionId"]),
-          ) ||
-          decision["versionId"] !== version.versionId ||
-          decision["versionId"] !== reviewed.versionId ||
-          decision["fromState"] !== version.state ||
-          decision["toState"] !== expectedState ||
-          decision["toState"] !== reviewed.state ||
-          decision["reasonCode"] !== input.reasonCode ||
-          !iso(decision["decidedAt"]) ||
-          reviewed.stateVersion !== version.stateVersion + 1
-        )
-          throw new GamesClientError(
-            "invalid-response",
-            "The review response was invalid.",
-          );
-        return reviewed;
+        return completeOwnedRequest(
+          ownedSessionTransport,
+          authorization,
+          signal,
+          async () => {
+            if (response.status === 409)
+              throw new GamesClientError(
+                "conflict",
+                "This retrospective changed while you were reviewing it.",
+              );
+            if (!response.ok)
+              throw new GamesClientError(
+                response.status === 403 ? "forbidden" : "request-failed",
+                "The review could not be saved.",
+              );
+            const body: unknown = await response.json();
+            if (
+              !plain(body) ||
+              !exact(body, ["version", "decision"]) ||
+              !validRetrospective(body["version"]) ||
+              !plain(body["decision"])
+            )
+              throw new GamesClientError(
+                "invalid-response",
+                "The review response was invalid.",
+              );
+            const reviewed = body["version"],
+              decision = body["decision"];
+            const expectedState =
+              input.reasonCode === "approve"
+                ? "approved"
+                : input.reasonCode === "reject"
+                  ? "rejected"
+                  : "changes-requested";
+            if (
+              !exact(decision, [
+                "decisionId",
+                "versionId",
+                "fromState",
+                "toState",
+                "reasonCode",
+                "decidedAt",
+              ]) ||
+              !/^retrospective-decision:[a-f0-9]{64}$/.test(
+                String(decision["decisionId"]),
+              ) ||
+              decision["versionId"] !== version.versionId ||
+              decision["versionId"] !== reviewed.versionId ||
+              decision["fromState"] !== version.state ||
+              decision["toState"] !== expectedState ||
+              decision["toState"] !== reviewed.state ||
+              decision["reasonCode"] !== input.reasonCode ||
+              !iso(decision["decidedAt"]) ||
+              reviewed.stateVersion !== version.stateVersion + 1
+            )
+              throw new GamesClientError(
+                "invalid-response",
+                "The review response was invalid.",
+              );
+            return reviewed;
+          },
+        );
       },
     },
   };

@@ -367,8 +367,8 @@ const handleEvent = async (event: LambdaEvent) => {
     // ones. While the flag is off, only routes already migrated to the owned
     // bearer pay this verification cost.
     (productAccessEnforced && productRoute) ||
-    // The ordinary route cutover verifies fte1 here; elevated routes retain
-    // their Cognito gateway authorizer until their later migration slice.
+    // Every detached owned route verifies fte1 here. Elevated mutations also
+    // request the strongly read server-role projection before handler checks.
     ownedSessionAuthorization
       ? await loadIdentitySecrets(secrets, identitySecretId)
       : undefined;

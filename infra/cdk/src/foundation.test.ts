@@ -525,7 +525,7 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("AllowOrigins");
     expect(rendered).toContain("ExposeHeaders");
     expect(rendered).toContain("location");
-    template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
+    template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 0);
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "GET /games",
       AuthorizationType: "NONE",
@@ -603,25 +603,14 @@ describe("foundation CDK app", () => {
       expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
       expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
-    // The owned capabilities projection is additive. The four elevated write
-    // routes remain on their exact Cognito scopes until the later cutover.
-    for (const [routeKey, scope] of [
-      [
-        "POST /retrospectives/{eventId}/review",
-        "events/retrospectives:approve",
-      ],
-      [
-        "POST /strategy-experiments/{eventId}/approve",
-        "events/strategies:promote",
-      ],
-      [
-        "POST /strategy-experiments/{eventId}/promote",
-        "events/strategies:promote",
-      ],
-      [
-        "POST /strategy-experiments/{eventId}/rollback",
-        "events/strategies:promote",
-      ],
+    // These are the final four Cognito-authorized methods to move behind the
+    // Lambda's verified owned-session and server-role boundary. The Cognito
+    // pool, clients, groups, scopes, domain, and outputs remain for rollback.
+    for (const routeKey of [
+      "POST /retrospectives/{eventId}/review",
+      "POST /strategy-experiments/{eventId}/approve",
+      "POST /strategy-experiments/{eventId}/promote",
+      "POST /strategy-experiments/{eventId}/rollback",
     ]) {
       const matches = Object.values(resources).filter(
         (resource) =>
@@ -630,12 +619,10 @@ describe("foundation CDK app", () => {
       );
       expect(matches).toHaveLength(1);
       expect(matches[0]?.Properties).toEqual(
-        expect.objectContaining({
-          AuthorizationType: "JWT",
-          AuthorizationScopes: [scope],
-        }),
+        expect.objectContaining({ AuthorizationType: "NONE" }),
       );
-      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeDefined();
+      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
+      expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {

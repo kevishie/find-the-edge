@@ -15,10 +15,13 @@ import {
   MemoryScoutingReportRepository,
   MemoryWatchlistRepository,
   type EventRepository,
+  type RetrospectiveRepository,
+  type StrategyExperimentRepository,
 } from "@find-the-edge/database";
 import {
   authorizationContextFromLambdaRequest,
   authorizationContextFromGateway,
+  ELEVATED_OWNED_ROUTE_KEYS,
   handlerAuthorizationFields,
   isOwnedSessionAuthorization,
   memoizeIdentityAccountLookup,
@@ -356,6 +359,216 @@ describe("Lambda request authorization adapter", () => {
       for (const repositoryCall of calls)
         expect(repositoryCall).not.toHaveBeenCalled();
       expect(identity.getAccount).toHaveBeenCalledTimes(identityRead ? 1 : 0);
+    },
+  );
+});
+
+describe("elevated owned Lambda authorization boundary", () => {
+  const elevatedAdapter = (
+    routeKey: (typeof ELEVATED_OWNED_ROUTE_KEYS)[number],
+    authorization: string | undefined,
+    roles: readonly ("retrospective-reviewer" | "strategy-promoter")[],
+  ) =>
+    authorizationContextFromLambdaRequest({
+      routeKey,
+      ...(authorization ? { headers: { authorization } } : {}),
+      // Detached methods must ignore stale or synthetic Gateway authority.
+      gatewayJwt: {
+        claims: {
+          sub: "legacy-cognito-user",
+          "cognito:groups": [
+            "fte-retrospective-reviewers",
+            "fte-strategy-promoters",
+          ],
+        },
+        scopes: ["events/retrospectives:approve", "events/strategies:promote"],
+      },
+      productRoute: true,
+      capabilitiesRoute: false,
+      includeElevatedAuthorization: true,
+      ownedRuntime: {
+        signingKeys: RING,
+        identity: identityOf(ACCOUNT),
+        identityAuthorization: {
+          get: vi.fn().mockResolvedValue(
+            createIdentityAuthorization({
+              accountId: ACCOUNT_ID,
+              roles,
+              updatedAt: NOW.toISOString(),
+              operatorId: "operator:test",
+            }),
+          ),
+        },
+        now: NOW,
+      },
+    });
+
+  const events: EventRepository = {
+    list: vi.fn(),
+    detail: vi.fn(),
+  };
+  const review = vi.fn().mockResolvedValue({
+    version: {
+      versionId: `retrospective-version:${"a".repeat(64)}`,
+      state: "approved",
+      stateVersion: 2,
+    },
+    decision: {
+      decisionId: `retrospective-decision:${"b".repeat(64)}`,
+      versionId: `retrospective-version:${"a".repeat(64)}`,
+      fromState: "draft",
+      toState: "approved",
+      reasonCode: "approve",
+      decidedAt: NOW.toISOString(),
+    },
+  });
+  const retrospectiveRepository = {
+    review,
+  } as unknown as RetrospectiveRepository;
+  const approve = vi.fn().mockResolvedValue({ experiment: {}, decision: {} });
+  const activate = vi.fn().mockResolvedValue({});
+  const strategyRepository = {
+    approve,
+    activate,
+  } as unknown as StrategyExperimentRepository;
+  const handler = createEventHandler(
+    events,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    retrospectiveRepository,
+    strategyRepository,
+  );
+
+  const requestFor = (
+    routeKey: (typeof ELEVATED_OWNED_ROUTE_KEYS)[number],
+    fields: ReturnType<typeof handlerAuthorizationFields>,
+  ) => {
+    if (routeKey === "POST /retrospectives/{eventId}/review")
+      return handler({
+        route: "retrospective-review",
+        eventId: `retrospective-version:${"a".repeat(64)}`,
+        method: "POST",
+        contentType: "application/json",
+        query: {},
+        body: JSON.stringify({
+          reasonCode: "approve",
+          idempotencyKey: "owned-review",
+          expectedState: "draft",
+          expectedStateVersion: 1,
+        }),
+        ...fields,
+      });
+    const action = routeKey.endsWith("/approve")
+      ? "experiment-approve"
+      : routeKey.endsWith("/promote")
+        ? "experiment-promote"
+        : "experiment-rollback";
+    return handler({
+      route: action,
+      eventId: `strategy-experiment:${"c".repeat(64)}`,
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify(
+        action === "experiment-approve"
+          ? {
+              reason: "Evidence verified",
+              idempotencyKey: "owned-approve",
+              expectedStateVersion: 1,
+              expectedDigest: "d".repeat(64),
+              artifactDigest: "e".repeat(64),
+            }
+          : {
+              strategyId: "strategy:test",
+              artifactVersion: "1.0.0",
+              artifactDigest: "e".repeat(64),
+              effectiveAt: "2099-01-01T00:00:00.000Z",
+              reason: "Evidence verified",
+              idempotencyKey: `owned-${action}`,
+              expectedActivationId: null,
+            },
+      ),
+      ...fields,
+    });
+  };
+
+  it.each(ELEVATED_OWNED_ROUTE_KEYS)(
+    "drives the actual %s handler with only the matching server role",
+    async (routeKey) => {
+      review.mockClear();
+      approve.mockClear();
+      activate.mockClear();
+      const requiredRole = routeKey.includes("retrospectives")
+        ? "retrospective-reviewer"
+        : "strategy-promoter";
+      const context = await elevatedAdapter(routeKey, `Bearer ${session()}`, [
+        requiredRole,
+      ]);
+      const response = await requestFor(
+        routeKey,
+        handlerAuthorizationFields(context),
+      );
+      expect(response.statusCode).toBe(200);
+      expect(
+        review.mock.calls.length +
+          approve.mock.calls.length +
+          activate.mock.calls.length,
+      ).toBe(1);
+    },
+  );
+
+  it.each(ELEVATED_OWNED_ROUTE_KEYS)(
+    "rejects missing and wrong-role authority before %s repository mutation",
+    async (routeKey) => {
+      const cases: readonly {
+        readonly authorization?: string;
+        readonly roles: readonly (
+          "retrospective-reviewer" | "strategy-promoter"
+        )[];
+        readonly expectedStatus: number;
+      }[] = [
+        {
+          roles: ["retrospective-reviewer", "strategy-promoter"],
+          expectedStatus: 401,
+        },
+        {
+          authorization: "Bearer fte1.invalid",
+          roles: ["retrospective-reviewer", "strategy-promoter"],
+          expectedStatus: 401,
+        },
+        {
+          authorization: `Bearer ${session({ tokenVersion: 2 })}`,
+          roles: ["retrospective-reviewer", "strategy-promoter"],
+          expectedStatus: 401,
+        },
+        {
+          authorization: `Bearer ${session()}`,
+          roles: [],
+          expectedStatus: 403,
+        },
+        {
+          authorization: `Bearer ${session()}`,
+          roles: routeKey.includes("retrospectives")
+            ? ["strategy-promoter"]
+            : ["retrospective-reviewer"],
+          expectedStatus: 403,
+        },
+      ];
+      for (const { authorization, roles, expectedStatus } of cases) {
+        review.mockClear();
+        approve.mockClear();
+        activate.mockClear();
+        const context = await elevatedAdapter(routeKey, authorization, roles);
+        const response = await requestFor(
+          routeKey,
+          handlerAuthorizationFields(context),
+        );
+        expect(response.statusCode).toBe(expectedStatus);
+        expect(review).not.toHaveBeenCalled();
+        expect(approve).not.toHaveBeenCalled();
+        expect(activate).not.toHaveBeenCalled();
+      }
     },
   );
 });

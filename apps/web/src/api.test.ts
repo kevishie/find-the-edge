@@ -1291,7 +1291,7 @@ describe("owned session capabilities client", () => {
 
     await expect(
       result.value.getSessionCapabilities?.(new AbortController().signal),
-    ).rejects.toMatchObject({ code: "authentication" });
+    ).rejects.toMatchObject({ name: "AbortError" });
     expect(authorize).toHaveBeenCalledTimes(2);
   });
 
@@ -1539,19 +1539,8 @@ const elevatedClient = (
 describe.each(elevatedDomains)("$label owned capability gate", (domain) => {
   const capabilityUrl = "https://api.example.test/auth/session/capabilities";
   const mutationUrl = `https://api.example.test${domain.mutationPath}`;
-  const opaqueLegacyBearer = "opaque-legacy-bearer-without-jwt-claims";
-
-  afterEach(() => {
-    Reflect.deleteProperty(globalThis, "session");
-  });
 
   it("selects only the exact owned capability and forwards cancellation", async () => {
-    const getAccessToken = vi.fn(() => Promise.resolve(opaqueLegacyBearer));
-    Object.defineProperty(globalThis, "session", {
-      configurable: true,
-      value: { getAccessToken },
-    });
-
     for (const [capabilities, expected] of [
       [[domain.capability], true],
       [[domain.otherCapability], false],
@@ -1569,16 +1558,9 @@ describe.each(elevatedDomains)("$label owned capability gate", (domain) => {
       expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
       expect(fetcher.mock.calls[0]![1]?.signal).toBe(signal);
     }
-
-    expect(getAccessToken).not.toHaveBeenCalled();
   });
 
-  it("rechecks owned authority and uses the legacy bearer only as an opaque POST credential", async () => {
-    const getAccessToken = vi.fn(() => Promise.resolve(opaqueLegacyBearer));
-    Object.defineProperty(globalThis, "session", {
-      configurable: true,
-      value: { getAccessToken },
-    });
+  it("rechecks owned authority and sends only the current owned bearer", async () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockImplementation((request) =>
@@ -1601,17 +1583,15 @@ describe.each(elevatedDomains)("$label owned capability gate", (domain) => {
       capabilityUrl,
       mutationUrl,
     ]);
-    expect(getAccessToken).toHaveBeenCalledOnce();
-    expect(fetcher.mock.invocationCallOrder[1]).toBeLessThan(
-      getAccessToken.mock.invocationCallOrder[0]!,
-    );
-    expect(getAccessToken.mock.invocationCallOrder[0]).toBeLessThan(
-      fetcher.mock.invocationCallOrder[2]!,
-    );
     const mutationRequest = fetcher.mock.calls[2]![1];
     expect(new Headers(mutationRequest?.headers).get("authorization")).toBe(
-      `Bearer ${opaqueLegacyBearer}`,
+      `Bearer ${ownedToken}`,
     );
+    expect(mutationRequest).toMatchObject({
+      method: "POST",
+      credentials: "omit",
+      cache: "no-store",
+    });
     const mutationBody = mutationRequest?.body;
     expect(typeof mutationBody).toBe("string");
     if (typeof mutationBody !== "string")
@@ -1626,31 +1606,56 @@ describe.each(elevatedDomains)("$label owned capability gate", (domain) => {
       new Response(null, { status: 503 }),
       "request-failed",
     ],
-  ])(
-    "stops on %s before reading a legacy bearer or sending a POST",
-    async (_case, response, code) => {
-      const getAccessToken = vi.fn(() => Promise.resolve(opaqueLegacyBearer));
-      Object.defineProperty(globalThis, "session", {
-        configurable: true,
-        value: { getAccessToken },
-      });
-      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response);
+  ])("stops on %s before sending a POST", async (_case, response, code) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response);
 
-      await expect(
-        domain.mutate(elevatedClient(fetcher), new AbortController().signal),
-      ).rejects.toMatchObject({ code });
-      expect(getAccessToken).not.toHaveBeenCalled();
+    await expect(
+      domain.mutate(elevatedClient(fetcher), new AbortController().signal),
+    ).rejects.toMatchObject({ code });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+  });
+
+  it.each(["deferred 503", "deferred malformed body"])(
+    "cancels a stale %s capability error after account replacement",
+    async (failure) => {
+      const replacement = {
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+        accountId: `account:${"d".repeat(64)}`,
+      };
+      let current = authorization();
+      const authorize = vi.fn(() => Promise.resolve(current));
+      const refuse = vi.fn();
+      let resolveResponse!: (response: Response) => void;
+      const fetcher = vi.fn<typeof fetch>(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveResponse = resolve;
+          }),
+      );
+      const malformed = deferredJsonResponse({ unexpected: true });
+      const pending = domain.mutate(
+        elevatedClient(fetcher, { authorize, refuse }),
+        new AbortController().signal,
+      );
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+      if (failure === "deferred 503") {
+        current = replacement;
+        resolveResponse(new Response(null, { status: 503 }));
+      } else {
+        resolveResponse(malformed.response);
+        await malformed.bodyStarted;
+        current = replacement;
+        malformed.release();
+      }
+
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
       expect(fetcher).toHaveBeenCalledOnce();
-      expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+      expect(refuse).not.toHaveBeenCalled();
     },
   );
 
-  it("aborts an in-flight capability recheck before reading a legacy bearer or sending a POST", async () => {
-    const getAccessToken = vi.fn(() => Promise.resolve(opaqueLegacyBearer));
-    Object.defineProperty(globalThis, "session", {
-      configurable: true,
-      value: { getAccessToken },
-    });
+  it("aborts an in-flight capability recheck before sending a POST", async () => {
     const controller = new AbortController();
     const reason = new DOMException("Stopped", "AbortError");
     const fetcher = vi.fn<typeof fetch>().mockImplementation(
@@ -1684,79 +1689,37 @@ describe.each(elevatedDomains)("$label owned capability gate", (domain) => {
       ok: false,
       error: { name: "AbortError" },
     });
-    expect(getAccessToken).not.toHaveBeenCalled();
     expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
   });
 
-  it("aborts after capability approval while the legacy bearer is still loading", async () => {
-    let resolveToken!: (token: string) => void;
-    const token = new Promise<string>((resolve) => {
-      resolveToken = resolve;
-    });
-    const getAccessToken = vi.fn(() => token);
-    Object.defineProperty(globalThis, "session", {
-      configurable: true,
-      value: { getAccessToken },
-    });
-    const controller = new AbortController();
-    const reason = new DOMException("Stopped", "AbortError");
+  it("uses a same-account token refresh that lands after capability approval", async () => {
+    const refreshed = authorization(`${ownedToken}-refreshed`);
+    const authorize = vi
+      .fn<OwnedSessionTransport["authorize"]>()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(refreshed)
+      .mockResolvedValueOnce(refreshed);
     const fetcher = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(capabilityResponse([domain.capability]));
-
-    const pending = domain
-      .mutate(elevatedClient(fetcher), controller.signal)
-      .then(
-        (value) => ({ ok: true as const, value }),
-        (error: unknown) => ({ ok: false as const, error }),
-      );
-    await vi.waitFor(() => expect(getAccessToken).toHaveBeenCalledOnce());
-    controller.abort(reason);
-
-    await expect(pending).resolves.toMatchObject({
-      ok: false,
-      error: { name: "AbortError" },
-    });
-    expect(fetcher).toHaveBeenCalledOnce();
-    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
-    resolveToken(opaqueLegacyBearer);
-  });
-
-  it("stops after an allowed capability when the legacy provider is missing", async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(capabilityResponse([domain.capability]));
+      .mockResolvedValueOnce(capabilityResponse([domain.capability]))
+      .mockResolvedValueOnce(new Response("{}", { status: 409 }));
 
     await expect(
-      domain.mutate(elevatedClient(fetcher), new AbortController().signal),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    expect(fetcher).toHaveBeenCalledOnce();
-    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
-  });
-
-  it.each([
-    ["whitespace", () => Promise.resolve("              ")],
-    ["too short", () => Promise.resolve("short")],
-    ["provider rejection", () => Promise.reject(new Error("provider down"))],
-  ])("stops on an invalid %s legacy bearer", async (_case, getAccessToken) => {
-    Object.defineProperty(globalThis, "session", {
-      configurable: true,
-      value: { getAccessToken: vi.fn(getAccessToken) },
-    });
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(capabilityResponse([domain.capability]));
-
-    await expect(
-      domain.mutate(elevatedClient(fetcher), new AbortController().signal),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    expect(fetcher).toHaveBeenCalledOnce();
-    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+      domain.mutate(
+        elevatedClient(fetcher, { authorize, refuse: vi.fn() }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(
+      new Headers(fetcher.mock.calls[1]![1]?.headers).get("authorization"),
+    ).toBe(`Bearer ${refreshed.token}`);
   });
 
   it("stops when the owned session changes after capability approval", async () => {
     const replacement = {
-      token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+      token: "malformed-replacement-token",
       accountId: `account:${"d".repeat(64)}`,
     };
     const authorize = vi
@@ -1764,27 +1727,142 @@ describe.each(elevatedDomains)("$label owned capability gate", (domain) => {
       .mockResolvedValueOnce(authorization())
       .mockResolvedValueOnce(authorization())
       .mockResolvedValueOnce(replacement);
-    Object.defineProperty(globalThis, "session", {
-      configurable: true,
-      value: {
-        getAccessToken: vi.fn(() =>
-          Promise.resolve("opaque-legacy-bearer-without-jwt-claims"),
-        ),
-      },
-    });
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValue(capabilityResponse([domain.capability]));
+    const refuse = vi.fn();
 
     await expect(
       domain.mutate(
-        elevatedClient(fetcher, { authorize, refuse: vi.fn() }),
+        elevatedClient(fetcher, { authorize, refuse }),
         new AbortController().signal,
       ),
-    ).rejects.toMatchObject({ code: "authentication" });
+    ).rejects.toMatchObject({ name: "AbortError" });
     expect(fetcher).toHaveBeenCalledOnce();
     expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+    expect(refuse).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [401, "authentication", true],
+    [402, "payment-required", false],
+  ] as const)(
+    "preserves the owned %s refusal fence",
+    async (status, code, exactToken) => {
+      const sent = authorization();
+      const terminal = exactToken
+        ? sent
+        : authorization(`${ownedToken}-refreshed`);
+      const authorize = vi
+        .fn<OwnedSessionTransport["authorize"]>()
+        .mockResolvedValueOnce(sent)
+        .mockResolvedValueOnce(sent)
+        .mockResolvedValueOnce(sent)
+        .mockResolvedValueOnce(terminal);
+      const refuse = vi.fn();
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(capabilityResponse([domain.capability]))
+        .mockResolvedValueOnce(new Response(null, { status }));
+
+      await expect(
+        domain.mutate(
+          elevatedClient(fetcher, { authorize, refuse }),
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code });
+      expect(refuse).toHaveBeenCalledWith(
+        sent,
+        status === 401 ? "authentication" : "payment-required",
+      );
+    },
+  );
+
+  it.each([401, 402] as const)(
+    "does not apply a stale %s refusal after account replacement",
+    async (status) => {
+      const replacement = {
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+        accountId: `account:${"d".repeat(64)}`,
+      };
+      const authorize = vi
+        .fn<OwnedSessionTransport["authorize"]>()
+        .mockResolvedValueOnce(authorization())
+        .mockResolvedValueOnce(authorization())
+        .mockResolvedValueOnce(authorization())
+        .mockResolvedValueOnce(replacement);
+      const refuse = vi.fn();
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(capabilityResponse([domain.capability]))
+        .mockResolvedValueOnce(new Response(null, { status }));
+
+      await expect(
+        domain.mutate(
+          elevatedClient(fetcher, { authorize, refuse }),
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(refuse).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not apply a stale 401 after a same-account token refresh", async () => {
+    const authorize = vi
+      .fn<OwnedSessionTransport["authorize"]>()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(authorization(`${ownedToken}-refreshed`));
+    const refuse = vi.fn();
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(capabilityResponse([domain.capability]))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }));
+
+    await expect(
+      domain.mutate(
+        elevatedClient(fetcher, { authorize, refuse }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(refuse).not.toHaveBeenCalled();
+  });
+});
+
+it("sends owned authority for approve, promote, and rollback", async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockImplementation((request) =>
+      Promise.resolve(
+        requestUrl(request).endsWith("/auth/session/capabilities")
+          ? capabilityResponse(["events/strategies:promote"])
+          : new Response("{}", { status: 409 }),
+      ),
+    );
+  const client = elevatedClient(fetcher);
+  for (const action of ["approve", "promote", "rollback"] as const)
+    await expect(
+      client.manageExperiment?.(
+        experimentId,
+        action,
+        experimentMutation,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+  const posts = fetcher.mock.calls.filter(
+    ([request]) => !requestUrl(request).endsWith("/auth/session/capabilities"),
+  );
+  expect(posts.map(([request]) => requestUrl(request))).toEqual(
+    ["approve", "promote", "rollback"].map(
+      (action) =>
+        `https://api.example.test/strategy-experiments/${encodeURIComponent(experimentId)}/${action}`,
+    ),
+  );
+  for (const [, init] of posts)
+    expect(new Headers(init?.headers).get("authorization")).toBe(
+      `Bearer ${ownedToken}`,
+    );
 });
 
 describe("ranked opportunity client", () => {

@@ -651,20 +651,10 @@ export function validateTemplate(template, config) {
   )
     throw new Error("HTTP API CORS configurator IAM must be API-scoped");
   const authorizers = entriesOfType(template, "AWS::ApiGatewayV2::Authorizer");
-  if (
-    authorizers.length !== 1 ||
-    !isRef(authorizers[0][1].Properties?.ApiId, apiId) ||
-    authorizers[0][1].Properties?.AuthorizerType !== "JWT" ||
-    !isGetAtt(
-      authorizers[0][1].Properties?.JwtConfiguration?.Issuer,
-      poolId,
-      "ProviderURL",
-    ) ||
-    JSON.stringify(authorizers[0][1].Properties?.JwtConfiguration?.Audience) !==
-      JSON.stringify([{ Ref: clientId }, { Ref: reviewerClients[0][0] }])
-  )
-    throw new Error("The transition JWT authorizer must remain exact");
-  const [authorizerId] = authorizers[0];
+  if (authorizers.length !== 0)
+    throw new Error(
+      "Owned handler authorization requires zero API Gateway authorizers",
+    );
   const integrations = entriesOfType(
     template,
     "AWS::ApiGatewayV2::Integration",
@@ -725,47 +715,6 @@ export function validateTemplate(template, config) {
     ) !== JSON.stringify([...requiredRouteKeys].sort()) ||
     apiRoutes.some(([, value]) => {
       if (value.Properties?.RouteKey === "$default") return true;
-      if (
-        [
-          "GET /events",
-          "POST /events/{eventId}/scout",
-          "GET /scout-jobs/{jobId}",
-          "POST /scout-jobs/{jobId}/retry",
-          "GET /scout-jobs/{jobId}/report",
-          "GET /scout-reports/{reportId}/versions",
-          "GET /scout-reports/{reportId}/versions/{versionNumber}",
-          "GET /watchlist",
-          "POST /watchlist",
-          "DELETE /watchlist/{eventId}",
-        ].includes(value.Properties?.RouteKey)
-      )
-        return (
-          value.Properties?.AuthorizationType !== "NONE" ||
-          value.Properties?.AuthorizerId !== undefined ||
-          value.Properties?.AuthorizationScopes !== undefined
-        );
-      if (
-        value.Properties?.RouteKey === "POST /retrospectives/{eventId}/review"
-      )
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify(["events/retrospectives:approve"])
-        );
-      if (
-        ["approve", "promote", "rollback"].some(
-          (action) =>
-            value.Properties?.RouteKey ===
-            `POST /strategy-experiments/{eventId}/${action}`,
-        )
-      )
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify(["events/strategies:promote"])
-        );
       // The identity routes are how a caller obtains a token, so they must
       // stay public: an authorizer here would lock everybody out, and a
       // scope would be meaningless on an unauthenticated request.
@@ -806,7 +755,7 @@ export function validateTemplate(template, config) {
     })
   )
     throw new Error(
-      "Ordinary owned routes must remain authorizer-free while elevated transition routes keep exact JWT scopes",
+      "Ordinary and elevated owned routes must remain authorizer-free for handler-owned authorization",
     );
   if (
     apiStages.length !== 1 ||

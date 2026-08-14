@@ -564,9 +564,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "POST /retrospectives/{eventId}/review",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/retrospectives:approve"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -602,9 +600,7 @@ function validTemplate() {
             Properties: {
               RouteKey: `POST /strategy-experiments/{eventId}/${action}`,
               ApiId: { Ref: "Api" },
-              AuthorizationType: "JWT",
-              AuthorizerId: { Ref: "Auth" },
-              AuthorizationScopes: ["events/strategies:promote"],
+              AuthorizationType: "NONE",
               Target: {
                 "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
               },
@@ -746,17 +742,6 @@ function validTemplate() {
           },
         ]),
       ),
-      Auth: {
-        Type: "AWS::ApiGatewayV2::Authorizer",
-        Properties: {
-          ApiId: { Ref: "Api" },
-          AuthorizerType: "JWT",
-          JwtConfiguration: {
-            Issuer: { "Fn::GetAtt": ["Pool", "ProviderURL"] },
-            Audience: [{ Ref: "Client" }, { Ref: "ReviewerClient" }],
-          },
-        },
-      },
       Integration: {
         Type: "AWS::ApiGatewayV2::Integration",
         Properties: {
@@ -1155,7 +1140,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
     };
     assert.throws(
       () => validateTemplate(wrongScoutingScope, templateConfig),
-      /Ordinary owned routes/,
+      /owned routes/i,
     );
   }
   const extraRoute = structuredClone(template);
@@ -1195,21 +1180,36 @@ test("template validation structurally binds public reads, outputs, and scoped I
     () => validateTemplate(publicRoute, templateConfig),
     /public|\$default|ordinary|elevated/i,
   );
-  for (const change of [
-    { AuthorizerId: { Ref: "OtherAuth" } },
-    { AuthorizationScopes: ["other:read"] },
-    { AuthorizationScopes: undefined },
-  ]) {
-    const weakRoute = structuredClone(template);
-    Object.assign(
-      weakRoute.Resources.RetrospectiveReviewRoute.Properties,
-      change,
-    );
-    assert.throws(
-      () => validateTemplate(weakRoute, templateConfig),
-      /ordinary|elevated/i,
-    );
-  }
+  for (const routeId of [
+    "RetrospectiveReviewRoute",
+    "StrategyExperimentapproveRoute",
+    "StrategyExperimentpromoteRoute",
+    "StrategyExperimentrollbackRoute",
+  ])
+    for (const change of [
+      { AuthorizationType: "JWT", AuthorizerId: { Ref: "OtherAuth" } },
+      { AuthorizerId: { Ref: "OtherAuth" } },
+      { AuthorizationScopes: ["other:read"] },
+    ]) {
+      const weakRoute = structuredClone(template);
+      Object.assign(weakRoute.Resources[routeId].Properties, change);
+      assert.throws(
+        () => validateTemplate(weakRoute, templateConfig),
+        /ordinary|elevated/i,
+      );
+    }
+  const staleAuthorizer = structuredClone(template);
+  staleAuthorizer.Resources.StaleAuthorizer = {
+    Type: "AWS::ApiGatewayV2::Authorizer",
+    Properties: {
+      ApiId: { Ref: "Api" },
+      AuthorizerType: "JWT",
+    },
+  };
+  assert.throws(
+    () => validateTemplate(staleAuthorizer, templateConfig),
+    /zero API Gateway authorizers/,
+  );
   const wildcardIam = structuredClone(template);
   wildcardIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Resource =
     "*";
@@ -1353,7 +1353,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
     mutation(authorizedIdentity.Resources.AuthOtpVerifyRoute);
     assert.throws(
       () => validateTemplate(authorizedIdentity, templateConfig),
-      /Ordinary owned routes/,
+      /owned routes/i,
     );
   }
   for (const routeId of [
@@ -1375,7 +1375,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
     ["events/events:read"];
   assert.throws(
     () => validateTemplate(scopedWatchlist, templateConfig),
-    /Ordinary owned routes/,
+    /owned routes/i,
   );
   const denyOnly = structuredClone(template);
   denyOnly.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Effect =
