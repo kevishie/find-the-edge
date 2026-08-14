@@ -114,10 +114,18 @@ describe("SharpAPI activation boundary", () => {
     expect(sharpApiLeagues.map(({ leagueKey }) => leagueKey)).toEqual([
       "mlb",
       "mls",
+      "nfl",
       "epl",
       "liga-mx",
       "uefa-champions-league",
     ]);
+    // Football takes the two-way shape, and its sport key is what the board's
+    // market specifications switch on.
+    expect(sharpApiLeagueByKey("nfl")).toMatchObject({
+      sportKey: "football",
+      providerLeague: "nfl",
+      moneylineMarket: "moneyline",
+    });
     expect(sharpApiLeagueByKey("epl").providerLeague).toBe(
       "england_-_premier_league",
     );
@@ -654,6 +662,90 @@ describe("SharpAPI activation boundary", () => {
         reason: "catalogue-derivative",
       }),
     );
+  });
+
+  it("rejects the provider's plus-suffixed secondary catalogue", () => {
+    // Captured from the mls+ catalogue: participants labelled with a trailing
+    // "+" and fixtures that are USL sides, not MLS. Twenty-one of these were
+    // bootstrapped as canonical events for 2026-08-13, pushing the soccer
+    // partition to 61 events against a board limit of 50 — which is what
+    // stopped that board being materialised at all.
+    const page = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "mls+_charleston_hartford_2026-08-13_b2",
+            league: "mls",
+            away_team: "Charleston +",
+            home_team: "Hartford +",
+            start_time: "2026-08-13T23:00:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+          {
+            id: "mls_real_2026-08-13_b2",
+            league: "mls",
+            away_team: "Away Club",
+            home_team: "Home Club",
+            start_time: "2026-08-13T23:30:00Z",
+            status: "upcoming",
+            is_live: false,
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagueByKey("mls"),
+      "2026-08-13T12:00:00.000Z" as never,
+    );
+
+    expect(page.events.map(({ providerEventId }) => providerEventId)).toEqual([
+      "mls_real_2026-08-13_b2",
+    ]);
+  });
+
+  it("keeps a club whose real name merely contains a plus sign", () => {
+    // The rule is a trailing " +" only. Nothing legitimate should match it,
+    // but a bare "+" inside a name must not be swept up with the catalogue.
+    expect(isSharpDerivativeMatchup("A+ United", "B+ City")).toBe(false);
+    expect(isSharpDerivativeMatchup("Rapids +", "Earthquakes +")).toBe(true);
+  });
+
+  it("rejects a foreign-sport fixture wearing the league's own label", () => {
+    // Captured live from /events?league=mlb on 2026-08-13. An NFL game, but
+    // the provider labelled it league "mlb", sport "baseball", and gave it a
+    // run_line — so it clears the league check, the shape check, and the MLB
+    // derivative check, which requires only that markets include moneyline
+    // or total_runs. Club resolution is the ONLY thing that rejects it, and
+    // it is closer than it looks: "ARI Cardinals" shares its last token with
+    // the St. Louis Cardinals, so a resolver that matched on nickname alone
+    // would mint a phantom MLB game against the Raiders.
+    const page = parseSharpApiSchedulePage(
+      {
+        data: [
+          {
+            id: "mlb_cardinals_lvraiders_2026-08-13_b3",
+            league: "mlb",
+            away_team: "ARI Cardinals",
+            home_team: "Las Vegas Raiders",
+            start_time: "2026-08-14T00:00:00Z",
+            status: "upcoming",
+            is_live: false,
+            markets: ["moneyline", "run_line"],
+          },
+        ],
+        pagination: { has_more: false, next_offset: null },
+      },
+      sharpApiLeagueByKey("mlb"),
+      "2026-08-13T02:00:00.000Z" as never,
+    );
+
+    expect(page.events).toEqual([]);
+    expect(page.exclusions).toEqual([
+      expect.objectContaining({
+        providerEventId: "mlb_cardinals_lvraiders_2026-08-13_b3",
+        reason: "participant-out-of-scope",
+      }),
+    ]);
   });
 
   describe("a lifecycle we do not want costs the row, never the page", () => {

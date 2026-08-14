@@ -310,6 +310,7 @@ describe("foundation CDK app", () => {
     });
     template.hasResourceProperties("AWS::DynamoDB::Table", {
       BillingMode: "PAY_PER_REQUEST",
+      ContributorInsightsSpecification: { Enabled: true },
       StreamSpecification: { StreamViewType: "NEW_IMAGE" },
       PointInTimeRecoverySpecification: {
         PointInTimeRecoveryEnabled: true,
@@ -322,6 +323,7 @@ describe("foundation CDK app", () => {
             { AttributeName: "activeSk", KeyType: "RANGE" },
           ],
           Projection: { ProjectionType: "KEYS_ONLY" },
+          ContributorInsightsSpecification: { Enabled: true },
         }),
         Match.objectLike({
           IndexName: "opportunity-rank-v1",
@@ -330,6 +332,7 @@ describe("foundation CDK app", () => {
             { AttributeName: "rankSk", KeyType: "RANGE" },
           ],
           Projection: { ProjectionType: "KEYS_ONLY" },
+          ContributorInsightsSpecification: { Enabled: true },
         }),
       ]),
     });

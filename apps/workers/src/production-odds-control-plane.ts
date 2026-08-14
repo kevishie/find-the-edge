@@ -230,6 +230,40 @@ interface SharpPageMaterial {
  * so a single run still walks one linear chain of sealed pages and the
  * evidence machinery is untouched.
  */
+/**
+ * How far ahead an odds run keeps paginating. Beyond this, a fixture is still
+ * ingested by the schedule scan and still browsable — it just stops drawing an
+ * odds request on every cadence tick.
+ *
+ * Seven days because that is roughly where a market becomes worth watching:
+ * a line thirteen weeks out moves on news, not on the minute, and refreshing
+ * it per tick is the difference between a league costing a handful of requests
+ * and costing its entire season. NFL alone lists 1,358 events; the next seven
+ * days of them is a fraction of one page walk.
+ */
+export const ODDS_PRICING_HORIZON_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Whether a page opens past the horizon, and so every page behind it does too.
+ *
+ * Judged on the EARLIEST start on the page, not the latest: the feed is
+ * non-decreasing, so a page whose first event is still inside the horizon may
+ * legitimately straddle it, and stopping on the latest would drop games we
+ * price. A page with no readable start never stops the walk — an unparseable
+ * timestamp is a reason to keep going, not to silently truncate a league.
+ */
+export const opensBeyondPricingHorizon = (
+  events: readonly { readonly startsAt: string }[],
+  now: Date,
+  horizonMs: number = ODDS_PRICING_HORIZON_MS,
+): boolean => {
+  const earliest = events
+    .map(({ startsAt }) => Date.parse(startsAt))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right)[0];
+  return earliest !== undefined && earliest - now.getTime() > horizonMs;
+};
+
 const SECONDARY_TOKEN = /^secondary:([a-z0-9_]+):(.*)$/;
 
 const secondaryToken = (league: string, cursor: string) =>
@@ -2345,13 +2379,38 @@ export async function runProductionOddsControlPlane(input: {
                 ),
                 digest: digest(material),
                 ...(() => {
-                  if (page.hasMore && page.nextCursor)
+                  // The odds feed paginates in non-decreasing start order —
+                  // verified against NFL, where pages 0-5 cover the next three
+                  // days and page 7 has already reached six months out. So the
+                  // first event on a page bounds every event after it, and a
+                  // page that opens beyond the horizon means the rest of the
+                  // season lies behind it.
+                  //
+                  // Walking that season is what makes a league expensive, and
+                  // it buys nothing: nobody prices a game thirteen weeks out
+                  // from a line we refreshed a minute ago. The schedule scan
+                  // still ingests every fixture, so the far weeks remain
+                  // browsable — they simply stop costing an odds request per
+                  // cadence tick.
+                  const beyondHorizon = opensBeyondPricingHorizon(
+                    page.events,
+                    liveNow(),
+                  );
+                  if (page.hasMore && page.nextCursor && !beyondHorizon)
                     return {
                       nextPageToken:
                         secondary === null
                           ? page.nextCursor
                           : secondaryToken(secondary.league, page.nextCursor),
                     };
+                  if (beyondHorizon)
+                    input.metrics?.emit("OddsHorizonStop", 1, {
+                      provider: SHARP_API_PROVIDER_ID,
+                      league: policy.leagueKey,
+                      ...(secondary === null
+                        ? {}
+                        : { catalogue: secondary.league }),
+                    });
                   // This catalogue is exhausted; hand the chain to the next
                   // one, or end the run when none are left.
                   const index =

@@ -132,10 +132,27 @@ test("real hosted bundle loads provider MLB and MLS games by day", async ({
 
   // Lines-only listings: soccer earns a pill (and rows) only when a priced
   // slate exists, so the check navigates directly to a day known to have one.
+  //
+  // Say so when it does NOT run. This leg silently did nothing whenever no
+  // priced soccer day was found, which is why a client bug that blanked the
+  // entire soccer board surfaced as an intermittent failure for weeks instead
+  // of a standing one: half the runs skipped the only check that could see
+  // it. A check that quietly does nothing cannot be told from a check that
+  // passed.
   const mls = await findProviderGame(request, "soccer", true);
   if (mls) {
     await page.goto(`/events?sport=soccer&day=${mls.day}&status=all`);
     await expect(page.locator("[data-event-id]").first()).toBeVisible();
+    test.info().annotations.push({
+      type: "soccer-leg",
+      description: `ran against ${mls.day}`,
+    });
+  } else {
+    const note =
+      "SOCCER LEG SKIPPED: no priced soccer day on the board in the next 21 " +
+      "days, so soccer rendering was NOT verified by this run.";
+    console.warn(note);
+    test.info().annotations.push({ type: "soccer-leg", description: note });
   }
 
   const emptyDay = await findEmptyDay(request, "mlb");

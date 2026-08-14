@@ -20,6 +20,7 @@
     "@find-the-edge/domain": "workspace:*"
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.883.0",
     "@find-the-edge/odds": "workspace:*",
     "@find-the-edge/scouting": "workspace:*",
     "@find-the-edge/sports": "workspace:*",

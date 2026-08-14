@@ -765,19 +765,32 @@ describe("joined games repository", () => {
     expect(reads).toBe(2);
   });
 
-  it("requires scheduled, complete, current event metadata for target qualification", async () => {
+  it("requires a scheduled, complete event for target qualification", async () => {
     const prices = completeDetailPrices(event);
     const rows = [...prices.map(row), ...activeEvidence(prices)];
-    for (const ineligibleEvent of [
-      {
-        ...event,
-        metadata: assessEventMetadata(
-          "scheduled",
-          "2026-08-01T09:00:00.000Z",
-          "2026-08-01T12:30:00.000Z",
-        ),
-      },
-      {
+    const qualify = async (
+      item: typeof event,
+      readAt = "2026-08-01T12:30:00.000Z",
+    ) => {
+      const eventRepository = events();
+      eventRepository.detail = () =>
+        Promise.resolve({
+          projectionState: "ready",
+          item,
+          unavailableReason: null,
+        });
+      const detail = await new JoinedGamesRepository(
+        eventRepository,
+        { batchGet: () => Promise.resolve(rows) },
+        ["hardrock"],
+        () => new Date(readAt),
+      ).detail(event.id);
+      return detail.item?.oddsComparison.targetQualified;
+    };
+
+    // A started game is never a qualified comparison.
+    expect(
+      await qualify({
         ...event,
         status: "started" as const,
         metadata: assessEventMetadata(
@@ -785,23 +798,28 @@ describe("joined games repository", () => {
           "2026-08-01T12:00:00.000Z",
           "2026-08-01T12:30:00.000Z",
         ),
-      },
-    ]) {
-      const eventRepository = events();
-      eventRepository.detail = () =>
-        Promise.resolve({
-          projectionState: "ready",
-          item: ineligibleEvent,
-          unavailableReason: null,
-        });
-      const detail = await new JoinedGamesRepository(
-        eventRepository,
-        { batchGet: () => Promise.resolve(rows) },
-        ["hardrock"],
-        () => new Date("2026-08-01T12:30:00.000Z"),
-      ).detail(event.id);
-      expect(detail.item?.oddsComparison.targetQualified).toBe(false);
-    }
+      }),
+    ).toBe(false);
+
+    // Stale event METADATA no longer disqualifies. It measures how long since
+    // the provider revised the schedule listing, which for an uncorrected
+    // game only ever grows — it said nothing about these prices, which are
+    // current. This assertion was inverted on 2026-08-13, when every MLB game
+    // on staging read "coverage is incomplete" on a 2.2-day metadata age.
+    expect(
+      await qualify({
+        ...event,
+        metadata: assessEventMetadata(
+          "scheduled",
+          "2026-08-01T09:00:00.000Z",
+          "2026-08-01T12:30:00.000Z",
+        ),
+      }),
+    ).toBe(true);
+
+    // Stale PRICES still disqualify, per cell, which is where the real
+    // freshness rule lives: read four hours past a two-hour window.
+    expect(await qualify(event, "2026-08-01T16:30:00.000Z")).toBe(false);
   });
 
   it("gives the memory repository a valid default target sportsbook", async () => {
@@ -1097,6 +1115,57 @@ describe("joined games repository", () => {
         { marketKey: "total", selectionKey: "under", point: 8.5 },
       ],
     });
+  });
+
+  it("reports no freshness when its own filtering empties the page", async () => {
+    // Page freshness is the oldest ITEM freshness. This method spread the
+    // inner event page and then replaced its items, so a page emptied by the
+    // participant boundary went out as zero items still carrying the event
+    // repository's freshness. That contradicts the definition, and the browser
+    // client rejects the whole response rather than rendering an empty board —
+    // which is how a reader got "The games response was invalid." instead of a
+    // day with no games. Observed on staging 2026-08-13: items 0 with
+    // freshness 2026-08-13T03:59:51.249Z.
+    const unresolvable = {
+      ...event,
+      id: "event-unresolvable",
+      participants: [
+        { id: "ghost-a", label: "Ghost A" },
+        { id: "ghost-b", label: "Ghost B" },
+      ],
+    };
+    const page = await new JoinedGamesRepository(
+      events([unresolvable], { cursor: undefined }, null),
+      { batchGet: () => Promise.resolve([]) },
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 50);
+
+    expect(page.items).toEqual([]);
+    expect(page.freshness).toBeNull();
+  });
+
+  it("reports no freshness when the phantom cutoff empties the page after the join", async () => {
+    // The first fix recomputed freshness before the odds join, which covered
+    // a page emptied by the participant boundary but NOT one emptied after
+    // it. The phantom cutoff drops a long-started scheduled game with no odds
+    // evidence, and the final return spread the pre-join page — so the board
+    // went out as zero items still carrying a non-null freshness. Staging kept
+    // serving exactly that after the first fix shipped, which is how the gap
+    // surfaced.
+    const longStarted = {
+      ...event,
+      id: "event-phantom",
+      startsAt: "2026-07-01T00:00:00.000Z",
+      eastern: { ...event.eastern, calendarDay: "2026-07-01" },
+    };
+    const page = await new JoinedGamesRepository(
+      events([longStarted], { cursor: undefined }, null),
+      { batchGet: () => Promise.resolve([]) },
+      ["hardrock"],
+      () => new Date("2026-08-01T12:30:00.000Z"),
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-07-01" }, 50);
+
+    expect(page.items).toEqual([]);
+    expect(page.freshness).toBeNull();
   });
 
   it("uses unavailable only when the whole market is absent", async () => {

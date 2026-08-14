@@ -950,6 +950,99 @@ describe("arbitrage client", () => {
   });
 });
 
+describe("soccer selection keys", () => {
+  // Captured from staging 2026-08-13. A participant selection key is
+  // `participant:` + encodeURIComponent(participant id), and soccer club ids
+  // contain spaces, so each space double-encodes to %2520. "Philadelphia
+  // Union" produces a 65-character key and "New York City FC" a 71-character
+  // one, against a bound of 64 — while every MLB key stayed short because
+  // those club keys are single words. One over-length key failed
+  // validSelection, which failed validGame, which threw the entire page, so
+  // the soccer board rendered nothing while the API served priced games.
+  const soccerPage = (away: string, home: string) => {
+    const awayId = `participant:soccer%3Amls:${away}`;
+    const homeId = `participant:soccer%3Amls:${home}`;
+    const price = (key: string, label: string, odds: number) => ({
+      marketKey: "moneyline",
+      selectionKey: key,
+      selectionLabel: label,
+      sportsbookId: "fliff",
+      sportsbookLabel: "Fliff",
+      americanOdds: odds,
+      observedAt: "2026-08-01T12:00:00.000Z",
+      retrievedAt: "2026-08-01T12:00:00.000Z",
+    });
+    return {
+      ...structuredClone(payload),
+      items: [
+        {
+          ...structuredClone(payload).items[0]!,
+          id: "event:soccer%3Amls:fixture-soccer",
+          sportKey: "soccer",
+          leagueKey: "mls",
+          competition: { key: "mls", state: "provisional" },
+          participants: [
+            { id: awayId, label: "Philadelphia Union" },
+            { id: homeId, label: "Santos Laguna" },
+          ],
+          odds: {
+            state: "available",
+            selections: [
+              price(
+                `participant:${encodeURIComponent(awayId)}`,
+                "Philadelphia Union",
+                -245,
+              ),
+              price("draw", "Draw", 355),
+              price(
+                `participant:${encodeURIComponent(homeId)}`,
+                "Santos Laguna",
+                495,
+              ),
+            ],
+          },
+        },
+      ],
+    };
+  };
+
+  it("accepts multi-word club names whose encoded keys exceed 64 characters", async () => {
+    const body = soccerPage("philadelphia%20union", "santos%20laguna");
+    const key = body.items[0]!.odds.selections[0]!.selectionKey;
+    expect(key.length).toBeGreaterThan(64);
+
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(body))),
+    );
+    if (!client.ok) throw client.error;
+    const page = await client.value.list(
+      { sport: "soccer", day: "2026-08-01", status: "all" },
+      new AbortController().signal,
+    );
+    expect(page.items).toHaveLength(1);
+  });
+
+  it("still rejects a selection key beyond what an encoded id can produce", async () => {
+    const body = soccerPage("a".repeat(700), "santos%20laguna");
+    const client = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(body))),
+    );
+    if (!client.ok) throw client.error;
+    await expect(
+      client.value.list(
+        { sport: "soccer", day: "2026-08-01", status: "all" },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+});
+
 describe("board market windows", () => {
   it("accepts markets that moved at different times and rejects a torn one", async () => {
     // Markets move independently: a moneyline can shift long after a total

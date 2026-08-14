@@ -44,8 +44,10 @@ test("shows unchanged seeded MLB and MLS identifiers", async ({ page }) => {
   }
   await expect(page.getByText("Aug 1 · 7:05 PM ET")).toBeVisible();
   await expect(boston.getByLabel("Lifecycle: scheduled")).toBeVisible();
-  await expect(boston.getByLabel("Event metadata is current")).toBeVisible();
-  await expect(boston.getByText(/Evidence .* Eastern/)).toBeVisible();
+  await expect(
+    boston.getByLabel("Provider confirmed this listing recently"),
+  ).toBeVisible();
+  await expect(boston.getByText(/Listing .* Eastern/)).toBeVisible();
 
   await page.getByRole("button", { name: /Soccer/ }).click();
   await expect(

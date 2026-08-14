@@ -20,6 +20,7 @@ import {
   scheduleCapabilityFailure,
   evidenceGaps,
   fetchSharpOddsPageWithRetry,
+  opensBeyondPricingHorizon,
   runFocusedSharpOddsIngestion,
   runProductionOddsControlPlane,
   reconstructSharpOddsRun,
@@ -80,6 +81,53 @@ describe("production odds control-plane composition", () => {
     expect(sharpOddsFailureRequestCost(second)).toBe(2);
   });
 
+  describe("pricing horizon", () => {
+    const now = new Date("2026-08-13T12:00:00.000Z");
+    const at = (days: number, hours = 0) =>
+      new Date(
+        now.getTime() + days * 86_400_000 + hours * 3_600_000,
+      ).toISOString();
+
+    it("keeps walking while a page still opens inside the horizon", () => {
+      // Page straddles the boundary: its first game is tomorrow, its last is
+      // three weeks out. Judged on the latest it would stop here and drop
+      // tomorrow's game, so it must be judged on the earliest.
+      expect(
+        opensBeyondPricingHorizon(
+          [{ startsAt: at(1) }, { startsAt: at(21) }],
+          now,
+        ),
+      ).toBe(false);
+    });
+
+    it("stops once a page opens past the horizon", () => {
+      // Non-decreasing order means everything behind this page is later still,
+      // so the rest of the season costs nothing.
+      expect(
+        opensBeyondPricingHorizon(
+          [{ startsAt: at(13 * 7) }, { startsAt: at(14 * 7) }],
+          now,
+        ),
+      ).toBe(true);
+    });
+
+    it("holds the boundary itself", () => {
+      expect(opensBeyondPricingHorizon([{ startsAt: at(7) }], now)).toBe(false);
+      expect(opensBeyondPricingHorizon([{ startsAt: at(7, 1) }], now)).toBe(
+        true,
+      );
+    });
+
+    it("never truncates a league on unreadable or absent starts", () => {
+      // A malformed timestamp must not end the walk: silently dropping the
+      // rest of a league is far worse than one wasted page.
+      expect(opensBeyondPricingHorizon([{ startsAt: "not-a-date" }], now)).toBe(
+        false,
+      );
+      expect(opensBeyondPricingHorizon([], now)).toBe(false);
+    });
+  });
+
   it("does not retry non-contract SharpAPI failures", async () => {
     for (const code of ["unauthorized", "provider-rejected"] as const) {
       const fetchPage = vi.fn().mockRejectedValue(new SharpApiError(code));
@@ -133,7 +181,7 @@ describe("production odds control-plane composition", () => {
     const scheduleAttempts = [...control.attempts.values()].filter(
       (attempt) => attempt.capability === "schedule",
     );
-    expect(scheduleAttempts).toHaveLength(5);
+    expect(scheduleAttempts).toHaveLength(6);
     expect(scheduleAttempts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -329,7 +377,10 @@ describe("production odds control-plane composition", () => {
       rateWindow: { limit: 1_000, remaining: 810 },
     });
     expect(await control.getHealth("sharpapi:account:account")).toMatchObject({
-      rateWindow: { limit: 1_000, remaining: 800 },
+      // One fewer than the split response reports: the account window
+      // tracks what this pass actually spent, and a sixth league spends one
+      // more request.
+      rateWindow: { limit: 1_000, remaining: 799 },
     });
     expect(await control.getHealth("sharpapi:mlb:splits")).toMatchObject({
       rateWindow: { limit: 1_000, remaining: 800 },
@@ -1531,9 +1582,10 @@ describe("production odds control-plane composition", () => {
       "sharpapi",
       "sharpapi",
       "sharpapi",
+      "sharpapi",
     ]);
-    expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
+    expect(fetchSharpSchedule).toHaveBeenCalledTimes(6);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(7);
     expect(options.metrics.emit).toHaveBeenCalledWith(
       "OddsNormalizedObservation",
       2,
@@ -1582,7 +1634,7 @@ describe("production odds control-plane composition", () => {
     ).toMatchObject({ sourceState: "missing", sportsbookId: "draftkings" });
     expect(
       [...control.gaps.values()].filter((gap) => gap.reason === "unsupported"),
-    ).toHaveLength(5);
+    ).toHaveLength(6);
 
     // Inside every cadence: nothing is due five seconds after the run.
     const gated = await runProductionOddsControlPlane({
@@ -1595,8 +1647,9 @@ describe("production odds control-plane composition", () => {
       "skipped",
       "skipped",
       "skipped",
+      "skipped",
     ]);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(7);
 
     // Twenty seconds in, the base cadence is still not due; only the
     // durable 12:45 scheduled start puts every league in its ten-second
@@ -1612,9 +1665,10 @@ describe("production odds control-plane composition", () => {
       "completed",
       "completed",
       "completed",
+      "completed",
     ]);
-    expect(fetchSharpSchedule).toHaveBeenCalledTimes(5);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(12);
+    expect(fetchSharpSchedule).toHaveBeenCalledTimes(6);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(14);
   });
 
   it("keeps an approved book active when the same event continues on another page", async () => {
@@ -2207,7 +2261,7 @@ describe("production odds control-plane composition", () => {
     });
 
     expect(fetchSharpOdds).not.toHaveBeenCalled();
-    expect(results).toHaveLength(5);
+    expect(results).toHaveLength(6);
     expect(results.every(({ pages }) => pages === 0)).toBe(true);
   });
   it("fails closed without a secondary schedule and isolates account setup failure", async () => {
@@ -2264,12 +2318,13 @@ describe("production odds control-plane composition", () => {
       "sharpapi",
       "sharpapi",
       "sharpapi",
+      "sharpapi",
     ]);
     expect(result[0]).toMatchObject({
       status: "failed",
       reason: "schedule-provider-unavailable",
     });
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(5);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(6);
     expect(fetchSharpOdds.mock.calls[0]?.[0].leagueKey).toBe("mls");
     expect(
       [...control.runs.values()].some(
@@ -2937,8 +2992,9 @@ describe("production odds control-plane composition", () => {
       ["sharpapi", "completed"],
       ["sharpapi", "completed"],
       ["sharpapi", "completed"],
+      ["sharpapi", "completed"],
     ]);
-    expect(fetchSharpOdds).toHaveBeenCalledTimes(12);
+    expect(fetchSharpOdds).toHaveBeenCalledTimes(14);
   });
 
   it("does not poison provider health when another schedule worker owns the lease", async () => {

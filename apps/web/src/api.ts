@@ -46,7 +46,7 @@ import type {
 const encodeCanonicalEventPathSegment = (eventId: string) =>
   encodeURIComponent(eventId);
 
-export type GamesSport = "mlb" | "soccer";
+export type GamesSport = "mlb" | "football" | "soccer";
 
 export interface RankedOpportunityPageDto {
   readonly schemaVersion: "ranked-opportunity-page-v1";
@@ -2147,14 +2147,16 @@ const validOddsComparison = (
         return false;
     }
   }
+  // Mirrors the server rule in `games-repository.ts` and must keep mirroring
+  // it: a disagreement here rejects the whole response. The freshness term
+  // was dropped on both sides together — it measured schedule-revision age,
+  // not price age, and price age is already enforced per cell.
   const eventEligible =
     status === "scheduled" &&
     plain(metadata) &&
     metadata["availability"] === "complete" &&
     plain(metadata["lifecycle"]) &&
-    metadata["lifecycle"]["state"] === "scheduled" &&
-    plain(metadata["freshness"]) &&
-    metadata["freshness"]["state"] === "current";
+    metadata["lifecycle"]["state"] === "scheduled";
   const computedQualified =
     eventEligible &&
     markets.every((market) => {
@@ -2391,7 +2393,17 @@ const validSelection = (value: unknown): value is GameOddsSelectionDto => {
   if (!exact(value, [...required, ...optional])) return false;
   return (
     boundedString(value["marketKey"], 64) &&
-    boundedString(value["selectionKey"], 64) &&
+    // A participant selection key is `participant:` + the participant id put
+    // through encodeURIComponent, and participant ids are themselves bounded
+    // at 512 above. Encoding can triple a string, so 64 was never large enough
+    // to hold what this field is defined to contain — it only held for MLB
+    // because those club keys are single words. Soccer clubs have spaces, each
+    // space double-encodes to %2520, and "Philadelphia Union" lands at 65
+    // characters while "New York City FC" reaches 71. One over-length key
+    // failed validSelection, which failed validGame, which threw the whole
+    // page away — so the entire soccer board rendered nothing while the API
+    // was serving priced games. Bound derives from the id bound it carries.
+    boundedString(value["selectionKey"], 12 + 3 * 512) &&
     boundedString(value["sportsbookId"], 128) &&
     (value["selectionLabel"] === undefined ||
       boundedString(value["selectionLabel"], 160)) &&
@@ -2933,7 +2945,12 @@ async function exhaustPages<T extends GameDisplayDto>(options: {
   const { endpoint, filter, signal, apiBase, fetcher, parse } = options;
   const baseQuery = {
     sport: filter.sport,
-    league: filter.sport === "mlb" ? "mlb" : "mls",
+    league:
+      filter.sport === "mlb"
+        ? "mlb"
+        : filter.sport === "football"
+          ? "nfl"
+          : "mls",
     // The games endpoint merges every lifecycle server-side; splits is
     // scheduled-only by contract.
     status:

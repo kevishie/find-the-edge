@@ -54,23 +54,30 @@ const freshness: Record<
   EventMetadataFreshnessState,
   EventMetadataPresentation
 > = {
+  // This state measures how long ago the PROVIDER last revised the schedule
+  // listing — `canonicalFreshness`, the canonical row's `updatedAt`. It says
+  // nothing about the age of the prices on the same screen, and the old copy
+  // ("Metadata stale · Evidence <date>") read as though it did: on 2026-08-13
+  // every MLB row showed a two-day-old "Evidence" date beside prices observed
+  // minutes earlier. An uncorrected listing is normal, so this is not a
+  // defect to shout about — it is a fact about the listing, named as such.
   current: {
-    label: "Metadata current",
+    label: "Listing confirmed",
     tone: "positive",
     icon: "✓",
-    ariaLabel: "Event metadata is current",
+    ariaLabel: "Provider confirmed this listing recently",
   },
   stale: {
-    label: "Metadata stale",
-    tone: "caution",
-    icon: "!",
-    ariaLabel: "Event metadata is stale",
+    label: "Listing unchanged",
+    tone: "neutral",
+    icon: "·",
+    ariaLabel: "Provider has not revised this listing recently",
   },
   unavailable: {
-    label: "Freshness unavailable",
-    tone: "danger",
+    label: "Listing age unknown",
+    tone: "caution",
     icon: "?",
-    ariaLabel: "Event metadata freshness is unavailable",
+    ariaLabel: "Provider listing revision time is unavailable",
   },
 };
 
@@ -86,13 +93,19 @@ export const eventMetadataReasonText = (
   ...(assessment.lifecycle.known
     ? []
     : ["Provider lifecycle status is unavailable."]),
+  // Reasons describe the LISTING, never the prices. Price age is shown
+  // separately and computed from each selection's own `retrievedAt`.
   ...(assessment.freshness.state === "current"
-    ? ["Evidence is within the two-hour freshness window."]
+    ? ["The provider confirmed this listing within the last two hours."]
     : assessment.freshness.state === "stale"
-      ? ["Evidence is older than the two-hour freshness window."]
+      ? [
+          "The provider has not revised this listing in over two hours. This is normal for a fixture that has not changed and does not describe the odds below.",
+        ]
       : assessment.freshness.missingReason === "missing-evidence-time"
-        ? ["Evidence time is missing."]
+        ? ["The provider gave no revision time for this listing."]
         : assessment.freshness.missingReason === "malformed-evidence-time"
-          ? ["Evidence time is malformed."]
-          : ["Evidence time is in the future and cannot establish freshness."]),
+          ? ["The provider's revision time for this listing is malformed."]
+          : [
+              "The provider's revision time for this listing is in the future.",
+            ]),
 ];

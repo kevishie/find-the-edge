@@ -8,7 +8,7 @@ import { defaultEvaluationPolicy } from "./evaluation-policy";
 
 describe("production odds policy", () => {
   it("publishes exact non-fixture provider status scopes", () => {
-    expect(productionProviderStatusCatalog).toHaveLength(16);
+    expect(productionProviderStatusCatalog).toHaveLength(19);
     expect(productionProviderStatusCatalog[0]).toMatchObject({
       scopeId: "sharpapi:account",
       healthKey: "sharpapi:account:account",
@@ -37,7 +37,7 @@ describe("production odds policy", () => {
 
   it("is Sharp-primary, independently budgeted and adaptive", () => {
     expect(oddsCollectionPolicyVersion).toContain("control-plane");
-    expect(productionOddsCollectionPolicies).toHaveLength(5);
+    expect(productionOddsCollectionPolicies).toHaveLength(6);
     for (const policy of productionOddsCollectionPolicies) {
       expect(policy.baseCadenceSeconds).toBe(60);
       expect(policy.nearStart.cadenceSeconds).toBeLessThan(

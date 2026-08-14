@@ -203,8 +203,7 @@ export function EventMetadataBadges({
       {game.metadata.freshness.state !== "unavailable" &&
         game.metadata.freshness.evidenceAt && (
           <time dateTime={game.metadata.freshness.evidenceAt}>
-            Evidence {easternDisplay(game.metadata.freshness.evidenceAt)}{" "}
-            Eastern
+            Listing {easternDisplay(game.metadata.freshness.evidenceAt)} Eastern
           </time>
         )}
       {reasons.map((reason) => (
@@ -289,7 +288,7 @@ function NumberField({
   );
 }
 
-type GamesSport = "mlb" | "soccer";
+type GamesSport = "mlb" | "football" | "soccer";
 export interface UiGamesPage {
   readonly projectionState: "ready" | "uninitialized";
   readonly unavailableReason: "projection-uninitialized" | null;
@@ -1268,6 +1267,7 @@ export function EdgeLab() {
 
 const sportLabels: Record<GamesSport, string> = {
   mlb: "MLB",
+  football: "NFL",
   soccer: "Soccer",
 };
 // A game qualifies when any cell is priced better than its no-vig fair line.
@@ -1420,9 +1420,12 @@ function GamesExplorer() {
     | { readonly kind: "ready"; readonly page: UiGamesPage }
     | { readonly kind: "error"; readonly message: string }
   >({ kind: "loading" });
-  const [otherSportItems, setOtherSportItems] = useState<UiGamesPage["items"]>(
-    [],
-  );
+  // Keyed by sport rather than a single "other": the rail has to count every
+  // sport it might offer, and with three of them a lone slot silently hid
+  // whichever one was not fetched.
+  const [otherSportItems, setOtherSportItems] = useState<
+    Partial<Record<GamesSport, UiGamesPage["items"]>>
+  >({});
   const requestId = useRef(0);
 
   useEffect(() => {
@@ -1458,17 +1461,22 @@ function GamesExplorer() {
         return;
       }
       try {
-        const otherSport: GamesSport = sport === "mlb" ? "soccer" : "mlb";
-        // The sport rail needs the other slate's count for the day; it must
-        // not wait on the selected slate, and a failure just leaves the pill
-        // hidden until the next poll.
-        void activeClient
-          .list({ sport: otherSport, day, status }, controller.signal)
-          .then((otherPage) => {
-            if (id === requestId.current && !controller.signal.aborted)
-              setOtherSportItems(otherPage.items);
-          })
-          .catch(() => undefined);
+        // The sport rail needs every other slate's count for the day; none of
+        // them may block the selected slate, and a failure leaves that one
+        // pill hidden until the next poll rather than failing the page.
+        for (const otherSport of (
+          Object.keys(sportLabels) as GamesSport[]
+        ).filter((candidate) => candidate !== sport))
+          void activeClient
+            .list({ sport: otherSport, day, status }, controller.signal)
+            .then((otherPage) => {
+              if (id === requestId.current && !controller.signal.aborted)
+                setOtherSportItems((current) => ({
+                  ...current,
+                  [otherSport]: otherPage.items,
+                }));
+            })
+            .catch(() => undefined);
         const page = await activeClient.list(
           { sport, day, status },
           controller.signal,
@@ -1545,9 +1553,9 @@ function GamesExplorer() {
 
       <nav className="sport-rail" aria-label="Sport rail">
         {(Object.keys(sportLabels) as GamesSport[]).map((key) => {
-          const items = (key === sport ? baseItems : otherSportItems).filter(
-            hasLines,
-          );
+          const items = (
+            key === sport ? baseItems : (otherSportItems[key] ?? [])
+          ).filter(hasLines);
           // A sport with no priced slate for the day does not earn a pill.
           if (items.length === 0 && key !== sport) return null;
           const qualified = items.filter(gameHasEdge).length;
@@ -1565,7 +1573,7 @@ function GamesExplorer() {
               }}
             >
               <span className="sport-pill-icon" aria-hidden="true">
-                {key === "mlb" ? "◍" : "⊛"}
+                {key === "mlb" ? "◍" : key === "football" ? "◈" : "⊛"}
               </span>
               {sportLabels[key]}
               <span
@@ -3158,7 +3166,11 @@ const gamesRoute = createRoute({
     requireSession(context.session, location.pathname, location.searchStr),
   validateSearch: (search: Record<string, unknown>) => ({
     sport:
-      search["sport"] === "soccer" ? ("soccer" as const) : ("mlb" as const),
+      search["sport"] === "soccer"
+        ? ("soccer" as const)
+        : search["sport"] === "football"
+          ? ("football" as const)
+          : ("mlb" as const),
     day:
       typeof search["day"] === "string" && validDay(search["day"])
         ? search["day"]
@@ -3267,7 +3279,11 @@ const gameDetailRoute = createRoute({
     requireSession(context.session, location.pathname, location.searchStr),
   validateSearch: (search: Record<string, unknown>) => ({
     sport:
-      search["sport"] === "soccer" ? ("soccer" as const) : ("mlb" as const),
+      search["sport"] === "soccer"
+        ? ("soccer" as const)
+        : search["sport"] === "football"
+          ? ("football" as const)
+          : ("mlb" as const),
     day:
       typeof search["day"] === "string" && validDay(search["day"])
         ? search["day"]

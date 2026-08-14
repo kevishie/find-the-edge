@@ -40,6 +40,25 @@ function same(left, right) {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
+function permitsContributorInsightsUpgrade(before, after) {
+  return (
+    same(before, after) ||
+    ((before === undefined || same(before, { Enabled: false })) &&
+      same(after, { Enabled: true }))
+  );
+}
+
+function preservesDynamoIndexIdentity(before, after) {
+  const { ContributorInsightsSpecification: oldInsights, ...oldIdentity } =
+    before;
+  const { ContributorInsightsSpecification: nextInsights, ...nextIdentity } =
+    after;
+  return (
+    same(oldIdentity, nextIdentity) &&
+    permitsContributorInsightsUpgrade(oldInsights, nextInsights)
+  );
+}
+
 function uniqueNamedMap(
   items,
   nameProperty,
@@ -182,7 +201,8 @@ export function assertRetainedResourcesSafe(existing, proposed) {
     if (!oldByName || !newByName) return false;
     for (const [name, oldIndex] of oldByName) {
       const nextIndex = newByName.get(name);
-      if (!nextIndex || !same(oldIndex, nextIndex)) return false;
+      if (!nextIndex) return false;
+      if (!preservesDynamoIndexIdentity(oldIndex, nextIndex)) return false;
     }
     return true;
   };
@@ -310,6 +330,10 @@ export function assertRetainedResourcesSafe(existing, proposed) {
               "SSEType",
               "KMSMasterKeyId",
             ]))) &&
+        permitsContributorInsightsUpgrade(
+          before.ContributorInsightsSpecification,
+          after.ContributorInsightsSpecification,
+        ) &&
         same(before.LocalSecondaryIndexes, after.LocalSecondaryIndexes) &&
         preservesNamedIndexes(
           before.GlobalSecondaryIndexes,
@@ -484,7 +508,7 @@ function analyzeDynamoGsiChanges(existing, proposed) {
       const nextIndex = newIndexes.get(name);
       if (!nextIndex)
         throw new Error(`GSI staging rejected index removal on ${logicalId}`);
-      if (!same(index, nextIndex))
+      if (!preservesDynamoIndexIdentity(index, nextIndex))
         throw new Error(`GSI staging rejected index mutation on ${logicalId}`);
     }
     const addedKeyAttributes = new Set();
@@ -1335,6 +1359,30 @@ export function planReleaseRollback(snapshot, current) {
   };
 }
 
+/**
+ * Whether a failed launch should restore the previous web release.
+ *
+ * ON for prod, OFF for every other stage, and overridable either way.
+ *
+ * The rollback protects readers from a bad release. It also deadlocks any
+ * client-side fix the smoke is failing on, because it deletes the bundle
+ * carrying that fix — measured on staging 2026-08-13, where three deploys in
+ * a row uploaded the correct bundle and restored the previous one about a
+ * minute later.
+ *
+ * Those two facts point opposite ways, so the default follows who is
+ * watching. Production serves real readers and keeps the protection; staging
+ * exists to find bugs and keeps the bundle. It was briefly off everywhere on
+ * the understanding that nobody used production yet — that was wrong, and a
+ * live environment must not inherit a convenience chosen for an empty one.
+ */
+export function rollbackOnFailureEnabled(environment = process.env) {
+  const override = environment.FTE_ROLLBACK_WEB_ON_FAILURE;
+  if (override === "1") return true;
+  if (override === "0") return false;
+  return environment.FTE_AWS_STAGE === "prod";
+}
+
 function restoreRelease(snapshot, outputs, environment) {
   const current = releaseSnapshot(outputs.WebAssetsBucketName, environment);
   const plan = planReleaseRollback(snapshot, current);
@@ -1810,10 +1858,30 @@ export async function phase1Launch(environment = process.env) {
     });
     return { webOrigin: outputs.WebOrigin, outputs };
   } catch (primaryFailure) {
-    try {
-      restoreRelease(snapshot, outputs, deployEnvironment);
-    } catch (rollbackFailure) {
-      throw combineLaunchAndRollbackFailures(primaryFailure, rollbackFailure);
+    // Rolling the web bundle back on a failed smoke deadlocks any fix the
+    // smoke itself is failing on: the bundle carrying the fix is uploaded,
+    // the smoke fails because the fix is not yet live everywhere it checks,
+    // and the rollback then deletes the fix. Observed 2026-08-13 — the
+    // correct bundle went up at 19:45:15 and was replaced by the previous
+    // release at 19:46:18, three deploys running, so no client-side fix could
+    // ever reach staging.
+    //
+    // Off by default while no one is using production. Turn it on before real
+    // traffic by setting FTE_ROLLBACK_WEB_ON_FAILURE=1 — a failed smoke will
+    // then restore the previous release, and a fix the smoke gates on will
+    // need a deliberate override.
+    if (rollbackOnFailureEnabled(deployEnvironment)) {
+      try {
+        restoreRelease(snapshot, outputs, deployEnvironment);
+      } catch (rollbackFailure) {
+        throw combineLaunchAndRollbackFailures(primaryFailure, rollbackFailure);
+      }
+    } else {
+      process.stdout.write(
+        "Web release rollback is DISABLED " +
+          "(FTE_ROLLBACK_WEB_ON_FAILURE is not 1). The uploaded bundle stays " +
+          "live despite the failure above.\n",
+      );
     }
     throw primaryFailure;
   }

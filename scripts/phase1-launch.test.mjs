@@ -9,6 +9,7 @@ import {
   assertDeployedOutputBindings,
   combineLaunchAndCleanupFailures,
   combineLaunchAndRollbackFailures,
+  rollbackOnFailureEnabled,
   classifyReleaseVerificationFailure,
   cleanupTemporaryLaunch,
   deployStagedDynamoGsiUpdates,
@@ -577,6 +578,11 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
   };
   const upgraded = structuredClone(resources);
   upgraded.Table.Properties.Tags = [{ Key: "new", Value: "tag" }];
+  upgraded.Table.Properties.ContributorInsightsSpecification = {
+    Enabled: true,
+  };
+  upgraded.Table.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
+    { Enabled: true };
   upgraded.Table.Properties.PointInTimeRecoverySpecification.RecoveryPeriodInDays = 35;
   upgraded.Table.Properties.AttributeDefinitions.push(
     { AttributeName: "newPk", AttributeType: "S" },
@@ -614,6 +620,10 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
     (copy) =>
       (copy.Table.Properties.GlobalSecondaryIndexes[0].Projection.ProjectionType =
         "ALL"),
+    (copy) =>
+      (copy.Table.Properties.ContributorInsightsSpecification = {
+        Enabled: false,
+      }),
     (copy) => delete copy.Table.Properties.TimeToLiveSpecification,
     (copy) => delete copy.Table.Properties.StreamSpecification,
     (copy) => delete copy.Table.Properties.ResourcePolicy,
@@ -662,6 +672,19 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
       ),
     );
   }
+  const deployedWithInsights = structuredClone(upgraded);
+  const insightsRemoved = structuredClone(upgraded);
+  delete insightsRemoved.Table.Properties.ContributorInsightsSpecification;
+  delete insightsRemoved.Table.Properties.GlobalSecondaryIndexes[0]
+    .ContributorInsightsSpecification;
+  assert.throws(
+    () =>
+      assertRetainedResourcesSafe(
+        { Resources: deployedWithInsights },
+        { Resources: insightsRemoved },
+      ),
+    /protected properties/,
+  );
 });
 
 test("retained guard permits only GSI-backed additive attribute definitions", () => {
@@ -748,9 +771,7 @@ test("retained guard permits only GSI-backed additive attribute definitions", ()
         "ALL"),
     (copy) =>
       (copy.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
-        {
-          Enabled: true,
-        }),
+        { Enabled: false }),
   ]) {
     const unsafe = structuredClone(upgraded);
     mutate(unsafe);
@@ -830,6 +851,13 @@ test("GSI stage planning deterministically leaves only one index for the final d
   );
   assert.equal(
     planDynamoGsiDeploymentStages(stages[0].template, target).length,
+    0,
+  );
+  const insightsTarget = structuredClone(existing);
+  insightsTarget.Resources.EventIngestionTable.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
+    { Enabled: true };
+  assert.equal(
+    planDynamoGsiDeploymentStages(existing, insightsTarget).length,
     0,
   );
 });
@@ -1319,5 +1347,51 @@ test("deployed output bindings require exact physical resources and distribution
       ...distribution,
       DomainName: "wrong.cloudfront.net",
     }),
+  );
+});
+
+test("web release rollback protects prod and not staging", () => {
+  // Production serves real readers, so a bad release must be rolled back.
+  assert.equal(rollbackOnFailureEnabled({ FTE_AWS_STAGE: "prod" }), true);
+  // Staging exists to find bugs; rolling back there deletes the bundle that
+  // fixes whatever the smoke is failing on.
+  assert.equal(rollbackOnFailureEnabled({ FTE_AWS_STAGE: "staging" }), false);
+  assert.equal(rollbackOnFailureEnabled({}), false);
+  // Either default can be overridden explicitly, including turning prod off
+  // deliberately to land a fix the smoke itself gates on.
+  assert.equal(
+    rollbackOnFailureEnabled({
+      FTE_AWS_STAGE: "prod",
+      FTE_ROLLBACK_WEB_ON_FAILURE: "0",
+    }),
+    false,
+  );
+  assert.equal(
+    rollbackOnFailureEnabled({
+      FTE_AWS_STAGE: "staging",
+      FTE_ROLLBACK_WEB_ON_FAILURE: "1",
+    }),
+    true,
+  );
+});
+
+test("web release rollback is opt-in", () => {
+  // A failed smoke used to restore the previous web release, which deletes the
+  // very bundle that fixes whatever the smoke is failing on. Measured on
+  // 2026-08-13: the correct bundle was uploaded at 19:45:15 and replaced by
+  // the previous release at 19:46:18, so no client-side fix could reach
+  // staging across three consecutive deploys.
+  assert.equal(rollbackOnFailureEnabled({}), false);
+  assert.equal(
+    rollbackOnFailureEnabled({ FTE_ROLLBACK_WEB_ON_FAILURE: "0" }),
+    false,
+  );
+  assert.equal(
+    rollbackOnFailureEnabled({ FTE_ROLLBACK_WEB_ON_FAILURE: "true" }),
+    false,
+  );
+  assert.equal(
+    rollbackOnFailureEnabled({ FTE_ROLLBACK_WEB_ON_FAILURE: "1" }),
+    true,
   );
 });

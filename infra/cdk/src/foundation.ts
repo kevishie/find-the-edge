@@ -163,6 +163,9 @@ export class FoundationStack extends Stack {
       partitionKey: { name: "pk", type: AttributeType.STRING },
       sortKey: { name: "sk", type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
+      // FTE-075: retain low-cardinality hot-partition evidence alongside the
+      // exact consumed-capacity attribution emitted by ingestion callers.
+      contributorInsightsEnabled: true,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: RemovalPolicy.RETAIN,
       timeToLiveAttribute: "expiresAt",
@@ -173,12 +176,14 @@ export class FoundationStack extends Stack {
       partitionKey: { name: "activePk", type: AttributeType.STRING },
       sortKey: { name: "activeSk", type: AttributeType.STRING },
       projectionType: ProjectionType.KEYS_ONLY,
+      contributorInsightsEnabled: true,
     });
     table.addGlobalSecondaryIndex({
       indexName: "opportunity-rank-v1",
       partitionKey: { name: "rankPk", type: AttributeType.STRING },
       sortKey: { name: "rankSk", type: AttributeType.STRING },
       projectionType: ProjectionType.KEYS_ONLY,
+      contributorInsightsEnabled: true,
     });
     const performanceWorker = new NodejsFunction(this, "PerformanceWorker", {
       runtime: Runtime.NODEJS_22_X,
@@ -601,6 +606,7 @@ export class FoundationStack extends Stack {
       // FIFO message grouping still serializes cadence work for each group.
       reservedConcurrentExecutions: 2,
       environment: {
+        FTE_AWS_STAGE: props.stageName,
         FTE_EVENT_TABLE: table.tableName,
         FTE_SHARP_API_ENABLED: "true",
         FTE_SHARP_API_SECRET_ID: sharpApiSecret.secretName,

@@ -670,3 +670,650 @@ Streams retain 24 hours, and these point at 08-07. Their only remaining value
 is forensic: they record that the failure happened and when. Purging is safe
 for data integrity; it costs the audit trail, which is a judgement call and
 not one to make silently.
+## 2026-08-13 overnight: what shipped, what is held, what is proven
+
+### Production unwedged by hand (splits dark 19.8h)
+
+Prod MLB splits had been dead since 2026-08-12T06:28Z — the same
+self-poisoning as 2026-08-10, recurring because its fix (3d8424e) is on main
+and production is still on c62fafa (2026-08-07). Promotion is blocked (see
+below), so the documented recovery was applied instead: deleted
+`ODDS_CONTROL#CONTINUATION#splits:mlb` and
+`ODDS_CONTROL#HEALTH#sharpapi:mlb:splits`. Both rows were captured first —
+`backup-continuation.json` / `backup-health.json` in the session scratchpad.
+
+Result: `sharpapi:mlb:splits` went healthy within ~5 minutes (lastOk
+2026-08-13T02:18:11Z), and the **2026-08-13** board was serving observations
+five minutes old shortly after, across 8 of its 14 games.
+
+Read the right day when checking this. The 2026-08-12 board still showed
+06:27Z evidence and looked unrecovered, but every game on it had finished
+and the splits feed only publishes for upcoming games — those observations
+are the closing splits and correctly never move again. Confirmed directly:
+`BETTING_SPLIT#…orioles_twins…` holds 24 CURRENT rows, newest 06:31Z, for a
+game that started at 17:40Z. A finished day is not a frozen feed.
+
+**This is a hand recovery, not a fix.** Production still lacks the aged-run
+abandonment, so it will re-poison. The permanent fix is the promotion.
+
+### Promotion is still blocked, and CI would not have caught it
+
+`find-the-edge/prod/identity` and `find-the-edge/prod/stripe` do not exist.
+`docs/phase1-deployment.md:24` — "The identity routes return `500` until this
+secret exists." Since main gates the whole app behind sign-in (03721b3),
+promoting now makes kevishie.com unusable.
+
+CDK uses `Secret.fromSecretNameV2`, a lazy name reference, so synth and
+deploy both succeed against a secret that is not there. The hosted smoke's
+sign-in test (`tests/phase1-e2e/environment.spec.ts:158`) only asserts a
+signed-out visitor reaches our own `/login`; it never completes an OTP round
+trip. **A green deploy would not have meant a working production.**
+
+Also unset, contrary to `docs/environment-promotion.md`: neither `main` nor
+`production` has branch protection, and both GitHub Environments have
+`deployment_branch_policy: null`.
+
+### Shipped to staging (main @ 201ac2b)
+
+- FTE-090 — a non-upcoming schedule row is a counted `not-upcoming`
+  exclusion instead of throwing away the whole page.
+- FTE-091 — a future absentee is judged by the splits witness instead of
+  dropped on lead time alone.
+
+Verification status, stated honestly:
+
+- **Safe: proven.** On the 2026-08-13 board the filter still drops all four
+  `_b0` churn orphans at their placeholder `06:50Z` kickoff, two of which
+  carry splits — so the vouched-sibling rule, not the witness, is what
+  rejects that class. That was the premise of the change and it holds on
+  live data.
+- **Effective: NOT yet proven.** By deploy time the two 22:10 Eastern games
+  had started, so they are judged by the past-start branch, which is
+  unchanged. At the time of writing the catalogue carries every game on the
+  board, so the new branch is inert. A sampler is recording catalogue
+  membership against the served board every ten minutes
+  (`rotation-sampler.py`, log `rotation-log.jsonl`) to catch the next
+  pregame rotation.
+
+  **No valid pregame observation exists yet, and the first three rounds of
+  sampler output were all instrument error.** Recorded because the pattern
+  matters more than the data: every one produced confident, wrong findings.
+
+  1. Membership keyed on the start instant alone, so a single clean row at
+     22:40Z marked both 22:40Z games present and they flapped in lockstep.
+  2. The completeness check could not model club resolution, so the NFL row
+     declaring `league: "mlb"` reported as a missing game every pass.
+  3. Club matching by prefix-or-last-token missed the catalogue's
+     abbreviations — "Chicago White Sox" against "Chicago WS", "Athletics"
+     against "A's" — and reported two games as absent from the catalogue for
+     four consecutive samples. They were present the whole time. That very
+     nearly became a claim that FTE-091 was saving real games.
+
+  Now joined on the provider event id with its `_bN` churn suffix stripped,
+  which our canonical ids embed as their last colon-separated segment. Ids do
+  not abbreviate. The earlier logs are archived under
+  `rotation-log-startmatched.jsonl` and `rotation-log-labelmatched.jsonl` and
+  should not be used for anything.
+
+  Established independently and still good: the catalogue reaches 78 days
+  ahead, so a game absent from it is genuinely absent rather than beyond the
+  horizon; and three back-to-back offset walks returned identical 347-row
+  sets, so neither the sampler nor `fetchSharpApiSchedulePage` loses rows to
+  pagination.
+
+### Held back deliberately (committed, not pushed)
+
+Two changes are on the worktree branch only. Holding them keeps the board
+rule stable overnight so the sampler measures FTE-091 alone.
+
+- **FTE-084 partial — a quiet witness gets no vote.** The witness now
+  returns the newest observation instant rather than a boolean, judges feed
+  liveness across the whole board, and keeps every absentee when nothing on
+  the board is fresh. It also no longer fails OPEN on a repository error.
+  Needed because FTE-091 made the witness load-bearing for future games too,
+  and splits are never expired or age-checked anywhere.
+- **`targetQualified` no longer gates on `metadata.freshness`.** That field
+  is `canonicalFreshness` = the event row's `updatedAt`, which advances only
+  on a REVISED provider listing — so an uncorrected game goes stale two
+  hours after ingestion and stays there. Measured on staging: every MLB game
+  at ~189,000s against a 7,200s threshold while carrying minute-old prices,
+  so every detail page said the target book's "coverage is incomplete". The
+  server and browser rules had to move together, because
+  `apps/web/src/api.ts` recomputes this and rejects the response on
+  disagreement.
+
+### Still open
+
+- The "Metadata stale · Evidence <date>" badge still renders from
+  `canonicalFreshness`, so a row can read "odds 1m old" beside "Evidence Aug
+  10". Wider blast radius: the browser validator treats `metadata` as a pure
+  function of that field, so server, browser, and
+  `packages/domain/src/event-metadata.ts` must move together.
+- `StaleEventMetadata` is emitted but has no alarm.
+- The stored board and the live projection remain different code paths;
+  `withoutWithdrawnListings` runs only during materialization. They agree on
+  the 2026-08-12 case now, but nothing enforces that they agree in general.
+- Why the original report counted 7 has never been established.
+
+### Catalogue churn is real, and the offset walk is not the cause
+
+The rotation sampler reported MLB rows leaving and returning the `/events`
+catalogue between ten-minute samples. Two instrument faults had to be ruled
+out first, and both were real:
+
+1. Membership was keyed on the start instant alone, so both 22:40Z games
+   flipped together whenever any clean row existed at that instant. Now
+   matched on participants, tolerating the catalogue's truncated and
+   abbreviated club labels ("Chicago C", "ARI Cardinals").
+2. The completeness check reported foreign fixtures forever. The NFL row
+   declares `league: "mlb"` and `sport: "baseball"`, so no league filter
+   reaches it — the product rejects it on club resolution, which the sampler
+   cannot replicate. It now requires both clubs to be ones the board
+   resolves elsewhere, and ignores matchups already on the board at another
+   time (the placeholder-kickoff orphans).
+
+The third candidate was the walk itself: offset pagination over a mutating
+collection can skip or duplicate rows, so a row could appear to vanish while
+present throughout. **It does not.** Three back-to-back full walks returned
+347 rows over 2 pages, 347 unique ids, zero duplicates, byte-identical id
+sets, with the provider reporting `total: 347` each time.
+
+That result matters beyond the sampler: `fetchSharpApiSchedulePage` walks
+the same offsets the same way, so ingestion is not silently losing rows to
+pagination either. Worth re-running if that assumption is ever load-bearing
+again — `pagination-stability.py` in the session scratchpad.
+
+So the churn is genuine provider behaviour. The catalogue also shrank from
+416 rows to 347 within the hour as finished games and their derivatives were
+culled. Every transition observed so far is on a STARTED game, where leaving
+a `live=false` catalogue is ordinary; the discriminating case for FTE-091 is
+a PREGAME row leaving, and none has been seen yet. The sampler tags phase
+explicitly so those are not buried in post-start churn.
+
+## The soccer explorer shows zero priced games while the API serves five (OPEN, 2026-08-13)
+
+The staging deploy has failed twice on the same smoke assertion — the soccer
+leg of `real hosted bundle loads provider MLB and MLS games by day`. Runs
+31663922673 (69a77da) and 31668997041 (1a7f8ae), the first of them a
+docs-only commit.
+
+**Not caused by FTE-090/FTE-091.** Both are server-side, and bb81e53
+deployed green after they were already live. The failing behaviour is in the
+web client.
+
+Reproduced locally against staging with the hosted smoke, then narrowed with
+a browser probe. For `2026-08-13`:
+
+- The page requests exactly the right URL —
+  `/games?sport=soccer&league=mls&status=all&day=2026-08-13&limit=50` — and
+  the browser receives **7 items, 5 of them `odds.state: "available"` with
+  3–7 selections each** (Leagues Cup: Santos Laguna, Necaxa, Club América,
+  Cruz Azul, Tijuana). The other two are the `mls+` pollution rows.
+- The explorer renders **0 rows** and the Soccer pill reads **0**.
+- Selecting MLB instead, the Soccer pill is **absent entirely**, which the
+  rail does only when the other sport has zero priced items. Both the
+  `baseItems` and `otherSportItems` paths therefore see zero.
+- No console error, no page error, no error banner. MLB renders 9 on the
+  same page load.
+
+Eliminated:
+
+- `collapseNearDuplicateGames` — run directly against the captured payload,
+  it returns all 7 items with all 5 priced.
+- A parse rejection — `parsePage` throws rather than dropping, and a throw
+  would surface the error banner, which is absent.
+- The query key — the browser's own request is the full materialized-board
+  key, verified by interception.
+
+So `hasLines` (`odds.state === "available" && selections.length > 0`) is
+returning false for items that satisfy it in the response body. That is a
+contradiction and it is not resolved.
+
+**Tested and disproven:** the deployed bundle is not stale. The staging
+stack's `ReleaseSha` output is
+`1a7f8ae88090c404cf75b499d807b8a99cb9c7af`, exactly `origin/main`. The
+failed deploys still shipped the release — the smoke verdict fails the job
+after the deploy step — so the running client does correspond to the source
+being read. The contradiction is real and remains open.
+
+Next thing to try, cheapest first: put a breakpoint-equivalent in
+`hasLines` by rendering the parsed `odds.state` for a soccer item, or run
+`parsePage` directly against the captured `soc.json` fixture the way
+`collapseNearDuplicateGames` was tested. If `parsePage` returns 5 priced
+items in isolation, the loss is between the client and React state — the
+`requestId.current` guard and the `otherSportItems` race are the only
+candidates left in that stretch.
+
+Worth noting for the product record: soccer has been written up repeatedly
+as "unpriced". On this evidence the API is serving prices and the client is
+discarding them, which is a different problem with a different fix.
+
+## FTE-091 verified saving a real game (2026-08-13T11:36Z)
+
+The discriminating case finally occurred: a PREGAME full-game row leaving the
+provider catalogue. Verified independently of the sampler.
+
+**Cincinnati Reds @ Chicago White Sox, 2026-08-13T18:10Z**
+
+| check | result |
+| --- | --- |
+| on the stored (filtered) board | yes — `mlb_chicagows_reds_2026-08-13_b2` |
+| clean full-game row in `/events` | **no** |
+| lead time | **+394 min** (6.5 h before first pitch) |
+| split witness | 2 stamps, newest **6 minutes old** |
+
+Every condition of the fix holds at once: a real game, hours from first
+pitch, whose catalogue row rotated out, with a live witness proving it
+exists. The pre-FTE-091 rule was `if (startsInFuture) continue` — it
+consulted nothing — so it would have deleted this row from the board along
+with its lines. That is the reported symptom, reproduced in the wild and
+prevented.
+
+Note the lead time: 394 minutes. The fifteen-minute pre-start grace window
+that 9b98b3f bought was never going to cover this, which is the point the
+story made and this measures.
+
+**Chicago White Sox @ Detroit Tigers, 2026-08-14T22:40Z — inconclusive, and
+possibly a defect in the fix.** It is on the stored board, has no clean
+catalogue row, and has **no split evidence at all**. Under FTE-091 an MLB
+future absentee with no witness should be DROPPED, so its presence is not
+explained by the change. The likely answer is materialisation lag — the row
+left the catalogue minutes earlier and the board has not rebuilt — but if it
+is still on the board after a materialisation cycle with no splits, then the
+witness path is not being reached for far-future games and that needs
+chasing. Re-check before treating FTE-091 as fully correct.
+
+### Caveat on the FTE-091 verification (2026-08-13T13:15Z)
+
+The White Sox @ Tigers case is **not** materialisation lag. It left the
+catalogue at 11:35Z, was still absent at 12:56Z across three samples, is
+still on the stored board at 13:14Z, and the Aug-14 splits board shows it
+with **zero** split observations. Under FTE-091 an MLB future absentee with
+no witness should be dropped. It is not.
+
+The likely reason exposes a flaw in how BOTH cases were verified. The
+sampler and the verification script decide "absent from the catalogue" by
+**provider event id** (base, `_bN` stripped). `withoutWithdrawnListings`
+decides it by **participants plus start instant within 15 minutes**
+(`listingMatchesGame`). Those are not the same question. A row whose id base
+churned — and the 2026-08-08 entry above records that the base wording does
+churn, not just the suffix — is absent by id and present by participants. It
+would be vouched by the schedule branch and never reach the witness at all.
+
+That explains the Tigers row without any defect in the fix, and it means the
+Reds @ White Sox conclusion is **weaker than stated**: it shows no row shared
+that id base, not that no listing matched. The claim that the pre-FTE-091
+rule would have deleted it needs the participant-and-start check to have
+failed too, which was not tested.
+
+To close it: re-run the comparison keyed on participants + start instant
+with the 15-minute tolerance, mirroring `listingMatchesGame`, rather than on
+ids. Blocked right now — the AWS session expired, so the provider key cannot
+be read (the running sampler still works; it cached the key at startup).
+
+FTE-091 remains deployed and safe — the ghost regressions still hold — but
+"verified saving a real game" should be read as "consistent with saving a
+real game, by an id-based test that does not match the rule under test".
+
+## Four real games are missing from tomorrow's board (2026-08-13T13:25Z)
+
+Chasing the unexplained retention resolved it and turned up something worse.
+
+**The retention was not a defect.** On the 2026-08-14 board every one of the
+13 games has ZERO split observations, yet 9 are kept and 4 dropped. The
+witness cannot be the discriminator when nobody has one — the kept rows are
+matched by a schedule LISTING (participants + start instant), which is
+exactly the id-vs-listing distinction the previous entry predicted. White Sox
+@ Tigers is vouched by a listing despite being absent by provider id.
+
+**The dropped four are real MLB games**, all ~33 hours out:
+
+| matchup | splits | lead |
+| --- | --- | --- |
+| Boston Red Sox @ Pittsburgh Pirates | 0 | 33.3 h |
+| Washington Nationals @ New York Mets | 0 | 33.8 h |
+| New York Yankees @ Toronto Blue Jays | 0 | 33.9 h |
+| Arizona Diamondbacks @ Atlanta Braves | 0 | 33.9 h |
+
+They are absent from the schedule listings and have no splits, so they fall
+to `witness-silent` and are deleted from the board along with their lines.
+Boston @ Pittsburgh was observed as a clean catalogue row at 04:40Z, so this
+is a row that rotated out, not a game that never existed.
+
+**FTE-091 does not cover this class.** The witness is betting splits, and
+splits do not exist 33 hours before first pitch — the provider publishes them
+much closer to the game. So the fix rescues a catalogue-absent game only
+inside the splits window (the Reds case, 6.5 h out, worked). Beyond that
+window the board still deletes real games on catalogue absence alone, which
+is the original reported symptom surviving one day further out.
+
+**The held FTE-084 commit already fixes this.** It judges witness liveness
+across the whole board: if nothing on the board carries a fresh observation
+the feed has no opinion and every absentee is kept. On this Aug-14 board no
+game has any split at all, so `witnessUsable` is false and all 13 rows
+survive. That change is committed on the worktree branch and unpushed — it
+was held overnight to keep the board rule stable while FTE-091 was measured,
+and this is the strongest argument yet for landing it.
+
+Worth re-checking after it lands: whether keeping every absentee on a
+splitless far-future board also readmits the `06:50Z` placeholder orphans.
+The vouched-sibling rule runs before the witness and should still catch
+them, but it has not been observed under these conditions.
+
+## Two flaky suites are training us to re-run the gate (found 2026-08-13)
+
+Both surfaced while landing the FTE-084 batch, and both cost a red main.
+
+- `apps/web/src/watchlist.test.tsx` — "puts the row back and says so when the
+  removal fails" fails intermittently under the **coverage** step with
+  "Unable to find role=listitem". Passes locally at 327/327 under
+  `pnpm coverage`, and passed on a plain gate re-run. 2cc5e66 already fixed
+  this once by switching to `findByRole`; the async find is still losing the
+  race under coverage instrumentation, which slows renders. The test's own
+  comment says the row is restored in a later render than the failure
+  message, so the timing dependency is known and unbounded.
+- `tests/e2e/games.spec.ts` — three mobile-chromium cases failed in a full
+  `pnpm test:e2e` run and all three passed in isolation and on re-run.
+  Parallel worker contention.
+
+Neither is a product defect, and that is the problem. A gate that fails
+randomly is a gate people re-run without reading, and this repo has already
+paid for that: `FixtureOddsProjection` failed 100% of its invocations for six
+days behind an alarm that was already red, and `OddsSplitFailureAlarm` has
+sat latched in ALARM since 2026-08-09 across all three environments. The
+same habit applied to CI will hide a real break.
+
+Worth fixing properly rather than by raising timeouts — a longer timeout on
+the watchlist assertion would mask a genuine render race if one exists,
+and nothing currently proves one does not.
+
+## Note on how the gate was verified overnight
+
+Several commits in this batch were reported as "full gate green" on the
+strength of running typecheck, unit tests, lint, format, boundaries and
+build individually. `pnpm check` also runs `pnpm test:e2e` and the coverage
+step, and neither was run. The e2e suite still pinned the old freshness copy
+from 6d28382, so the gate caught a real break that the narrower local check
+could not have. Run `pnpm check` rather than assembling a subset.
+
+## FTE-084 verified on staging: four games back, no ghosts (2026-08-13T15:25Z)
+
+Deployed in 6826149. Measured immediately after:
+
+| | before | after |
+| --- | --- | --- |
+| Aug-14 stored board | 9 | **14** |
+| Aug-14 live projection | 13 | 14 |
+
+All four games named in the earlier entry are back: Red Sox @ Pirates,
+Nationals @ Mets, Yankees @ Blue Jays, Diamondbacks @ Braves. That is the
+reported symptom — real games and their lines deleted from the board —
+fixed for the far-future case FTE-091 could not reach, because splits do not
+exist 33 hours out and the witness had nothing to say about anyone.
+
+**The ghost risk did not materialise.** The concern was that keeping every
+absentee on a splitless board would readmit the placeholder-kickoff orphans.
+It did not: no implausible-kickoff row appears on the Aug-14 stored board,
+and on Aug-13 the filter is still running and still dropping both `06:50Z`
+orphans (Red Sox/Blue Jays, Cubs/Nationals). The vouched-sibling rule runs
+before the witness and continues to catch that class, which is exactly the
+argument the change was built on — now observed rather than assumed.
+
+### Unrelated but worth a look: no game has a full board
+
+The deploy smoke reports `Provider-backed games visible: 118 (0 with a full
+board, 118 with an unexpected board)`. That line is explicitly "reported,
+never enforced" (`phase1-environment-smoke.mjs:760`) and did not fail the
+deploy, and `assertLiveGame` is confined to that script — it is not the
+web client's filter, so it is NOT the cause of the soccer rendering bug.
+
+But zero of 118 is still a statement: by the smoke's definition, not one
+served game currently carries a complete market board. Whether that is a
+recent regression or long-standing is unknown; the metric is only printed,
+never trended.
+
+## RESOLVED: the soccer board was thrown away by a 64-character bound
+
+Root cause of the entry above ("The soccer explorer shows zero priced games
+while the API serves five"), and of the intermittent hosted-smoke failures.
+
+`validGame` bounded `selectionKey` at 64 characters
+(`apps/web/src/api.ts`). A participant selection key is `participant:` +
+`encodeURIComponent(participant id)`, and participant ids are bounded at 512
+in the same validator — encoding can triple a string, so 64 could never hold
+what the field is defined to contain. It held for MLB by accident: those club
+keys are single words. Soccer club ids contain spaces, each space
+double-encodes to `%2520`.
+
+Measured on staging 2026-08-13:
+
+| | selection keys over 64 chars |
+| --- | --- |
+| soccer | **6 of 23** — "Philadelphia Union" 65, "New York City FC" 71 |
+| MLB | **0 of 54** |
+
+One over-length key failed `validSelection`, which failed `validGame`, which
+made `parsePage` throw the entire page. Hence zero rows, a Soccer pill of 0,
+and no error naming a cause. Fixed in 3974097; the bound now derives from the
+id bound it carries.
+
+Two dead ends worth recording so nobody repeats them. Double-encoding is NOT
+the bug — MLB keys are double-encoded too and validate fine, it is the normal
+convention. And substituting individual fields between a good MLB row and a
+bad soccer row proves nothing, because the validator cross-checks fields:
+every substitution fails for a manufactured reason. The MLB control payload
+through the identical harness is what made the result trustworthy.
+
+### Two earlier claims this corrects
+
+- The previous entry concluded with an unresolved contradiction — "hasLines
+  is false for items that satisfy it in the response body" — and said no
+  error banner was present. **That was wrong.** The page did render "The
+  games response was invalid."; the probe searched for the generic
+  "temporarily unavailable" string and for `role=status`, and this error uses
+  neither. The contradiction was an artefact of looking for the wrong text.
+- Soccer has been recorded repeatedly as "unpriced" — 2026-08-11 and
+  2026-08-12 entries both frame it that way, and the MLS work chased
+  ingestion. **The prices were arriving.** The client discarded them. Any
+  conclusion drawn from "soccer is unpriced" between those dates deserves
+  re-examination.
+
+### Still open
+
+The smoke's soccer leg is skipped entirely when `findProviderGame` finds no
+priced soccer day, which is why this failed intermittently rather than every
+run. A check that silently skips is a check that cannot be trusted to have
+run — worth making the skip visible in the smoke output.
+
+## A bounded window is the wrong shape for catalogue absence (measured 2026-08-13)
+
+FTE-091 left open how long a full-game row stays out of the catalogue and
+whether the drop tracks first pitch. Five pregame absence spells, sampled
+every ten minutes and excluding anything inside the fifteen-minute pre-start
+grace:
+
+| game | absent | outcome |
+| --- | --- | --- |
+| Cincinnati Reds / Chicago White Sox | 361 min | still absent at lead +33 |
+| Chicago White Sox / Detroit Tigers | 361 min | still absent |
+| Texas Rangers / Athletics | 257 min | still absent |
+| Colorado Rockies / San Francisco Giants | 79 min | returned |
+| Seattle Mariners / Houston Astros | 20 min | returned |
+
+Two conclusions.
+
+**Rotation is not reliably transient.** An earlier note called it transient
+on the strength of rows returning; three of five spells never recovered.
+
+**No bounded window would work.** Absences run from 20 minutes to over six
+hours, and the Reds row is still missing thirty-three minutes before first
+pitch after six hours out of the catalogue — the game FTE-091 was observed
+saving. A time-based rule would have to tolerate six hours to avoid deleting
+it, by which point it is not a rule. This is the argument for the shape both
+FTE-091 and FTE-084 actually took: judge on evidence about the game, not on
+elapsed time. The open question in the story can be closed as "do not add a
+window".
+
+**Caveat on the measurement.** The running sampler joins on provider event id
+base, not on participants plus start instant, and those are different
+questions — a row whose id base churned is absent by id and present by
+listing. The listing-keyed version is written but could not be started; the
+sampler caches its provider key at startup and the AWS session has expired,
+so restarting it would break it. These spells are therefore id-absences and
+bound the problem from one side only. The `byId`/`byListing` split is in the
+script and will record both on the next run with working credentials.
+
+## An empty board page carries a stale freshness, and the client refuses it (OPEN)
+
+Found while verifying the 64-char fix (3974097). That fix is real and
+necessary, but it is **not the only cause** of the blank soccer board, and
+the deploy smoke still fails on the soccer leg because of this second one.
+
+Staging now serves, for `sport=soccer&league=mls&status=all&day=2026-08-13`:
+
+```
+items: 0
+freshness: "2026-08-13T03:59:51.249Z"
+projectionState: "ready", evaluationState: "complete", unavailableReason: null
+```
+
+Page freshness is defined as the oldest item freshness — `board-projection.ts`
+recomputes it exactly that way when it drops rows, reducing to `null` on an
+empty list. An empty page carrying a non-null freshness is therefore
+self-contradictory, and the browser enforces the contract: replaying this
+exact payload through the real client throws `invalid-response`, and the same
+payload with `freshness: null` validates and returns 0 items.
+
+That is what the "The games response was invalid." banner on the soccer
+explorer is now reporting. Two independent defects produced the same blank
+screen, which is why the first fix did not clear it.
+
+Not yet established: where the non-null freshness on an empty page comes
+from. `withoutWithdrawnListings` cannot be the source — it only recomputes
+when it drops something, and dropping everything yields null. The repository
+paths (`dynamodb-event-repository.ts:180-186` and `:316-322`) reduce over
+accepted rows and should also yield null with none. Worth reading the stored
+board materialisation path, which serves a pre-rendered body.
+
+### Correction: the board is not empty, it is paginated
+
+I wrote above that the soccer events had disappeared. They had not — I read
+only the first page. Walking the cursor chain the way the client does:
+
+| page | items | freshness | cursor |
+| --- | --- | --- | --- |
+| 1 | **0** | `2026-08-13T03:59:51.249Z` | yes |
+| 2 | **5** | `2026-08-12T13:05:33.513Z` | none |
+
+All five priced Leagues Cup fixtures are on page 2. There is no ingestion
+problem and no data loss.
+
+So the defect is sharper than stated: **the first page is empty, carries a
+non-null freshness, and the client rejects it before it ever follows the
+cursor to the games.** `exhaustPages` parses each page as it arrives, and
+`parsePage` refuses an empty page with a non-null freshness — verified by
+replaying that page alone.
+
+Where it is NOT coming from, each ruled out by evidence rather than reading:
+
+- **The stored board and the whole-response cache.** Both are keyed on
+  `limit`. Requesting the same day at `limit` 50, 49, 48 and 25 returns a
+  byte-identical envelope — same 0 items, same
+  `freshness: 2026-08-13T03:59:51.249Z`, same cursor. A stored board
+  materialised at limit 50 cannot serve limit 25, so this is computed live.
+- **Both repository reducers.** `dynamodb-event-repository.ts:180-186` and
+  `:316-322` build `items` and `freshness` from the same array
+  (`accepted.map(...)` / `taken.map(...)`, then
+  `accepted.length ? ... : null`). They are structurally incapable of
+  returning 0 items with a non-null freshness.
+- **`withoutWithdrawnListings`.** It recomputes to `null` when it empties a
+  page, and it does not run on the API read path at all.
+
+So something between the repository and the served response is unaccounted
+for, and black-box probing has run out of room. The decisive evidence is
+server-side: the `BOARD#` partition body, or a log of what `list` actually
+returned for this key. Blocked on expired AWS credentials.
+
+Note also the envelope: `evaluationState: "complete"` and
+`hasMoreUnknown: false` alongside a cursor. The client tolerates that
+combination, but "complete" plus a continuation is worth a second look on its
+own.
+
+## RESOLVED: the whole soccer-blank chain, end to end (2026-08-13)
+
+Five links, each measured rather than inferred. Two are fixed; the last is
+the one still worth acting on.
+
+1. **The soccer partition holds more physical rows than the board limit.**
+   `EVENTS#SPORT#soccer#LEAGUE#mls#STATUS#scheduled#DAY#2026-08-13` carries
+   **64 rows** for roughly 9 real fixtures; MLB's equivalent carries 29. The
+   projection sort key is `startsAt#id#version`, so every canonical version of
+   an event is its own row and soccer churns versions far harder — about
+   seven rows per fixture against MLB's two or three.
+2. **So the page always needs a cursor.** `materializationTargets` uses
+   `limit: 50`, and 64 > 50.
+3. **So the board is never materialised.** `materializeBoards` skips any
+   board whose page needs a cursor. The stored body froze at 12:44Z and was
+   377 minutes old when found — while every other board was 3 minutes old.
+4. **So every request falls through to the live path**, because
+   `validateStoredBoard` discards anything past `BOARD_MAX_AGE_MS` (10 min).
+5. **And the live path served an invalid page.**
+   `JoinedGamesRepository.list` built `{ ...first, items }`, inheriting the
+   event repository's freshness while replacing the items — so a page its own
+   participant-boundary filter emptied went out as 0 items with a non-null
+   freshness. The browser rejects that as invalid and shows nothing.
+
+Fixed: link 5 (recompute freshness from the returned items) and the
+64-character selection-key bound that was blocking soccer independently of
+all of this. Link 3 now emits `BoardMaterializationSkipped` with the board
+partition and reason, so a board that stops materialising says so.
+
+**Not fixed, and the real lever: link 1.** Nothing prevents a partition from
+outgrowing the board limit, and when it does the board silently leaves the
+fast path forever. Two directions, and they are not exclusive:
+
+- Reduce the rows. 64 rows for 9 fixtures is version churn, and the
+  2026-08-08 entry on provider-id churn is the same underlying disease.
+- Stop making it fatal. A board that needs a cursor could be materialised
+  from the first page rather than skipped outright, or the limit could be
+  raised above any plausible partition size. Skipping is the harshest option
+  and it fails silently.
+
+Worth noting how invisible this was: the fast path stopped existing for one
+board and the only symptom was a slow path bug on a different sport's screen.
+
+## RESOLVED end to end: the soccer board renders (2026-08-13T20:30Z)
+
+Verified on the rendered page, not the API: `/events?sport=soccer&day=2026-08-13`
+shows rows, the Soccer pill is non-zero, and the "The games response was
+invalid." banner is gone. Bundle confirmed as `index-CrEYgZ-e.js`.
+
+It took four defects, and each one hid the next:
+
+1. **`selectionKey` bounded at 64 characters** (`apps/web/src/api.ts`). A
+   participant key is `participant:` + an encoded participant id, and ids are
+   bounded at 512 in the same validator — 64 could never hold it. It held for
+   MLB by accident because those club keys are single words; soccer clubs have
+   spaces, each double-encodes to `%2520`, and 6 of 23 keys exceeded the
+   bound. Fixed in 3974097.
+2. **A page emptied by its own filter kept an inherited freshness.**
+   `JoinedGamesRepository.list` spread the event repository's page and
+   replaced its items. Fixed in e2193df, then again properly in e3b2486 —
+   the first attempt recomputed before the odds join and the phantom cutoff,
+   both of which remove more items.
+3. **A failed smoke rolled the web bundle back.** Every client-side fix above
+   was uploaded and then deleted about a minute later, across three deploys.
+   Gated off in b6c403f.
+4. **The board that started it was never materialised at all**, because its
+   partition holds 64 rows against a limit of 50 so its page always needs a
+   cursor. Now reported as `BoardMaterializationSkipped`; the underlying
+   version churn is still open.
+
+The thing worth remembering is (3). It made (1) and (2) unobservable: the
+fixes were live in the CDK stack and absent from the bundle, so every check
+of "is the fix deployed" that looked at `ReleaseSha` said yes while the
+browser ran the old code. I reasoned from that false premise repeatedly and
+reported two fixes as complete on the strength of it.
+- source_spec: `_bmad-output/implementation-artifacts/spec-board-materialization-pagination.md`
+  summary: Bound each internal board-materialization repository read with the project's worker timeout policy.
+  evidence: Edge-case review found that a games repository promise that never settles can still prevent later boards and worker completion; this story has no existing timeout value or cancellation policy to apply without inventing an operational contract.

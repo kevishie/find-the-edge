@@ -416,10 +416,10 @@ it("renders independent accessible lifecycle and freshness badges on games and d
   expect(
     await screen.findByLabelText("Lifecycle: scheduled"),
   ).toHaveTextContent("Scheduled");
-  expect(screen.getByLabelText("Event metadata is current")).toHaveTextContent(
-    "Metadata current",
-  );
-  expect(screen.getByText(/Evidence .* Eastern/)).toBeVisible();
+  expect(
+    screen.getByLabelText("Provider confirmed this listing recently"),
+  ).toHaveTextContent("Listing confirmed");
+  expect(screen.getByText(/Listing .* Eastern/)).toBeVisible();
   unmount();
 
   const detail = vi.fn(() => Promise.resolve(comparisonDetail()));
@@ -504,7 +504,9 @@ it("renders independent accessible lifecycle and freshness badges on games and d
     />,
   );
   expect(await screen.findByLabelText("Lifecycle: scheduled")).toBeVisible();
-  expect(screen.getByLabelText("Event metadata is current")).toBeVisible();
+  expect(
+    screen.getByLabelText("Provider confirmed this listing recently"),
+  ).toBeVisible();
   expect(
     screen.getByRole("heading", { name: "Sportsbook comparison" }),
   ).toBeVisible();
@@ -840,43 +842,43 @@ it.each([
     "scheduled",
     "2026-08-01T12:30:00.000Z",
     "Lifecycle: scheduled",
-    "Event metadata is current",
-    "within the two-hour",
+    "Provider confirmed this listing recently",
+    "confirmed this listing",
   ],
   [
     "scheduled",
     "2026-08-01T09:00:00.000Z",
     "Lifecycle: scheduled",
-    "Event metadata is stale",
-    "older than the two-hour",
+    "Provider has not revised this listing recently",
+    "not revised this listing",
   ],
   [
     "scheduled",
     "2026-08-01T13:00:00.000Z",
     "Lifecycle: scheduled",
-    "Event metadata freshness is unavailable",
+    "Provider listing revision time is unavailable",
     "in the future",
   ],
   [
     "unknown",
     "2026-08-01T12:30:00.000Z",
     "Lifecycle status unavailable",
-    "Event metadata is current",
+    "Provider confirmed this listing recently",
     "lifecycle status is unavailable",
   ],
   [
     "postponed",
     "2026-08-01T12:30:00.000Z",
     "Lifecycle: postponed",
-    "Event metadata is current",
-    "within the two-hour",
+    "Provider confirmed this listing recently",
+    "confirmed this listing",
   ],
   [
     "cancelled",
     "2026-08-01T09:00:00.000Z",
     "Lifecycle: cancelled",
-    "Event metadata is stale",
-    "older than the two-hour",
+    "Provider has not revised this listing recently",
+    "not revised this listing",
   ],
 ] as const)(
   "renders %s lifecycle and reasoned freshness accessibly",
@@ -1845,8 +1847,9 @@ describe("Games", () => {
     // prices refresh every minute — fresh odds must never read "stale".
     expect(price.closest(".event-card")?.textContent).not.toContain("stale");
     fireEvent.click(screen.getByRole("button", { name: "MLB" }));
-    // Both sports load per poll so the rail can size and hide its pills.
-    expect(list).toHaveBeenCalledTimes(2);
+    // Every sport loads per poll so the rail can size and hide its pills:
+    // the selected slate plus one request for each of the others.
+    expect(list).toHaveBeenCalledTimes(3);
     expect(screen.queryByText("Loading games…")).not.toBeInTheDocument();
     // A sport with no slate for the day earns no pill.
     expect(

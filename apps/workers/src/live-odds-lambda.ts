@@ -11,7 +11,10 @@ import {
   fetchSharpApiSchedulePage,
   sharpApiLeagueByKey,
 } from "@find-the-edge/providers";
-import { usableScheduleListings } from "@find-the-edge/database";
+import {
+  instrumentDynamoCapacity,
+  usableScheduleListings,
+} from "@find-the-edge/database";
 import { captureClosingLines } from "./closing-lines-capture";
 import {
   AwsDynamoGateway,
@@ -33,6 +36,7 @@ import {
   runProductionOddsControlPlane,
 } from "./production-odds-control-plane";
 import { embeddedOddsControlPlaneMetrics } from "./odds-control-plane";
+import { emitDynamoCapacityMetrics } from "./dynamo-capacity-metrics";
 import { decideOddsRetry } from "./odds-control-plane";
 
 export function parseProviderApiSecret(value: string | undefined): string {
@@ -465,7 +469,10 @@ const runLiveOddsHandler = async (event?: unknown) => {
   if (!tableName || !sharpEnabled || !sharpSecretId)
     throw new Error("live-odds-configuration-invalid");
   const secrets = new SecretsManagerClient({});
-  const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  const client = instrumentDynamoCapacity(
+    DynamoDBDocumentClient.from(new DynamoDBClient({})),
+    emitDynamoCapacityMetrics,
+  );
   await assertLiveOddsMaintenanceOwnership(
     client,
     tableName,
@@ -621,9 +628,9 @@ const runLiveOddsHandler = async (event?: unknown) => {
       const boardGateway = new AwsDynamoGateway(client, tableName);
       const boardEvents = new DynamoEventRepository(
         boardGateway,
-        // The worker never returns a cursor from a fifty-game page; a page
-        // that would need one is skipped, so this codec never signs anything
-        // a client will see.
+        // The worker exhausts a bounded cursor chain under one snapshot, then
+        // persists only a terminal board that still fits the public fifty-game
+        // contract. These signatures remain internal and never reach a client.
         new EventCursorCodec({
           current: { id: "board-materializer", secret: randomBytes(32) },
         }),
@@ -696,6 +703,54 @@ const runLiveOddsHandler = async (event?: unknown) => {
               ],
             },
             ScheduledBoardOddsAgeSeconds: boards.scheduledOddsAgeSeconds,
+          })}\n`,
+        );
+      // Dropping a listing is the most consequential thing the board does and
+      // it was counted, then discarded unread — so a reader reporting a short
+      // board on 2026-08-12 could not be answered from telemetry at all. Split
+      // by rule, because the total cannot tell four correctly-rejected churn
+      // orphans from four deleted real games.
+      for (const [reason, count] of Object.entries(boards.withdrawnByReason))
+        if (count > 0)
+          process.stdout.write(
+            `${JSON.stringify({
+              _aws: {
+                Timestamp: Date.now(),
+                CloudWatchMetrics: [
+                  {
+                    Namespace: "FindTheEdge/Boards",
+                    Dimensions: [["reason"]],
+                    Metrics: [{ Name: "BoardListingsDropped", Unit: "Count" }],
+                  },
+                ],
+              },
+              reason,
+              BoardListingsDropped: count,
+            })}\n`,
+          );
+      // A board that is never materialised serves from the live path forever
+      // and nobody is told. On 2026-08-13 one Eastern day's soccer board went
+      // six hours without being stored while every other board refreshed on
+      // the three-minute cadence; the count existed and was returned unread,
+      // exactly as the withdrawn-listing count had been.
+      for (const { board, reason } of boards.skippedBoards)
+        process.stdout.write(
+          `${JSON.stringify({
+            _aws: {
+              Timestamp: Date.now(),
+              CloudWatchMetrics: [
+                {
+                  Namespace: "FindTheEdge/Boards",
+                  Dimensions: [["reason"]],
+                  Metrics: [
+                    { Name: "BoardMaterializationSkipped", Unit: "Count" },
+                  ],
+                },
+              ],
+            },
+            reason,
+            board,
+            BoardMaterializationSkipped: 1,
           })}\n`,
         );
       // The share of upcoming games in a sport that carry a price. Board

@@ -52,12 +52,39 @@ export interface GameDetailSportsbook {
   readonly label: string;
 }
 
+/**
+ * Page freshness is the OLDEST item freshness, so it only means anything when
+ * it is derived from the items being returned. Spreading an upstream page
+ * inherits a value computed over rows that later filtering removed: a page
+ * emptied by its own filters then goes out as zero items carrying a non-null
+ * freshness, which contradicts the definition and which the browser client
+ * refuses outright — the reader gets "The games response was invalid."
+ * instead of an empty board. `withoutWithdrawnListings` recomputes for the
+ * same reason.
+ */
+const oldestFreshness = (
+  items: readonly { readonly freshness: string | null }[],
+): string | null =>
+  items.reduce<string | null>(
+    (oldest, item) =>
+      item.freshness === null
+        ? oldest
+        : oldest === null || item.freshness < oldest
+          ? item.freshness
+          : oldest,
+    null,
+  );
+
 const marketSpecifications = (event: EventPage["items"][number]) => {
   const sides = event.participants
     .slice(0, 2)
     .map(({ id }) => participantSelectionKey(id as EntityId));
   const sportKey = event.sportKey;
-  if (sportKey === "mlb")
+  // Two-way moneyline plus spread and total. Baseball and football differ in
+  // everything except the shape of these three markets: neither prices a tie
+  // as an outcome, so both read as away/home. Any further two-way sport —
+  // basketball, hockey — belongs on this branch rather than a new one.
+  if (sportKey === "mlb" || sportKey === "football")
     return [
       {
         marketKey: "moneyline",
@@ -248,9 +275,17 @@ const validateCurrent = (
   return {
     marketKey: normalized.marketKey,
     selectionKey: normalized.selectionKey,
-    ...(normalized.selectionLabel
-      ? { selectionLabel: normalized.selectionLabel }
-      : {}),
+    // A participant's label is the club's name and belongs to the event. The
+    // draw belongs to nobody, so its label is ours to choose — and taking the
+    // book's text means the same fixture reads "Draw" or "DRAW" depending on
+    // which sportsbook happened to win the row. Circa publishes it uppercase
+    // and DraftKings does not, so two MLS games rendered nothing at all on
+    // 2026-08-13 while their siblings rendered fine.
+    ...(normalized.selectionKey === "draw"
+      ? { selectionLabel: "Draw" }
+      : normalized.selectionLabel
+        ? { selectionLabel: normalized.selectionLabel }
+        : {}),
     sportsbookId: normalized.sportsbookId,
     ...(normalized.sportsbookLabel
       ? { sportsbookLabel: normalized.sportsbookLabel }
@@ -597,11 +632,23 @@ export class JoinedGamesRepository implements GamesRepository {
         ...event,
         oddsComparison: {
           targetSportsbookId,
+          // Deliberately NOT gated on `metadata.freshness`. That field is
+          // `canonicalFreshness`, which is the canonical event row's
+          // `updatedAt` — it advances only when the provider publishes a
+          // REVISED schedule listing, so a game listed once and never
+          // corrected goes "stale" two hours later and stays there. On
+          // 2026-08-13 every MLB game on staging reported a freshness age of
+          // 2.2 days against a 7,200s threshold while carrying prices minutes
+          // old, and the detail page told every reader the target book's
+          // "coverage is incomplete" — blaming the sportsbook for a schedule
+          // clock. Price freshness is already enforced where it belongs, per
+          // cell: a price older than `freshnessWindowMs` is marked
+          // `price-stale` and `eligible: false`, and every required market's
+          // target cell must be eligible below.
           targetQualified:
             event.status === "scheduled" &&
             event.metadata.lifecycle.state === "scheduled" &&
             event.metadata.availability === "complete" &&
-            event.metadata.freshness.state === "current" &&
             markets.every((market) => {
               const required = ["moneyline", "spread", "total"].includes(
                 market.marketKey,
@@ -669,8 +716,13 @@ export class JoinedGamesRepository implements GamesRepository {
       nextCursor = following.nextCursor;
     }
     items = items.slice(0, limit);
-    const page: EventPage = { ...first, items, nextCursor: nextCursor ?? null };
-    if (!page.items.length) return { ...page, items: [] };
+    const page: EventPage = {
+      ...first,
+      items,
+      freshness: oldestFreshness(items),
+      nextCursor: nextCursor ?? null,
+    };
+    if (!page.items.length) return { ...page, items: [], freshness: null };
     // Provider id churn advances canonical versions faster than the odds
     // persist path follows, so fresh rows can sit one version behind the
     // event. Each selection reads both versions and the newer row wins.
@@ -864,9 +916,16 @@ export class JoinedGamesRepository implements GamesRepository {
         game.odds.state !== "unavailable" ||
         Date.parse(game.startsAt) > phantomCutoff,
     );
+    // Recomputed HERE, against what is actually returned, not against the
+    // rows this method started with. Everything between those two points can
+    // remove items — the participant boundary, the phantom cutoff above, and
+    // the near-duplicate collapse below — and each one leaves the inherited
+    // freshness describing rows that are no longer in the page.
+    const finalItems = collapseNearDuplicateGames(surviving);
     return {
       ...page,
-      items: collapseNearDuplicateGames(surviving),
+      items: finalItems,
+      freshness: oldestFreshness(finalItems),
     };
   }
 }

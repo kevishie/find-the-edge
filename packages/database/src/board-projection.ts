@@ -1,3 +1,4 @@
+import { collapseNearDuplicateGames } from "@find-the-edge/domain";
 import type { GamesPage, GamesRepository } from "./games-repository";
 import type { BettingSplitRepository } from "./betting-split-repository";
 
@@ -34,6 +35,36 @@ const START_TOLERANCE_MS = 15 * 60_000;
 
 /** How early the provider may flip a listing to in-play before first pitch. */
 const PRE_START_IN_PLAY_GRACE_MS = 15 * 60_000;
+/**
+ * How old the newest split observation may be and still count as evidence.
+ * Splits ingest on a fifteen-minute cadence, so this tolerates several missed
+ * passes while still refusing the twenty-hour freeze of 2026-08-12.
+ */
+const SPLIT_WITNESS_MAX_AGE_MS = 90 * 60_000;
+
+/** Why a listing was dropped. Counted separately on purpose: these rules
+ * fail in different directions and merging them into one number hides
+ * which one is doing the damage. */
+/** Why a board was not materialised. A board that always needs a cursor is
+ * never stored at all, so it silently serves from the live path forever. */
+export type BoardSkipReason =
+  | "needs-cursor"
+  | "pagination-invalid"
+  | "repository-read-failed"
+  | "projection-not-ready"
+  | "body-too-big"
+  | "split-enrichment-failed"
+  | "serialization-failed"
+  | "store-failed";
+
+export type WithdrawnDropReason =
+  /** A sibling with the same participants that the provider still vouches
+   * for — the churned-id orphan. */
+  | "vouched-sibling"
+  /** Future, absent from the schedule, in a league with no split witness. */
+  | "future-no-witness"
+  /** The witness is live and says nothing about this game. */
+  | "witness-silent";
 
 const listingMatchesGame = (
   listing: ScheduleListing,
@@ -112,7 +143,23 @@ export const withoutWithdrawnListings = async <
     readonly now: Date;
     /** Whether every real game in this league carries split observations. */
     readonly splitsExpected: boolean;
-    readonly hasSplitEvidence: (canonicalEventId: string) => Promise<boolean>;
+    /**
+     * Newest split observation for an event, or null if it has none. A
+     * timestamp rather than a boolean because "this game has no splits" and
+     * "the splits feed stopped" are different facts and only the first is
+     * evidence about the game.
+     */
+    readonly splitWitnessAt: (
+      canonicalEventId: string,
+    ) => Promise<string | null>;
+    /**
+     * Called once per dropped listing with the rule that dropped it. Deleting
+     * a game is the most consequential thing this function does and it left
+     * no record: the count existed but was discarded unread, so when a reader
+     * reported a short board on 2026-08-12 there was no telemetry to say
+     * whether anything had been dropped, let alone why.
+     */
+    readonly onDrop?: (reason: WithdrawnDropReason) => void;
   },
 ) => {
   if (!options.schedule) return page;
@@ -135,6 +182,40 @@ export const withoutWithdrawnListings = async <
       )
       .map(participantIdentity),
   );
+  // The witness can only condemn a game if the witness is actually speaking.
+  // On 2026-08-12 production's MLB splits feed froze for nearly twenty hours
+  // while every stored observation sat there looking like evidence: splits
+  // are never expired and `listCurrent` returns whatever was last persisted,
+  // so a dead feed is indistinguishable from a quiet game unless the age is
+  // read. Liveness is therefore judged across the whole board — if ANY game
+  // on it carries a fresh observation the feed is up, and a game that is
+  // silent against that backdrop is genuinely silent. If nothing on the board
+  // is fresh the feed is down, and a down feed has no opinion about anyone.
+  const witnessCache = new Map<string, number | null>();
+  const witnessAt = async (id: string) => {
+    if (!witnessCache.has(id)) {
+      const at = await options.splitWitnessAt(id).catch(() => null);
+      const parsed = at === null ? null : Date.parse(at);
+      witnessCache.set(
+        id,
+        parsed === null || Number.isNaN(parsed) ? null : parsed,
+      );
+    }
+    return witnessCache.get(id) ?? null;
+  };
+  const isFresh = (at: number | null) =>
+    at !== null && options.now.getTime() - at <= SPLIT_WITNESS_MAX_AGE_MS;
+
+  let witnessUsable = false;
+  if (options.splitsExpected) {
+    for (const game of page.items) {
+      if (isFresh(await witnessAt(game.id))) {
+        witnessUsable = true;
+        break;
+      }
+    }
+  }
+
   const items: T[] = [];
   for (const game of page.items) {
     if (game.status !== "scheduled") {
@@ -145,7 +226,10 @@ export const withoutWithdrawnListings = async <
       items.push(game);
       continue;
     }
-    if (vouchedParticipants.has(participantIdentity(game))) continue;
+    if (vouchedParticipants.has(participantIdentity(game))) {
+      options.onDrop?.("vouched-sibling");
+      continue;
+    }
     // The provider flips a listing to in-play minutes before first pitch, so
     // a game inside the pre-start window is judged like a started game — by
     // its splits witness — rather than as a withdrawn future listing.
@@ -165,14 +249,24 @@ export const withoutWithdrawnListings = async <
     // both games on the same pass as every retained game, so where a witness
     // exists a future absentee is judged by it, exactly like a started one.
     // Leagues without split coverage have no witness and are unchanged.
-    if (startsInFuture && !options.splitsExpected) continue;
+    if (startsInFuture && !options.splitsExpected) {
+      options.onDrop?.("future-no-witness");
+      continue;
+    }
     if (!options.splitsExpected) {
       // In-play games leave the schedule feed; without a splits witness this
       // league cannot distinguish them from a withdrawn listing, so keep.
       items.push(game);
       continue;
     }
-    if (await options.hasSplitEvidence(game.id)) items.push(game);
+    if (!witnessUsable) {
+      // The feed is down, not the game. An absent witness is an absent
+      // opinion, and a board must never shrink because a provider went quiet.
+      items.push(game);
+      continue;
+    }
+    if (isFresh(await witnessAt(game.id))) items.push(game);
+    else options.onDrop?.("witness-silent");
   }
   if (items.length === page.items.length) return page;
   return {
@@ -228,6 +322,11 @@ export const BOARD_MAX_AGE_MS = 10 * 60_000;
 
 const BOARD_BODY_LIMIT_BYTES = 380_000;
 
+/** The public page limit stays at fifty. This separate worker-only bound
+ * prevents a corrupt or unexpectedly deep cursor chain from turning one
+ * board refresh into an unbounded projection walk. */
+const BOARD_INTERNAL_PAGE_LIMIT = 50;
+
 export const boardPartition = (key: BoardKey) =>
   `BOARD#${key.route}#${key.sportKey}#${key.leagueKey}#${key.status}#${key.day}#${String(key.limit)}`;
 
@@ -247,7 +346,8 @@ export const validateStoredBoard = (
     !Number.isFinite(Date.parse(record["generatedAt"])) ||
     typeof record["body"] !== "string" ||
     record["body"].length === 0 ||
-    record["body"].length > BOARD_BODY_LIMIT_BYTES ||
+    new TextEncoder().encode(record["body"]).byteLength >
+      BOARD_BODY_LIMIT_BYTES ||
     !counts ||
     typeof counts !== "object" ||
     !finiteCount(counts["stale"]) ||
@@ -401,6 +501,24 @@ export interface BoardMaterializationResult {
    */
   readonly withdrawnDropped: number;
   /**
+   * The same removals split by the rule that made them. The total alone
+   * cannot distinguish "we correctly rejected four churned orphans" from "we
+   * deleted four real games", and those need opposite responses.
+   */
+  readonly withdrawnByReason: Partial<Record<WithdrawnDropReason, number>>;
+  /**
+   * Which boards were not stored, and why. `skipped` alone is a number nobody
+   * reads: on 2026-08-13 the soccer board for one Eastern day stopped being
+   * materialised for over six hours while every other board refreshed on the
+   * three-minute cadence, and nothing reported it. Its stored body aged past
+   * BOARD_MAX_AGE_MS, so every request fell through to the live path — which
+   * is a slower path and, that day, a broken one.
+   */
+  readonly skippedBoards: readonly {
+    readonly board: string;
+    readonly reason: BoardSkipReason;
+  }[];
+  /**
    * Per sport, how many upcoming scheduled games carry a price and how many
    * do not. A sport where every upcoming game is priceless is the shape both
    * of the 2026-08-11 soccer faults took — a latched ambiguity marker and a
@@ -412,6 +530,113 @@ export interface BoardMaterializationResult {
     Record<string, { readonly upcoming: number; readonly priced: number }>
   >;
 }
+
+const pageFreshness = (items: GamesPage["items"]): string | null =>
+  items.reduce<string | null>(
+    (oldest, item) =>
+      item.freshness === null
+        ? oldest
+        : oldest === null || item.freshness < oldest
+          ? item.freshness
+          : oldest,
+    null,
+  );
+
+type CollectedBoard =
+  | { readonly state: "complete"; readonly page: GamesPage }
+  | { readonly state: "invalid" }
+  | { readonly state: "read-failed" };
+
+const validPaginationEnvelope = (page: GamesPage) =>
+  page.evaluationState === "partial"
+    ? page.hasMoreUnknown && page.nextCursor !== null
+    : !page.hasMoreUnknown;
+
+/**
+ * Cursor traversal is private to the materializer. Every page is read through
+ * the repository's signed-cursor boundary, under the snapshot established by
+ * the first call. Only after the terminal page do we normalize across page
+ * boundaries and synthesize the cursor-free envelope that may be persisted.
+ */
+const collectBoard = async (
+  games: GamesRepository,
+  filter: Parameters<GamesRepository["list"]>[0],
+  limit: number,
+): Promise<CollectedBoard> => {
+  let first: GamesPage;
+  try {
+    first = await games.list(filter, limit);
+  } catch {
+    return { state: "read-failed" };
+  }
+  if (!validPaginationEnvelope(first)) return { state: "invalid" };
+  // An uninitialized terminal page is a valid repository response, not a
+  // malformed cursor chain. Preserve it so the existing materialization gate
+  // reports the truthful projection-not-ready reason.
+  if (first.projectionState !== "ready" && first.nextCursor === null)
+    return { state: "complete", page: first };
+  if (
+    first.snapshotAt === null ||
+    !Number.isFinite(Date.parse(first.snapshotAt))
+  )
+    return { state: "invalid" };
+  const itemIds = new Set(first.items.map(({ id }) => id));
+  if (itemIds.size !== first.items.length) return { state: "invalid" };
+  if (first.nextCursor === null) {
+    const normalized = collapseNearDuplicateGames(first.items);
+    return {
+      state: "complete",
+      page: {
+        ...first,
+        items: normalized,
+        freshness: pageFreshness(normalized),
+      },
+    };
+  }
+
+  const items = [...first.items];
+  const seen = new Set<string>();
+  let nextCursor: string | null = first.nextCursor;
+  let pages = 1;
+  while (nextCursor !== null) {
+    if (pages >= BOARD_INTERNAL_PAGE_LIMIT || seen.has(nextCursor))
+      return { state: "invalid" };
+    seen.add(nextCursor);
+    let following: GamesPage;
+    try {
+      following = await games.list(filter, limit, nextCursor);
+    } catch {
+      return { state: "read-failed" };
+    }
+    if (
+      !validPaginationEnvelope(following) ||
+      following.snapshotAt !== first.snapshotAt ||
+      following.projectionState !== first.projectionState ||
+      following.unavailableReason !== first.unavailableReason
+    )
+      return { state: "invalid" };
+    for (const item of following.items) {
+      if (itemIds.has(item.id)) return { state: "invalid" };
+      itemIds.add(item.id);
+    }
+    items.push(...following.items);
+    nextCursor = following.nextCursor;
+    pages += 1;
+  }
+
+  const normalized = collapseNearDuplicateGames(items);
+  return {
+    state: "complete",
+    page: {
+      ...first,
+      items: normalized,
+      nextCursor: null,
+      evaluationState: "complete",
+      hasMoreUnknown: false,
+      freshness: pageFreshness(normalized),
+    },
+  };
+};
 
 export const materializeBoards = async (input: {
   readonly games: GamesRepository;
@@ -431,6 +656,8 @@ export const materializeBoards = async (input: {
   let skipped = 0;
   let scheduledOddsAgeSeconds: number | null = null;
   let withdrawnDropped = 0;
+  const withdrawnByReason: Partial<Record<WithdrawnDropReason, number>> = {};
+  const skippedBoards: { board: string; reason: BoardSkipReason }[] = [];
   const pricedBySport: Record<string, { upcoming: number; priced: number }> =
     {};
   const scheduleCache = new Map<string, readonly ScheduleListing[] | null>();
@@ -443,20 +670,29 @@ export const materializeBoards = async (input: {
       );
     return scheduleCache.get(sportKey) ?? null;
   };
-  const splitEvidence = new Map<string, boolean>();
-  const hasSplitEvidence = async (canonicalEventId: string) => {
+  const splitEvidence = new Map<string, string | null>();
+  const splitWitnessAt = async (canonicalEventId: string) => {
     if (!splitEvidence.has(canonicalEventId))
       splitEvidence.set(
         canonicalEventId,
         await input.splits
           .listCurrent(canonicalEventId)
-          .then((observations) => observations.length > 0)
-          .catch(() => true),
+          .then((observations) =>
+            observations.reduce<string | null>(
+              (newest, observation) =>
+                newest === null || observation.providerTimestamp > newest
+                  ? observation.providerTimestamp
+                  : newest,
+              null,
+            ),
+          )
+          .catch(() => null),
       );
-    return splitEvidence.get(canonicalEventId)!;
+    return splitEvidence.get(canonicalEventId) ?? null;
   };
   for (const key of materializationTargets(input.now)) {
-    const rawPage = await input.games.list(
+    const collected = await collectBoard(
+      input.games,
       {
         sportKey: key.sportKey,
         leagueKey: key.leagueKey,
@@ -465,17 +701,39 @@ export const materializeBoards = async (input: {
       },
       key.limit,
     );
+    if (collected.state !== "complete") {
+      skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason:
+          collected.state === "invalid"
+            ? "pagination-invalid"
+            : "repository-read-failed",
+      });
+      continue;
+    }
+    const rawPage = collected.page;
     const page = (await withoutWithdrawnListings(rawPage, {
       schedule: await scheduleFor(key.sportKey),
       now: input.now,
       // Verified against the live feed: the provider publishes splits for
       // every real MLB game and for no soccer game.
       splitsExpected: key.sportKey === "mlb",
-      hasSplitEvidence,
+      splitWitnessAt,
+      onDrop: (reason) => {
+        withdrawnByReason[reason] = (withdrawnByReason[reason] ?? 0) + 1;
+      },
     })) as typeof rawPage;
     withdrawnDropped += rawPage.items.length - page.items.length;
-    if (page.nextCursor !== null || page.projectionState !== "ready") {
+    if (page.items.length > key.limit || page.projectionState !== "ready") {
       skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason:
+          page.items.length > key.limit
+            ? "needs-cursor"
+            : "projection-not-ready",
+      });
       continue;
     }
     if (key.route === "games" && key.status === "scheduled") {
@@ -516,23 +774,57 @@ export const materializeBoards = async (input: {
         (game) => game.odds.state === "available",
       ).length;
     }
-    const body = JSON.stringify(
-      key.route === "splits" ? await attachSplits(page, input.splits) : page,
-    );
-    if (body.length > BOARD_BODY_LIMIT_BYTES) {
+    let bodyPage: GamesPage | Awaited<ReturnType<typeof attachSplits>> = page;
+    if (key.route === "splits") {
+      try {
+        bodyPage = await attachSplits(page, input.splits);
+      } catch {
+        skipped += 1;
+        skippedBoards.push({
+          board: boardPartition(key),
+          reason: "split-enrichment-failed",
+        });
+        continue;
+      }
+    }
+    let body: string;
+    try {
+      body = JSON.stringify(bodyPage);
+    } catch {
       skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason: "serialization-failed",
+      });
       continue;
     }
-    await input.put({
-      pk: boardPartition(key),
-      sk: "CURRENT",
-      value: {
-        schemaVersion: 1,
-        generatedAt: input.now.toISOString(),
-        body,
-        counts: boardCounts(page),
-      },
-    });
+    if (new TextEncoder().encode(body).byteLength > BOARD_BODY_LIMIT_BYTES) {
+      skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason: "body-too-big",
+      });
+      continue;
+    }
+    try {
+      await input.put({
+        pk: boardPartition(key),
+        sk: "CURRENT",
+        value: {
+          schemaVersion: 1,
+          generatedAt: input.now.toISOString(),
+          body,
+          counts: boardCounts(page),
+        },
+      });
+    } catch {
+      skipped += 1;
+      skippedBoards.push({
+        board: boardPartition(key),
+        reason: "store-failed",
+      });
+      continue;
+    }
     stored += 1;
   }
   return {
@@ -540,6 +832,8 @@ export const materializeBoards = async (input: {
     skipped,
     scheduledOddsAgeSeconds,
     withdrawnDropped,
+    withdrawnByReason,
+    skippedBoards,
     pricedBySport,
   };
 };
