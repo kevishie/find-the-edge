@@ -40,7 +40,7 @@ Do not delete, rename, import, empty, or repurpose the legacy stack or its retai
    - CloudFront certificate in `us-east-1`, covering the environment's exact web hostname.
    - Regional API Gateway certificate in `us-east-1`, covering the environment's exact API hostname.
 4. Add ACM validation records to the current authoritative DNS and wait for both certificates to reach `ISSUED`. Do not point application traffic yet.
-5. Deploy `infra/github-actions-deploy-role.yml`. It creates separate OIDC roles for the GitHub `staging` and `production` Environment subjects and does not use static AWS keys or `AdministratorAccess`.
+5. Deploy `infra/github-actions-deploy-role.yml`. It creates separate deployment and authorization-operator OIDC roles for the GitHub `staging` and `production` Environment subjects and does not use static AWS keys or `AdministratorAccess`.
 6. Review the role policy before production. It is service-scoped but retains `Resource: "*"` for CDK resource creation; further resource-level reduction is a security-hardening follow-up where AWS APIs permit predictable ARNs.
 
 ## One-time GitHub preparation
@@ -52,12 +52,15 @@ Create GitHub Environments named `staging` and `production`.
 - A successful quality run on `main` automatically deploys staging. A successful quality run on `production` automatically deploys production. No additional GitHub Environment reviewer gate is required for this two-engineer repository.
 - Configure these variables separately in each Environment:
   - `AWS_DEPLOY_ROLE_ARN`
+  - `AUTHORIZATION_OPERATOR_ROLE_ARN`
   - `WEB_CERTIFICATE_ARN`
   - `API_CERTIFICATE_ARN`
   - `EVENT_CURSOR_SECRET_ARN`
 - Configure `SHARP_API_KEY` as an Environment secret. Never use one environment's secret or cursor ARN in the other.
 
 Protect both `main` and `production`: require pull requests and the Quality gates checks, disable force pushes and branch deletion, and dismiss stale approvals when the head changes. Repository settings are external control-plane state and must be verified in GitHub after configuration.
+
+Server-owned elevated roles use the separate least-privilege operator role and the protected manual workflow documented in `docs/runbooks/identity-authorization.md`. Never substitute the deployment role for production role provisioning.
 
 ## Credential-free verification
 

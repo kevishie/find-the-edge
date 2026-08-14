@@ -394,7 +394,7 @@ export interface GamesClient {
     }[]
   >;
   getExperiment?(id: string, signal: AbortSignal): Promise<unknown>;
-  canManageExperiments?(): Promise<boolean>;
+  canManageExperiments?(signal: AbortSignal): Promise<boolean>;
   manageExperiment?(
     id: string,
     action: "approve" | "promote" | "rollback",
@@ -417,7 +417,7 @@ export interface GamesClient {
     retrospectiveId: string,
     signal: AbortSignal,
   ): Promise<readonly RetrospectiveDto[]>;
-  canReviewRetrospectives?(): Promise<boolean>;
+  canReviewRetrospectives?(signal: AbortSignal): Promise<boolean>;
   reviewRetrospective?(
     version: RetrospectiveDto,
     input: {
@@ -3232,63 +3232,32 @@ function bootstrapFailure(failure: RuntimeConfigError): GamesClientError {
   return new GamesClientError("configuration", failure.message);
 }
 
-const reviewerSession = async (providerKey: string | undefined) => {
-  if (!providerKey) return null;
-  const provider = (globalThis as Record<string, unknown>)[providerKey];
-  if (!plain(provider) || typeof provider["getAccessToken"] !== "function")
-    return null;
-  const token = await (provider["getAccessToken"] as () => Promise<unknown>)();
-  if (typeof token !== "string" || token.length < 10 || token.length > 16_384)
-    return null;
-  try {
-    const payload = JSON.parse(
-      atob(token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/")),
-    ) as unknown;
-    if (!plain(payload)) return null;
-    const scopes =
-      typeof payload["scope"] === "string" ? payload["scope"].split(" ") : [];
-    const groups = Array.isArray(payload["cognito:groups"])
-      ? payload["cognito:groups"].filter(
-          (item): item is string => typeof item === "string",
-        )
-      : [];
-    return scopes.includes("events/retrospectives:approve") &&
-      groups.includes("fte-retrospective-reviewers")
-      ? { token }
-      : null;
-  } catch {
-    return null;
-  }
-};
-const promoterSession = async (
+const legacyElevatedSession = async (
   providerKey: string | undefined,
-): Promise<{ token: string } | null> => {
+  signal: AbortSignal,
+) => {
   if (!providerKey) return null;
   const provider = (globalThis as Record<string, unknown>)[providerKey];
   if (!plain(provider) || typeof provider["getAccessToken"] !== "function")
     return null;
-  const token = await (provider["getAccessToken"] as () => Promise<unknown>)();
-  if (typeof token !== "string" || token.length < 10 || token.length > 16_384)
-    return null;
+  let token: unknown;
   try {
-    const payload = JSON.parse(
-      atob(token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/")),
-    ) as unknown;
-    if (!plain(payload)) return null;
-    const scopes =
-      typeof payload["scope"] === "string" ? payload["scope"].split(" ") : [];
-    const groups = Array.isArray(payload["cognito:groups"])
-      ? payload["cognito:groups"].filter(
-          (item): item is string => typeof item === "string",
-        )
-      : [];
-    return scopes.includes("events/strategies:promote") &&
-      groups.includes("fte-strategy-promoters")
-      ? { token }
-      : null;
+    token = await awaitWithSignal(
+      (provider["getAccessToken"] as () => Promise<unknown>)(),
+      signal,
+    );
   } catch {
+    if (signal.aborted) throw abortReason(signal);
     return null;
   }
+  if (
+    typeof token !== "string" ||
+    token.length < 10 ||
+    token.length > 16_384 ||
+    !/^[A-Za-z0-9._~+/-]+=*$/u.test(token)
+  )
+    return null;
+  return { token };
 };
 
 const SCOUTING_SCOPES = [
@@ -3774,13 +3743,83 @@ export function createGamesClient(
           clientId: bootstrap.value.config.cognitoClientId,
         }
       : null;
-  const productFetcher = ownedProductFetcher(
-    fetcher,
-    ownedSession ?? {
-      authorize: () => Promise.resolve(null),
-      refuse: () => undefined,
-    },
-  );
+  const ownedSessionTransport = ownedSession ?? {
+    authorize: () => Promise.resolve(null),
+    refuse: () => undefined,
+  };
+  const productFetcher = ownedProductFetcher(fetcher, ownedSessionTransport);
+  const loadOwnedSessionCapabilities = async (
+    signal: AbortSignal,
+  ): Promise<{
+    readonly projection: OwnedSessionCapabilitiesDto;
+    readonly authorization: OwnedSessionAuthorization;
+  }> => {
+    const { response, authorization } = await ownedProductFetch(
+      fetcher,
+      ownedSessionTransport,
+      `${bootstrap.value.config.apiBase}/auth/session/capabilities`,
+      {
+        method: "GET",
+        credentials: "omit",
+        cache: "no-store",
+        signal,
+      },
+    );
+    if (!response.ok)
+      throw new GamesClientError(
+        "request-failed",
+        "Session capabilities are unavailable.",
+      );
+    const payload: unknown = await response.json().catch(() => null);
+    const parsed = parseOwnedSessionCapabilities(
+      payload,
+      authorization.accountId,
+    );
+    const currentAuthorization = await authorizeProductRequest(
+      ownedSessionTransport,
+      signal,
+    );
+    if (signal.aborted) throw abortReason(signal);
+    if (
+      !currentAuthorization ||
+      !isSessionToken(currentAuthorization.token) ||
+      !isAccountId(currentAuthorization.accountId) ||
+      currentAuthorization.accountId !== authorization.accountId
+    )
+      throw new GamesClientError(
+        "authentication",
+        "The active account changed while capabilities were loading.",
+      );
+    return { projection: parsed, authorization: currentAuthorization };
+  };
+  const resolveOwnedSessionCapability = async (
+    capability: OwnedSessionCapability,
+    signal: AbortSignal,
+  ) => {
+    const resolution = await loadOwnedSessionCapabilities(signal);
+    return {
+      allowed: resolution.projection.capabilities.includes(capability),
+      authorization: resolution.authorization,
+    };
+  };
+  const assertOwnedSessionUnchanged = async (
+    expected: OwnedSessionAuthorization,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const current = await authorizeProductRequest(
+      ownedSessionTransport,
+      signal,
+    );
+    if (
+      current === null ||
+      current.accountId !== expected.accountId ||
+      current.token !== expected.token
+    )
+      throw new GamesClientError(
+        "authentication",
+        "The active session changed while elevated access was being checked.",
+      );
+  };
   return {
     ok: true,
     value: {
@@ -4035,47 +4074,7 @@ export function createGamesClient(
         });
       },
       async getSessionCapabilities(signal) {
-        const session = ownedSession ?? {
-          authorize: () => Promise.resolve(null),
-          refuse: () => undefined,
-        };
-        const { response, authorization } = await ownedProductFetch(
-          fetcher,
-          session,
-          `${bootstrap.value.config.apiBase}/auth/session/capabilities`,
-          {
-            method: "GET",
-            credentials: "omit",
-            cache: "no-store",
-            signal,
-          },
-        );
-        if (!response.ok)
-          throw new GamesClientError(
-            "request-failed",
-            "Session capabilities are unavailable.",
-          );
-        const payload: unknown = await response.json().catch(() => null);
-        const parsed = parseOwnedSessionCapabilities(
-          payload,
-          authorization.accountId,
-        );
-        const currentAuthorization = await authorizeProductRequest(
-          session,
-          signal,
-        );
-        if (signal.aborted) throw abortReason(signal);
-        if (
-          !currentAuthorization ||
-          !isSessionToken(currentAuthorization.token) ||
-          !isAccountId(currentAuthorization.accountId) ||
-          currentAuthorization.accountId !== authorization.accountId
-        )
-          throw new GamesClientError(
-            "authentication",
-            "The active account changed while capabilities were loading.",
-          );
-        return parsed;
+        return (await loadOwnedSessionCapabilities(signal)).projection;
       },
       async entitlement(token, signal) {
         return authRequest({
@@ -4364,21 +4363,35 @@ export function createGamesClient(
           );
         return body;
       },
-      async canManageExperiments() {
+      async canManageExperiments(signal) {
         return (
-          (await promoterSession(bootstrap.value.config.tokenProviderKey)) !==
-          null
-        );
+          await resolveOwnedSessionCapability(
+            "events/strategies:promote",
+            signal,
+          )
+        ).allowed;
       },
       async manageExperiment(id, action, body, signal) {
-        const session = await promoterSession(
+        const authority = await resolveOwnedSessionCapability(
+          "events/strategies:promote",
+          signal,
+        );
+        if (!authority.allowed)
+          throw new GamesClientError(
+            "forbidden",
+            "Strategy promoter access is required.",
+          );
+        const session = await legacyElevatedSession(
           bootstrap.value.config.tokenProviderKey,
+          signal,
         );
         if (!session)
           throw new GamesClientError(
             "forbidden",
             "A strategy promoter session is required.",
           );
+        if (signal.aborted) throw abortReason(signal);
+        await assertOwnedSessionUnchanged(authority.authorization, signal);
         const response = await fetcher(
           `${bootstrap.value.config.apiBase}/strategy-experiments/${encodeURIComponent(id)}/${action}`,
           {
@@ -4941,21 +4954,35 @@ export function createGamesClient(
           "The version history response was invalid.",
         );
       },
-      async canReviewRetrospectives() {
+      async canReviewRetrospectives(signal) {
         return (
-          (await reviewerSession(bootstrap.value.config.tokenProviderKey)) !==
-          null
-        );
+          await resolveOwnedSessionCapability(
+            "events/retrospectives:approve",
+            signal,
+          )
+        ).allowed;
       },
       async reviewRetrospective(version, input, signal) {
-        const session = await reviewerSession(
+        const authority = await resolveOwnedSessionCapability(
+          "events/retrospectives:approve",
+          signal,
+        );
+        if (!authority.allowed)
+          throw new GamesClientError(
+            "forbidden",
+            "Reviewer access is required.",
+          );
+        const session = await legacyElevatedSession(
           bootstrap.value.config.tokenProviderKey,
+          signal,
         );
         if (!session)
           throw new GamesClientError(
             "forbidden",
             "Reviewer access is required.",
           );
+        if (signal.aborted) throw abortReason(signal);
+        await assertOwnedSessionUnchanged(authority.authorization, signal);
         let response: Response;
         try {
           response = await fetcher(

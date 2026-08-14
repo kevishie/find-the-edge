@@ -551,7 +551,7 @@ export interface UiGamesClient {
     retrospectiveId: string,
     signal: AbortSignal,
   ): Promise<readonly RetrospectiveDto[]>;
-  canReviewRetrospectives?(): Promise<boolean>;
+  canReviewRetrospectives?(signal: AbortSignal): Promise<boolean>;
   reviewRetrospective?(
     version: RetrospectiveDto,
     input: {
@@ -565,7 +565,7 @@ export interface UiGamesClient {
     signal: AbortSignal,
   ): Promise<readonly StrategyExperimentDto[]>;
   getExperiment?(id: string, signal: AbortSignal): Promise<unknown>;
-  canManageExperiments?(): Promise<boolean>;
+  canManageExperiments?(signal: AbortSignal): Promise<boolean>;
   manageExperiment?(
     id: string,
     action: "approve" | "promote" | "rollback",

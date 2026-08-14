@@ -225,11 +225,14 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-The template creates separate service-scoped staging and production roles. Its
-OIDC trust is restricted to the immutable GitHub owner/repository IDs and exact
+The template creates separate service-scoped staging and production deployment
+roles plus least-privilege identity-authorization operator roles. Its OIDC
+trust is restricted to the immutable GitHub owner/repository IDs and exact
 GitHub Environment subjects for `kevishie/find-the-edge`; no static AWS access
-keys are stored in GitHub. Protect `main` and `production` so only reviewed
-commits can reach their respective deployment environments.
+keys are stored in GitHub. Configure each Environment's
+`AUTHORIZATION_OPERATOR_ROLE_ARN` from the matching stack output and follow
+`docs/runbooks/identity-authorization.md`. Protect `main` and `production` so
+only reviewed commits can reach their respective environments.
 
 ## Rollback
 

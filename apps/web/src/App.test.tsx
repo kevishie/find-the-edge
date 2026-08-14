@@ -48,6 +48,15 @@ const withSession = (store: ReturnType<typeof signedIn>) => {
   return store;
 };
 const activeSession = () => withSession(signedIn());
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+};
 
 const entitlement = (hasAccess: boolean) => ({
   schemaVersion: "billing-entitlement-v1" as const,
@@ -524,6 +533,43 @@ const retrospective: RetrospectiveDto = {
   contentDigest: hex("4"),
 };
 
+const strategyExperiment = {
+  experimentId: `strategy-experiment:${hex("5")}`,
+  state: "approved",
+  createdAt: "2026-08-04T12:00:00.000Z",
+  baseline: {
+    strategyId: "find-the-edge",
+    version: "1.0.0",
+    digest: hex("6"),
+  },
+  challenger: {
+    strategyId: "find-the-edge",
+    version: "1.1.0",
+    digest: hex("7"),
+  },
+  gates: [],
+  failureReasons: [],
+  stateVersion: 1,
+  train: {
+    startsAt: "2026-05-01T00:00:00.000Z",
+    endsAt: "2026-05-31T23:59:59.000Z",
+    digest: hex("8"),
+  },
+  tune: {
+    startsAt: "2026-06-01T00:00:00.000Z",
+    endsAt: "2026-06-30T23:59:59.000Z",
+    digest: hex("9"),
+  },
+  holdout: {
+    startsAt: "2026-07-01T00:00:00.000Z",
+    endsAt: "2026-07-31T23:59:59.000Z",
+    digest: hex("a"),
+  },
+  contentDigest: hex("b"),
+  audit: [],
+  active: null,
+};
+
 it("renders retrospective evidence layers and honest read-only controls", async () => {
   const client = {
     ok: true as const,
@@ -604,6 +650,240 @@ it("requires an explicit confirmed reviewer action and refreshes the audit state
     }),
     expect.any(AbortSignal),
   );
+});
+
+it("clears retrospective authority and ignores a stale capability result after an account switch", async () => {
+  const first = deferred<boolean>();
+  const capabilitySignals: AbortSignal[] = [];
+  const canReviewRetrospectives = vi
+    .fn<(signal: AbortSignal) => Promise<boolean>>()
+    .mockImplementationOnce((signal) => {
+      capabilitySignals.push(signal);
+      return first.promise;
+    })
+    .mockImplementationOnce((signal) => {
+      capabilitySignals.push(signal);
+      return Promise.resolve(false);
+    });
+  const store = activeSession();
+  render(
+    <App
+      sessionStore={store}
+      initialPath={`/retrospectives/${retrospective.versionId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getRetrospective: vi.fn(() => Promise.resolve(retrospective)),
+          canReviewRetrospectives,
+        },
+      }}
+    />,
+  );
+  await screen.findByText("What was knowable then");
+  await waitFor(() => expect(canReviewRetrospectives).toHaveBeenCalledOnce());
+  expect(
+    screen.queryByRole("button", { name: "Save human review" }),
+  ).not.toBeInTheDocument();
+
+  act(() => {
+    store.signIn({
+      token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+      accountId: `account:${"d".repeat(64)}`,
+    });
+  });
+  await waitFor(() => expect(canReviewRetrospectives).toHaveBeenCalledTimes(2));
+  expect(capabilitySignals[0]?.aborted).toBe(true);
+
+  await act(async () => {
+    first.resolve(true);
+    await first.promise;
+  });
+  expect(
+    screen.queryByRole("button", { name: "Save human review" }),
+  ).not.toBeInTheDocument();
+});
+
+it("refreshes strategy authority for a replacement token and ignores the stale result", async () => {
+  const first = deferred<boolean>();
+  const capabilitySignals: AbortSignal[] = [];
+  const canManageExperiments = vi
+    .fn<(signal: AbortSignal) => Promise<boolean>>()
+    .mockImplementationOnce((signal) => {
+      capabilitySignals.push(signal);
+      return first.promise;
+    })
+    .mockImplementationOnce((signal) => {
+      capabilitySignals.push(signal);
+      return Promise.resolve(true);
+    });
+  const store = activeSession();
+  render(
+    <App
+      sessionStore={store}
+      initialPath={`/experiments/${strategyExperiment.experimentId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getExperiment: vi.fn(() => Promise.resolve(strategyExperiment)),
+          canManageExperiments,
+        },
+      }}
+    />,
+  );
+  await screen.findByText("Human promotion control");
+  await waitFor(() => expect(canManageExperiments).toHaveBeenCalledOnce());
+  expect(screen.queryByRole("button", { name: "promote" })).toBeNull();
+
+  act(() => {
+    store.signIn({
+      token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+      accountId: `account:${"b".repeat(64)}`,
+    });
+  });
+  await waitFor(() => expect(canManageExperiments).toHaveBeenCalledTimes(2));
+  expect(capabilitySignals[0]?.aborted).toBe(true);
+  expect(await screen.findByRole("button", { name: "promote" })).toBeVisible();
+
+  await act(async () => {
+    first.resolve(false);
+    await first.promise;
+  });
+  expect(screen.getByRole("button", { name: "promote" })).toBeVisible();
+});
+
+it("keeps strategy controls read-only when capability resolution rejects", async () => {
+  const canManageExperiments = vi.fn(() =>
+    Promise.reject(new Error("capabilities unavailable")),
+  );
+  render(
+    <App
+      sessionStore={activeSession()}
+      initialPath={`/experiments/${strategyExperiment.experimentId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getExperiment: vi.fn(() => Promise.resolve(strategyExperiment)),
+          canManageExperiments,
+        },
+      }}
+    />,
+  );
+
+  await screen.findByText("Human promotion control");
+  await waitFor(() => expect(canManageExperiments).toHaveBeenCalledOnce());
+  expect(
+    screen.getByText(/Read-only\. Strategy promoter access is unavailable/),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "approve" })).toBeNull();
+});
+
+it("aborts a pending retrospective capability check on unmount", async () => {
+  const pending = deferred<boolean>();
+  const capabilitySignals: AbortSignal[] = [];
+  const canReviewRetrospectives = vi.fn((signal: AbortSignal) => {
+    capabilitySignals.push(signal);
+    return pending.promise;
+  });
+  const rendered = render(
+    <App
+      sessionStore={activeSession()}
+      initialPath={`/retrospectives/${retrospective.versionId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getRetrospective: vi.fn(() => Promise.resolve(retrospective)),
+          canReviewRetrospectives,
+        },
+      }}
+    />,
+  );
+  await waitFor(() => expect(canReviewRetrospectives).toHaveBeenCalledOnce());
+
+  rendered.unmount();
+  expect(capabilitySignals[0]?.aborted).toBe(true);
+  await act(async () => {
+    pending.resolve(true);
+    await pending.promise;
+  });
+});
+
+it("aborts a pending strategy mutation on unmount", async () => {
+  const mutation = deferred<unknown>();
+  const manageExperiment = vi.fn<NonNullable<GamesClient["manageExperiment"]>>(
+    () => mutation.promise,
+  );
+  const rendered = render(
+    <App
+      sessionStore={activeSession()}
+      initialPath={`/experiments/${strategyExperiment.experimentId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getExperiment: vi.fn(() => Promise.resolve(strategyExperiment)),
+          canManageExperiments: vi.fn(() => Promise.resolve(true)),
+          manageExperiment,
+        },
+      }}
+    />,
+  );
+  await screen.findByRole("button", { name: "approve" });
+  fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), {
+    target: { value: "Evidence checked." },
+  });
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "approve" }));
+  await waitFor(() => expect(manageExperiment).toHaveBeenCalledOnce());
+  const signal = manageExperiment.mock.calls[0]?.[3];
+
+  rendered.unmount();
+  expect(signal?.aborted).toBe(true);
+  await act(async () => {
+    mutation.resolve({});
+    await mutation.promise;
+  });
+});
+
+it("aborts a pending retrospective mutation on unmount", async () => {
+  const mutation = deferred<RetrospectiveDto>();
+  const reviewRetrospective = vi.fn<
+    NonNullable<GamesClient["reviewRetrospective"]>
+  >(() => mutation.promise);
+  const rendered = render(
+    <App
+      sessionStore={activeSession()}
+      initialPath={`/retrospectives/${retrospective.versionId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getRetrospective: vi.fn(() => Promise.resolve(retrospective)),
+          canReviewRetrospectives: vi.fn(() => Promise.resolve(true)),
+          reviewRetrospective,
+        },
+      }}
+    />,
+  );
+  const save = await screen.findByRole("button", {
+    name: "Save human review",
+  });
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(save);
+  await waitFor(() => expect(reviewRetrospective).toHaveBeenCalledOnce());
+  const signal = reviewRetrospective.mock.calls[0]?.[2];
+
+  rendered.unmount();
+  expect(signal?.aborted).toBe(true);
+  await act(async () => {
+    mutation.resolve(retrospective);
+    await mutation.promise;
+  });
 });
 
 it("shows an honest empty performance state before a frozen report exists", async () => {
