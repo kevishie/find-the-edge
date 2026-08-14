@@ -551,7 +551,7 @@ const collectContributorInsights = (table, options) => {
         "--period",
         String(options.period),
         "--max-contributor-count",
-        "100",
+        "25",
         "--metrics",
         "Sum",
         "--order-by",
@@ -665,11 +665,28 @@ export const collectAwsEvidence = ({
 
 const parseArguments = (argv) => {
   const values = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const name = argv[index];
-    if (!name.startsWith("--") || !argv[index + 1]?.length)
+  const args = argv[0] === "--" ? argv.slice(1) : argv;
+  const allowedNames = new Set([
+    "stage",
+    "from",
+    "to",
+    "output",
+    "region",
+    "fixture",
+  ]);
+  for (let index = 0; index < args.length; index += 1) {
+    const name = args[index];
+    const key = name.startsWith("--") ? name.slice(2) : "";
+    const value = args[index + 1];
+    if (
+      name === "--" ||
+      !allowedNames.has(key) ||
+      values[key] !== undefined ||
+      !value?.length ||
+      value.startsWith("--")
+    )
       throw new Error(`invalid-argument:${name}`);
-    values[name.slice(2)] = argv[index + 1];
+    values[key] = value;
     index += 1;
   }
   for (const name of ["stage", "from", "to", "output"])

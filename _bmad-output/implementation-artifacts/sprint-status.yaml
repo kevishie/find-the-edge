@@ -1,6 +1,6 @@
 project: FIND THE EDGE
 created: "2026-07-15"
-updated: "2026-08-13"
+updated: "2026-08-14"
 source: "_bmad-output/planning-artifacts/epics-and-stories.md"
 statusValues:
   - backlog
@@ -941,7 +941,7 @@ stories:
     status: in-progress
     dependencies: []
     validationCommands: [pnpm check]
-    blockerReason:
+    blockerReason: awaiting-first-closed-instrumented-window-and-settled-cost-explorer
     risk: Low
     approvalRequiredBeforeMerge: false
   - id: FTE-076
