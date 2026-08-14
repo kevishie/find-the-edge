@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   buildBaseline,
+  runCli,
   validateWindow,
 } from "./ingestion-cost-attribution.mjs";
 
@@ -208,6 +209,102 @@ test("CLI exits nonzero and writes nothing when a required metric is empty", asy
   assert.equal(result.status, 1);
   assert.match(result.stderr, /required-series-empty:custom/);
   await assert.rejects(readFile(outputPath), { code: "ENOENT" });
+});
+
+test("package script accepts the documented pnpm argument delimiter", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "fte-cost-attribution-"));
+  const fixturePath = path.join(directory, "fixture.json");
+  const outputPath = path.join(directory, "baseline.json");
+  await writeFile(fixturePath, JSON.stringify(fixture()));
+
+  const result = spawnSync(
+    "pnpm",
+    [
+      "ingestion-cost:baseline",
+      "--",
+      "--stage",
+      "prod",
+      "--from",
+      "2026-08-01",
+      "--to",
+      "2026-08-08",
+      "--region",
+      "us-east-1",
+      "--output",
+      outputPath,
+      "--fixture",
+      fixturePath,
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(await readFile(outputPath, "utf8")).stage, "prod");
+});
+
+test("CLI rejects misplaced or repeated standalone argument delimiters", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "fte-cost-attribution-"));
+  const outputPath = path.join(directory, "baseline.json");
+  const required = [
+    "--stage",
+    "prod",
+    "--from",
+    "2026-08-01",
+    "--to",
+    "2026-08-08",
+    "--output",
+    "baseline.json",
+  ];
+
+  await assert.rejects(
+    runCli([...required.slice(0, 2), "--", ...required.slice(2)]),
+    /invalid-argument:--/,
+  );
+  await assert.rejects(
+    runCli(["--", "--", ...required]),
+    /invalid-argument:--/,
+  );
+
+  const processResult = spawnSync(
+    process.execPath,
+    [
+      path.resolve("scripts/ingestion-cost-attribution.mjs"),
+      "--",
+      "--",
+      ...required.slice(0, -1),
+      outputPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(processResult.status, 1);
+  assert.match(processResult.stderr, /invalid-argument:--/);
+  await assert.rejects(readFile(outputPath), { code: "ENOENT" });
+});
+
+test("CLI rejects malformed, unknown, or duplicate arguments", async () => {
+  await assert.rejects(runCli(["stage", "prod"]), /invalid-argument:stage/);
+  await assert.rejects(runCli(["--stage"]), /invalid-argument:--stage/);
+  await assert.rejects(
+    runCli(["--stage", "--from", "2026-08-01"]),
+    /invalid-argument:--stage/,
+  );
+  await assert.rejects(
+    runCli(["--regoin", "us-east-1"]),
+    /invalid-argument:--regoin/,
+  );
+  await assert.rejects(
+    runCli(["--stage", "prod", "--stage", "staging"]),
+    /invalid-argument:--stage/,
+  );
+});
+
+test("Contributor Insights requests stay within the AWS report limit", async () => {
+  const source = await readFile(
+    path.resolve("scripts/ingestion-cost-attribution.mjs"),
+    "utf8",
+  );
+  assert.match(source, /"--max-contributor-count",\s+"25"/);
+  assert.doesNotMatch(source, /"--max-contributor-count",\s+"100"/);
 });
 
 test("rejects a dollar model outside the settled-bill tolerance", () => {
