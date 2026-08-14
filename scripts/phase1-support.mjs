@@ -651,22 +651,10 @@ export function validateTemplate(template, config) {
   )
     throw new Error("HTTP API CORS configurator IAM must be API-scoped");
   const authorizers = entriesOfType(template, "AWS::ApiGatewayV2::Authorizer");
-  if (
-    authorizers.length !== 1 ||
-    !isRef(authorizers[0][1].Properties?.ApiId, apiId) ||
-    authorizers[0][1].Properties?.AuthorizerType !== "JWT" ||
-    !isGetAtt(
-      authorizers[0][1].Properties?.JwtConfiguration?.Issuer,
-      poolId,
-      "ProviderURL",
-    ) ||
-    JSON.stringify(authorizers[0][1].Properties?.JwtConfiguration?.Audience) !==
-      JSON.stringify([{ Ref: clientId }, { Ref: reviewerClients[0][0] }])
-  )
+  if (authorizers.length !== 0)
     throw new Error(
-      "Internal event listing must keep its exact JWT authorizer",
+      "Owned handler authorization requires zero API Gateway authorizers",
     );
-  const [authorizerId] = authorizers[0];
   const integrations = entriesOfType(
     template,
     "AWS::ApiGatewayV2::Integration",
@@ -727,50 +715,6 @@ export function validateTemplate(template, config) {
     ) !== JSON.stringify([...requiredRouteKeys].sort()) ||
     apiRoutes.some(([, value]) => {
       if (value.Properties?.RouteKey === "$default") return true;
-      if (value.Properties?.RouteKey === "GET /events")
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify(["events/events:read"])
-        );
-      if (
-        value.Properties?.RouteKey === "POST /retrospectives/{eventId}/review"
-      )
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify(["events/retrospectives:approve"])
-        );
-      if (
-        ["approve", "promote", "rollback"].some(
-          (action) =>
-            value.Properties?.RouteKey ===
-            `POST /strategy-experiments/{eventId}/${action}`,
-        )
-      )
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify(["events/strategies:promote"])
-        );
-      // Watchlist rows are per-user data keyed by the token subject, so the
-      // routes must sit behind the JWT authorizer and must carry no scope:
-      // a scope here would be authorization theatre plus a re-consent step.
-      if (
-        [
-          "GET /watchlist",
-          "POST /watchlist",
-          "DELETE /watchlist/{eventId}",
-        ].includes(value.Properties?.RouteKey)
-      )
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          value.Properties?.AuthorizationScopes !== undefined
-        );
       // The identity routes are how a caller obtains a token, so they must
       // stay public: an authorizer here would lock everybody out, and a
       // scope would be meaningless on an unauthenticated request.
@@ -803,26 +747,6 @@ export function validateTemplate(template, config) {
           value.Properties?.AuthorizerId !== undefined ||
           value.Properties?.AuthorizationScopes !== undefined
         );
-      const scoutingScope = [
-        "GET /scout-jobs/{jobId}",
-        "GET /scout-jobs/{jobId}/report",
-        "GET /scout-reports/{reportId}/versions",
-        "GET /scout-reports/{reportId}/versions/{versionNumber}",
-      ].includes(value.Properties?.RouteKey)
-        ? "events/scouting:read"
-        : [
-              "POST /events/{eventId}/scout",
-              "POST /scout-jobs/{jobId}/retry",
-            ].includes(value.Properties?.RouteKey)
-          ? "events/scouting:write"
-          : undefined;
-      if (scoutingScope)
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify([scoutingScope])
-        );
       return (
         value.Properties?.AuthorizationType !== "NONE" ||
         value.Properties?.AuthorizerId !== undefined ||
@@ -831,7 +755,7 @@ export function validateTemplate(template, config) {
     })
   )
     throw new Error(
-      "Public reads must remain public while protected event, scouting, review, and promotion routes remain scoped exactly",
+      "Ordinary and elevated owned routes must remain authorizer-free for handler-owned authorization",
     );
   if (
     apiStages.length !== 1 ||

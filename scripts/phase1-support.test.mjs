@@ -564,9 +564,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "POST /retrospectives/{eventId}/review",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/retrospectives:approve"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -602,9 +600,7 @@ function validTemplate() {
             Properties: {
               RouteKey: `POST /strategy-experiments/{eventId}/${action}`,
               ApiId: { Ref: "Api" },
-              AuthorizationType: "JWT",
-              AuthorizerId: { Ref: "Auth" },
-              AuthorizationScopes: ["events/strategies:promote"],
+              AuthorizationType: "NONE",
               Target: {
                 "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
               },
@@ -617,9 +613,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /events",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/events:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -641,9 +635,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "POST /events/{eventId}/scout",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:write"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -654,9 +646,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /scout-jobs/{jobId}",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -667,9 +657,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "POST /scout-jobs/{jobId}/retry",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:write"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -680,9 +668,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /scout-jobs/{jobId}/report",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -693,9 +679,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /scout-reports/{reportId}/versions",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -706,9 +690,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /scout-reports/{reportId}/versions/{versionNumber}",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -752,8 +734,7 @@ function validTemplate() {
             Properties: {
               RouteKey: routeKey,
               ApiId: { Ref: "Api" },
-              AuthorizationType: "JWT",
-              AuthorizerId: { Ref: "Auth" },
+              AuthorizationType: "NONE",
               Target: {
                 "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
               },
@@ -761,17 +742,6 @@ function validTemplate() {
           },
         ]),
       ),
-      Auth: {
-        Type: "AWS::ApiGatewayV2::Authorizer",
-        Properties: {
-          ApiId: { Ref: "Api" },
-          AuthorizerType: "JWT",
-          JwtConfiguration: {
-            Issuer: { "Fn::GetAtt": ["Pool", "ProviderURL"] },
-            Audience: [{ Ref: "Client" }, { Ref: "ReviewerClient" }],
-          },
-        },
-      },
       Integration: {
         Type: "AWS::ApiGatewayV2::Integration",
         Properties: {
@@ -1134,7 +1104,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
   wrongApi.Resources.Route.Properties.ApiId = { Ref: "OtherApi" };
   assert.throws(
     () => validateTemplate(wrongApi, templateConfig),
-    /public|scoped/i,
+    /public|scoped|ordinary|elevated/i,
   );
   for (const routeId of [
     "Route",
@@ -1148,21 +1118,29 @@ test("template validation structurally binds public reads, outputs, and scoped I
     delete missingRoute.Resources[routeId];
     assert.throws(
       () => validateTemplate(missingRoute, templateConfig),
-      /public|scoped/,
+      /public|scoped|ordinary|elevated/i,
     );
   }
-  for (const [routeId, wrongScope] of [
-    ["ScoutCreateRoute", "events/scouting:read"],
-    ["ScoutStatusRoute", "events/scouting:write"],
-    ["ScoutRetryRoute", "events/events:read"],
+  for (const routeId of [
+    "EventsRoute",
+    "ScoutCreateRoute",
+    "ScoutStatusRoute",
+    "ScoutRetryRoute",
+    "ScoutReportByJobRoute",
+    "ScoutReportVersionsRoute",
+    "ScoutReportVersionRoute",
+    "WatchlistListRoute",
+    "WatchlistAddRoute",
+    "WatchlistRemoveRoute",
   ]) {
     const wrongScoutingScope = structuredClone(template);
-    wrongScoutingScope.Resources[routeId].Properties.AuthorizationScopes = [
-      wrongScope,
-    ];
+    wrongScoutingScope.Resources[routeId].Properties.AuthorizationType = "JWT";
+    wrongScoutingScope.Resources[routeId].Properties.AuthorizerId = {
+      Ref: "Auth",
+    };
     assert.throws(
       () => validateTemplate(wrongScoutingScope, templateConfig),
-      /scoped/,
+      /owned routes/i,
     );
   }
   const extraRoute = structuredClone(template);
@@ -1170,7 +1148,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
   extraRoute.Resources.ExtraRoute.Properties.RouteKey = "GET /extra";
   assert.throws(
     () => validateTemplate(extraRoute, templateConfig),
-    /public|scoped/,
+    /public|scoped|ordinary|elevated/i,
   );
   for (const mutate of [
     (copy) => delete copy.Resources.EventsRoute.Properties.Target,
@@ -1200,24 +1178,38 @@ test("template validation structurally binds public reads, outputs, and scoped I
   };
   assert.throws(
     () => validateTemplate(publicRoute, templateConfig),
-    /public|\$default/,
+    /public|\$default|ordinary|elevated/i,
   );
-  for (const change of [
-    { AuthorizerId: { Ref: "OtherAuth" } },
-    { AuthorizationScopes: ["other:read"] },
-    { AuthorizationScopes: undefined },
-  ]) {
-    const weakRoute = structuredClone(template);
-    weakRoute.Resources.OtherRoute = {
-      Type: "AWS::ApiGatewayV2::Route",
-      Properties: {
-        ...weakRoute.Resources.Route.Properties,
-        RouteKey: "GET /events",
-        ...change,
-      },
-    };
-    assert.throws(() => validateTemplate(weakRoute, templateConfig), /public/);
-  }
+  for (const routeId of [
+    "RetrospectiveReviewRoute",
+    "StrategyExperimentapproveRoute",
+    "StrategyExperimentpromoteRoute",
+    "StrategyExperimentrollbackRoute",
+  ])
+    for (const change of [
+      { AuthorizationType: "JWT", AuthorizerId: { Ref: "OtherAuth" } },
+      { AuthorizerId: { Ref: "OtherAuth" } },
+      { AuthorizationScopes: ["other:read"] },
+    ]) {
+      const weakRoute = structuredClone(template);
+      Object.assign(weakRoute.Resources[routeId].Properties, change);
+      assert.throws(
+        () => validateTemplate(weakRoute, templateConfig),
+        /ordinary|elevated/i,
+      );
+    }
+  const staleAuthorizer = structuredClone(template);
+  staleAuthorizer.Resources.StaleAuthorizer = {
+    Type: "AWS::ApiGatewayV2::Authorizer",
+    Properties: {
+      ApiId: { Ref: "Api" },
+      AuthorizerType: "JWT",
+    },
+  };
+  assert.throws(
+    () => validateTemplate(staleAuthorizer, templateConfig),
+    /zero API Gateway authorizers/,
+  );
   const wildcardIam = structuredClone(template);
   wildcardIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Resource =
     "*";
@@ -1361,7 +1353,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
     mutation(authorizedIdentity.Resources.AuthOtpVerifyRoute);
     assert.throws(
       () => validateTemplate(authorizedIdentity, templateConfig),
-      /Public reads must remain public/,
+      /owned routes/i,
     );
   }
   for (const routeId of [
@@ -1375,25 +1367,16 @@ test("template validation structurally binds public reads, outputs, and scoped I
     delete missingIdentityRoute.Resources[routeId];
     assert.throws(
       () => validateTemplate(missingIdentityRoute, templateConfig),
-      /public|scoped/,
+      /public|scoped|ordinary|elevated/i,
     );
   }
-  for (const mutation of [
-    (route) => {
-      route.Properties.AuthorizationType = "NONE";
-      delete route.Properties.AuthorizerId;
-    },
-    (route) => {
-      route.Properties.AuthorizationScopes = ["events/events:read"];
-    },
-  ]) {
-    const unscopedWatchlist = structuredClone(template);
-    mutation(unscopedWatchlist.Resources.WatchlistRemoveRoute);
-    assert.throws(
-      () => validateTemplate(unscopedWatchlist, templateConfig),
-      /Public reads must remain public/,
-    );
-  }
+  const scopedWatchlist = structuredClone(template);
+  scopedWatchlist.Resources.WatchlistRemoveRoute.Properties.AuthorizationScopes =
+    ["events/events:read"];
+  assert.throws(
+    () => validateTemplate(scopedWatchlist, templateConfig),
+    /owned routes/i,
+  );
   const denyOnly = structuredClone(template);
   denyOnly.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Effect =
     "Deny";

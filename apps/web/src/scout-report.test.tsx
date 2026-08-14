@@ -13,6 +13,7 @@ import {
   type ScoutReportVersionsDto,
 } from "./api";
 import { ScoutReport, type ScoutReportClientResult } from "./scout-report";
+import { createSessionStore, SessionContext } from "./session";
 
 const jobId = `scout-job:${"a".repeat(64)}`;
 const reportId = `scout-report:${"b".repeat(64)}`;
@@ -226,6 +227,98 @@ describe("ScoutReport", () => {
     ).toBeVisible();
   });
 
+  it("masks the prior report and version history before replacement loading settles", async () => {
+    const store = createSessionStore({ storage: null, refresh: null });
+    store.signIn({
+      token: `fte1.${"first".padEnd(40, "x")}.${"6".repeat(64)}`,
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+      accountId: `account:${"7".repeat(64)}`,
+    });
+    const prior = dto({ latestVersionNumber: 2 });
+    const replacement = dto({
+      payload: payload({
+        probability: {
+          estimate: 0.41,
+          low: 0.35,
+          high: 0.48,
+          uncertainty: 0.07,
+        },
+      }),
+    });
+    let resolveReplacement!: (report: ScoutReportDto) => void;
+    const replacementPending = new Promise<ScoutReportDto>((resolve) => {
+      resolveReplacement = resolve;
+    });
+    const byJob = vi
+      .fn<NonNullable<GamesClient["getScoutReportByJob"]>>()
+      .mockResolvedValueOnce(prior)
+      .mockImplementationOnce(() => replacementPending);
+    let historySignal: AbortSignal | undefined;
+    let resolveHistory!: (page: ScoutReportVersionsDto) => void;
+    const historyPending = new Promise<ScoutReportVersionsDto>((resolve) => {
+      resolveHistory = resolve;
+    });
+    const listVersions = vi.fn((_reportId: string, signal: AbortSignal) => {
+      historySignal = signal;
+      return historyPending;
+    });
+    render(
+      <SessionContext.Provider value={store}>
+        <ScoutReport
+          jobId={jobId}
+          client={client({
+            getScoutReportByJob: byJob,
+            listScoutReportVersions: listVersions,
+          })}
+        />
+      </SessionContext.Provider>,
+    );
+    await screen.findByRole("heading", { name: "Market Edge" });
+    expect(
+      screen.getByRole("region", { name: "Report versions" }),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show version history" }),
+    );
+    expect(screen.getByText("Loading version history…")).toBeVisible();
+    expect(historySignal?.aborted).toBe(false);
+
+    act(() => {
+      store.signIn({
+        token: `fte1.${"second".padEnd(40, "x")}.${"8".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"9".repeat(64)}`,
+      });
+    });
+
+    expect(screen.getByText("Loading scouting report…")).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Market Edge" })).toBeNull();
+    expect(
+      screen.queryByRole("region", { name: "Report versions" }),
+    ).toBeNull();
+    expect(historySignal?.aborted).toBe(true);
+    expect(byJob).toHaveBeenCalledTimes(2);
+
+    resolveHistory({
+      schemaVersion: "scout-report-versions-v1",
+      reportId,
+      eventId: "event:soccer:2026-epl-fulham-arsenal-001",
+      latestVersionNumber: 2,
+      updatedAt: "2026-08-07T17:00:00.000Z",
+      items: [],
+    });
+    await settle();
+    expect(
+      screen.queryByRole("region", { name: "Report versions" }),
+    ).toBeNull();
+
+    resolveReplacement(replacement);
+    expect((await screen.findAllByText("41.0%")).length).toBeGreaterThan(0);
+    expect(
+      screen.queryByRole("heading", { name: /Report could not|unavailable/i }),
+    ).toBeNull();
+  });
+
   it("renders a PASS verdict with explained abstention codes and no play", async () => {
     render(
       <ScoutReport
@@ -394,6 +487,33 @@ describe("ScoutReport", () => {
         selector: "p.scout-report-change",
       }),
     ).toBeVisible();
+  });
+
+  it("does not show a version-history error for stale cancellation", async () => {
+    render(
+      <ScoutReport
+        jobId={jobId}
+        client={client({
+          getScoutReportByJob: vi.fn(() =>
+            Promise.resolve(dto({ latestVersionNumber: 2 })),
+          ),
+          listScoutReportVersions: vi.fn(() =>
+            Promise.reject(
+              new DOMException("The signed-in account changed.", "AbortError"),
+            ),
+          ),
+        })}
+      />,
+    );
+    await screen.findByRole("heading", { name: "Market Edge" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show version history" }),
+    );
+    await settle();
+    expect(
+      screen.queryByText("The version history could not be loaded."),
+    ).toBeNull();
+    expect(screen.queryByText("Loading version history…")).toBeNull();
   });
 
   it("states a missing report neutrally without offering a retry", async () => {

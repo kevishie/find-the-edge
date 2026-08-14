@@ -108,7 +108,6 @@ import {
 } from "aws-cdk-lib/aws-apigatewayv2";
 import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
-import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import {
   AwsCustomResource,
@@ -1435,16 +1434,6 @@ export class FoundationStack extends Stack {
       "EventsIntegration",
       eventApi,
     );
-    const authorizer = new HttpJwtAuthorizer(
-      "EventsJwt",
-      userPool.userPoolProviderUrl,
-      {
-        jwtAudience: [
-          userPoolClient.userPoolClientId,
-          reviewerClient.userPoolClientId,
-        ],
-      },
-    );
     // Our own identity endpoints, deliberately without an authorizer: these
     // routes are how a caller obtains a token, so requiring one would be
     // circular. They are protected by per-number and per-address rate limits
@@ -1460,9 +1449,8 @@ export class FoundationStack extends Stack {
         methods: [HttpMethod.POST],
         integration,
       });
-    // This projection authenticates the owned fte1 bearer in the handler. It
-    // must remain outside the legacy Cognito authorizer so it can describe the
-    // authority of the session that will eventually replace that authorizer.
+    // This projection authenticates the owned fte1 bearer in the handler and
+    // strongly reads the same server-owned roles used by elevated mutations.
     api.addRoutes({
       path: "/auth/session/capabilities",
       methods: [HttpMethod.GET],
@@ -1493,8 +1481,6 @@ export class FoundationStack extends Stack {
       path: "/events",
       methods: [HttpMethod.GET],
       integration,
-      authorizer,
-      authorizationScopes: ["events/events:read"],
     });
     api.addRoutes({
       path: "/events/{eventId}",
@@ -1505,22 +1491,16 @@ export class FoundationStack extends Stack {
       path: "/events/{eventId}/scout",
       methods: [HttpMethod.POST],
       integration,
-      authorizer,
-      authorizationScopes: ["events/scouting:write"],
     });
     api.addRoutes({
       path: "/scout-jobs/{jobId}",
       methods: [HttpMethod.GET],
       integration,
-      authorizer,
-      authorizationScopes: ["events/scouting:read"],
     });
     api.addRoutes({
       path: "/scout-jobs/{jobId}/retry",
       methods: [HttpMethod.POST],
       integration,
-      authorizer,
-      authorizationScopes: ["events/scouting:write"],
     });
     for (const path of [
       "/scout-jobs/{jobId}/report",
@@ -1531,24 +1511,19 @@ export class FoundationStack extends Stack {
         path,
         methods: [HttpMethod.GET],
         integration,
-        authorizer,
-        authorizationScopes: ["events/scouting:read"],
       });
-    // The watchlist is per-user data, so every route is authenticated. It
-    // carries no dedicated Cognito scope: the requester is the token subject
-    // and the storage partition is derived from it, so a scope would add a
-    // re-consent step without adding an authorization decision.
+    // These account-owned routes authenticate the fte1 bearer in Lambda. The
+    // retained Cognito resources support coordinated rollback, but no API
+    // method uses their JWT authorizer after this cutover.
     api.addRoutes({
       path: "/watchlist",
       methods: [HttpMethod.GET, HttpMethod.POST],
       integration,
-      authorizer,
     });
     api.addRoutes({
       path: "/watchlist/{eventId}",
       methods: [HttpMethod.DELETE],
       integration,
-      authorizer,
     });
     for (const path of [
       "/sports/{sportKey}/opportunities",
@@ -1601,16 +1576,12 @@ export class FoundationStack extends Stack {
       path: "/retrospectives/{eventId}/review",
       methods: [HttpMethod.POST],
       integration,
-      authorizer,
-      authorizationScopes: ["events/retrospectives:approve"],
     });
     for (const action of ["approve", "promote", "rollback"])
       api.addRoutes({
         path: `/strategy-experiments/{eventId}/${action}`,
         methods: [HttpMethod.POST],
         integration,
-        authorizer,
-        authorizationScopes: ["events/strategies:promote"],
       });
     const configureCorsCall = {
       service: "ApiGatewayV2",

@@ -52,6 +52,7 @@ import { LandingPage } from "./landing-page";
 import { PublicLegalPage } from "./public-legal";
 import {
   GamesClientError,
+  isRequestCancellation,
   type OddsHistoryDto,
   type RetrospectiveDto,
   type WatchlistEntryDto,
@@ -658,14 +659,19 @@ export interface WatchlistControl {
 }
 
 type WatchlistState =
-  | { readonly kind: "loading" }
+  | { readonly kind: "loading"; readonly ownerKey: string }
   | {
       readonly kind: "ready";
+      readonly ownerKey: string;
       readonly entries: readonly WatchlistEntryDto[];
       readonly loadedAt: string;
     }
-  | { readonly kind: "signed-out" }
-  | { readonly kind: "unavailable"; readonly reason: string };
+  | { readonly kind: "signed-out"; readonly ownerKey: string }
+  | {
+      readonly kind: "unavailable";
+      readonly ownerKey: string;
+      readonly reason: string;
+    };
 
 const byKickoff = (
   entries: readonly WatchlistEntryDto[],
@@ -693,6 +699,11 @@ const withoutEntry = (
 export function useWatchlistControl(
   client: GamesClientResult,
 ): WatchlistControl {
+  const sessionStore = useContext(SessionContext);
+  const session = useSession(sessionStore);
+  const sessionKey = session
+    ? `${session.accountId}\u0000${session.token}`
+    : "signed-out";
   const listWatchlist = client.ok ? client.value.listWatchlist : undefined;
   const addToWatchlist = client.ok ? client.value.addToWatchlist : undefined;
   const removeFromWatchlist = client.ok
@@ -700,9 +711,10 @@ export function useWatchlistControl(
     : undefined;
   const [state, setState] = useState<WatchlistState>(() =>
     listWatchlist
-      ? { kind: "loading" }
+      ? { kind: "loading", ownerKey: sessionKey }
       : {
           kind: "unavailable",
+          ownerKey: sessionKey,
           reason: "The watchlist is unavailable in this environment.",
         },
   );
@@ -722,29 +734,37 @@ export function useWatchlistControl(
       controller.abort();
       mutations.current = null;
     };
-  }, []);
+  }, [sessionKey]);
 
   useEffect(() => {
     if (!listWatchlist) return;
     const controller = new AbortController();
+    queueMicrotask(() => {
+      if (controller.signal.aborted) return;
+      setState({ kind: "loading", ownerKey: sessionKey });
+      setPending(new Set<string>());
+      setMutationError(null);
+    });
     listWatchlist(controller.signal)
       .then((page) => {
         if (controller.signal.aborted) return;
         setState({
           kind: "ready",
+          ownerKey: sessionKey,
           entries: page.items,
           loadedAt: new Date().toISOString(),
         });
       })
       .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || isRequestCancellation(error)) return;
         const code = error instanceof GamesClientError ? error.code : null;
         if (code === "authentication" || code === "forbidden") {
-          setState({ kind: "signed-out" });
+          setState({ kind: "signed-out", ownerKey: sessionKey });
           return;
         }
         setState({
           kind: "unavailable",
+          ownerKey: sessionKey,
           reason:
             code === "invalid-response"
               ? "The watchlist did not match its published contract, so none of it is shown."
@@ -752,7 +772,7 @@ export function useWatchlistControl(
         });
       });
     return () => controller.abort();
-  }, [generation, listWatchlist]);
+  }, [generation, listWatchlist, sessionKey]);
 
   const markPending = useCallback((eventId: string, active: boolean) => {
     setPending((current) => {
@@ -763,16 +783,25 @@ export function useWatchlistControl(
     });
   }, []);
 
+  const visibleState: WatchlistState = useMemo(
+    () =>
+      !listWatchlist || state.ownerKey === sessionKey
+        ? state
+        : { kind: "loading", ownerKey: sessionKey },
+    [listWatchlist, sessionKey, state],
+  );
+
   const add = useCallback(
     async (eventId: string): Promise<boolean> => {
       const signal = mutations.current?.signal;
-      if (!addToWatchlist || !signal) return false;
+      if (!addToWatchlist || !signal || visibleState.kind !== "ready")
+        return false;
       markPending(eventId, true);
       setMutationError(null);
       try {
         const entry = await addToWatchlist(eventId, signal);
         setState((current) =>
-          current.kind === "ready"
+          current.kind === "ready" && current.ownerKey === sessionKey
             ? {
                 ...current,
                 entries: byKickoff([
@@ -784,7 +813,7 @@ export function useWatchlistControl(
         );
         return true;
       } catch (error: unknown) {
-        if (signal.aborted) return false;
+        if (signal.aborted || isRequestCancellation(error)) return false;
         const code = error instanceof GamesClientError ? error.code : null;
         setMutationError(
           code === "authentication" || code === "forbidden"
@@ -798,24 +827,25 @@ export function useWatchlistControl(
         markPending(eventId, false);
       }
     },
-    [addToWatchlist, markPending],
+    [addToWatchlist, markPending, sessionKey, visibleState.kind],
   );
 
   const remove = useCallback(
     async (eventId: string): Promise<boolean> => {
       const signal = mutations.current?.signal;
-      if (!removeFromWatchlist || !signal) return false;
+      if (!removeFromWatchlist || !signal || visibleState.kind !== "ready")
+        return false;
       // Capture rollback data from the exact render that exposed the Remove
       // button. Mirroring entries through an effect leaves a brief window in
       // which the row is visible but its rollback snapshot is still stale.
       const removed =
-        state.kind === "ready"
-          ? state.entries.find((entry) => entry.eventId === eventId)
+        visibleState.kind === "ready"
+          ? visibleState.entries.find((entry) => entry.eventId === eventId)
           : undefined;
       markPending(eventId, true);
       setMutationError(null);
       setState((current) =>
-        current.kind === "ready"
+        current.kind === "ready" && current.ownerKey === sessionKey
           ? { ...current, entries: withoutEntry(current.entries, eventId) }
           : current,
       );
@@ -823,11 +853,11 @@ export function useWatchlistControl(
         await removeFromWatchlist(eventId, signal);
         return true;
       } catch (error: unknown) {
-        if (signal.aborted) return false;
+        if (signal.aborted || isRequestCancellation(error)) return false;
         // The row goes back exactly where it was; nothing was removed.
         if (removed)
           setState((current) =>
-            current.kind === "ready"
+            current.kind === "ready" && current.ownerKey === sessionKey
               ? {
                   ...current,
                   entries: byKickoff([
@@ -848,35 +878,36 @@ export function useWatchlistControl(
         markPending(eventId, false);
       }
     },
-    [markPending, removeFromWatchlist, state],
+    [markPending, removeFromWatchlist, sessionKey, visibleState],
   );
 
   const watched = useMemo(
     () =>
       new Set(
-        state.kind === "ready"
-          ? state.entries.map((entry) => entry.eventId)
+        visibleState.kind === "ready"
+          ? visibleState.entries.map((entry) => entry.eventId)
           : [],
       ),
-    [state],
+    [visibleState],
   );
 
   const retry = useCallback(() => {
-    setState({ kind: "loading" });
+    setState({ kind: "loading", ownerKey: sessionKey });
     setGeneration((value) => value + 1);
-  }, []);
+  }, [sessionKey]);
 
   return {
     availability:
-      state.kind === "ready"
+      visibleState.kind === "ready"
         ? "ready"
-        : state.kind === "loading"
+        : visibleState.kind === "loading"
           ? "loading"
-          : state.kind,
-    entries: state.kind === "ready" ? state.entries : [],
-    unavailableReason: state.kind === "unavailable" ? state.reason : null,
-    pending,
-    mutationError,
+          : visibleState.kind,
+    entries: visibleState.kind === "ready" ? visibleState.entries : [],
+    unavailableReason:
+      visibleState.kind === "unavailable" ? visibleState.reason : null,
+    pending: state.ownerKey === sessionKey ? pending : new Set<string>(),
+    mutationError: state.ownerKey === sessionKey ? mutationError : null,
     isWatched: (eventId: string) => watched.has(eventId),
     add,
     remove,

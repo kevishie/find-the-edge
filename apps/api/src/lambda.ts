@@ -49,11 +49,11 @@ import { createSnsSmsSender } from "./sms-sender";
 import { loadSecretRing } from "./secrets";
 import { encodeApiResponse } from "./http-compression";
 import {
-  authorizationContextFromGateway,
-  isOwnedSessionAuthorization,
+  authorizationContextFromLambdaRequest,
+  authorizationHeaderFromLambdaHeaders,
+  handlerAuthorizationFields,
   memoizeIdentityAccountLookup,
-  resolveOwnedSessionAuthorization,
-  UNAUTHORIZED_CONTEXT,
+  shouldResolveOwnedLambdaAuthorization,
 } from "./authorization-context";
 import { withEventApiLambdaBoundary } from "./lambda-boundary";
 interface LambdaEvent {
@@ -325,16 +325,15 @@ const handleEvent = async (event: LambdaEvent) => {
   const acceptEncoding = Object.entries(event.headers ?? {}).find(
     ([key]) => key.toLowerCase() === "accept-encoding",
   )?.[1];
-  const authorization = Object.entries(event.headers ?? {}).find(
-    ([key]) => key.toLowerCase() === "authorization",
-  )?.[1];
-  const gatewayAuthorization = authorizationContextFromGateway(
-    event.requestContext?.authorizer?.jwt,
-  );
+  const authorization = authorizationHeaderFromLambdaHeaders(event.headers);
   const capabilitiesRoute = route === "auth-session-capabilities";
-  const ownedSessionAuthorization =
-    (requiresProductAccess(route) || capabilitiesRoute) &&
-    isOwnedSessionAuthorization(authorization);
+  const productRoute = requiresProductAccess(route);
+  const ownedSessionAuthorization = shouldResolveOwnedLambdaAuthorization({
+    ...(event.routeKey ? { routeKey: event.routeKey } : {}),
+    ...(event.headers ? { headers: event.headers } : {}),
+    productRoute,
+    capabilitiesRoute,
+  });
   const includeElevatedAuthorization =
     capabilitiesRoute || ELEVATED_AUTHORIZATION_ROUTES.has(route);
   const stripeSignature = Object.entries(event.headers ?? {}).find(
@@ -365,39 +364,45 @@ const handleEvent = async (event: LambdaEvent) => {
     capabilitiesRoute ||
     billingRoute ||
     // Enforcement needs the ring on every product route, not just the auth
-    // ones. While the flag is off, the secret load stays on the auth path
-    // alone and product routes pay nothing for it.
-    (productAccessEnforced && requiresProductAccess(route)) ||
-    // This is preparation for the authorizer cutover only. API Gateway still
-    // enforces Cognito in deployed stages, but a request that reaches the
-    // adapter with an fte1 credential must be verified here and fail closed.
+    // ones. While the flag is off, only routes already migrated to the owned
+    // bearer pay this verification cost.
+    (productAccessEnforced && productRoute) ||
+    // Every detached owned route verifies fte1 here. Elevated mutations also
+    // request the strongly read server-role projection before handler checks.
     ownedSessionAuthorization
       ? await loadIdentitySecrets(secrets, identitySecretId)
       : undefined;
   // The capabilities route has no gateway authorizer by design. Even if an
   // integration test or future gateway accidentally supplies JWT claims,
   // only a verified owned bearer may populate this response.
-  const requestAuthorization =
-    ownedSessionAuthorization && identity
-      ? ((await resolveOwnedSessionAuthorization({
-          ...(authorization ? { authorization } : {}),
-          signingKeys: identity.signingKeys,
-          identity: identityRepository,
-          ...(includeElevatedAuthorization
-            ? {
-                includeElevatedAuthorization: true,
-                identityAuthorization:
-                  new DynamoIdentityAuthorizationRepository(
-                    documentClient,
-                    tableName,
-                  ),
-              }
-            : {}),
-          now: new Date(),
-        })) ?? UNAUTHORIZED_CONTEXT)
-      : capabilitiesRoute
-        ? UNAUTHORIZED_CONTEXT
-        : gatewayAuthorization;
+  const requestAuthorization = await authorizationContextFromLambdaRequest({
+    ...(event.routeKey ? { routeKey: event.routeKey } : {}),
+    ...(event.headers ? { headers: event.headers } : {}),
+    ...(event.requestContext?.authorizer?.jwt
+      ? { gatewayJwt: event.requestContext.authorizer.jwt }
+      : {}),
+    productRoute,
+    capabilitiesRoute,
+    includeElevatedAuthorization,
+    ...(ownedSessionAuthorization && identity
+      ? {
+          ownedRuntime: {
+            signingKeys: identity.signingKeys,
+            identity: identityRepository,
+            ...(includeElevatedAuthorization
+              ? {
+                  identityAuthorization:
+                    new DynamoIdentityAuthorizationRepository(
+                      documentClient,
+                      tableName,
+                    ),
+                }
+              : {}),
+            now: new Date(),
+          },
+        }
+      : {}),
+  });
   let billingSecrets: BillingSecrets | undefined;
   if (billingRoute && stripeSecretId && webBaseUrl)
     try {
@@ -484,14 +489,7 @@ const handleEvent = async (event: LambdaEvent) => {
       : undefined,
   )({
     route,
-    ...(requestAuthorization.subject
-      ? { subject: requestAuthorization.subject }
-      : {}),
-    ...(requestAuthorization.scopes
-      ? { scopes: requestAuthorization.scopes }
-      : {}),
-    reviewerAuthorized: requestAuthorization.reviewerAuthorized,
-    strategyPromoterAuthorized: requestAuthorization.strategyPromoterAuthorized,
+    ...handlerAuthorizationFields(requestAuthorization),
     ...(eventId ? { eventId } : {}),
     ...(eventIdAlternatives.length > 0 ? { eventIdAlternatives } : {}),
     ...(sportKey ? { sportKey } : {}),

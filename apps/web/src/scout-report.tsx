@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ScoutingReportAssertion,
   ScoutingReportCandidate,
@@ -10,11 +10,13 @@ import type {
 
 import {
   GamesClientError,
+  isRequestCancellation,
   isScoutingJobId,
   type GamesClient,
   type ScoutReportDto,
   type ScoutReportVersionSummaryDto,
 } from "./api";
+import { useSession, useSessionStore } from "./session";
 
 export type ScoutReportClientResult =
   | {
@@ -296,11 +298,13 @@ function EmptySection({ title }: { readonly title: string }) {
 
 function VersionSelector({
   report,
+  ownerKey,
   requestedVersion,
   client,
   onSelectVersion,
 }: {
   readonly report: ScoutReportDto;
+  readonly ownerKey: string;
   readonly requestedVersion: number | undefined;
   readonly client: ScoutReportClientResult;
   readonly onSelectVersion: ((versionNumber: number) => void) | undefined;
@@ -311,10 +315,19 @@ function VersionSelector({
   >(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const controllerRef = useRef<AbortController | null>(null);
   const list =
     client.ok && client.value.listScoutReportVersions
       ? client.value.listScoutReportVersions
       : null;
+
+  useEffect(
+    () => () => {
+      controllerRef.current?.abort();
+      controllerRef.current = null;
+    },
+    [ownerKey, report.reportId],
+  );
 
   const load = useCallback(() => {
     setOpen(true);
@@ -322,12 +335,23 @@ function VersionSelector({
     setLoading(true);
     setError(null);
     const controller = new AbortController();
+    controllerRef.current = controller;
     list(report.reportId, controller.signal)
       .then((page) => {
+        if (controller.signal.aborted || controllerRef.current !== controller)
+          return;
         setItems(page.items);
         setLoading(false);
+        controllerRef.current = null;
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || controllerRef.current !== controller)
+          return;
+        controllerRef.current = null;
+        if (isRequestCancellation(error)) {
+          setLoading(false);
+          return;
+        }
         setError("The version history could not be loaded.");
         setLoading(false);
       });
@@ -403,18 +427,24 @@ function VersionSelector({
 }
 
 interface ReportView {
+  readonly ownerKey: string;
   readonly loading: boolean;
   readonly report: ScoutReportDto | null;
   readonly loadedAt: string | null;
   readonly error: ReportError | null;
 }
 
-const LOADING_VIEW: ReportView = {
+const LOADING_VIEW = {
   loading: true,
   report: null,
   loadedAt: null,
   error: null,
-};
+} as const;
+
+const loadingReport = (ownerKey: string): ReportView => ({
+  ...LOADING_VIEW,
+  ownerKey,
+});
 
 export function ScoutReport({
   jobId,
@@ -427,11 +457,17 @@ export function ScoutReport({
   readonly client: ScoutReportClientResult;
   readonly onSelectVersion?: ((versionNumber: number) => void) | undefined;
 }) {
+  const sessionStore = useSessionStore();
+  const session = useSession(sessionStore);
+  const sessionKey = session
+    ? `${session.accountId}\u0000${session.token}`
+    : "signed-out";
   const usable = client.ok && client.value.getScoutReportByJob !== undefined;
   const [view, setView] = useState<ReportView>(() =>
     !isScoutingJobId(jobId)
       ? {
           ...LOADING_VIEW,
+          ownerKey: sessionKey,
           loading: false,
           error: {
             kind: "missing",
@@ -442,6 +478,7 @@ export function ScoutReport({
       : !usable
         ? {
             ...LOADING_VIEW,
+            ownerKey: sessionKey,
             loading: false,
             error: {
               kind: "unavailable",
@@ -449,9 +486,20 @@ export function ScoutReport({
               message: "Scouting reports are unavailable in this environment.",
             },
           }
-        : LOADING_VIEW,
+        : loadingReport(sessionKey),
   );
   const [generation, setGeneration] = useState(0);
+
+  useEffect(() => {
+    if (!usable || !isScoutingJobId(jobId)) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (active) setView(loadingReport(sessionKey));
+    });
+    return () => {
+      active = false;
+    };
+  }, [jobId, sessionKey, usable]);
 
   useEffect(() => {
     const byJob = client.ok ? client.value.getScoutReportByJob : undefined;
@@ -478,6 +526,7 @@ export function ScoutReport({
       .then((report) => {
         if (controller.signal.aborted) return;
         setView({
+          ownerKey: sessionKey,
           loading: false,
           report,
           loadedAt: new Date().toISOString(),
@@ -485,17 +534,22 @@ export function ScoutReport({
         });
       })
       .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || isRequestCancellation(error)) return;
         setView({
           ...LOADING_VIEW,
+          ownerKey: sessionKey,
           loading: false,
           error: reportError(error),
         });
       });
     return () => controller.abort();
-  }, [client, generation, jobId, versionNumber]);
+  }, [client, generation, jobId, sessionKey, versionNumber]);
 
-  const report = view.report;
+  const visibleView =
+    !usable || !isScoutingJobId(jobId) || view.ownerKey === sessionKey
+      ? view
+      : loadingReport(sessionKey);
+  const report = visibleView.report;
   const observations = useMemo(
     () =>
       new Map(
@@ -509,7 +563,7 @@ export function ScoutReport({
     ? `/scout-jobs/${encodeURIComponent(jobId)}`
     : "/events";
 
-  if (view.loading)
+  if (visibleView.loading)
     return (
       <section className="scout-report-state" role="status">
         <p>Loading scouting report…</p>
@@ -519,21 +573,22 @@ export function ScoutReport({
         </div>
       </section>
     );
-  if (view.error || !report)
+  if (visibleView.error || !report)
     return (
       <section className="scout-report-state error" role="alert">
-        <h1>{view.error?.title ?? "Report unavailable"}</h1>
+        <h1>{visibleView.error?.title ?? "Report unavailable"}</h1>
         <p>
-          {view.error?.message ?? "This report is temporarily unavailable."}
+          {visibleView.error?.message ??
+            "This report is temporarily unavailable."}
         </p>
         <div className="scout-report-actions">
-          {(view.error?.kind === "unavailable" ||
-            view.error?.kind === "invalid") &&
+          {(visibleView.error?.kind === "unavailable" ||
+            visibleView.error?.kind === "invalid") &&
             usable && (
               <button
                 type="button"
                 onClick={() => {
-                  setView(LOADING_VIEW);
+                  setView(loadingReport(sessionKey));
                   setGeneration((value) => value + 1);
                 }}
               >
@@ -549,7 +604,7 @@ export function ScoutReport({
 
   const payload = report.payload;
   const verdict = VERDICTS[payload.status];
-  const reference = view.loadedAt ?? report.generatedAt;
+  const reference = visibleView.loadedAt ?? report.generatedAt;
   const routed = NARRATIVE_SECTIONS.map((section) => ({
     ...section,
     assertions: payload.assertions.filter((assertion) =>
@@ -602,6 +657,7 @@ export function ScoutReport({
       {report.latestVersionNumber > 1 && (
         <VersionSelector
           report={report}
+          ownerKey={sessionKey}
           requestedVersion={versionNumber}
           client={client}
           onSelectVersion={onSelectVersion}

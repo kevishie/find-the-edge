@@ -117,42 +117,15 @@ test.afterAll(async () => {
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(
-    ({ apiBase, accessToken }) => {
+    ({ apiBase }) => {
       Object.defineProperty(window, "__FTE_RUNTIME_CONFIG__", {
         value: {
           schemaVersion: 1,
           apiBase,
-          tokenProviderKey: "e2eSession",
-          cognitoIssuer: "https://issuer.example.test",
-          cognitoClientId: "e2e-client",
-          cognitoDomain: "https://auth.example.test",
-          cognitoScopes: Object.freeze([
-            "events/events:read",
-            "events/scouting:read",
-            "events/scouting:write",
-          ]),
-          callbackUrl: "https://app.example.test/auth/callback",
-          logoutUrl: "https://app.example.test",
         },
       });
-      Object.defineProperty(window, "__FTE_TOKEN_PROVIDERS__", {
-        configurable: true,
-        value: { e2eSession: () => Promise.resolve(accessToken) },
-      });
     },
-    {
-      apiBase: api.apiBase,
-      accessToken: `x.${Buffer.from(
-        JSON.stringify({
-          iss: "https://issuer.example.test",
-          client_id: "e2e-client",
-          token_use: "access",
-          exp: Math.floor(Date.now() / 1000) + 3_600,
-          scope:
-            "events/events:read events/scouting:read events/scouting:write",
-        }),
-      ).toString("base64url")}.x`,
-    },
+    { apiBase: api.apiBase },
   );
 });
 

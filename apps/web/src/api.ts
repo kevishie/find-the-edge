@@ -1127,9 +1127,43 @@ export interface OwnedSessionTransport {
 }
 
 const abortReason = (signal: AbortSignal): Error =>
-  signal.reason instanceof Error
-    ? signal.reason
+  typeof signal.reason === "object" &&
+  signal.reason !== null &&
+  "name" in signal.reason
+    ? (signal.reason as Error)
     : new DOMException("Aborted", "AbortError");
+
+export const isRequestCancellation = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "name" in error &&
+  error.name === "AbortError";
+
+const staleSessionCancellation = () =>
+  new DOMException(
+    "The active session changed while the request was being handled.",
+    "AbortError",
+  );
+
+const normalizePromiseRejection = (error: unknown): Error => {
+  if (error instanceof Error) return error;
+  const normalized = new Error(
+    typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string"
+      ? error.message
+      : "The request could not be completed.",
+  );
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    typeof error.name === "string"
+  )
+    normalized.name = error.name;
+  return normalized;
+};
 
 const authorizeProductRequest = (
   session: OwnedSessionTransport,
@@ -1140,13 +1174,35 @@ const authorizeProductRequest = (
   return new Promise((resolve, reject) => {
     const aborted = () => reject(abortReason(signal));
     signal.addEventListener("abort", aborted, { once: true });
-    void session
-      .authorize()
-      .then(resolve, reject)
-      .finally(() => {
+    const settled = <T>(complete: (value: T) => void, value: T) => {
+      signal.removeEventListener("abort", aborted);
+      complete(value);
+    };
+    void session.authorize().then(
+      (value) => settled(resolve, value),
+      (error: unknown) => {
         signal.removeEventListener("abort", aborted);
-      });
+        reject(normalizePromiseRejection(error));
+      },
+    );
   });
+};
+
+const assertProductRefusalAuthorityCurrent = async (
+  session: OwnedSessionTransport,
+  expected: OwnedSessionAuthorization,
+  signal: AbortSignal | null | undefined,
+  exactToken: boolean,
+): Promise<void> => {
+  const current = await authorizeProductRequest(session, signal);
+  if (
+    current === null ||
+    !isSessionToken(current.token) ||
+    !isAccountId(current.accountId) ||
+    current.accountId !== expected.accountId ||
+    (exactToken && current.token !== expected.token)
+  )
+    throw staleSessionCancellation();
 };
 
 const ownedProductFetch = async (
@@ -1154,6 +1210,7 @@ const ownedProductFetch = async (
   session: OwnedSessionTransport,
   input: Parameters<typeof fetch>[0],
   init?: Parameters<typeof fetch>[1],
+  expectedAccountId?: string,
 ): Promise<{
   readonly response: Response;
   readonly authorization: OwnedSessionAuthorization;
@@ -1165,6 +1222,8 @@ const ownedProductFetch = async (
       : undefined);
   const authorization = await authorizeProductRequest(session, signal);
   if (authorization === null) {
+    if (signal?.aborted) throw abortReason(signal);
+    if (expectedAccountId !== undefined) throw staleSessionCancellation();
     session.refuse(null, "authentication");
     throw new GamesClientError(
       "authentication",
@@ -1172,9 +1231,15 @@ const ownedProductFetch = async (
     );
   }
   if (
+    expectedAccountId !== undefined &&
+    authorization.accountId !== expectedAccountId
+  )
+    throw staleSessionCancellation();
+  if (
     !isSessionToken(authorization.token) ||
     !isAccountId(authorization.accountId)
   ) {
+    if (signal?.aborted) throw abortReason(signal);
     session.refuse(authorization, "authentication");
     throw new GamesClientError(
       "authentication",
@@ -1184,8 +1249,27 @@ const ownedProductFetch = async (
   if (signal?.aborted) throw abortReason(signal);
   const headers = new Headers(init?.headers);
   headers.set("authorization", `Bearer ${authorization.token}`);
-  const response = await fetcher(input, { ...init, headers });
+  let response: Response;
+  try {
+    response = await fetcher(input, { ...init, headers });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    await assertProductRefusalAuthorityCurrent(
+      session,
+      authorization,
+      signal,
+      true,
+    );
+    throw error;
+  }
   if (response.status === 401) {
+    await assertProductRefusalAuthorityCurrent(
+      session,
+      authorization,
+      signal,
+      true,
+    );
+    if (signal?.aborted) throw abortReason(signal);
     session.refuse(authorization, "authentication");
     throw new GamesClientError(
       "authentication",
@@ -1193,6 +1277,13 @@ const ownedProductFetch = async (
     );
   }
   if (response.status === 402) {
+    await assertProductRefusalAuthorityCurrent(
+      session,
+      authorization,
+      signal,
+      false,
+    );
+    if (signal?.aborted) throw abortReason(signal);
     session.refuse(authorization, "payment-required");
     throw new GamesClientError(
       "payment-required",
@@ -3232,178 +3323,68 @@ function bootstrapFailure(failure: RuntimeConfigError): GamesClientError {
   return new GamesClientError("configuration", failure.message);
 }
 
-const legacyElevatedSession = async (
-  providerKey: string | undefined,
-  signal: AbortSignal,
-) => {
-  if (!providerKey) return null;
-  const provider = (globalThis as Record<string, unknown>)[providerKey];
-  if (!plain(provider) || typeof provider["getAccessToken"] !== "function")
-    return null;
-  let token: unknown;
-  try {
-    token = await awaitWithSignal(
-      (provider["getAccessToken"] as () => Promise<unknown>)(),
-      signal,
-    );
-  } catch {
-    if (signal.aborted) throw abortReason(signal);
-    return null;
-  }
-  if (
-    typeof token !== "string" ||
-    token.length < 10 ||
-    token.length > 16_384 ||
-    !/^[A-Za-z0-9._~+/-]+=*$/u.test(token)
-  )
-    return null;
-  return { token };
-};
-
-const SCOUTING_SCOPES = [
-  "events/events:read",
-  "events/scouting:read",
-  "events/scouting:write",
-] as const;
 const SCOUTING_REQUEST_TIMEOUT_MS = 10_000;
 
 const awaitWithSignal = <T>(promise: Promise<T>, signal: AbortSignal) =>
   new Promise<T>((resolve, reject) => {
-    const abortError = () =>
-      signal.reason instanceof Error
-        ? signal.reason
-        : new DOMException("Aborted", "AbortError");
     if (signal.aborted) {
-      reject(abortError());
+      reject(abortReason(signal));
       return;
     }
-    const aborted = () => reject(abortError());
+    const aborted = () => reject(abortReason(signal));
     signal.addEventListener("abort", aborted, { once: true });
-    promise.then(resolve, reject).finally(() => {
-      signal.removeEventListener("abort", aborted);
-    });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener("abort", aborted);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", aborted);
+        reject(normalizePromiseRejection(error));
+      },
+    );
   });
 
-const invalidateScoutingSession = (providerKey: string | undefined): void => {
-  if (!providerKey) return;
-  const registry = (globalThis as Record<string, unknown>)[
-    "__FTE_TOKEN_INVALIDATORS__"
-  ];
-  const invalidate = plain(registry) ? registry[providerKey] : undefined;
-  if (typeof invalidate !== "function") return;
-  try {
-    (invalidate as () => void)();
-  } catch {
-    // A failed local cleanup must not hide the authoritative 401.
-  }
+const ownedOrdinaryFetch = async (
+  fetcher: typeof fetch,
+  session: OwnedSessionTransport,
+  input: Parameters<typeof fetch>[0],
+  init: Parameters<typeof fetch>[1],
+): Promise<{
+  readonly response: Response;
+  readonly authorization: OwnedSessionAuthorization;
+}> => ownedProductFetch(fetcher, session, input, init);
+
+const assertOwnedOrdinarySessionCurrent = async (
+  session: OwnedSessionTransport,
+  expected: OwnedSessionAuthorization,
+  signal: AbortSignal,
+): Promise<void> => {
+  const current = await authorizeProductRequest(session, signal);
+  if (
+    current === null ||
+    current.accountId !== expected.accountId ||
+    current.token !== expected.token
+  )
+    throw staleSessionCancellation();
 };
 
-/**
- * Resolves the Cognito access token a protected call needs. The required
- * scopes are a parameter because not every protected surface carries the same
- * grant: scouting needs its own scopes, while the watchlist is authorised by
- * the token subject alone.
- */
-const authenticatedSession = async (
-  providerKey: string | undefined,
-  expectedIssuer: string | undefined,
-  expectedClientId: string | undefined,
-  requiredScopes: readonly string[],
-  messages: {
-    readonly signIn: string;
-    readonly forbidden: string;
-  },
-): Promise<{ readonly token: string }> => {
-  if (!providerKey || !expectedIssuer || !expectedClientId)
-    throw new GamesClientError("authentication", messages.signIn);
-  const registry = (globalThis as Record<string, unknown>)[
-    "__FTE_TOKEN_PROVIDERS__"
-  ];
-  const provider = plain(registry) ? registry[providerKey] : undefined;
-  if (typeof provider !== "function")
-    throw new GamesClientError("authentication", messages.signIn);
-  let token: unknown;
+const completeOwnedRequest = async <T>(
+  session: OwnedSessionTransport,
+  authorization: OwnedSessionAuthorization,
+  signal: AbortSignal,
+  operation: () => Promise<T> | T,
+): Promise<T> => {
+  let result: T;
   try {
-    token = await (provider as () => Promise<unknown>)();
-  } catch {
-    throw new GamesClientError(
-      "authentication",
-      "Sign in could not be completed.",
-    );
-  }
-  if (typeof token !== "string" || token.length < 10 || token.length > 16_384)
-    throw new GamesClientError(
-      "authentication",
-      "Sign in could not be completed.",
-    );
-  try {
-    const tokenParts = token.split(".");
-    if (tokenParts.length !== 3) throw new Error();
-    const segment = tokenParts[1];
-    if (!segment || !/^[A-Za-z0-9_-]+$/.test(segment)) throw new Error();
-    const payload = JSON.parse(
-      atob(
-        segment
-          .replace(/-/g, "+")
-          .replace(/_/g, "/")
-          .padEnd(Math.ceil(segment.length / 4) * 4, "="),
-      ),
-    ) as unknown;
-    const scopes =
-      plain(payload) && typeof payload["scope"] === "string"
-        ? payload["scope"].split(" ")
-        : [];
-    if (
-      !plain(payload) ||
-      payload["iss"] !== expectedIssuer ||
-      payload["client_id"] !== expectedClientId ||
-      payload["token_use"] !== "access" ||
-      typeof payload["exp"] !== "number" ||
-      !Number.isFinite(payload["exp"]) ||
-      payload["exp"] <= Date.now() / 1000 + 30 ||
-      !requiredScopes.every((scope) => scopes.includes(scope))
-    )
-      throw new GamesClientError("forbidden", messages.forbidden);
+    result = await operation();
   } catch (error) {
-    if (error instanceof GamesClientError) throw error;
-    throw new GamesClientError(
-      "authentication",
-      "Sign in could not be completed.",
-    );
+    await assertOwnedOrdinarySessionCurrent(session, authorization, signal);
+    throw error;
   }
-  return { token };
+  await assertOwnedOrdinarySessionCurrent(session, authorization, signal);
+  return result;
 };
-
-const scoutingSession = (
-  providerKey: string | undefined,
-  expectedIssuer: string | undefined,
-  expectedClientId: string | undefined,
-): Promise<{ readonly token: string }> =>
-  authenticatedSession(
-    providerKey,
-    expectedIssuer,
-    expectedClientId,
-    SCOUTING_SCOPES,
-    {
-      signIn: "Sign in is required to use scouting.",
-      forbidden: "This session does not have scouting access.",
-    },
-  );
-
-/**
- * The watchlist API authorises on the token subject and asks for no extra
- * Cognito scope, so the session check here verifies only that the token is a
- * live access token minted for this app.
- */
-const watchlistSession = (
-  providerKey: string | undefined,
-  expectedIssuer: string | undefined,
-  expectedClientId: string | undefined,
-): Promise<{ readonly token: string }> =>
-  authenticatedSession(providerKey, expectedIssuer, expectedClientId, [], {
-    signIn: "Sign in is required to use the watchlist.",
-    forbidden: "This session cannot use the watchlist.",
-  });
 
 const scoutingHttpError = (
   response: Response,
@@ -3448,9 +3429,7 @@ const scoutingHttpError = (
 
 const scoutingJobRequest = async ({
   apiBase,
-  providerKey,
-  expectedIssuer,
-  expectedClientId,
+  session,
   fetcher,
   operation,
   path,
@@ -3461,9 +3440,7 @@ const scoutingJobRequest = async ({
   expectedEventId,
 }: {
   readonly apiBase: string;
-  readonly providerKey: string | undefined;
-  readonly expectedIssuer: string | undefined;
-  readonly expectedClientId: string | undefined;
+  readonly session: OwnedSessionTransport;
   readonly fetcher: typeof fetch;
   readonly operation: "create" | "status" | "retry";
   readonly path: string;
@@ -3475,46 +3452,67 @@ const scoutingJobRequest = async ({
 }): Promise<PublicScoutingJob> => {
   const timeoutSignal = AbortSignal.timeout(SCOUTING_REQUEST_TIMEOUT_MS);
   const requestSignal = AbortSignal.any([signal, timeoutSignal]);
-  let token: string;
   try {
-    ({ token } = await awaitWithSignal(
-      scoutingSession(providerKey, expectedIssuer, expectedClientId),
-      requestSignal,
-    ));
-  } catch (error) {
-    if (signal.aborted) throw error;
-    if (timeoutSignal.aborted)
-      throw new GamesClientError(
-        "request-failed",
-        operation === "status"
-          ? "Scouting progress is temporarily unavailable."
-          : "The scouting request could not be completed.",
-      );
-    throw error;
-  }
-  let response: Response;
-  try {
-    response = await awaitWithSignal(
-      fetcher(`${apiBase}${path}`, {
-        method: operation === "status" ? "GET" : "POST",
-        credentials: "omit",
-        cache: "no-store",
-        signal: requestSignal,
-        headers: {
-          authorization: `Bearer ${token}`,
-          ...(operation === "status"
-            ? {}
-            : {
-                "content-type": "application/json",
-                "idempotency-key": idempotencyKey!,
-              }),
-        },
-        ...(operation === "status" ? {} : { body: JSON.stringify(body) }),
-      }),
+    return await awaitWithSignal(
+      (async () => {
+        const { response, authorization } = await ownedOrdinaryFetch(
+          fetcher,
+          session,
+          `${apiBase}${path}`,
+          {
+            method: operation === "status" ? "GET" : "POST",
+            credentials: "omit",
+            cache: "no-store",
+            signal: requestSignal,
+            headers: {
+              ...(operation === "status"
+                ? {}
+                : {
+                    "content-type": "application/json",
+                    "idempotency-key": idempotencyKey!,
+                  }),
+            },
+            ...(operation === "status" ? {} : { body: JSON.stringify(body) }),
+          },
+        );
+        return completeOwnedRequest(
+          session,
+          authorization,
+          requestSignal,
+          async () => {
+            const accepted =
+              operation === "status"
+                ? response.status === 200
+                : response.status === 200 || response.status === 202;
+            if (!accepted) throw scoutingHttpError(response, operation);
+            const job = parsePublicScoutingJob(
+              await response.json().catch(() => null),
+            );
+            if (
+              (expectedJobId !== undefined && job.jobId !== expectedJobId) ||
+              (expectedEventId !== undefined && job.eventId !== expectedEventId)
+            )
+              throw new GamesClientError(
+                "invalid-response",
+                "The scouting response was invalid.",
+              );
+            if (operation !== "status") {
+              const expectedLocation = `/scout-jobs/${job.jobId}`;
+              if (response.headers.get("location") !== expectedLocation)
+                throw new GamesClientError(
+                  "invalid-response",
+                  "The scouting response was invalid.",
+                );
+            }
+            return job;
+          },
+        );
+      })(),
       requestSignal,
     );
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (signal.aborted || isRequestCancellation(error)) throw error;
+    if (error instanceof GamesClientError) throw error;
     throw new GamesClientError(
       "request-failed",
       operation === "status"
@@ -3522,32 +3520,6 @@ const scoutingJobRequest = async ({
         : "The scouting request could not be completed.",
     );
   }
-  const accepted =
-    operation === "status"
-      ? response.status === 200
-      : response.status === 200 || response.status === 202;
-  if (!accepted) {
-    if (response.status === 401) invalidateScoutingSession(providerKey);
-    throw scoutingHttpError(response, operation);
-  }
-  const job = parsePublicScoutingJob(await response.json().catch(() => null));
-  if (
-    (expectedJobId !== undefined && job.jobId !== expectedJobId) ||
-    (expectedEventId !== undefined && job.eventId !== expectedEventId)
-  )
-    throw new GamesClientError(
-      "invalid-response",
-      "The scouting response was invalid.",
-    );
-  if (operation !== "status") {
-    const expectedLocation = `/scout-jobs/${job.jobId}`;
-    if (response.headers.get("location") !== expectedLocation)
-      throw new GamesClientError(
-        "invalid-response",
-        "The scouting response was invalid.",
-      );
-  }
-  return job;
 };
 
 const scoutReportHttpError = (response: Response): GamesClientError => {
@@ -3572,18 +3544,14 @@ const scoutReportHttpError = (response: Response): GamesClientError => {
 
 const scoutReportRequest = async <T>({
   apiBase,
-  providerKey,
-  expectedIssuer,
-  expectedClientId,
+  session,
   fetcher,
   path,
   signal,
   parse,
 }: {
   readonly apiBase: string;
-  readonly providerKey: string;
-  readonly expectedIssuer: string;
-  readonly expectedClientId: string;
+  readonly session: OwnedSessionTransport;
   readonly fetcher: typeof fetch;
   readonly path: string;
   readonly signal: AbortSignal;
@@ -3596,38 +3564,37 @@ const scoutReportRequest = async <T>({
       "request-failed",
       "This report is temporarily unavailable.",
     );
-  let token: string;
   try {
-    ({ token } = await awaitWithSignal(
-      scoutingSession(providerKey, expectedIssuer, expectedClientId),
-      requestSignal,
-    ));
-  } catch (error) {
-    if (signal.aborted) throw error;
-    if (timeoutSignal.aborted) throw unavailable();
-    throw error;
-  }
-  let response: Response;
-  try {
-    response = await awaitWithSignal(
-      fetcher(`${apiBase}${path}`, {
-        method: "GET",
-        credentials: "omit",
-        cache: "no-store",
-        signal: requestSignal,
-        headers: { authorization: `Bearer ${token}` },
-      }),
+    return await awaitWithSignal(
+      (async () => {
+        const { response, authorization } = await ownedOrdinaryFetch(
+          fetcher,
+          session,
+          `${apiBase}${path}`,
+          {
+            method: "GET",
+            credentials: "omit",
+            cache: "no-store",
+            signal: requestSignal,
+          },
+        );
+        return completeOwnedRequest(
+          session,
+          authorization,
+          requestSignal,
+          async () => {
+            if (response.status !== 200) throw scoutReportHttpError(response);
+            return parse(await response.json().catch(() => null));
+          },
+        );
+      })(),
       requestSignal,
     );
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (signal.aborted || isRequestCancellation(error)) throw error;
+    if (error instanceof GamesClientError) throw error;
     throw unavailable();
   }
-  if (response.status !== 200) {
-    if (response.status === 401) invalidateScoutingSession(providerKey);
-    throw scoutReportHttpError(response);
-  }
-  return parse(await response.json().catch(() => null));
 };
 
 const WATCHLIST_REQUEST_TIMEOUT_MS = 10_000;
@@ -3662,9 +3629,7 @@ const watchlistHttpError = (response: Response): GamesClientError => {
  */
 const watchlistRequest = async <T>({
   apiBase,
-  providerKey,
-  expectedIssuer,
-  expectedClientId,
+  session,
   fetcher,
   method,
   path,
@@ -3674,9 +3639,7 @@ const watchlistRequest = async <T>({
   parse,
 }: {
   readonly apiBase: string;
-  readonly providerKey: string;
-  readonly expectedIssuer: string;
-  readonly expectedClientId: string;
+  readonly session: OwnedSessionTransport;
   readonly fetcher: typeof fetch;
   readonly method: "GET" | "POST" | "DELETE";
   readonly path: string;
@@ -3687,43 +3650,46 @@ const watchlistRequest = async <T>({
 }): Promise<T> => {
   const timeoutSignal = AbortSignal.timeout(WATCHLIST_REQUEST_TIMEOUT_MS);
   const requestSignal = AbortSignal.any([signal, timeoutSignal]);
-  let token: string;
   try {
-    ({ token } = await awaitWithSignal(
-      watchlistSession(providerKey, expectedIssuer, expectedClientId),
-      requestSignal,
-    ));
-  } catch (error) {
-    if (signal.aborted) throw error;
-    if (timeoutSignal.aborted) throw watchlistUnavailable();
-    throw error;
-  }
-  let response: Response;
-  try {
-    response = await awaitWithSignal(
-      fetcher(`${apiBase}${path}`, {
-        method,
-        credentials: "omit",
-        cache: "no-store",
-        signal: requestSignal,
-        headers: {
-          authorization: `Bearer ${token}`,
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }),
+    return await awaitWithSignal(
+      (async () => {
+        const { response, authorization } = await ownedOrdinaryFetch(
+          fetcher,
+          session,
+          `${apiBase}${path}`,
+          {
+            method,
+            credentials: "omit",
+            cache: "no-store",
+            signal: requestSignal,
+            headers: {
+              ...(body === undefined
+                ? {}
+                : { "content-type": "application/json" }),
+            },
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          },
+        );
+        return completeOwnedRequest(
+          session,
+          authorization,
+          requestSignal,
+          async () => {
+            if (!accepted.includes(response.status))
+              throw watchlistHttpError(response);
+            return response.status === 204
+              ? parse(undefined)
+              : parse(await response.json().catch(() => null));
+          },
+        );
+      })(),
       requestSignal,
     );
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (signal.aborted || isRequestCancellation(error)) throw error;
+    if (error instanceof GamesClientError) throw error;
     throw watchlistUnavailable();
   }
-  if (!accepted.includes(response.status)) {
-    if (response.status === 401) invalidateScoutingSession(providerKey);
-    throw watchlistHttpError(response);
-  }
-  if (response.status === 204) return parse(undefined);
-  return parse(await response.json().catch(() => null));
 };
 
 export function createGamesClient(
@@ -3733,16 +3699,6 @@ export function createGamesClient(
 ): Result<GamesClient, GamesClientError> {
   if (!bootstrap.ok)
     return { ok: false, error: bootstrapFailure(bootstrap.error) };
-  const scoutingAuth =
-    bootstrap.value.config.tokenProviderKey &&
-    bootstrap.value.config.cognitoIssuer &&
-    bootstrap.value.config.cognitoClientId
-      ? {
-          providerKey: bootstrap.value.config.tokenProviderKey,
-          issuer: bootstrap.value.config.cognitoIssuer,
-          clientId: bootstrap.value.config.cognitoClientId,
-        }
-      : null;
   const ownedSessionTransport = ownedSession ?? {
     authorize: () => Promise.resolve(null),
     refuse: () => undefined,
@@ -3765,31 +3721,39 @@ export function createGamesClient(
         signal,
       },
     );
-    if (!response.ok)
-      throw new GamesClientError(
-        "request-failed",
-        "Session capabilities are unavailable.",
+    const fenceCapabilityAccount = async () => {
+      const current = await authorizeProductRequest(
+        ownedSessionTransport,
+        signal,
       );
-    const payload: unknown = await response.json().catch(() => null);
-    const parsed = parseOwnedSessionCapabilities(
-      payload,
-      authorization.accountId,
-    );
-    const currentAuthorization = await authorizeProductRequest(
-      ownedSessionTransport,
-      signal,
-    );
-    if (signal.aborted) throw abortReason(signal);
-    if (
-      !currentAuthorization ||
-      !isSessionToken(currentAuthorization.token) ||
-      !isAccountId(currentAuthorization.accountId) ||
-      currentAuthorization.accountId !== authorization.accountId
-    )
-      throw new GamesClientError(
-        "authentication",
-        "The active account changed while capabilities were loading.",
-      );
+      if (signal.aborted) throw abortReason(signal);
+      if (
+        !current ||
+        !isSessionToken(current.token) ||
+        !isAccountId(current.accountId)
+      )
+        throw new GamesClientError(
+          "authentication",
+          "The active session is no longer valid.",
+        );
+      if (current.accountId !== authorization.accountId)
+        throw staleSessionCancellation();
+      return current;
+    };
+    let parsed: OwnedSessionCapabilitiesDto;
+    try {
+      if (!response.ok)
+        throw new GamesClientError(
+          "request-failed",
+          "Session capabilities are unavailable.",
+        );
+      const payload: unknown = await response.json().catch(() => null);
+      parsed = parseOwnedSessionCapabilities(payload, authorization.accountId);
+    } catch (error) {
+      await fenceCapabilityAccount();
+      throw error;
+    }
+    const currentAuthorization = await fenceCapabilityAccount();
     return { projection: parsed, authorization: currentAuthorization };
   };
   const resolveOwnedSessionCapability = async (
@@ -3802,231 +3766,191 @@ export function createGamesClient(
       authorization: resolution.authorization,
     };
   };
-  const assertOwnedSessionUnchanged = async (
-    expected: OwnedSessionAuthorization,
-    signal: AbortSignal,
-  ): Promise<void> => {
-    const current = await authorizeProductRequest(
-      ownedSessionTransport,
-      signal,
-    );
-    if (
-      current === null ||
-      current.accountId !== expected.accountId ||
-      current.token !== expected.token
-    )
-      throw new GamesClientError(
-        "authentication",
-        "The active session changed while elevated access was being checked.",
-      );
-  };
   return {
     ok: true,
     value: {
-      ...(scoutingAuth
-        ? {
-            async createScoutingJob(eventId, idempotencyKey, signal) {
-              if (
-                !isCanonicalScoutingEventId(eventId) ||
-                !SCOUTING_IDEMPOTENCY_KEY.test(idempotencyKey)
-              )
-                throw new GamesClientError(
-                  "invalid-response",
-                  "The scouting request was invalid.",
-                );
-              return scoutingJobRequest({
-                apiBase: bootstrap.value.config.apiBase,
-                providerKey: scoutingAuth.providerKey,
-                expectedIssuer: scoutingAuth.issuer,
-                expectedClientId: scoutingAuth.clientId,
-                fetcher,
-                operation: "create",
-                path: `/events/${encodeCanonicalEventPathSegment(eventId)}/scout`,
-                signal,
-                idempotencyKey,
-                body: {},
-                expectedEventId: eventId,
-              });
-            },
-            async getScoutingJob(jobId, signal) {
-              if (!isScoutingJobId(jobId))
-                throw new GamesClientError(
-                  "invalid-response",
-                  "The scouting job address was invalid.",
-                );
-              return scoutingJobRequest({
-                apiBase: bootstrap.value.config.apiBase,
-                providerKey: scoutingAuth.providerKey,
-                expectedIssuer: scoutingAuth.issuer,
-                expectedClientId: scoutingAuth.clientId,
-                fetcher,
-                operation: "status",
-                path: `/scout-jobs/${encodeURIComponent(jobId)}`,
-                signal,
-                expectedJobId: jobId,
-              });
-            },
-            async retryScoutingJob(
-              jobId,
-              expectedStateVersion,
-              idempotencyKey,
-              signal,
-            ) {
-              if (
-                !isScoutingJobId(jobId) ||
-                !Number.isSafeInteger(expectedStateVersion) ||
-                expectedStateVersion < 1 ||
-                !SCOUTING_IDEMPOTENCY_KEY.test(idempotencyKey)
-              )
-                throw new GamesClientError(
-                  "invalid-response",
-                  "The scouting retry was invalid.",
-                );
-              return scoutingJobRequest({
-                apiBase: bootstrap.value.config.apiBase,
-                providerKey: scoutingAuth.providerKey,
-                expectedIssuer: scoutingAuth.issuer,
-                expectedClientId: scoutingAuth.clientId,
-                fetcher,
-                operation: "retry",
-                path: `/scout-jobs/${encodeURIComponent(jobId)}/retry`,
-                signal,
-                idempotencyKey,
-                body: { expectedStateVersion },
-                expectedJobId: jobId,
-              });
-            },
-            async getScoutReportByJob(jobId, signal) {
-              if (!isScoutingJobId(jobId))
-                throw new GamesClientError(
-                  "invalid-response",
-                  "The scouting job address was invalid.",
-                );
-              const report = await scoutReportRequest({
-                apiBase: bootstrap.value.config.apiBase,
-                providerKey: scoutingAuth.providerKey,
-                expectedIssuer: scoutingAuth.issuer,
-                expectedClientId: scoutingAuth.clientId,
-                fetcher,
-                path: `/scout-jobs/${encodeURIComponent(jobId)}/report`,
-                signal,
-                parse: parseScoutReport,
-              });
-              if (report.jobId !== jobId) throw invalidScoutReport();
-              return report;
-            },
-            async getScoutReportVersion(reportId, versionNumber, signal) {
-              if (
-                !isScoutReportId(reportId) ||
-                !Number.isSafeInteger(versionNumber) ||
-                versionNumber < 1
-              )
-                throw new GamesClientError(
-                  "invalid-response",
-                  "The report address was invalid.",
-                );
-              const report = await scoutReportRequest({
-                apiBase: bootstrap.value.config.apiBase,
-                providerKey: scoutingAuth.providerKey,
-                expectedIssuer: scoutingAuth.issuer,
-                expectedClientId: scoutingAuth.clientId,
-                fetcher,
-                path: `/scout-reports/${encodeURIComponent(
-                  reportId,
-                )}/versions/${String(versionNumber)}`,
-                signal,
-                parse: parseScoutReport,
-              });
-              if (
-                report.reportId !== reportId ||
-                report.versionNumber !== versionNumber
-              )
-                throw invalidScoutReport();
-              return report;
-            },
-            async listScoutReportVersions(reportId, signal) {
-              if (!isScoutReportId(reportId))
-                throw new GamesClientError(
-                  "invalid-response",
-                  "The report address was invalid.",
-                );
-              const versions = await scoutReportRequest({
-                apiBase: bootstrap.value.config.apiBase,
-                providerKey: scoutingAuth.providerKey,
-                expectedIssuer: scoutingAuth.issuer,
-                expectedClientId: scoutingAuth.clientId,
-                fetcher,
-                path: `/scout-reports/${encodeURIComponent(reportId)}/versions`,
-                signal,
-                parse: parseScoutReportVersions,
-              });
-              if (versions.reportId !== reportId) throw invalidScoutReport();
-              return versions;
-            },
-            async listWatchlist(signal) {
-              return watchlistRequest({
-                apiBase: bootstrap.value.config.apiBase,
-                providerKey: scoutingAuth.providerKey,
-                expectedIssuer: scoutingAuth.issuer,
-                expectedClientId: scoutingAuth.clientId,
-                fetcher,
-                method: "GET",
-                path: "/watchlist",
-                signal,
-                accepted: [200],
-                parse: parseWatchlistPage,
-              });
-            },
-            async addToWatchlist(eventId, signal) {
-              if (!isCanonicalScoutingEventId(eventId))
-                throw new GamesClientError(
-                  "invalid-response",
-                  "The watchlist request was invalid.",
-                );
-              // The API resolves the submitted id against the event store and
-              // answers with the canonical identity it stored, which is the
-              // one the screen keys on. It is deliberately not compared to the
-              // id sent here: the store is the authority on canonical form.
-              return watchlistRequest({
-                apiBase: bootstrap.value.config.apiBase,
-                providerKey: scoutingAuth.providerKey,
-                expectedIssuer: scoutingAuth.issuer,
-                expectedClientId: scoutingAuth.clientId,
-                fetcher,
-                method: "POST",
-                path: "/watchlist",
-                signal,
-                body: { eventId },
-                accepted: [200, 201],
-                parse: parseWatchlistEntry,
-              });
-            },
-            async removeFromWatchlist(eventId, signal) {
-              if (!isCanonicalScoutingEventId(eventId))
-                throw new GamesClientError(
-                  "invalid-response",
-                  "The watchlist request was invalid.",
-                );
-              // A removal carries no representation, so anything in the body
-              // is a response this contract does not describe.
-              await watchlistRequest({
-                apiBase: bootstrap.value.config.apiBase,
-                providerKey: scoutingAuth.providerKey,
-                expectedIssuer: scoutingAuth.issuer,
-                expectedClientId: scoutingAuth.clientId,
-                fetcher,
-                method: "DELETE",
-                path: `/watchlist/${encodeCanonicalEventPathSegment(eventId)}`,
-                signal,
-                accepted: [204],
-                parse: (value) => {
-                  if (value !== undefined) throw invalidWatchlist();
-                  return null;
-                },
-              });
-            },
-          }
-        : {}),
+      async createScoutingJob(eventId, idempotencyKey, signal) {
+        if (
+          !isCanonicalScoutingEventId(eventId) ||
+          !SCOUTING_IDEMPOTENCY_KEY.test(idempotencyKey)
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The scouting request was invalid.",
+          );
+        return scoutingJobRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          operation: "create",
+          path: `/events/${encodeCanonicalEventPathSegment(eventId)}/scout`,
+          signal,
+          idempotencyKey,
+          body: {},
+          expectedEventId: eventId,
+        });
+      },
+      async getScoutingJob(jobId, signal) {
+        if (!isScoutingJobId(jobId))
+          throw new GamesClientError(
+            "invalid-response",
+            "The scouting job address was invalid.",
+          );
+        return scoutingJobRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          operation: "status",
+          path: `/scout-jobs/${encodeURIComponent(jobId)}`,
+          signal,
+          expectedJobId: jobId,
+        });
+      },
+      async retryScoutingJob(
+        jobId,
+        expectedStateVersion,
+        idempotencyKey,
+        signal,
+      ) {
+        if (
+          !isScoutingJobId(jobId) ||
+          !Number.isSafeInteger(expectedStateVersion) ||
+          expectedStateVersion < 1 ||
+          !SCOUTING_IDEMPOTENCY_KEY.test(idempotencyKey)
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The scouting retry was invalid.",
+          );
+        return scoutingJobRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          operation: "retry",
+          path: `/scout-jobs/${encodeURIComponent(jobId)}/retry`,
+          signal,
+          idempotencyKey,
+          body: { expectedStateVersion },
+          expectedJobId: jobId,
+        });
+      },
+      async getScoutReportByJob(jobId, signal) {
+        if (!isScoutingJobId(jobId))
+          throw new GamesClientError(
+            "invalid-response",
+            "The scouting job address was invalid.",
+          );
+        const report = await scoutReportRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          path: `/scout-jobs/${encodeURIComponent(jobId)}/report`,
+          signal,
+          parse: parseScoutReport,
+        });
+        if (report.jobId !== jobId) throw invalidScoutReport();
+        return report;
+      },
+      async getScoutReportVersion(reportId, versionNumber, signal) {
+        if (
+          !isScoutReportId(reportId) ||
+          !Number.isSafeInteger(versionNumber) ||
+          versionNumber < 1
+        )
+          throw new GamesClientError(
+            "invalid-response",
+            "The report address was invalid.",
+          );
+        const report = await scoutReportRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          path: `/scout-reports/${encodeURIComponent(
+            reportId,
+          )}/versions/${String(versionNumber)}`,
+          signal,
+          parse: parseScoutReport,
+        });
+        if (
+          report.reportId !== reportId ||
+          report.versionNumber !== versionNumber
+        )
+          throw invalidScoutReport();
+        return report;
+      },
+      async listScoutReportVersions(reportId, signal) {
+        if (!isScoutReportId(reportId))
+          throw new GamesClientError(
+            "invalid-response",
+            "The report address was invalid.",
+          );
+        const versions = await scoutReportRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          path: `/scout-reports/${encodeURIComponent(reportId)}/versions`,
+          signal,
+          parse: parseScoutReportVersions,
+        });
+        if (versions.reportId !== reportId) throw invalidScoutReport();
+        return versions;
+      },
+      async listWatchlist(signal) {
+        return watchlistRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          method: "GET",
+          path: "/watchlist",
+          signal,
+          accepted: [200],
+          parse: parseWatchlistPage,
+        });
+      },
+      async addToWatchlist(eventId, signal) {
+        if (!isCanonicalScoutingEventId(eventId))
+          throw new GamesClientError(
+            "invalid-response",
+            "The watchlist request was invalid.",
+          );
+        // The API resolves the submitted id against the event store and
+        // answers with the canonical identity it stored, which is the
+        // one the screen keys on. It is deliberately not compared to the
+        // id sent here: the store is the authority on canonical form.
+        return watchlistRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          method: "POST",
+          path: "/watchlist",
+          signal,
+          body: { eventId },
+          accepted: [200, 201],
+          parse: parseWatchlistEntry,
+        });
+      },
+      async removeFromWatchlist(eventId, signal) {
+        if (!isCanonicalScoutingEventId(eventId))
+          throw new GamesClientError(
+            "invalid-response",
+            "The watchlist request was invalid.",
+          );
+        // A removal carries no representation, so anything in the body
+        // is a response this contract does not describe.
+        await watchlistRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          method: "DELETE",
+          path: `/watchlist/${encodeCanonicalEventPathSegment(eventId)}`,
+          signal,
+          accepted: [204],
+          parse: (value) => {
+            if (value !== undefined) throw invalidWatchlist();
+            return null;
+          },
+        });
+      },
       // Identity is unauthenticated by construction: these are the calls that
       // produce a session, so they never resolve one first.
       async requestOtp(phone, signal) {
@@ -4381,40 +4305,41 @@ export function createGamesClient(
             "forbidden",
             "Strategy promoter access is required.",
           );
-        const session = await legacyElevatedSession(
-          bootstrap.value.config.tokenProviderKey,
-          signal,
-        );
-        if (!session)
-          throw new GamesClientError(
-            "forbidden",
-            "A strategy promoter session is required.",
-          );
         if (signal.aborted) throw abortReason(signal);
-        await assertOwnedSessionUnchanged(authority.authorization, signal);
-        const response = await fetcher(
+        const { response, authorization } = await ownedProductFetch(
+          fetcher,
+          ownedSessionTransport,
           `${bootstrap.value.config.apiBase}/strategy-experiments/${encodeURIComponent(id)}/${action}`,
           {
             method: "POST",
+            credentials: "omit",
+            cache: "no-store",
             headers: {
-              authorization: `Bearer ${session.token}`,
               "content-type": "application/json",
             },
             body: JSON.stringify(body),
             signal,
           },
+          authority.authorization.accountId,
         );
-        if (response.status === 409)
-          throw new GamesClientError(
-            "conflict",
-            "The experiment changed. Reloading current evidence.",
-          );
-        if (!response.ok)
-          throw new GamesClientError(
-            response.status === 403 ? "forbidden" : "request-failed",
-            "The strategy action could not be saved.",
-          );
-        return response.json() as Promise<unknown>;
+        return completeOwnedRequest(
+          ownedSessionTransport,
+          authorization,
+          signal,
+          async () => {
+            if (response.status === 409)
+              throw new GamesClientError(
+                "conflict",
+                "The experiment changed. Reloading current evidence.",
+              );
+            if (!response.ok)
+              throw new GamesClientError(
+                response.status === 403 ? "forbidden" : "request-failed",
+                "The strategy action could not be saved.",
+              );
+            return response.json() as Promise<unknown>;
+          },
+        );
       },
       async list(filter, signal) {
         // Every lifecycle arrives in one server-merged request; the previous
@@ -4972,26 +4897,20 @@ export function createGamesClient(
             "forbidden",
             "Reviewer access is required.",
           );
-        const session = await legacyElevatedSession(
-          bootstrap.value.config.tokenProviderKey,
-          signal,
-        );
-        if (!session)
-          throw new GamesClientError(
-            "forbidden",
-            "Reviewer access is required.",
-          );
         if (signal.aborted) throw abortReason(signal);
-        await assertOwnedSessionUnchanged(authority.authorization, signal);
+        let authorization: OwnedSessionAuthorization;
         let response: Response;
         try {
-          response = await fetcher(
+          const result = await ownedProductFetch(
+            fetcher,
+            ownedSessionTransport,
             `${bootstrap.value.config.apiBase}/retrospectives/${encodeURIComponent(version.versionId)}/review`,
             {
               method: "POST",
+              credentials: "omit",
+              cache: "no-store",
               signal,
               headers: {
-                authorization: `Bearer ${session.token}`,
                 "content-type": "application/json",
               },
               body: JSON.stringify({
@@ -5002,69 +4921,84 @@ export function createGamesClient(
                 expectedStateVersion: version.stateVersion,
               }),
             },
+            authority.authorization.accountId,
           );
+          response = result.response;
+          authorization = result.authorization;
         } catch (error) {
-          if (signal.aborted) throw error;
+          if (
+            signal.aborted ||
+            isRequestCancellation(error) ||
+            error instanceof GamesClientError
+          )
+            throw error;
           throw new GamesClientError(
             "request-failed",
             "The review could not be saved.",
           );
         }
-        if (response.status === 409)
-          throw new GamesClientError(
-            "conflict",
-            "This retrospective changed while you were reviewing it.",
-          );
-        if (!response.ok)
-          throw new GamesClientError(
-            response.status === 403 ? "forbidden" : "request-failed",
-            "The review could not be saved.",
-          );
-        const body: unknown = await response.json();
-        if (
-          !plain(body) ||
-          !exact(body, ["version", "decision"]) ||
-          !validRetrospective(body["version"]) ||
-          !plain(body["decision"])
-        )
-          throw new GamesClientError(
-            "invalid-response",
-            "The review response was invalid.",
-          );
-        const reviewed = body["version"],
-          decision = body["decision"];
-        const expectedState =
-          input.reasonCode === "approve"
-            ? "approved"
-            : input.reasonCode === "reject"
-              ? "rejected"
-              : "changes-requested";
-        if (
-          !exact(decision, [
-            "decisionId",
-            "versionId",
-            "fromState",
-            "toState",
-            "reasonCode",
-            "decidedAt",
-          ]) ||
-          !/^retrospective-decision:[a-f0-9]{64}$/.test(
-            String(decision["decisionId"]),
-          ) ||
-          decision["versionId"] !== version.versionId ||
-          decision["versionId"] !== reviewed.versionId ||
-          decision["fromState"] !== version.state ||
-          decision["toState"] !== expectedState ||
-          decision["toState"] !== reviewed.state ||
-          decision["reasonCode"] !== input.reasonCode ||
-          !iso(decision["decidedAt"]) ||
-          reviewed.stateVersion !== version.stateVersion + 1
-        )
-          throw new GamesClientError(
-            "invalid-response",
-            "The review response was invalid.",
-          );
-        return reviewed;
+        return completeOwnedRequest(
+          ownedSessionTransport,
+          authorization,
+          signal,
+          async () => {
+            if (response.status === 409)
+              throw new GamesClientError(
+                "conflict",
+                "This retrospective changed while you were reviewing it.",
+              );
+            if (!response.ok)
+              throw new GamesClientError(
+                response.status === 403 ? "forbidden" : "request-failed",
+                "The review could not be saved.",
+              );
+            const body: unknown = await response.json();
+            if (
+              !plain(body) ||
+              !exact(body, ["version", "decision"]) ||
+              !validRetrospective(body["version"]) ||
+              !plain(body["decision"])
+            )
+              throw new GamesClientError(
+                "invalid-response",
+                "The review response was invalid.",
+              );
+            const reviewed = body["version"],
+              decision = body["decision"];
+            const expectedState =
+              input.reasonCode === "approve"
+                ? "approved"
+                : input.reasonCode === "reject"
+                  ? "rejected"
+                  : "changes-requested";
+            if (
+              !exact(decision, [
+                "decisionId",
+                "versionId",
+                "fromState",
+                "toState",
+                "reasonCode",
+                "decidedAt",
+              ]) ||
+              !/^retrospective-decision:[a-f0-9]{64}$/.test(
+                String(decision["decisionId"]),
+              ) ||
+              decision["versionId"] !== version.versionId ||
+              decision["versionId"] !== reviewed.versionId ||
+              decision["fromState"] !== version.state ||
+              decision["toState"] !== expectedState ||
+              decision["toState"] !== reviewed.state ||
+              decision["reasonCode"] !== input.reasonCode ||
+              !iso(decision["decidedAt"]) ||
+              reviewed.stateVersion !== version.stateVersion + 1
+            )
+              throw new GamesClientError(
+                "invalid-response",
+                "The review response was invalid.",
+              );
+            return reviewed;
+          },
+        );
       },
     },
   };

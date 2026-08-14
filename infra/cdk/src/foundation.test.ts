@@ -525,7 +525,7 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("AllowOrigins");
     expect(rendered).toContain("ExposeHeaders");
     expect(rendered).toContain("location");
-    template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
+    template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 0);
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "GET /games",
       AuthorizationType: "NONE",
@@ -542,10 +542,6 @@ describe("foundation CDK app", () => {
       RouteKey: "GET /events/{eventId}",
       AuthorizationType: "NONE",
     });
-    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
-      RouteKey: "GET /events",
-      AuthorizationType: "JWT",
-    });
     for (const routeKey of [
       "GET /sports/{sportKey}/opportunities",
       "GET /sports/{sportKey}/opportunities/{opportunityId}",
@@ -554,9 +550,16 @@ describe("foundation CDK app", () => {
         RouteKey: routeKey,
         AuthorizationType: "NONE",
       });
-    // Watchlist rows belong to one user, so the routes are authenticated but
-    // deliberately carry no Cognito scope: the subject is the authorization.
+    // These ten ordinary routes authenticate the owned fte1 session inside
+    // Lambda. None may be partially left on the Cognito authorizer.
     for (const routeKey of [
+      "GET /events",
+      "POST /events/{eventId}/scout",
+      "GET /scout-jobs/{jobId}",
+      "POST /scout-jobs/{jobId}/retry",
+      "GET /scout-jobs/{jobId}/report",
+      "GET /scout-reports/{reportId}/versions",
+      "GET /scout-reports/{reportId}/versions/{versionNumber}",
       "GET /watchlist",
       "POST /watchlist",
       "DELETE /watchlist/{eventId}",
@@ -568,8 +571,9 @@ describe("foundation CDK app", () => {
       );
       expect(matches).toHaveLength(1);
       expect(matches[0]?.Properties).toEqual(
-        expect.objectContaining({ AuthorizationType: "JWT" }),
+        expect.objectContaining({ AuthorizationType: "NONE" }),
       );
+      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
       expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
     // The identity routes are how a caller obtains a token, so they carry no
@@ -599,25 +603,14 @@ describe("foundation CDK app", () => {
       expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
       expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
-    // The owned capabilities projection is additive. The four elevated write
-    // routes remain on their exact Cognito scopes until the later cutover.
-    for (const [routeKey, scope] of [
-      [
-        "POST /retrospectives/{eventId}/review",
-        "events/retrospectives:approve",
-      ],
-      [
-        "POST /strategy-experiments/{eventId}/approve",
-        "events/strategies:promote",
-      ],
-      [
-        "POST /strategy-experiments/{eventId}/promote",
-        "events/strategies:promote",
-      ],
-      [
-        "POST /strategy-experiments/{eventId}/rollback",
-        "events/strategies:promote",
-      ],
+    // These are the final four Cognito-authorized methods to move behind the
+    // Lambda's verified owned-session and server-role boundary. The Cognito
+    // pool, clients, groups, scopes, domain, and outputs remain for rollback.
+    for (const routeKey of [
+      "POST /retrospectives/{eventId}/review",
+      "POST /strategy-experiments/{eventId}/approve",
+      "POST /strategy-experiments/{eventId}/promote",
+      "POST /strategy-experiments/{eventId}/rollback",
     ]) {
       const matches = Object.values(resources).filter(
         (resource) =>
@@ -626,12 +619,10 @@ describe("foundation CDK app", () => {
       );
       expect(matches).toHaveLength(1);
       expect(matches[0]?.Properties).toEqual(
-        expect.objectContaining({
-          AuthorizationType: "JWT",
-          AuthorizationScopes: [scope],
-        }),
+        expect.objectContaining({ AuthorizationType: "NONE" }),
       );
-      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeDefined();
+      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
+      expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
@@ -1012,16 +1003,13 @@ describe("foundation CDK app", () => {
     expect(workflowDefinition).toContain("$.jobId");
     expect(workflowDefinition).toContain("$.attemptId");
 
-    for (const [routeKey, scope] of [
-      ["POST /events/{eventId}/scout", "events/scouting:write"],
-      ["GET /scout-jobs/{jobId}", "events/scouting:read"],
-      ["POST /scout-jobs/{jobId}/retry", "events/scouting:write"],
-      ["GET /scout-jobs/{jobId}/report", "events/scouting:read"],
-      ["GET /scout-reports/{reportId}/versions", "events/scouting:read"],
-      [
-        "GET /scout-reports/{reportId}/versions/{versionNumber}",
-        "events/scouting:read",
-      ],
+    for (const routeKey of [
+      "POST /events/{eventId}/scout",
+      "GET /scout-jobs/{jobId}",
+      "POST /scout-jobs/{jobId}/retry",
+      "GET /scout-jobs/{jobId}/report",
+      "GET /scout-reports/{reportId}/versions",
+      "GET /scout-reports/{reportId}/versions/{versionNumber}",
     ]) {
       const matches = Object.values(resources).filter(
         (resource) =>
@@ -1030,11 +1018,10 @@ describe("foundation CDK app", () => {
       );
       expect(matches).toHaveLength(1);
       expect(matches[0]?.Properties).toEqual(
-        expect.objectContaining({
-          AuthorizationType: "JWT",
-          AuthorizationScopes: [scope],
-        }),
+        expect.objectContaining({ AuthorizationType: "NONE" }),
       );
+      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
+      expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
     expect(rendered).toContain("scouting:read");
     expect(rendered).toContain("scouting:write");

@@ -40,9 +40,120 @@ interface GatewayJwtAuthorization {
   readonly scopes?: readonly string[];
 }
 
-/** Preserve the legacy Cognito projection exactly while its authorizer is
- * still attached. This function is intentionally claim-aware; the owned
- * session path below never consults these client-adjacent values. */
+export const ORDINARY_OWNED_ROUTE_KEYS = Object.freeze([
+  "GET /events",
+  "POST /events/{eventId}/scout",
+  "GET /scout-jobs/{jobId}",
+  "POST /scout-jobs/{jobId}/retry",
+  "GET /scout-jobs/{jobId}/report",
+  "GET /scout-reports/{reportId}/versions",
+  "GET /scout-reports/{reportId}/versions/{versionNumber}",
+  "GET /watchlist",
+  "POST /watchlist",
+  "DELETE /watchlist/{eventId}",
+] as const);
+
+export const ELEVATED_OWNED_ROUTE_KEYS = Object.freeze([
+  "POST /retrospectives/{eventId}/review",
+  "POST /strategy-experiments/{eventId}/approve",
+  "POST /strategy-experiments/{eventId}/promote",
+  "POST /strategy-experiments/{eventId}/rollback",
+] as const);
+
+const ordinaryOwnedRouteKeys = new Set<string>(ORDINARY_OWNED_ROUTE_KEYS);
+const elevatedOwnedRouteKeys = new Set<string>(ELEVATED_OWNED_ROUTE_KEYS);
+
+export const authorizationHeaderFromLambdaHeaders = (
+  headers: Readonly<Record<string, string | undefined>> | undefined,
+): string | undefined =>
+  Object.entries(headers ?? {}).find(
+    ([key]) => key.toLowerCase() === "authorization",
+  )?.[1];
+
+export interface LambdaRequestAuthorizationInput {
+  readonly routeKey?: string;
+  readonly headers?: Readonly<Record<string, string | undefined>>;
+  readonly gatewayJwt?: GatewayJwtAuthorization;
+  readonly productRoute: boolean;
+  readonly capabilitiesRoute: boolean;
+  readonly includeElevatedAuthorization: boolean;
+  readonly ownedRuntime?: {
+    readonly signingKeys: SessionKeyRing;
+    readonly identity: Pick<IdentityRepository, "getAccount">;
+    readonly identityAuthorization?: Pick<
+      IdentityAuthorizationRepository,
+      "get"
+    >;
+    readonly now: Date;
+  };
+}
+
+export const shouldResolveOwnedLambdaAuthorization = (
+  input: Pick<
+    LambdaRequestAuthorizationInput,
+    "routeKey" | "headers" | "productRoute" | "capabilitiesRoute"
+  >,
+): boolean =>
+  (ordinaryOwnedRouteKeys.has(input.routeKey ?? "") ||
+    elevatedOwnedRouteKeys.has(input.routeKey ?? "") ||
+    input.productRoute ||
+    input.capabilitiesRoute) &&
+  isOwnedSessionAuthorization(
+    authorizationHeaderFromLambdaHeaders(input.headers),
+  );
+
+/**
+ * Production Lambda authorization seam. Ordinary detached routes accept only
+ * a verified owned bearer, even if a synthetic request context contains stale
+ * gateway claims. Routes outside that exact cutover inventory retain the
+ * legacy projection until their own migration slice.
+ */
+export async function authorizationContextFromLambdaRequest(
+  input: LambdaRequestAuthorizationInput,
+): Promise<HandlerAuthorizationContext> {
+  const ordinaryOwnedRoute = ordinaryOwnedRouteKeys.has(input.routeKey ?? "");
+  const elevatedOwnedRoute = elevatedOwnedRouteKeys.has(input.routeKey ?? "");
+  const authorization = authorizationHeaderFromLambdaHeaders(input.headers);
+  const resolveOwned = shouldResolveOwnedLambdaAuthorization(input);
+  if (resolveOwned) {
+    if (!input.ownedRuntime) return UNAUTHORIZED_CONTEXT;
+    return (
+      (await resolveOwnedSessionAuthorization({
+        ...(authorization ? { authorization } : {}),
+        signingKeys: input.ownedRuntime.signingKeys,
+        identity: input.ownedRuntime.identity,
+        ...(input.includeElevatedAuthorization
+          ? {
+              includeElevatedAuthorization: true,
+              ...(input.ownedRuntime.identityAuthorization
+                ? {
+                    identityAuthorization:
+                      input.ownedRuntime.identityAuthorization,
+                  }
+                : {}),
+            }
+          : {}),
+        now: input.ownedRuntime.now,
+      })) ?? UNAUTHORIZED_CONTEXT
+    );
+  }
+  if (ordinaryOwnedRoute || elevatedOwnedRoute || input.capabilitiesRoute)
+    return UNAUTHORIZED_CONTEXT;
+  return authorizationContextFromGateway(input.gatewayJwt);
+}
+
+export const handlerAuthorizationFields = (
+  authorization: HandlerAuthorizationContext,
+) => ({
+  ...(authorization.subject ? { subject: authorization.subject } : {}),
+  ...(authorization.scopes ? { scopes: authorization.scopes } : {}),
+  reviewerAuthorized: authorization.reviewerAuthorized,
+  strategyPromoterAuthorized: authorization.strategyPromoterAuthorized,
+});
+
+/** Preserve the legacy Cognito projection as a rollback seam. This function
+ * is intentionally claim-aware; every detached owned-session route is
+ * inventoried above and never consults these client-adjacent values. */
 export function authorizationContextFromGateway(
   jwt: GatewayJwtAuthorization | undefined,
 ): HandlerAuthorizationContext {
