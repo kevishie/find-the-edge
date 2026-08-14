@@ -6,7 +6,17 @@ SharpAPI is the sole enabled production schedule, odds, and public-betting
 provider. The Odds API is not called by production ingestion. The upgraded
 account boundary was verified on 2026-08-05 with `maxBooks=25`; this is a
 capacity fact, not a promise that every book appears on every event. Streaming
-and Live Game State add-ons are intentionally disabled for MVP.
+remains disabled. Live Game State is not connected to production ingestion or a
+serving path. Epic 14 records a successful account-boundary response on
+2026-08-12, but the bounded FTE-082 preflight below must revalidate current
+entitlement before any research window; it never purchases or enables an
+add-on.
+
+The staging Game State preflight succeeded again on 2026-08-14: all four closed
+routes returned within the exact request budget. The derived record contained
+448 observations, including 23 baseball rows, 106 soccer rows, zero football
+rows at that instant, and 190 aggregate rows from off-roster catalogues. This is
+entitlement and shape evidence only, not coverage or correctness evidence.
 
 The runtime references `find-the-edge/<stage>/sharpapi` in AWS Secrets Manager.
 The secret must contain only the server-side API key. Never place the value in
@@ -26,6 +36,124 @@ freshness, not the exact time a line moved. Split `fetched_at` remains separate.
 
 The operator approved Pro activation. A plan upgrade or add-on remains a manual
 decision and is never performed by deployment automation.
+
+## Live Game State research preflight
+
+FTE-082 uses `scripts/game-state-spike.mjs`, a read-only research tool. It reads
+the existing stage secret, performs fixed GET requests to `/gamestate` and the
+closed baseball, football, and soccer routes, and writes only derived bounded
+evidence. It has no table, worker, billing, provider-activation, or product
+serving access.
+
+Run the local contract suite before a paid request:
+
+```sh
+pnpm test:game-state-spike
+```
+
+Confirm the current AWS identity is account `228246988391` in `us-east-1`, then
+run the staging preflight. The four-request cap is exact: aggregate plus one
+request for each served sport route. Choose a new output path because the tool
+uses exclusive creation and never overwrites evidence.
+
+```sh
+pnpm game-state:spike -- \
+  --stage staging \
+  --mode preflight \
+  --region us-east-1 \
+  --max-requests 4 \
+  --output /tmp/fte-game-state-preflight-2026-08-14.json
+```
+
+Stop on `unauthorized`, `not-entitled`, `rate-limited`,
+`provider-request-ambiguous`, `provider-unavailable`, or `invalid-response`.
+There is no automatic retry. A failed required route produces no final evidence
+file. Do not change route names, loosen response validation, upgrade the plan,
+or substitute a key from an environment variable.
+
+Before a whole-slate sample, freeze an independently sourced manifest using
+schema `game-state-spike-manifest-v1`. It contains a bounded official reference
+hash, freeze time, canonical event id, provider event id, sport, and scheduled
+start for every event in the denominator. Provider-returned rows never define
+the denominator. Then initialize the truth sidecar. The initializer validates
+the manifest and binds the exact manifest-file bytes, source, tolerance, and
+freeze time into one exclusive header line.
+
+```sh
+pnpm game-state:truth:init -- \
+  --manifest /absolute/path/to/frozen-mlb-slate.json \
+  --source-kind official-scoreboard \
+  --source-reference-hash <64-lowercase-hex-digest> \
+  --comparison-tolerance-seconds 60 \
+  --frozen-at <ISO-8601-instant-before-collection> \
+  --output /absolute/path/to/append-only-official-truth.jsonl
+```
+
+A 24-hour run plus a six-hour post-final retention window at five-minute cadence
+has 361 ticks and exactly 1,444 requests. Post-final minutes extend the planned
+window and request budget; they are not descriptive metadata. The sampler
+requires the still-header-only sidecar and records its exact header hash plus
+the exact manifest-file hash before the first provider request.
+
+```sh
+pnpm game-state:spike -- \
+  --stage staging \
+  --mode sample \
+  --region us-east-1 \
+  --interval-seconds 300 \
+  --duration-minutes 1440 \
+  --post-final-minutes 360 \
+  --max-requests 1444 \
+  --manifest /absolute/path/to/frozen-mlb-slate.json \
+  --truth-sidecar /absolute/path/to/append-only-official-truth.jsonl \
+  --output /absolute/path/to/new-derived-evidence.json
+```
+
+The output intentionally excludes raw provider ids, team/player labels,
+primary-book identifiers, response bodies, headers containing credentials,
+commercial terms, and user data. It retains per-run keyed event hashes,
+normalized state fields, schema/state hashes, retrieval and consensus times,
+rate-window metadata, mapping classes, aggregate-versus-sport reconciliation,
+coverage denominators, and categorical lifecycle transitions. A hash is an
+integrity marker, not permission to retain the paid response. Raw responses are
+discarded after in-memory normalization unless written licensing terms later
+authorize a separate encrypted evidence corpus.
+
+### Independent truth sidecar
+
+Do not place future scores or statuses in the frozen pregame manifest. The
+manifest freezes identity, scheduled starts, the denominator, and the identity
+source before collection. Before the provider window, create a separate JSON
+Lines truth sidecar whose first line is a `game-state-spike-truth-v1` `header`
+binding a protocol freeze time no later than provider collection, the exact
+manifest input hash, the independent source, and the comparison tolerance.
+The sampler refuses a missing, changed, already-populated, or unlike header.
+During the window, append closed `checkpoint` lines with
+canonical event id, observation time, nullable integer scores/clock/period,
+phase, in-play, and final flags. After the provider artifact is complete, append
+one terminal `seal` line containing its exact SHA-256 and the SHA-256 of every
+preceding sidecar line including its newline. The analyzer requires that seal to
+be last, verifies both hashes, and refuses edits, missing seals, or appended
+records. Never include a provider id, team label, book name, URL, credential, or
+raw response.
+
+After the provider evidence and truth sidecar are immutable, run the offline
+join. It performs no AWS or provider call, chooses only the latest checkpoint at
+or before the provider consensus timestamp, refuses unlike hashes, and writes a
+bounded aggregate analysis without copying event ids or checkpoint values.
+
+```sh
+pnpm game-state:truth -- \
+  --evidence /absolute/path/to/new-derived-evidence.json \
+  --truth /absolute/path/to/append-only-official-truth.jsonl \
+  --output /absolute/path/to/new-truth-analysis.json
+```
+
+The truth analysis reports compared/unavailable denominators and bounded
+wrong-score, status, clock/period, false-live, and false-final counts by served
+sport. A checkpoint later than a provider observation is never used to judge
+that observation. The sidecar and analysis are evidence for the research
+report; neither is a settlement authority.
 
 ## Entitled collection roster and consensus policy
 
