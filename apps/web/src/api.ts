@@ -285,6 +285,20 @@ export interface AuthSessionDto {
   readonly accountId: string;
 }
 
+export const OWNED_SESSION_CAPABILITIES = [
+  "events/retrospectives:approve",
+  "events/strategies:promote",
+] as const;
+export type OwnedSessionCapability =
+  (typeof OWNED_SESSION_CAPABILITIES)[number];
+
+/** The server-owned elevated authority projected for the current session. */
+export interface OwnedSessionCapabilitiesDto {
+  readonly schemaVersion: "owned-session-capabilities-v1";
+  readonly accountId: string;
+  readonly capabilities: readonly OwnedSessionCapability[];
+}
+
 /** The two plans this product sells. A name, never a price. */
 export const CHECKOUT_PLANS = ["monthly", "annual"] as const;
 export type CheckoutPlan = (typeof CHECKOUT_PLANS)[number];
@@ -454,6 +468,9 @@ export interface GamesClient {
     signal: AbortSignal,
   ): Promise<AuthSessionDto>;
   refreshSession?(token: string, signal: AbortSignal): Promise<AuthSessionDto>;
+  getSessionCapabilities?(
+    signal: AbortSignal,
+  ): Promise<OwnedSessionCapabilitiesDto>;
   /** Retires the token server-side. Signing out must end it, not forget it. */
   revokeSession?(token: string, signal: AbortSignal): Promise<void>;
   entitlement?(token: string, signal: AbortSignal): Promise<EntitlementDto>;
@@ -1132,42 +1149,63 @@ const authorizeProductRequest = (
   });
 };
 
+const ownedProductFetch = async (
+  fetcher: typeof fetch,
+  session: OwnedSessionTransport,
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): Promise<{
+  readonly response: Response;
+  readonly authorization: OwnedSessionAuthorization;
+}> => {
+  const signal =
+    init?.signal ??
+    (typeof Request !== "undefined" && input instanceof Request
+      ? input.signal
+      : undefined);
+  const authorization = await authorizeProductRequest(session, signal);
+  if (authorization === null) {
+    session.refuse(null, "authentication");
+    throw new GamesClientError(
+      "authentication",
+      "Sign in is required to use Find The Edge.",
+    );
+  }
+  if (
+    !isSessionToken(authorization.token) ||
+    !isAccountId(authorization.accountId)
+  ) {
+    session.refuse(authorization, "authentication");
+    throw new GamesClientError(
+      "authentication",
+      "The session has ended. Sign in again.",
+    );
+  }
+  if (signal?.aborted) throw abortReason(signal);
+  const headers = new Headers(init?.headers);
+  headers.set("authorization", `Bearer ${authorization.token}`);
+  const response = await fetcher(input, { ...init, headers });
+  if (response.status === 401) {
+    session.refuse(authorization, "authentication");
+    throw new GamesClientError(
+      "authentication",
+      "The session has ended. Sign in again.",
+    );
+  }
+  if (response.status === 402) {
+    session.refuse(authorization, "payment-required");
+    throw new GamesClientError(
+      "payment-required",
+      "An active trial or subscription is required.",
+    );
+  }
+  return { response, authorization };
+};
+
 const ownedProductFetcher =
   (fetcher: typeof fetch, session: OwnedSessionTransport): typeof fetch =>
-  async (input, init) => {
-    const signal =
-      init?.signal ??
-      (typeof Request !== "undefined" && input instanceof Request
-        ? input.signal
-        : undefined);
-    const authorization = await authorizeProductRequest(session, signal);
-    if (authorization === null) {
-      session.refuse(null, "authentication");
-      throw new GamesClientError(
-        "authentication",
-        "Sign in is required to use Find The Edge.",
-      );
-    }
-    if (signal?.aborted) throw abortReason(signal);
-    const headers = new Headers(init?.headers);
-    headers.set("authorization", `Bearer ${authorization.token}`);
-    const response = await fetcher(input, { ...init, headers });
-    if (response.status === 401) {
-      session.refuse(authorization, "authentication");
-      throw new GamesClientError(
-        "authentication",
-        "The session has ended. Sign in again.",
-      );
-    }
-    if (response.status === 402) {
-      session.refuse(authorization, "payment-required");
-      throw new GamesClientError(
-        "payment-required",
-        "An active trial or subscription is required.",
-      );
-    }
-    return response;
-  };
+  async (input, init) =>
+    (await ownedProductFetch(fetcher, session, input, init)).response;
 
 /**
  * A refusal that carries how long the caller must wait. It is its own class so
@@ -1603,6 +1641,41 @@ export const isSessionToken = (value: unknown): value is string =>
 /** The account id is a digest, never a phone number. */
 export const isAccountId = (value: unknown): value is string =>
   typeof value === "string" && /^account:[a-f0-9]{64}$/.test(value);
+
+const invalidOwnedCapabilities = () =>
+  new GamesClientError(
+    "invalid-response",
+    "Session capabilities are unavailable.",
+  );
+
+export function parseOwnedSessionCapabilities(
+  value: unknown,
+  expectedAccountId: string,
+): OwnedSessionCapabilitiesDto {
+  if (
+    !isAccountId(expectedAccountId) ||
+    !plain(value) ||
+    !exact(value, ["schemaVersion", "accountId", "capabilities"]) ||
+    value["schemaVersion"] !== "owned-session-capabilities-v1" ||
+    value["accountId"] !== expectedAccountId ||
+    !Array.isArray(value["capabilities"])
+  )
+    throw invalidOwnedCapabilities();
+  const capabilities = value["capabilities"] as unknown[];
+  const canonical = OWNED_SESSION_CAPABILITIES.filter((capability) =>
+    capabilities.includes(capability),
+  );
+  if (
+    capabilities.length !== canonical.length ||
+    capabilities.some((capability, index) => capability !== canonical[index])
+  )
+    throw invalidOwnedCapabilities();
+  return Object.freeze({
+    schemaVersion: "owned-session-capabilities-v1" as const,
+    accountId: expectedAccountId,
+    capabilities: Object.freeze([...canonical]),
+  });
+}
 
 const invalidAuth = () =>
   new GamesClientError("invalid-response", "The sign-in response was invalid.");
@@ -3960,6 +4033,49 @@ export function createGamesClient(
           ),
           unavailable: "Sign in could not be completed right now. Try again.",
         });
+      },
+      async getSessionCapabilities(signal) {
+        const session = ownedSession ?? {
+          authorize: () => Promise.resolve(null),
+          refuse: () => undefined,
+        };
+        const { response, authorization } = await ownedProductFetch(
+          fetcher,
+          session,
+          `${bootstrap.value.config.apiBase}/auth/session/capabilities`,
+          {
+            method: "GET",
+            credentials: "omit",
+            cache: "no-store",
+            signal,
+          },
+        );
+        if (!response.ok)
+          throw new GamesClientError(
+            "request-failed",
+            "Session capabilities are unavailable.",
+          );
+        const payload: unknown = await response.json().catch(() => null);
+        const parsed = parseOwnedSessionCapabilities(
+          payload,
+          authorization.accountId,
+        );
+        const currentAuthorization = await authorizeProductRequest(
+          session,
+          signal,
+        );
+        if (signal.aborted) throw abortReason(signal);
+        if (
+          !currentAuthorization ||
+          !isSessionToken(currentAuthorization.token) ||
+          !isAccountId(currentAuthorization.accountId) ||
+          currentAuthorization.accountId !== authorization.accountId
+        )
+          throw new GamesClientError(
+            "authentication",
+            "The active account changed while capabilities were loading.",
+          );
+        return parsed;
       },
       async entitlement(token, signal) {
         return authRequest({

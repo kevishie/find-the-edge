@@ -40,7 +40,7 @@ describe("strategy experiment API mutation boundary", () => {
     method: "POST" as const,
     contentType: "application/json",
     subject: "human",
-    scopes: ["strategies:promote"],
+    scopes: ["events/strategies:promote"],
     strategyPromoterAuthorized: true,
   };
   it("rejects null and array mutation bodies", async () => {
@@ -55,6 +55,17 @@ describe("strategy experiment API mutation boundary", () => {
           body: "{}",
           strategyPromoterAuthorized: false,
           reviewerAuthorized: true,
+        })
+      ).statusCode,
+    ).toBe(403);
+  });
+  it("rejects the legacy bare scope even for a projected promoter", async () => {
+    expect(
+      (
+        await handler({
+          ...base,
+          scopes: ["strategies:promote"],
+          body: "{}",
         })
       ).statusCode,
     ).toBe(403);

@@ -1461,6 +1461,14 @@ export class FoundationStack extends Stack {
         methods: [HttpMethod.POST],
         integration,
       });
+    // This projection authenticates the owned fte1 bearer in the handler. It
+    // must remain outside the legacy Cognito authorizer so it can describe the
+    // authority of the session that will eventually replace that authorizer.
+    api.addRoutes({
+      path: "/auth/session/capabilities",
+      methods: [HttpMethod.GET],
+      integration,
+    });
     // Billing carries no gateway authorizer either, for two different
     // reasons. `/billing/webhook` is called by Stripe, which authenticates
     // itself with a signature over the raw body — an authorizer expecting our

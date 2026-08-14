@@ -9,6 +9,8 @@ import {
   createGamesClient as createGamesClientWithTransport,
   GamesClientError,
   isCanonicalEventStatus,
+  OWNED_SESSION_CAPABILITIES,
+  parseOwnedSessionCapabilities,
   parsePublicScoutingJob,
   type OwnedSessionTransport,
 } from "./api";
@@ -802,6 +804,177 @@ describe("owned product transport", () => {
     expect(fetcher).not.toHaveBeenCalled();
     // The shared refresh is not canceled; settling it later remains harmless.
     resolveAuthorization(authorization());
+  });
+});
+
+describe("owned session capabilities client", () => {
+  const capabilities = {
+    schemaVersion: "owned-session-capabilities-v1",
+    accountId: ownedAccount,
+    capabilities: [...OWNED_SESSION_CAPABILITIES],
+  };
+
+  it("reads canonical capabilities with the current owned session", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify(capabilities)));
+    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
+    if (!result.ok) throw result.error;
+
+    const loaded = await result.value.getSessionCapabilities?.(
+      new AbortController().signal,
+    );
+    expect(loaded).toEqual(capabilities);
+    expect(Object.isFrozen(loaded)).toBe(true);
+    expect(Object.isFrozen(loaded?.capabilities)).toBe(true);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/auth/session/capabilities",
+    );
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      method: "GET",
+      credentials: "omit",
+      cache: "no-store",
+    });
+    expect(
+      new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("authorization"),
+    ).toBe(`Bearer ${ownedToken}`);
+  });
+
+  it("rejects a capability response when the active account changes in flight", async () => {
+    const nextAccount = `account:${"c".repeat(64)}`;
+    const authorize = vi
+      .fn()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce({ token: ownedToken, accountId: nextAccount });
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(capabilities))),
+      { authorize, refuse: vi.fn() },
+    );
+    if (!result.ok) throw result.error;
+
+    await expect(
+      result.value.getSessionCapabilities?.(new AbortController().signal),
+    ).rejects.toMatchObject({ code: "authentication" });
+    expect(authorize).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts a same-account token refresh while capabilities are in flight", async () => {
+    const authorize = vi
+      .fn()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(authorization(`${ownedToken}-refreshed`));
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(capabilities))),
+      { authorize, refuse: vi.fn() },
+    );
+    if (!result.ok) throw result.error;
+
+    await expect(
+      result.value.getSessionCapabilities?.(new AbortController().signal),
+    ).resolves.toEqual(capabilities);
+  });
+
+  it("rejects a malformed replacement token for the same account", async () => {
+    const authorize = vi
+      .fn()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce({ token: "legacy.jwt", accountId: ownedAccount });
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(capabilities))),
+      { authorize, refuse: vi.fn() },
+    );
+    if (!result.ok) throw result.error;
+
+    await expect(
+      result.value.getSessionCapabilities?.(new AbortController().signal),
+    ).rejects.toMatchObject({ code: "authentication" });
+  });
+
+  it("accepts an empty capability projection for an ordinary account", () => {
+    expect(
+      parseOwnedSessionCapabilities(
+        { ...capabilities, capabilities: [] },
+        ownedAccount,
+      ),
+    ).toEqual({ ...capabilities, capabilities: [] });
+  });
+
+  it.each([
+    [
+      "another account",
+      { ...capabilities, accountId: `account:${"c".repeat(64)}` },
+    ],
+    [
+      "an unknown schema",
+      { ...capabilities, schemaVersion: "owned-session-capabilities-v2" },
+    ],
+    [
+      "an unknown capability",
+      { ...capabilities, capabilities: ["events/admin"] },
+    ],
+    [
+      "a repeated capability",
+      {
+        ...capabilities,
+        capabilities: [
+          OWNED_SESSION_CAPABILITIES[0],
+          OWNED_SESSION_CAPABILITIES[0],
+        ],
+      },
+    ],
+    [
+      "a noncanonical order",
+      {
+        ...capabilities,
+        capabilities: [...OWNED_SESSION_CAPABILITIES].reverse(),
+      },
+    ],
+    ["an extra field", { ...capabilities, roles: ["strategy-promoter"] }],
+  ])("fails closed on %s", async (_label, body) => {
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(body))),
+    );
+    if (!result.ok) throw result.error;
+    await expect(
+      result.value.getSessionCapabilities?.(new AbortController().signal),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  it("refuses a malformed owned-session identity before the request", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const refuse = vi.fn();
+    const result = createGamesClient(
+      { ok: true, value: bootstrap() },
+      fetcher,
+      {
+        authorize: () =>
+          Promise.resolve({ token: "legacy.jwt", accountId: ownedAccount }),
+        refuse,
+      },
+    );
+    if (!result.ok) throw result.error;
+
+    await expect(
+      result.value.getSessionCapabilities?.(new AbortController().signal),
+    ).rejects.toMatchObject({ code: "authentication" });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(refuse).toHaveBeenCalledWith(
+      { token: "legacy.jwt", accountId: ownedAccount },
+      "authentication",
+    );
   });
 });
 

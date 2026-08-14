@@ -37,6 +37,7 @@ import {
   canonicalMvpMarketKeys,
   createWatchlistEntry,
   EVENT_LIFECYCLE_STATES,
+  IDENTITY_AUTHORIZATION_CAPABILITIES,
   opportunityWarningCodes,
   participantSelectionKey,
   WATCHLIST_ENTRY_SCHEMA_VERSION,
@@ -110,6 +111,10 @@ export interface ApiRequest {
     | "auth-otp-verify"
     | "auth-session-refresh"
     | "auth-session-revoke"
+    // Public at the gateway, but authenticated here with the owned session.
+    // This lets the browser discover server-owned capabilities without
+    // depending on Cognito claims during the authorizer migration.
+    | "auth-session-capabilities"
     // Public by design: Stripe calls this one, and it authenticates itself
     // with a signature over the raw body rather than with a token.
     | "billing-webhook"
@@ -463,6 +468,28 @@ export const createEventHandler =
         });
         status = result.response.statusCode;
         return result.response;
+      }
+      if (request.route === "auth-session-capabilities") {
+        if (!request.subject)
+          return response((status = 401), { error: "unauthorized" });
+        if (
+          request.method !== "GET" ||
+          request.body !== undefined ||
+          Object.keys(request.query ?? {}).length > 0
+        )
+          throw new EventInputError("session-capabilities-request-invalid");
+        const capabilities = IDENTITY_AUTHORIZATION_CAPABILITIES.filter(
+          (capability) =>
+            request.scopes?.includes(capability) &&
+            (capability === "events/retrospectives:approve"
+              ? request.reviewerAuthorized
+              : request.strategyPromoterAuthorized),
+        );
+        return response(200, {
+          schemaVersion: "owned-session-capabilities-v1",
+          accountId: request.subject,
+          capabilities,
+        });
       }
       // FTE-073. Every remaining route serves the paid product, so the
       // entitlement decision happens here, once, before any of them run. It
@@ -1012,7 +1039,7 @@ export const createEventHandler =
         if (!request.subject)
           return response((status = 401), { error: "unauthorized" });
         if (
-          !request.scopes?.includes("strategies:promote") ||
+          !request.scopes?.includes(IDENTITY_AUTHORIZATION_CAPABILITIES[1]) ||
           !request.strategyPromoterAuthorized
         )
           return response((status = 403), { error: "forbidden" });
@@ -1135,7 +1162,7 @@ export const createEventHandler =
           throw new EventInputError("retrospective-review-request-invalid");
         if (!request.subject)
           return response((status = 401), { error: "unauthorized" });
-        if (!request.scopes?.includes("retrospectives:approve"))
+        if (!request.scopes?.includes(IDENTITY_AUTHORIZATION_CAPABILITIES[0]))
           return response((status = 403), { error: "forbidden" });
         if (!request.reviewerAuthorized)
           return response((status = 403), { error: "forbidden" });
