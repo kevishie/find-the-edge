@@ -47,6 +47,14 @@ import { createStripeRestClient } from "./stripe-client";
 import { createSnsSmsSender } from "./sms-sender";
 import { loadSecretRing } from "./secrets";
 import { encodeApiResponse } from "./http-compression";
+import {
+  authorizationContextFromGateway,
+  isOwnedSessionAuthorization,
+  memoizeIdentityAccountLookup,
+  resolveOwnedSessionAuthorization,
+  UNAUTHORIZED_CONTEXT,
+} from "./authorization-context";
+import { withEventApiLambdaBoundary } from "./lambda-boundary";
 interface LambdaEvent {
   readonly routeKey?: string;
   readonly rawPath?: string;
@@ -157,7 +165,7 @@ const projectionReady = async () => {
   };
   return ready;
 };
-export const handler = async (event: LambdaEvent) => {
+const handleEvent = async (event: LambdaEvent) => {
   const ring = await loadSecretRing(secrets, secretArn);
   const cursorCodec = new EventCursorCodec(ring);
   const repository = new DynamoEventRepository(
@@ -181,7 +189,9 @@ export const handler = async (event: LambdaEvent) => {
     documentClient,
     tableName,
   );
-  const claims = event.requestContext?.authorizer?.jwt?.claims;
+  const identityRepository = memoizeIdentityAccountLookup(
+    new DynamoIdentityRepository(documentClient, tableName),
+  );
   const route =
     BILLING_ROUTES[event.routeKey ?? ""] ??
     (event.routeKey === "POST /auth/otp/request"
@@ -295,24 +305,6 @@ export const handler = async (event: LambdaEvent) => {
   const jobId = event.pathParameters?.jobId;
   const reportId = event.pathParameters?.reportId;
   const versionNumber = event.pathParameters?.versionNumber;
-  const subject =
-    typeof claims?.["sub"] === "string" ? claims["sub"] : undefined;
-  const authorizedScopes = event.requestContext?.authorizer?.jwt?.scopes;
-  const claimScope = claims?.["scope"];
-  const scopes =
-    authorizedScopes ??
-    (typeof claimScope === "string"
-      ? claimScope.split(" ").filter(Boolean)
-      : undefined);
-  const groups = claims?.["cognito:groups"];
-  const reviewerAuthorized =
-    (Array.isArray(groups) && groups.includes("fte-retrospective-reviewers")) ||
-    (typeof groups === "string" &&
-      groups.split(",").includes("fte-retrospective-reviewers"));
-  const strategyPromoterAuthorized =
-    (Array.isArray(groups) && groups.includes("fte-strategy-promoters")) ||
-    (typeof groups === "string" &&
-      groups.split(",").includes("fte-strategy-promoters"));
   const query = event.queryStringParameters;
   const contentType = Object.entries(event.headers ?? {}).find(
     ([key]) => key.toLowerCase() === "content-type",
@@ -326,6 +318,11 @@ export const handler = async (event: LambdaEvent) => {
   const authorization = Object.entries(event.headers ?? {}).find(
     ([key]) => key.toLowerCase() === "authorization",
   )?.[1];
+  const gatewayAuthorization = authorizationContextFromGateway(
+    event.requestContext?.authorizer?.jwt,
+  );
+  const ownedSessionAuthorization =
+    requiresProductAccess(route) && isOwnedSessionAuthorization(authorization);
   const stripeSignature = Object.entries(event.headers ?? {}).find(
     ([key]) => key.toLowerCase() === "stripe-signature",
   )?.[1];
@@ -355,9 +352,23 @@ export const handler = async (event: LambdaEvent) => {
     // Enforcement needs the ring on every product route, not just the auth
     // ones. While the flag is off, the secret load stays on the auth path
     // alone and product routes pay nothing for it.
-    (productAccessEnforced && requiresProductAccess(route))
+    (productAccessEnforced && requiresProductAccess(route)) ||
+    // This is preparation for the authorizer cutover only. API Gateway still
+    // enforces Cognito in deployed stages, but a request that reaches the
+    // adapter with an fte1 credential must be verified here and fail closed.
+    ownedSessionAuthorization
       ? await loadIdentitySecrets(secrets, identitySecretId)
       : undefined;
+  const requestAuthorization = ownedSessionAuthorization
+    ? identity
+      ? ((await resolveOwnedSessionAuthorization({
+          ...(authorization ? { authorization } : {}),
+          signingKeys: identity.signingKeys,
+          identity: identityRepository,
+          now: new Date(),
+        })) ?? UNAUTHORIZED_CONTEXT)
+      : UNAUTHORIZED_CONTEXT
+    : gatewayAuthorization;
   let billingSecrets: BillingSecrets | undefined;
   if (billingRoute && stripeSecretId && webBaseUrl)
     try {
@@ -412,7 +423,7 @@ export const handler = async (event: LambdaEvent) => {
     new DynamoClvRepository(documentClient, tableName),
     new DynamoScoutingReportRepository(documentClient, tableName),
     new DynamoWatchlistRepository(documentClient, tableName),
-    new DynamoIdentityRepository(documentClient, tableName),
+    identityRepository,
     identity
       ? {
           sms,
@@ -444,10 +455,14 @@ export const handler = async (event: LambdaEvent) => {
       : undefined,
   )({
     route,
-    ...(subject ? { subject } : {}),
-    ...(scopes ? { scopes } : {}),
-    reviewerAuthorized,
-    strategyPromoterAuthorized,
+    ...(requestAuthorization.subject
+      ? { subject: requestAuthorization.subject }
+      : {}),
+    ...(requestAuthorization.scopes
+      ? { scopes: requestAuthorization.scopes }
+      : {}),
+    reviewerAuthorized: requestAuthorization.reviewerAuthorized,
+    strategyPromoterAuthorized: requestAuthorization.strategyPromoterAuthorized,
     ...(eventId ? { eventId } : {}),
     ...(eventIdAlternatives.length > 0 ? { eventIdAlternatives } : {}),
     ...(sportKey ? { sportKey } : {}),
@@ -473,3 +488,6 @@ export const handler = async (event: LambdaEvent) => {
   });
   return encodeApiResponse(apiResponse, acceptEncoding);
 };
+
+export const handler = (event: LambdaEvent) =>
+  withEventApiLambdaBoundary(() => handleEvent(event));
