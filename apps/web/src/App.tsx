@@ -714,7 +714,6 @@ export function useWatchlistControl(
   // Mutations outlive the effect that started them, so they share one
   // controller that is aborted when the screen goes away.
   const mutations = useRef<AbortController | null>(null);
-  const entries = useRef<readonly WatchlistEntryDto[]>([]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -724,10 +723,6 @@ export function useWatchlistControl(
       mutations.current = null;
     };
   }, []);
-
-  useEffect(() => {
-    entries.current = state.kind === "ready" ? state.entries : [];
-  }, [state]);
 
   useEffect(() => {
     if (!listWatchlist) return;
@@ -810,9 +805,13 @@ export function useWatchlistControl(
     async (eventId: string): Promise<boolean> => {
       const signal = mutations.current?.signal;
       if (!removeFromWatchlist || !signal) return false;
-      const removed = entries.current.find(
-        (entry) => entry.eventId === eventId,
-      );
+      // Capture rollback data from the exact render that exposed the Remove
+      // button. Mirroring entries through an effect leaves a brief window in
+      // which the row is visible but its rollback snapshot is still stale.
+      const removed =
+        state.kind === "ready"
+          ? state.entries.find((entry) => entry.eventId === eventId)
+          : undefined;
       markPending(eventId, true);
       setMutationError(null);
       setState((current) =>
@@ -849,7 +848,7 @@ export function useWatchlistControl(
         markPending(eventId, false);
       }
     },
-    [markPending, removeFromWatchlist],
+    [markPending, removeFromWatchlist, state],
   );
 
   const watched = useMemo(
