@@ -103,7 +103,7 @@ describe("retrospective API", () =>
       route: "retrospective-review",
       eventId: record.versionId,
       subject: "reviewer",
-      scopes: ["retrospectives:approve"],
+      scopes: ["events/retrospectives:approve"],
       reviewerAuthorized: true,
       method: "POST",
       contentType: "application/json",
@@ -124,6 +124,26 @@ describe("retrospective API", () =>
           eventId: record.versionId,
           subject: "reviewer",
           scopes: ["retrospectives:approve"],
+          reviewerAuthorized: true,
+          method: "POST",
+          contentType: "application/json",
+          query: {},
+          body: JSON.stringify({
+            reasonCode: "approve",
+            idempotencyKey: "legacy-bare-scope",
+            expectedState: "draft",
+            expectedStateVersion: 1,
+          }),
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await handler({
+          route: "retrospective-review",
+          eventId: record.versionId,
+          subject: "reviewer",
+          scopes: ["events/retrospectives:approve"],
           reviewerAuthorized: true,
           method: "POST",
           contentType: "text/plain",

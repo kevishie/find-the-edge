@@ -29,6 +29,10 @@ const OPEN_ROUTES = new Set([
   "auth-session-refresh",
   // Signing out must work even for a session the gate would refuse.
   "auth-session-revoke",
+  // This route authenticates the owned bearer itself and reports authority,
+  // not paid product data. Gating capability discovery behind entitlement
+  // would make the browser unable to distinguish authorization from access.
+  "auth-session-capabilities",
   "billing-webhook",
   "billing-entitlement",
   "billing-checkout",

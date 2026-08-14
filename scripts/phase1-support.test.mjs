@@ -684,6 +684,7 @@ function validTemplate() {
           ["AuthOtpVerifyRoute", "POST /auth/otp/verify"],
           ["AuthSessionRefreshRoute", "POST /auth/session/refresh"],
           ["AuthSessionRevokeRoute", "POST /auth/session/revoke"],
+          ["AuthSessionCapabilitiesRoute", "GET /auth/session/capabilities"],
           ["BillingWebhookRoute", "POST /billing/webhook"],
           ["BillingEntitlementRoute", "GET /billing/entitlement"],
           ["BillingCheckoutRoute", "POST /billing/checkout"],
@@ -1326,6 +1327,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
     "AuthOtpVerifyRoute",
     "AuthSessionRefreshRoute",
     "AuthSessionRevokeRoute",
+    "AuthSessionCapabilitiesRoute",
   ]) {
     const missingIdentityRoute = structuredClone(template);
     delete missingIdentityRoute.Resources[routeId];
