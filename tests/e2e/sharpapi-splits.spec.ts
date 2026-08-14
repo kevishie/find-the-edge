@@ -1,5 +1,4 @@
-import { expect, test } from "@playwright/test";
-import { seedSession } from "./session";
+import { expect, test } from "./session";
 import {
   startLocalSharpApiSplitsApi,
   type LocalSharpApiSplitsApi,
@@ -16,7 +15,6 @@ test.afterAll(async () => {
 });
 
 test.beforeEach(async ({ page }) => {
-  await seedSession(page);
   await page.addInitScript((apiBase) => {
     Object.defineProperty(window, "__FTE_RUNTIME_CONFIG__", {
       value: { schemaVersion: 1, apiBase },

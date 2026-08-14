@@ -2,12 +2,14 @@ import { expect, describe, it, vi } from "vitest";
 
 import { GamesClientError } from "./api";
 import {
+  createProductRefusalHandler,
   createSessionStore,
   DEFAULT_RETURN_PATH,
   LOGIN_PATH,
   requiresSession,
   safeReturnPath,
   SESSION_STORAGE_KEY,
+  SUBSCRIBE_PATH,
   type Session,
 } from "./session";
 
@@ -38,6 +40,11 @@ const NOW = Date.parse("2026-08-11T12:00:00.000Z");
 const token = (marker: string) =>
   `fte1.${marker.padEnd(40, "x")}.${"a".repeat(64)}`;
 const ACCOUNT = `account:${"b".repeat(64)}`;
+const OTHER_ACCOUNT = `account:${"c".repeat(64)}`;
+const authorization = (marker: string, accountId = ACCOUNT) => ({
+  token: token(marker),
+  accountId,
+});
 
 const session = (minutesLeft: number, marker = "first"): Session => ({
   token: token(marker),
@@ -170,6 +177,96 @@ describe("proactive refresh", () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
+  it("does not overwrite a replacement account when an old refresh succeeds", async () => {
+    let resolveRefresh!: (value: Session) => void;
+    const refresh = vi.fn(
+      () =>
+        new Promise<Session>((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+    const { storage, store } = storeWith(JSON.stringify(session(5)), {
+      refresh,
+    });
+    const pending = store.authorize();
+    const replacement = {
+      ...session(60, "replacement"),
+      accountId: OTHER_ACCOUNT,
+    };
+    store.signIn(replacement);
+
+    resolveRefresh(session(60, "renewed-old"));
+
+    await expect(pending).resolves.toBeNull();
+    expect(store.getSnapshot()).toEqual(replacement);
+    expect(
+      JSON.parse(storage.getItem(SESSION_STORAGE_KEY) ?? "null") as unknown,
+    ).toEqual(replacement);
+  });
+
+  it("does not clear a replacement account when an old refresh is refused", async () => {
+    let rejectRefresh!: (reason: Error) => void;
+    const refresh = vi.fn(
+      () =>
+        new Promise<Session>((_resolve, reject) => {
+          rejectRefresh = reject;
+        }),
+    );
+    const { storage, store } = storeWith(JSON.stringify(session(5)), {
+      refresh,
+    });
+    const pending = store.authorize();
+    const replacement = {
+      ...session(60, "replacement"),
+      accountId: OTHER_ACCOUNT,
+    };
+    store.signIn(replacement);
+
+    rejectRefresh(new GamesClientError("unauthorized", "Old token ended."));
+
+    await expect(pending).resolves.toBeNull();
+    expect(store.getSnapshot()).toEqual(replacement);
+    expect(
+      JSON.parse(storage.getItem(SESSION_STORAGE_KEY) ?? "null") as unknown,
+    ).toEqual(replacement);
+  });
+
+  it("starts a distinct renewal when a replacement account authorizes", async () => {
+    const resolvers = new Map<string, (value: Session) => void>();
+    const refresh = vi.fn(
+      (sourceToken: string) =>
+        new Promise<Session>((resolve) => {
+          resolvers.set(sourceToken, resolve);
+        }),
+    );
+    const { store } = storeWith(JSON.stringify(session(5)), { refresh });
+    const oldAuthorization = store.authorize();
+    const replacement = {
+      ...session(5, "replacement"),
+      accountId: OTHER_ACCOUNT,
+    };
+    store.signIn(replacement);
+    const replacementAuthorization = store.authorize();
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenNthCalledWith(1, token("first"));
+    expect(refresh).toHaveBeenNthCalledWith(2, token("replacement"));
+
+    const renewedReplacement = {
+      ...session(60, "renewed-replacement"),
+      accountId: OTHER_ACCOUNT,
+    };
+    resolvers.get(token("replacement"))!(renewedReplacement);
+    await expect(replacementAuthorization).resolves.toBe(
+      token("renewed-replacement"),
+    );
+
+    // The old account settles last and cannot clear or replace B's result.
+    resolvers.get(token("first"))!(session(60, "renewed-old"));
+    await expect(oldAuthorization).resolves.toBeNull();
+    expect(store.getSnapshot()).toEqual(renewedReplacement);
+  });
+
   it("signs out cleanly on a refused renewal and never retries it", async () => {
     const refresh = vi.fn(() =>
       Promise.reject(new GamesClientError("unauthorized", "gone")),
@@ -222,6 +319,99 @@ describe("proactive refresh", () => {
   it("hands back the token unchanged when no refresher is wired", async () => {
     const { store } = storeWith(JSON.stringify(session(2)));
     await expect(store.authorize()).resolves.toBe(token("first"));
+  });
+});
+
+describe("product refusal handling", () => {
+  const handlerFor = (store: ReturnType<typeof createSessionStore>) => {
+    const navigate = vi.fn();
+    return {
+      navigate,
+      handle: createProductRefusalHandler(store, {
+        currentPath: () => "/splits?view=heat#top",
+        navigate,
+      }),
+    };
+  };
+
+  it("signs out the rejected current token and navigates to login", () => {
+    const { store } = storeWith(JSON.stringify(session(30)));
+    const { handle, navigate } = handlerFor(store);
+
+    handle(authorization("first"), "authentication");
+
+    expect(store.getSnapshot()).toBeNull();
+    expect(navigate).toHaveBeenCalledWith(
+      "/login?returnUrl=%2Fsplits%3Fview%3Dheat%23top",
+    );
+  });
+
+  it("keeps the session and navigates a current 402 to subscribe", () => {
+    const { store } = storeWith(JSON.stringify(session(30)));
+    const { handle, navigate } = handlerFor(store);
+
+    handle(authorization("first"), "payment-required");
+
+    expect(store.getSnapshot()?.token).toBe(token("first"));
+    expect(navigate).toHaveBeenCalledWith(SUBSCRIBE_PATH);
+  });
+
+  it("ignores stale authentication but keeps payment authority across refresh", () => {
+    const { store } = storeWith(JSON.stringify(session(30)));
+    const { handle, navigate } = handlerFor(store);
+    store.signIn(session(60, "second"));
+
+    handle(authorization("first"), "authentication");
+
+    expect(store.getSnapshot()?.token).toBe(token("second"));
+    expect(navigate).not.toHaveBeenCalled();
+
+    handle(authorization("first"), "payment-required");
+
+    expect(store.getSnapshot()?.token).toBe(token("second"));
+    expect(navigate).toHaveBeenCalledWith(SUBSCRIBE_PATH);
+  });
+
+  it("ignores a payment refusal from an account that has since changed", () => {
+    const { store } = storeWith(JSON.stringify(session(30)));
+    const { handle, navigate } = handlerFor(store);
+    store.signIn({ ...session(60, "second"), accountId: OTHER_ACCOUNT });
+
+    handle(authorization("first"), "payment-required");
+
+    expect(store.getSnapshot()?.accountId).toBe(OTHER_ACCOUNT);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("routes a vanished session to login without overriding a new session", () => {
+    const { store } = storeWith(undefined);
+    const { handle, navigate } = handlerFor(store);
+
+    handle(null, "authentication");
+
+    expect(navigate).toHaveBeenCalledWith(
+      "/login?returnUrl=%2Fsplits%3Fview%3Dheat%23top",
+    );
+    navigate.mockClear();
+    store.signIn(session(30));
+
+    handle(null, "authentication");
+
+    expect(store.getSnapshot()?.token).toBe(token("first"));
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("does not re-navigate a payment refusal already on subscribe", () => {
+    const { store } = storeWith(JSON.stringify(session(30)));
+    const navigate = vi.fn();
+    const handle = createProductRefusalHandler(store, {
+      currentPath: () => "/subscribe?plan=annual",
+      navigate,
+    });
+
+    handle(authorization("first"), "payment-required");
+
+    expect(navigate).not.toHaveBeenCalled();
   });
 });
 
@@ -287,7 +477,7 @@ describe("where a return address may point", () => {
   });
 
   it("knows which routes need a session", () => {
-    for (const path of ["/", "/terms", "/privacy", LOGIN_PATH])
+    for (const path of ["/", "/terms", "/privacy", LOGIN_PATH, SUBSCRIBE_PATH])
       expect(requiresSession(path)).toBe(false);
     for (const path of ["/splits", "/dashboard", "/events", "/watchlist"])
       expect(requiresSession(path)).toBe(true);

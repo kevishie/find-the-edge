@@ -14,7 +14,11 @@ import {
   type RankedOpportunityDto,
 } from "@find-the-edge/domain";
 
-import { App } from "./App";
+import {
+  App as ProductApp,
+  authorizeRouteSession,
+  ROUTE_AUTHORIZATION_ABORTED,
+} from "./App";
 import { detailMatchesRoute } from "./route-state";
 import { createSessionStore } from "./session";
 import { clearSplitsCache } from "./splits-cache";
@@ -44,6 +48,392 @@ const withSession = (store: ReturnType<typeof signedIn>) => {
   return store;
 };
 const activeSession = () => withSession(signedIn());
+
+const entitlement = (hasAccess: boolean) => ({
+  schemaVersion: "billing-entitlement-v1" as const,
+  state: hasAccess ? "active" : "none",
+  accessUntil: hasAccess ? "2099-08-01T00:00:00.000Z" : null,
+  hasAccess,
+});
+
+// Screen tests use deliberately narrow clients. Supply the route authority as
+// its own dependency so those fixtures do not become a runtime fail-open path.
+const App = (props: Parameters<typeof ProductApp>[0]) => {
+  const routeEntitlement =
+    props.routeEntitlement ??
+    (props.gamesClient?.ok ? props.gamesClient.value.entitlement : undefined) ??
+    (() => Promise.resolve(entitlement(true)));
+  return <ProductApp {...props} routeEntitlement={routeEntitlement} />;
+};
+
+describe("owned product route guard", () => {
+  it("sends an anonymous product reader to on-origin sign-in", async () => {
+    render(<App sessionStore={signedIn()} initialPath="/splits" />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Sign in" }),
+    ).toBeVisible();
+  });
+
+  it("resolves anonymous identity before reporting missing entitlement configuration", async () => {
+    render(
+      <ProductApp
+        sessionStore={signedIn()}
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn() } }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Sign in" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("heading", { name: "Unable to render this view" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("settles abandoned route authorization without waiting for refresh", async () => {
+    let rejectAuthorization!: (reason: Error) => void;
+    const backingStore = activeSession();
+    const store = {
+      ...backingStore,
+      authorize: vi.fn(
+        () =>
+          new Promise<string | null>((_resolve, reject) => {
+            rejectAuthorization = reject;
+          }),
+      ),
+    };
+    const controller = new AbortController();
+    const reason = new DOMException("Navigation changed", "AbortError");
+    const pending = authorizeRouteSession(store, controller.signal);
+
+    controller.abort(reason);
+
+    await expect(pending).resolves.toBe(ROUTE_AUTHORIZATION_ABORTED);
+    expect(store.getSnapshot()).not.toBeNull();
+    // The shared refresh may settle later; the abandoned route has no handler
+    // left that could convert its refusal into navigation or invalidation.
+    rejectAuthorization(
+      new GamesClientError("authentication", "Old navigation ended."),
+    );
+    await Promise.resolve();
+    expect(store.getSnapshot()).not.toBeNull();
+  });
+
+  it("sends a signed-in unentitled reader to the paywall", async () => {
+    const resolveEntitlement = vi.fn(() => Promise.resolve(entitlement(false)));
+    render(
+      <App
+        sessionStore={activeSession()}
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), entitlement: resolveEntitlement },
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Start your seven days" }),
+    ).toBeVisible();
+    expect(resolveEntitlement).toHaveBeenCalledOnce();
+  });
+
+  it("allows an entitled reader to render the requested product", async () => {
+    const resolveEntitlement = vi.fn(() => Promise.resolve(entitlement(true)));
+    render(
+      <App
+        sessionStore={activeSession()}
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            listSplits: vi.fn(() => Promise.resolve(splitsPage())),
+            entitlement: resolveEntitlement,
+          },
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("Betting splits")).toBeVisible();
+    expect(resolveEntitlement).toHaveBeenCalledOnce();
+  });
+
+  it("does not resolve entitlement again on the paywall route", async () => {
+    const resolveEntitlement = vi.fn(() => Promise.resolve(entitlement(false)));
+    const listSplits = vi.fn(() =>
+      Promise.reject(
+        new GamesClientError(
+          "payment-required",
+          "An active subscription is required.",
+        ),
+      ),
+    );
+    render(
+      <App
+        sessionStore={activeSession()}
+        initialPath="/subscribe"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), listSplits, entitlement: resolveEntitlement },
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Start your seven days" }),
+    ).toBeVisible();
+    expect(resolveEntitlement).not.toHaveBeenCalled();
+    expect(listSplits).not.toHaveBeenCalled();
+  });
+
+  it("rechecks entitlement when the session changes during a stale result", async () => {
+    const store = activeSession();
+    const firstToken = store.getSnapshot()!.token;
+    const secondToken = `fte1.${"second".padEnd(40, "x")}.${"b".repeat(64)}`;
+    const resolveEntitlement = vi
+      .fn<NonNullable<GamesClient["entitlement"]>>()
+      .mockImplementationOnce(() => {
+        store.signIn({ ...store.getSnapshot()!, token: secondToken });
+        return Promise.resolve(entitlement(true));
+      })
+      .mockResolvedValueOnce(entitlement(false));
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), entitlement: resolveEntitlement },
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Start your seven days" }),
+    ).toBeVisible();
+    expect(resolveEntitlement).toHaveBeenNthCalledWith(
+      1,
+      firstToken,
+      expect.any(AbortSignal),
+    );
+    expect(resolveEntitlement).toHaveBeenNthCalledWith(
+      2,
+      secondToken,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("ignores a stale entitlement rejection after the token is replaced", async () => {
+    const store = activeSession();
+    const secondToken = `fte1.${"second".padEnd(40, "x")}.${"b".repeat(64)}`;
+    const resolveEntitlement = vi
+      .fn<NonNullable<GamesClient["entitlement"]>>()
+      .mockImplementationOnce(() => {
+        store.signIn({ ...store.getSnapshot()!, token: secondToken });
+        return Promise.reject(
+          new GamesClientError("unauthorized", "Old token ended."),
+        );
+      })
+      .mockResolvedValueOnce(entitlement(true));
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            listSplits: vi.fn(() => Promise.resolve(splitsPage())),
+            entitlement: resolveEntitlement,
+          },
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("Betting splits")).toBeVisible();
+    expect(store.getSnapshot()?.token).toBe(secondToken);
+    expect(resolveEntitlement).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when the session changes throughout bounded entitlement checks", async () => {
+    const store = activeSession();
+    let marker = 0;
+    const resolveEntitlement = vi.fn(() => {
+      marker += 1;
+      store.signIn({
+        ...store.getSnapshot()!,
+        token: `fte1.${`replacement-${marker}`.padEnd(40, "x")}.${"b".repeat(64)}`,
+      });
+      return Promise.resolve(entitlement(true));
+    });
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), entitlement: resolveEntitlement },
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Unable to render this view",
+      }),
+    ).toBeVisible();
+    expect(resolveEntitlement).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears a server-rejected session and returns to sign-in", async () => {
+    const store = activeSession();
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            entitlement: vi.fn(() =>
+              Promise.reject(
+                new GamesClientError("unauthorized", "Session ended."),
+              ),
+            ),
+          },
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Sign in" }),
+    ).toBeVisible();
+    expect(store.getSnapshot()).toBeNull();
+  });
+
+  it("returns a refused session refresh to sign-in", async () => {
+    const backingStore = activeSession();
+    const store = {
+      ...backingStore,
+      authorize: vi.fn(() =>
+        Promise.reject(
+          new GamesClientError("authentication", "Refresh refused."),
+        ),
+      ),
+    };
+    const resolveEntitlement = vi.fn(() => Promise.resolve(entitlement(true)));
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), entitlement: resolveEntitlement },
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Sign in" }),
+    ).toBeVisible();
+    expect(store.getSnapshot()).toBeNull();
+    expect(resolveEntitlement).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when session resolution is unavailable", async () => {
+    const store = {
+      ...activeSession(),
+      authorize: vi.fn(() => Promise.reject(new Error("session-unavailable"))),
+    };
+    const resolveEntitlement = vi.fn(() => Promise.resolve(entitlement(true)));
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: { list: vi.fn(), entitlement: resolveEntitlement },
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Unable to render this view",
+      }),
+    ).toBeVisible();
+    expect(resolveEntitlement).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when protected routing has no entitlement resolver", async () => {
+    render(
+      <ProductApp
+        sessionStore={activeSession()}
+        initialPath="/splits"
+        gamesClient={{ ok: true, value: { list: vi.fn() } }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Unable to render this view",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByText("Product access could not be verified."),
+    ).toBeVisible();
+  });
+
+  it("uses a synchronously installed refresher on first route entry", async () => {
+    const store = signedIn();
+    const firstToken = `fte1.${"first".padEnd(40, "x")}.${"a".repeat(64)}`;
+    const refreshedToken = `fte1.${"second".padEnd(40, "x")}.${"a".repeat(64)}`;
+    store.signIn({
+      token: firstToken,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      accountId: `account:${"b".repeat(64)}`,
+    });
+    const refreshSession = vi.fn(() =>
+      Promise.resolve({
+        schemaVersion: "auth-session-v1" as const,
+        token: refreshedToken,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"b".repeat(64)}`,
+      }),
+    );
+    store.setRefresher(refreshSession);
+    const resolveEntitlement = vi.fn(() => Promise.resolve(entitlement(true)));
+    render(
+      <App
+        sessionStore={store}
+        sessionRefresherInstalled
+        initialPath="/splits"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(),
+            listSplits: vi.fn(() => Promise.resolve(splitsPage())),
+            refreshSession,
+            entitlement: resolveEntitlement,
+          },
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("Betting splits")).toBeVisible();
+    expect(refreshSession).toHaveBeenCalledWith(
+      firstToken,
+      expect.any(AbortSignal),
+    );
+    expect(resolveEntitlement).toHaveBeenCalledWith(
+      refreshedToken,
+      expect.any(AbortSignal),
+    );
+  });
+});
 
 it("sends a signed-in reader from the pitch to the product", async () => {
   // Someone who already pays has no use for the landing page.

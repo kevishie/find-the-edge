@@ -1069,6 +1069,7 @@ export type GamesClientErrorCode =
   | "configuration"
   | "authentication"
   | "unauthorized"
+  | "payment-required"
   | "forbidden"
   | "request-failed"
   | "not-found"
@@ -1089,6 +1090,84 @@ export class GamesClientError extends Error {
     super(message);
   }
 }
+
+/**
+ * The owned session authority injected by the browser composition root. The
+ * token is resolved for every request rather than captured when the client is
+ * created, so a refresh (including one between pagination pages) is observed.
+ */
+export interface OwnedSessionAuthorization {
+  readonly token: string;
+  readonly accountId: string;
+}
+
+export interface OwnedSessionTransport {
+  readonly authorize: () => Promise<OwnedSessionAuthorization | null>;
+  readonly refuse: (
+    rejectedSession: OwnedSessionAuthorization | null,
+    reason: "authentication" | "payment-required",
+  ) => void;
+}
+
+const abortReason = (signal: AbortSignal): Error =>
+  signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Aborted", "AbortError");
+
+const authorizeProductRequest = (
+  session: OwnedSessionTransport,
+  signal: AbortSignal | null | undefined,
+): Promise<OwnedSessionAuthorization | null> => {
+  if (!signal) return session.authorize();
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(abortReason(signal));
+    signal.addEventListener("abort", aborted, { once: true });
+    void session
+      .authorize()
+      .then(resolve, reject)
+      .finally(() => {
+        signal.removeEventListener("abort", aborted);
+      });
+  });
+};
+
+const ownedProductFetcher =
+  (fetcher: typeof fetch, session: OwnedSessionTransport): typeof fetch =>
+  async (input, init) => {
+    const signal =
+      init?.signal ??
+      (typeof Request !== "undefined" && input instanceof Request
+        ? input.signal
+        : undefined);
+    const authorization = await authorizeProductRequest(session, signal);
+    if (authorization === null) {
+      session.refuse(null, "authentication");
+      throw new GamesClientError(
+        "authentication",
+        "Sign in is required to use Find The Edge.",
+      );
+    }
+    if (signal?.aborted) throw abortReason(signal);
+    const headers = new Headers(init?.headers);
+    headers.set("authorization", `Bearer ${authorization.token}`);
+    const response = await fetcher(input, { ...init, headers });
+    if (response.status === 401) {
+      session.refuse(authorization, "authentication");
+      throw new GamesClientError(
+        "authentication",
+        "The session has ended. Sign in again.",
+      );
+    }
+    if (response.status === 402) {
+      session.refuse(authorization, "payment-required");
+      throw new GamesClientError(
+        "payment-required",
+        "An active trial or subscription is required.",
+      );
+    }
+    return response;
+  };
 
 /**
  * A refusal that carries how long the caller must wait. It is its own class so
@@ -2979,6 +3058,7 @@ async function exhaustPages<T extends GameDisplayDto>(options: {
       response = await fetcher(`${apiBase}/${endpoint}?${query}`, { signal });
     } catch (error) {
       if (signal.aborted) throw error;
+      if (error instanceof GamesClientError) throw error;
       throw new GamesClientError(
         "request-failed",
         endpoint === "games"
@@ -3607,6 +3687,7 @@ const watchlistRequest = async <T>({
 export function createGamesClient(
   bootstrap: Result<RuntimeBootstrap, RuntimeConfigError>,
   fetcher: typeof fetch = fetch,
+  ownedSession?: OwnedSessionTransport,
 ): Result<GamesClient, GamesClientError> {
   if (!bootstrap.ok)
     return { ok: false, error: bootstrapFailure(bootstrap.error) };
@@ -3620,6 +3701,13 @@ export function createGamesClient(
           clientId: bootstrap.value.config.cognitoClientId,
         }
       : null;
+  const productFetcher = ownedProductFetcher(
+    fetcher,
+    ownedSession ?? {
+      authorize: () => Promise.resolve(null),
+      refuse: () => undefined,
+    },
+  );
   return {
     ok: true,
     value: {
@@ -3997,12 +4085,13 @@ export function createGamesClient(
         return boundedOpportunityRequest(signal, async (boundedSignal) => {
           let response: Response;
           try {
-            response = await fetcher(
+            response = await productFetcher(
               `${bootstrap.value.config.apiBase}/sports/${encodeURIComponent(sportKey)}/opportunities?limit=20`,
               { signal: boundedSignal },
             );
           } catch (error) {
             if (boundedSignal.aborted) throw error;
+            if (error instanceof GamesClientError) throw error;
             throw new GamesClientError(
               "request-failed",
               "Opportunities are temporarily unavailable.",
@@ -4028,12 +4117,13 @@ export function createGamesClient(
         return boundedOpportunityRequest(signal, async (boundedSignal) => {
           let response: Response;
           try {
-            response = await fetcher(
+            response = await productFetcher(
               `${bootstrap.value.config.apiBase}/sports/${encodeURIComponent(sportKey)}/arbitrage?limit=20`,
               { signal: boundedSignal },
             );
           } catch (error) {
             if (boundedSignal.aborted) throw error;
+            if (error instanceof GamesClientError) throw error;
             throw new GamesClientError(
               "request-failed",
               "Arbitrage findings are temporarily unavailable.",
@@ -4057,12 +4147,13 @@ export function createGamesClient(
         return boundedOpportunityRequest(signal, async (boundedSignal) => {
           let response: Response;
           try {
-            response = await fetcher(
+            response = await productFetcher(
               `${bootstrap.value.config.apiBase}/sports/${encodeURIComponent(sportKey)}/clv`,
               { signal: boundedSignal },
             );
           } catch (error) {
             if (boundedSignal.aborted) throw error;
+            if (error instanceof GamesClientError) throw error;
             throw new GamesClientError(
               "request-failed",
               "Closing line value is temporarily unavailable.",
@@ -4112,7 +4203,7 @@ export function createGamesClient(
         });
       },
       async listExperiments(signal: AbortSignal) {
-        const response = await fetcher(
+        const response = await productFetcher(
           `${bootstrap.value.config.apiBase}/strategy-experiments?limit=50`,
           { signal },
         );
@@ -4135,7 +4226,7 @@ export function createGamesClient(
             "invalid-response",
             "The experiment ID is invalid.",
           );
-        const response = await fetcher(
+        const response = await productFetcher(
           `${bootstrap.value.config.apiBase}/strategy-experiments/${encodeURIComponent(id)}`,
           { signal },
         );
@@ -4209,7 +4300,7 @@ export function createGamesClient(
             filter,
             signal: boundedSignal,
             apiBase: bootstrap.value.config.apiBase,
-            fetcher,
+            fetcher: productFetcher,
             parse: parsePage,
           }),
         );
@@ -4237,12 +4328,13 @@ export function createGamesClient(
       async detail(eventId, signal) {
         let response: Response;
         try {
-          response = await fetcher(
+          response = await productFetcher(
             `${bootstrap.value.config.apiBase}/events/${encodeCanonicalEventPathSegment(eventId)}`,
             { signal },
           );
         } catch (error) {
           if (signal.aborted) throw error;
+          if (error instanceof GamesClientError) throw error;
           throw new GamesClientError(
             "request-failed",
             "Game details are temporarily unavailable.",
@@ -4323,12 +4415,13 @@ export function createGamesClient(
           if (cursor) query.set("cursor", cursor);
           let response: Response;
           try {
-            response = await fetcher(
+            response = await productFetcher(
               `${bootstrap.value.config.apiBase}/games/${encodeCanonicalEventPathSegment(eventId)}/odds-history?${query}`,
               { signal },
             );
           } catch (error) {
             if (signal.aborted) throw error;
+            if (error instanceof GamesClientError) throw error;
             throw new GamesClientError(
               "request-failed",
               "Line movement is temporarily unavailable.",
@@ -4449,19 +4542,20 @@ export function createGamesClient(
           filter,
           signal,
           apiBase: bootstrap.value.config.apiBase,
-          fetcher,
+          fetcher: productFetcher,
           parse: parseSplitsPage,
         });
       },
       async listPerformance(signal) {
         let response: Response;
         try {
-          response = await fetcher(
+          response = await productFetcher(
             `${bootstrap.value.config.apiBase}/performance/reports?limit=1`,
             { signal },
           );
         } catch (error) {
           if (signal.aborted) throw error;
+          if (error instanceof GamesClientError) throw error;
           throw new GamesClientError(
             "request-failed",
             "Performance is temporarily unavailable.",
@@ -4509,12 +4603,13 @@ export function createGamesClient(
           try {
             const query = new URLSearchParams({ limit: "50" });
             if (cursor) query.set("cursor", cursor);
-            response = await fetcher(
+            response = await productFetcher(
               `${bootstrap.value.config.apiBase}/retrospectives?${query.toString()}`,
               { signal },
             );
           } catch (error) {
             if (signal.aborted) throw error;
+            if (error instanceof GamesClientError) throw error;
             throw new GamesClientError(
               "request-failed",
               "Retrospectives are temporarily unavailable.",
@@ -4572,12 +4667,13 @@ export function createGamesClient(
           );
         let response: Response;
         try {
-          response = await fetcher(
+          response = await productFetcher(
             `${bootstrap.value.config.apiBase}/retrospectives/${encodeURIComponent(versionId)}`,
             { signal },
           );
         } catch (error) {
           if (signal.aborted) throw error;
+          if (error instanceof GamesClientError) throw error;
           throw new GamesClientError(
             "request-failed",
             "This retrospective is temporarily unavailable.",
@@ -4615,7 +4711,7 @@ export function createGamesClient(
             limit: "50",
             cursor: auditCursor,
           });
-          const nextResponse = await fetcher(
+          const nextResponse = await productFetcher(
             `${bootstrap.value.config.apiBase}/retrospectives/${encodeURIComponent(versionId)}?${query.toString()}`,
             { signal },
           );
@@ -4670,12 +4766,13 @@ export function createGamesClient(
           if (cursor) query.set("cursor", cursor);
           let response: Response;
           try {
-            response = await fetcher(
+            response = await productFetcher(
               `${bootstrap.value.config.apiBase}/retrospectives/${encodeURIComponent(retrospectiveId)}/versions?${query.toString()}`,
               { signal },
             );
           } catch (error) {
             if (signal.aborted) throw error;
+            if (error instanceof GamesClientError) throw error;
             throw new GamesClientError(
               "request-failed",
               "Version history is temporarily unavailable.",

@@ -217,6 +217,28 @@ it("puts the row back and says so when the removal fails", async () => {
   ).not.toBeInTheDocument();
 });
 
+it("can roll back an immediate removal after the row was restored", async () => {
+  const removeFromWatchlist = vi
+    .fn<NonNullable<UiGamesClient["removeFromWatchlist"]>>()
+    .mockResolvedValueOnce()
+    .mockRejectedValueOnce(unavailable());
+  render(<Watchlist client={client({ removeFromWatchlist })} />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+  const restored = await screen.findByRole("listitem");
+
+  fireEvent.click(within(restored).getByRole("button", { name: "Remove" }));
+
+  expect(
+    await screen.findByText(
+      "That event could not be removed from the watchlist.",
+    ),
+  ).toBeVisible();
+  expect(await screen.findByRole("listitem")).toBeVisible();
+  expect(removeFromWatchlist).toHaveBeenCalledTimes(2);
+});
+
 it("reports an undo that fails without pretending the event is watched", async () => {
   render(
     <Watchlist
