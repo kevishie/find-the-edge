@@ -56,6 +56,11 @@ Create GitHub Environments named `staging` and `production`.
   - `WEB_CERTIFICATE_ARN`
   - `API_CERTIFICATE_ARN`
   - `EVENT_CURSOR_SECRET_ARN`
+- Product-access enforcement is not a GitHub variable in this release. The
+  reviewed workflow binds `false` independently in the `main`/staging and
+  `production`/prod branch cases, then rechecks it before cloud credentials.
+  This avoids organization/repository fallback and prevents an unreviewed
+  settings change from activating the cutover.
 - Configure `SHARP_API_KEY` as an Environment secret. Never use one environment's secret or cursor ARN in the other.
 
 Protect both `main` and `production`: require pull requests and the Quality gates checks, disable force pushes and branch deletion, and dismiss stale approvals when the head changes. Repository settings are external control-plane state and must be verified in GitHub after configuration.
@@ -67,8 +72,8 @@ Server-owned elevated roles use the separate least-privilege operator role and t
 Run both synth/preflight paths before requesting cloud credentials:
 
 ```sh
-FTE_AWS_STAGE=staging pnpm phase1:preflight
-FTE_AWS_STAGE=prod pnpm phase1:preflight
+FTE_AWS_STAGE=staging FTE_PRODUCT_ACCESS_ENFORCED=false pnpm phase1:preflight
+FTE_AWS_STAGE=prod FTE_PRODUCT_ACCESS_ENFORCED=false pnpm phase1:preflight
 pnpm phase1:test
 pnpm check
 ```
@@ -84,6 +89,25 @@ The templates must emit `WebDnsTarget`, `ApiDnsTarget`, `ApiDnsHostedZoneId`, `D
 5. Record the Git SHA, workflow run, CloudFormation stack ID, DNS answers, certificate status, smoke result, and alarm state.
 
 Do not promote a revision to `production` until staging proves the exact custom web/API origins, TLS, CORS, CSP, authentication callback, direct-S3 denial, representative data reads, stage marker, and release SHA.
+
+This configuration release does not enable product enforcement. Verify the
+deployed Event API Lambda configuration reports
+`FTE_PRODUCT_ACCESS_ENFORCED=false`. A later cutover may change staging only
+after a real owned and entitled session passes positive access, missing and
+revoked sessions return 401, unentitled sessions return 402, all legacy routes
+have migrated, and the hosted smoke uses real owned authority. Production
+remains false through the staging soak. The current protected launch also
+refuses `true`, so that later cutover requires its own reviewed code change.
+
+Resolve the Event API from the selected stack and verify the live value after
+every deployment:
+
+```sh
+stage=staging # use prod only during an intentional production promotion
+stack=FindTheEdge-$stage-Foundation
+event_api=$(aws cloudformation list-stack-resources --stack-name "$stack" --region us-east-1 --output json | jq -er '[.StackResourceSummaries[] | select(.ResourceType=="AWS::Lambda::Function" and (.LogicalResourceId | contains("EventApi")))] | if length == 1 then .[0].PhysicalResourceId else error("event-api-binding") end')
+test "$(aws lambda get-function-configuration --function-name "$event_api" --region us-east-1 --query 'Environment.Variables.FTE_PRODUCT_ACCESS_ENFORCED' --output text)" = false
+```
 
 ## Production promotion and cutover
 

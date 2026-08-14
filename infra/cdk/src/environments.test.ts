@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveEnvironment } from "./environments";
+import {
+  resolveEnvironment,
+  resolveProductAccessEnforcement,
+} from "./environments";
 
 describe("deployment environment contract", () => {
   it.each([
@@ -55,5 +58,22 @@ describe("deployment environment contract", () => {
     expect(resolveEnvironment("staging").branch).not.toBe(
       resolveEnvironment("prod").branch,
     );
+  });
+
+  it("requires an exact product-access setting for persistent stages", () => {
+    expect(resolveProductAccessEnforcement("local", undefined)).toBe(false);
+    expect(resolveProductAccessEnforcement("staging", "false")).toBe(false);
+    expect(resolveProductAccessEnforcement("local", "true")).toBe(true);
+    expect(() => resolveProductAccessEnforcement("prod", "true")).toThrow(
+      /cutover/i,
+    );
+    expect(() => resolveProductAccessEnforcement("staging", undefined)).toThrow(
+      /required/i,
+    );
+    for (const value of ["", "1", "TRUE", " false", "false "]) {
+      expect(() => resolveProductAccessEnforcement("prod", value)).toThrow(
+        /true or false/i,
+      );
+    }
   });
 });

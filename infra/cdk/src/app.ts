@@ -1,5 +1,8 @@
 import { createFoundationApp } from "./foundation.js";
-import { resolveEnvironment } from "./environments.js";
+import {
+  resolveEnvironment,
+  resolveProductAccessEnforcement,
+} from "./environments.js";
 
 const launchAccount = "228246988391";
 const launchRegion = "us-east-1";
@@ -18,6 +21,10 @@ const stage = process.env["FTE_AWS_STAGE"] ?? "local";
 const deploymentEnvironment = resolveEnvironment(stage, {
   allowLegacyDev: process.env["FTE_ALLOW_LEGACY_DEV"] === "1",
 });
+const productAccessEnforced = resolveProductAccessEnforcement(
+  deploymentEnvironment.stage,
+  process.env["FTE_PRODUCT_ACCESS_ENFORCED"],
+);
 const rawSchedulerEnabled = process.env["FTE_UPCOMING_SCHEDULER_ENABLED"];
 const rawFixtureOddsSeedEnabled = process.env["FTE_FIXTURE_ODDS_SEED_ENABLED"];
 const rawPaperPickSchedulerEnabled =
@@ -69,6 +76,7 @@ const { app } = createFoundationApp({
     : {}),
   schedulerEnabled: rawSchedulerEnabled === "true",
   fixtureOddsSeedEnabled: rawFixtureOddsSeedEnabled === "true",
+  productAccessEnforced,
   paperPickSchedulerEnabled: rawPaperPickSchedulerEnabled === "true",
   paperPickGenerationMinutes,
   ...(process.env["FTE_EVENT_CURSOR_SECRET_ARN"]

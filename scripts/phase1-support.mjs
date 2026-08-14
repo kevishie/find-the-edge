@@ -7,6 +7,21 @@ import { deploymentEnvironment } from "./environment-contract.mjs";
 
 export const projectRoot = resolve(new URL("..", import.meta.url).pathname);
 
+export function parseProductAccessEnforcement(
+  value,
+  { required = false } = {},
+) {
+  if (value === undefined) {
+    if (!required) return false;
+    throw new Error(
+      "FTE_PRODUCT_ACCESS_ENFORCED is required for persistent stages",
+    );
+  }
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error("FTE_PRODUCT_ACCESS_ENFORCED must be true or false");
+}
+
 export function safeDevConfig(environment = process.env) {
   return {
     stage: environment.FTE_AWS_STAGE ?? "dev",
@@ -35,12 +50,23 @@ export function safeDevConfig(environment = process.env) {
     schedulerEnabled:
       environment.FTE_UPCOMING_SCHEDULER_ENABLED === undefined ||
       environment.FTE_UPCOMING_SCHEDULER_ENABLED === "true",
+    productAccessEnforced: parseProductAccessEnforcement(
+      environment.FTE_PRODUCT_ACCESS_ENFORCED,
+    ),
     localMode: environment.FTE_PHASE1_LOCAL_MODE === "1",
   };
 }
 
 export function safeDeploymentConfig(environment = process.env) {
   const target = deploymentEnvironment(environment.FTE_AWS_STAGE ?? "staging");
+  const productAccessEnforced = parseProductAccessEnforcement(
+    environment.FTE_PRODUCT_ACCESS_ENFORCED,
+    { required: true },
+  );
+  if (productAccessEnforced)
+    throw new Error(
+      "FTE_PRODUCT_ACCESS_ENFORCED must remain false until the owned-access cutover is approved",
+    );
   return {
     ...safeDevConfig({
       ...environment,
@@ -53,6 +79,7 @@ export function safeDeploymentConfig(environment = process.env) {
       FTE_COGNITO_LOGOUT_URL:
         environment.FTE_COGNITO_LOGOUT_URL ?? target.webOrigin,
     }),
+    productAccessEnforced,
     target,
     webCertificateArn:
       environment.FTE_WEB_CERTIFICATE_ARN ??
@@ -830,6 +857,17 @@ export function validateTemplate(template, config) {
   )
     throw new Error(
       "Every intended API route must target the exact shared Lambda integration",
+    );
+  if (typeof config.productAccessEnforced !== "boolean")
+    throw new Error("Product access enforcement must be an explicit boolean");
+  const apiLambda = template.Resources?.[apiLambdaId];
+  if (
+    apiLambda?.Type !== "AWS::Lambda::Function" ||
+    apiLambda.Properties?.Environment?.Variables
+      ?.FTE_PRODUCT_ACCESS_ENFORCED !== String(config.productAccessEnforced)
+  )
+    throw new Error(
+      "Event API product access enforcement must match the selected deployment setting",
     );
   const seedFunctions = entriesOfType(template, "AWS::Lambda::Function").filter(
     ([, value]) =>

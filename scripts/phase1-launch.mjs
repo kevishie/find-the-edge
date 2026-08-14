@@ -124,6 +124,10 @@ export function validateLaunchEnvironment(environment) {
     throw new Error(
       "The cursor secret must belong to the authorized account and region",
     );
+  if (environment.FTE_PRODUCT_ACCESS_ENFORCED !== "false")
+    throw new Error(
+      "FTE_PRODUCT_ACCESS_ENFORCED must remain false until the owned-access cutover is approved",
+    );
   if (environment.FTE_AWS_STAGE) {
     const target = validateDeploymentBranch(
       environment.FTE_AWS_STAGE,

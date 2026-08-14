@@ -21,6 +21,8 @@ test("deployment maps only verified main and production revisions to isolated en
     "FTE_RELEASE_SHA:",
     "FTE_WEB_CERTIFICATE_ARN:",
     "FTE_API_CERTIFICATE_ARN:",
+    "product_access_enforced: ${{ steps.target.outputs.product_access_enforced }}",
+    "FTE_PRODUCT_ACCESS_ENFORCED: ${{ needs.target.outputs.product_access_enforced }}",
   ])
     assert.ok(
       workflow.includes(required),
@@ -28,6 +30,36 @@ test("deployment maps only verified main and production revisions to isolated en
     );
   assert.doesNotMatch(workflow, /find-the-edge\/dev\//);
   assert.doesNotMatch(workflow, /phase1-development-environment/);
+  assert.ok(
+    workflow.indexOf("Refuse premature product-access cutover") <
+      workflow.indexOf("Install environment SharpAPI credential"),
+    "product access must be validated before the first cloud mutation",
+  );
+  assert.equal(
+    workflow.match(/echo "product_access_enforced=false"/g)?.length,
+    2,
+    "both protected branch cases must bind their own explicit false value",
+  );
+  assert.match(workflow, /test "\$FTE_PRODUCT_ACCESS_ENFORCED" = "false"/);
+  assert.doesNotMatch(workflow, /PRODUCT_ACCESS_POLICY|vars\.PRODUCT_ACCESS/);
+  for (const command of [
+    "aws apigatewayv2 get-routes",
+    "aws apigatewayv2 get-integration",
+    "aws lambda get-function-configuration",
+  ])
+    assert.ok(workflow.includes(command), `missing live readback: ${command}`);
+  assert.ok(
+    workflow.indexOf("Deploy and run environment smoke") <
+      workflow.indexOf("Verify live product-access setting"),
+    "live setting must be read after deployment",
+  );
+  assert.match(workflow, /\^arn:aws:lambda:us-east-1:228246988391:function:/);
+  assert.doesNotMatch(workflow, /function_name=\$\{function_name%%:\*\}/);
+
+  const quality = await read(".github/workflows/ci.yml");
+  assert.match(quality, /FTE_PRODUCT_ACCESS_ENFORCED:\s*["']false["']/);
+  assert.match(quality, /FTE_AWS_STAGE=staging pnpm phase1:preflight/);
+  assert.match(quality, /FTE_AWS_STAGE=prod pnpm phase1:preflight/);
 });
 
 test("OIDC bootstrap has isolated environment subjects and no administrator policy", async () => {

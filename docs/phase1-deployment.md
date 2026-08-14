@@ -58,7 +58,8 @@ canary, one league, then remaining leagues; Pinnacle is reported as observed or
 
 ```sh
 pnpm phase1:test
-pnpm phase1:preflight
+FTE_AWS_STAGE=staging FTE_PRODUCT_ACCESS_ENFORCED=false pnpm phase1:preflight
+FTE_AWS_STAGE=prod FTE_PRODUCT_ACCESS_ENFORCED=false pnpm phase1:preflight
 FTE_PHASE1_API_BASE=https://api.example.com FTE_WEB_ORIGIN=https://app.example.com pnpm phase1:bundle
 ```
 
@@ -75,6 +76,16 @@ identity immediately before every mutation, rejects retained-table destructive
 diffs, deploys the dev stack, generates runtime configuration from stack outputs,
 uploads and invalidates the private site, runs live ingestion, and proves the anonymous API and browser flow.
 
+Persistent launches also require the exact
+`FTE_PRODUCT_ACCESS_ENFORCED=true|false` setting. Keep it `false` for the
+configuration-plumbing release; absence, whitespace, case variants, and
+numeric aliases are rejected before AWS mutation. GitHub deployments source
+the value independently in each protected branch case in the reviewed workflow.
+The current guarded launcher accepts only `false`; enabling staging requires a
+later reviewed cutover change after the owned-session and hosted-smoke gates
+are complete. No repository, organization, or Environment variable can activate
+it in this release.
+
 The underlying operator commands are shown for diagnosis only:
 
 ```sh
@@ -84,6 +95,7 @@ export CDK_DEFAULT_REGION=us-east-1
 export FTE_AWS_STAGE=dev
 export FTE_EVENT_CURSOR_SECRET_ARN=arn:aws:secretsmanager:us-east-1:228246988391:secret:fte-dev-cursor
 export FTE_FIXTURE_ODDS_SEED_ENABLED=false
+export FTE_PRODUCT_ACCESS_ENFORCED=false
 export FTE_UPCOMING_SCHEDULER_ENABLED=true
 pnpm --filter @find-the-edge/infra-cdk synth
 pnpm --filter @find-the-edge/infra-cdk exec cdk deploy FindTheEdge-dev-Foundation --require-approval never --outputs-file /tmp/fte-phase1-outputs.json
