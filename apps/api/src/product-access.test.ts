@@ -134,6 +134,16 @@ describe("the access decision", () => {
       ).toEqual({ allowed: true, accountId: ACCOUNT });
   });
 
+  it("accepts the case-insensitive HTTP bearer scheme", async () => {
+    for (const scheme of ["bearer", "BEARER", "BeArEr"])
+      await expect(
+        decide({
+          route: "games",
+          authorization: `${scheme} ${token()}`,
+        }),
+      ).resolves.toEqual({ allowed: true, accountId: ACCOUNT });
+  });
+
   it("refuses an anonymous product read", async () => {
     expect(await decide({ route: "games" })).toEqual({
       allowed: false,

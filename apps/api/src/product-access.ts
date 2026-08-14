@@ -56,7 +56,7 @@ export type ProductAccessDecision =
 
 const bearer = (authorization: string | undefined): string | null => {
   if (typeof authorization !== "string") return null;
-  const match = /^Bearer\s+(\S+)$/.exec(authorization.trim());
+  const match = /^Bearer\s+(\S+)$/i.exec(authorization.trim());
   return match ? match[1]! : null;
 };
 

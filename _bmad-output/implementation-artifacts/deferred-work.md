@@ -1317,3 +1317,6 @@ reported two fixes as complete on the strength of it.
 - source_spec: `_bmad-output/implementation-artifacts/spec-board-materialization-pagination.md`
   summary: Bound each internal board-materialization repository read with the project's worker timeout policy.
   evidence: Edge-case review found that a games repository promise that never settles can still prevent later boards and worker completion; this story has no existing timeout value or cancellation policy to apply without inventing an operational contract.
+## Deferred from: code review of spec-fte-074-owned-session-authorization-seam (2026-08-13)
+
+- Cold-start validation for the event-table and cursor-secret environment variables occurs during module initialization, before request-time safe response handling. This behavior predates the owned-session seam; decide separately whether foundational configuration failures should initialize successfully enough to return a JSON 500.
