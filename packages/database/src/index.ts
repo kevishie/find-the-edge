@@ -66,3 +66,4 @@ export * from "./bet-repository.js";
 export * from "./watchlist-repository";
 export * from "./identity-repository";
 export * from "./entitlement-repository";
+export * from "./dynamo-capacity-attribution";

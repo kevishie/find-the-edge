@@ -50,22 +50,35 @@ describe("stored board validation", () => {
       { ...fresh, counts: undefined },
     ])
       expect(validateStoredBoard(broken, NOW)).toBeNull();
+    expect(
+      validateStoredBoard({ ...fresh, body: "é".repeat(200_000) }, NOW),
+    ).toBeNull();
   });
 });
 
 describe("materialization", () => {
-  const page = (day: string) => ({
-    items: [
-      {
-        id: `event:${day}`,
-        version: 1,
-        metadata: {
-          freshness: { state: "current" },
-          availability: "available",
-          evaluatedAt: NOW.toISOString(),
-        },
+  const game = (id: string, overrides: Record<string, unknown> = {}) => ({
+    id,
+    version: 1,
+    sportKey: "soccer",
+    leagueKey: "mls",
+    status: "scheduled",
+    startsAt: "2026-08-09T00:00:00.000Z",
+    participants: [{ label: `Away ${id}` }, { label: `Home ${id}` }],
+    freshness: NOW.toISOString(),
+    odds: { state: "unavailable" },
+    metadata: {
+      freshness: {
+        state: "current",
+        evidenceAt: NOW.toISOString(),
       },
-    ],
+      availability: "available",
+      evaluatedAt: NOW.toISOString(),
+    },
+    ...overrides,
+  });
+  const page = (day: string) => ({
+    items: [game(`event:${day}`)],
     nextCursor: null,
     projectionState: "ready" as const,
     evaluationState: "complete" as const,
@@ -186,8 +199,28 @@ describe("materialization", () => {
             ...page("2026-08-08"),
             items:
               filter.sportKey === "soccer"
-                ? [upcoming("unavailable"), upcoming("unavailable")]
-                : [upcoming("available"), upcoming("unavailable")],
+                ? [
+                    upcoming("unavailable"),
+                    {
+                      ...upcoming("unavailable"),
+                      id: "event:soccer-second",
+                      participants: [
+                        { label: "Second Away" },
+                        { label: "Second Home" },
+                      ],
+                    },
+                  ]
+                : [
+                    upcoming("available"),
+                    {
+                      ...upcoming("unavailable"),
+                      id: "event:mlb-second",
+                      participants: [
+                        { label: "Second Away" },
+                        { label: "Second Home" },
+                      ],
+                    },
+                  ],
           } as never),
       },
       splits: {
@@ -201,12 +234,120 @@ describe("materialization", () => {
     expect(result.pricedBySport["mlb"]).toEqual({ upcoming: 4, priced: 2 });
   });
 
-  it("skips a board whose page would need a cursor", async () => {
-    const puts: unknown[] = [];
+  it("materializes a physical second page after global duplicate collapse", async () => {
+    const puts: { value: { body: string } }[] = [];
+    const firstItems = Array.from({ length: 50 }, (_, index) =>
+      game(`event:${index}`),
+    );
+    const replacement = game("event:replacement", {
+      version: 2,
+      participants: firstItems[0]!.participants,
+      startsAt: firstItems[0]!.startsAt,
+    });
     const result = await materializeBoards({
       games: {
-        list: () =>
-          Promise.resolve({ ...page("2026-08-08"), nextCursor: "sk" } as never),
+        list: (_filter, _limit, cursor) =>
+          Promise.resolve(
+            (cursor
+              ? { ...page("2026-08-08"), items: [replacement] }
+              : {
+                  ...page("2026-08-08"),
+                  items: firstItems,
+                  nextCursor: "second-page",
+                }) as never,
+          ),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(10);
+    expect(result.skipped).toBe(0);
+    const body = JSON.parse(puts[0]!.value.body) as {
+      items: { id: string }[];
+      nextCursor: string | null;
+    };
+    expect(body.items).toHaveLength(50);
+    expect(body.items.map(({ id }) => id)).toContain("event:replacement");
+    expect(body.items.map(({ id }) => id)).not.toContain("event:0");
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it("applies withdrawal evidence across page boundaries", async () => {
+    const ghost = game("event:ghost", {
+      startsAt: "2026-08-08T06:50:00.000Z",
+      participants: [
+        { label: "Kansas City Royals" },
+        { label: "Los Angeles Dodgers" },
+      ],
+    });
+    const real = game("event:real", {
+      startsAt: "2026-08-09T02:10:00.000Z",
+      participants: ghost.participants,
+    });
+    const puts: { value: { body: string } }[] = [];
+    const result = await materializeBoards({
+      games: {
+        list: (_filter, _limit, cursor) =>
+          Promise.resolve(
+            (cursor
+              ? { ...page("2026-08-08"), items: [real] }
+              : {
+                  ...page("2026-08-08"),
+                  items: [ghost],
+                  nextCursor: "second-page",
+                }) as never,
+          ),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+      scheduleListings: () =>
+        Promise.resolve([
+          {
+            awayTeam: "Kansas City Royals",
+            homeTeam: "Los Angeles Dodgers",
+            startsAt: real.startsAt,
+          },
+        ]),
+    });
+
+    expect(result.stored).toBe(10);
+    expect(result.withdrawnByReason["vouched-sibling"]).toBe(10);
+    const body = JSON.parse(puts[0]!.value.body) as {
+      items: { id: string }[];
+    };
+    expect(body.items.map(({ id }) => id)).toEqual(["event:real"]);
+  });
+
+  it("skips a genuine 51-game logical board without storing a partial page", async () => {
+    const puts: unknown[] = [];
+    const firstItems = Array.from({ length: 50 }, (_, index) =>
+      game(`event:${index}`),
+    );
+    const result = await materializeBoards({
+      games: {
+        list: (_filter, _limit, cursor) =>
+          Promise.resolve(
+            (cursor
+              ? { ...page("2026-08-08"), items: [game("event:50")] }
+              : {
+                  ...page("2026-08-08"),
+                  items: firstItems,
+                  nextCursor: "second-page",
+                }) as never,
+          ),
       },
       splits: { listCurrent: vi.fn() } as unknown as BettingSplitRepository,
       put: (item) => {
@@ -236,6 +377,426 @@ describe("materialization", () => {
     });
     expect(new Set(result.skippedBoards.map(({ board }) => board)).size).toBe(
       10,
+    );
+  });
+
+  it("isolates cursor cycles, snapshot drift, and page-bound failures", async () => {
+    const puts: unknown[] = [];
+    const calls = new Map<string, number>();
+    const result = await materializeBoards({
+      games: {
+        list: (filter, _limit, cursor) => {
+          const key = `${filter.sportKey}:${filter.status}:${filter.day}`;
+          calls.set(key, (calls.get(key) ?? 0) + 1);
+          if (key === "mlb:all:2026-08-08")
+            return Promise.resolve({
+              ...page(filter.day),
+              items: [game(cursor ? "event:cycle-page" : "event:cycle-first")],
+              nextCursor: cursor ? "cycle" : "cycle",
+            } as never);
+          if (key === "mlb:scheduled:2026-08-08")
+            return Promise.resolve({
+              ...page(filter.day),
+              snapshotAt: cursor
+                ? "2026-08-08T12:00:01.000Z"
+                : NOW.toISOString(),
+              nextCursor: cursor ? null : "drift",
+            } as never);
+          if (key === "soccer:all:2026-08-08") {
+            const pageNumber = cursor ? Number(cursor.slice(1)) : 0;
+            return Promise.resolve({
+              ...page(filter.day),
+              items: [game(`event:page-${String(pageNumber)}`)],
+              nextCursor: `p${String(pageNumber + 1)}`,
+            } as never);
+          }
+          return Promise.resolve(page(filter.day) as never);
+        },
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    // The scheduled MLB filter feeds both the games and splits boards, so its
+    // drifting chain invalidates two targets while the other six still store.
+    expect(result.stored).toBe(6);
+    expect(result.skipped).toBe(4);
+    expect(puts).toHaveLength(6);
+    expect(result.skippedBoards.map(({ reason }) => reason)).toEqual([
+      "pagination-invalid",
+      "pagination-invalid",
+      "pagination-invalid",
+      "pagination-invalid",
+    ]);
+    expect(calls.get("mlb:all:2026-08-08")).toBe(2);
+    expect(calls.get("soccer:all:2026-08-08")).toBe(50);
+  });
+
+  it("rejects projection-state drift", async () => {
+    const puts: unknown[] = [];
+    const result = await materializeBoards({
+      games: {
+        list: (filter, _limit, cursor) =>
+          Promise.resolve(
+            (filter.sportKey === "soccer" &&
+            filter.status === "all" &&
+            filter.day === "2026-08-09"
+              ? {
+                  ...page(filter.day),
+                  items: [game(cursor ? "event:drift-2" : "event:drift-1")],
+                  nextCursor: cursor ? null : "drift",
+                  projectionState: cursor ? "uninitialized" : "ready",
+                  unavailableReason: cursor ? "projection-uninitialized" : null,
+                }
+              : page(filter.day)) as never,
+          ),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(9);
+    expect(puts).toHaveLength(9);
+    expect(result.skippedBoards[0]?.reason).toBe("pagination-invalid");
+  });
+
+  it("rejects unavailable-reason drift", async () => {
+    const puts: unknown[] = [];
+    const result = await materializeBoards({
+      games: {
+        list: (filter, _limit, cursor) =>
+          Promise.resolve(
+            (filter.sportKey === "soccer" &&
+            filter.status === "all" &&
+            filter.day === "2026-08-09"
+              ? {
+                  ...page(filter.day),
+                  items: [game(cursor ? "event:drift-2" : "event:drift-1")],
+                  nextCursor: cursor ? null : "drift",
+                  unavailableReason: cursor ? "projection-uninitialized" : null,
+                }
+              : page(filter.day)) as never,
+          ),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(9);
+    expect(puts).toHaveLength(9);
+    expect(result.skippedBoards[0]?.reason).toBe("pagination-invalid");
+  });
+
+  it("rejects an event id repeated across pages and continues later boards", async () => {
+    const puts: unknown[] = [];
+    const result = await materializeBoards({
+      games: {
+        list: (filter, _limit, cursor) => {
+          if (
+            filter.sportKey === "soccer" &&
+            filter.status === "scheduled" &&
+            filter.day === "2026-08-09"
+          )
+            return Promise.resolve({
+              ...page(filter.day),
+              items: [game("event:overlap")],
+              nextCursor: cursor ? null : "overlap",
+            } as never);
+          return Promise.resolve(page(filter.day) as never);
+        },
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(9);
+    expect(result.skipped).toBe(1);
+    expect(puts).toHaveLength(9);
+    expect(result.skippedBoards).toEqual([
+      {
+        board: boardPartition({
+          route: "games",
+          sportKey: "soccer",
+          leagueKey: "mls",
+          status: "scheduled",
+          day: "2026-08-09",
+          limit: 50,
+        }),
+        reason: "pagination-invalid",
+      },
+    ]);
+  });
+
+  it("rejects a terminal partial envelope and continues later boards", async () => {
+    const puts: unknown[] = [];
+    const result = await materializeBoards({
+      games: {
+        list: (filter) =>
+          Promise.resolve(
+            (filter.sportKey === "soccer" &&
+            filter.status === "all" &&
+            filter.day === "2026-08-09"
+              ? {
+                  ...page(filter.day),
+                  evaluationState: "partial",
+                  hasMoreUnknown: true,
+                }
+              : page(filter.day)) as never,
+          ),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(9);
+    expect(result.skipped).toBe(1);
+    expect(puts).toHaveLength(9);
+    expect(result.skippedBoards[0]?.reason).toBe("pagination-invalid");
+  });
+
+  it("reports repository read failures and continues later boards", async () => {
+    const puts: unknown[] = [];
+    const result = await materializeBoards({
+      games: {
+        list: (filter) =>
+          filter.sportKey === "mlb" &&
+          filter.status === "all" &&
+          filter.day === "2026-08-08"
+            ? Promise.reject(new Error("read failed"))
+            : Promise.resolve(page(filter.day) as never),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(9);
+    expect(puts).toHaveLength(9);
+    expect(result.skippedBoards[0]?.reason).toBe("repository-read-failed");
+  });
+
+  it.each([
+    {
+      name: "missing snapshot",
+      broken: (filter: { day: string }) => ({
+        ...page(filter.day),
+        snapshotAt: null,
+      }),
+    },
+    {
+      name: "duplicate event ids",
+      broken: (filter: { day: string }) => ({
+        ...page(filter.day),
+        items: [game("event:duplicate"), game("event:duplicate")],
+      }),
+    },
+  ])("rejects a single page with $name", async ({ broken }) => {
+    const puts: unknown[] = [];
+    const result = await materializeBoards({
+      games: {
+        list: (filter) =>
+          Promise.resolve(
+            (filter.sportKey === "soccer" &&
+            filter.status === "all" &&
+            filter.day === "2026-08-09"
+              ? broken(filter)
+              : page(filter.day)) as never,
+          ),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(9);
+    expect(puts).toHaveLength(9);
+    expect(result.skippedBoards[0]?.reason).toBe("pagination-invalid");
+  });
+
+  it("reports an uninitialized terminal page as projection-not-ready", async () => {
+    const result = await materializeBoards({
+      games: {
+        list: (filter) =>
+          Promise.resolve(
+            (filter.sportKey === "soccer" &&
+            filter.status === "all" &&
+            filter.day === "2026-08-09"
+              ? {
+                  ...page(filter.day),
+                  items: [],
+                  projectionState: "uninitialized",
+                  snapshotAt: null,
+                  freshness: null,
+                  unavailableReason: "projection-uninitialized",
+                }
+              : page(filter.day)) as never,
+          ),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: () => Promise.resolve(),
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(9);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedBoards).toContainEqual({
+      board: boardPartition({
+        route: "games",
+        sportKey: "soccer",
+        leagueKey: "mls",
+        status: "all",
+        day: "2026-08-09",
+        limit: 50,
+      }),
+      reason: "projection-not-ready",
+    });
+  });
+
+  it("recomputes freshness after single-page duplicate collapse", async () => {
+    const puts: { value: { body: string } }[] = [];
+    const retainedFreshness = "2026-08-08T11:59:00.000Z";
+    const result = await materializeBoards({
+      games: {
+        list: (filter) =>
+          Promise.resolve({
+            ...page(filter.day),
+            freshness: "2026-08-08T01:00:00.000Z",
+            items: [
+              game("event:old", {
+                freshness: "2026-08-08T01:00:00.000Z",
+                participants: [
+                  { label: "New York City FC" },
+                  { label: "Inter Miami CF" },
+                ],
+              }),
+              game("event:new", {
+                version: 2,
+                freshness: retainedFreshness,
+                participants: [
+                  { label: "New York City FC" },
+                  { label: "Inter Miami CF" },
+                ],
+              }),
+            ],
+          } as never),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(10);
+    const body = JSON.parse(puts[0]!.value.body) as {
+      freshness: string | null;
+      items: { id: string }[];
+    };
+    expect(body.items.map(({ id }) => id)).toEqual(["event:new"]);
+    expect(body.freshness).toBe(retainedFreshness);
+  });
+
+  it("isolates split enrichment and storage failures per board", async () => {
+    const puts: unknown[] = [];
+    const result = await materializeBoards({
+      games: {
+        list: (filter) => Promise.resolve(page(filter.day) as never),
+      },
+      splits: {
+        listCurrent: (eventId: string) =>
+          eventId === "event:2026-08-08"
+            ? Promise.reject(new Error("split failed"))
+            : Promise.resolve([]),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        if (item.pk === "BOARD#games#soccer#mls#all#2026-08-09#50")
+          return Promise.reject(new Error("put failed"));
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(8);
+    expect(puts).toHaveLength(8);
+    expect(result.skippedBoards.map(({ reason }) => reason)).toEqual([
+      "split-enrichment-failed",
+      "store-failed",
+    ]);
+  });
+
+  it("enforces the write body limit in UTF-8 bytes", async () => {
+    const puts: unknown[] = [];
+    const oversized = game("event:large", {
+      metadata: {
+        ...game("metadata-template").metadata,
+        diagnostic: "é".repeat(200_000),
+      },
+    });
+    const result = await materializeBoards({
+      games: {
+        list: (filter) =>
+          Promise.resolve({ ...page(filter.day), items: [oversized] } as never),
+      },
+      splits: {
+        listCurrent: vi.fn(() => Promise.resolve([])),
+      } as unknown as BettingSplitRepository,
+      put: (item) => {
+        puts.push(item);
+        return Promise.resolve();
+      },
+      now: NOW,
+    });
+
+    expect(result.stored).toBe(0);
+    expect(puts).toHaveLength(0);
+    expect(new Set(result.skippedBoards.map(({ reason }) => reason))).toEqual(
+      new Set(["body-too-big"]),
     );
   });
 });

@@ -40,6 +40,25 @@ function same(left, right) {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
+function permitsContributorInsightsUpgrade(before, after) {
+  return (
+    same(before, after) ||
+    ((before === undefined || same(before, { Enabled: false })) &&
+      same(after, { Enabled: true }))
+  );
+}
+
+function preservesDynamoIndexIdentity(before, after) {
+  const { ContributorInsightsSpecification: oldInsights, ...oldIdentity } =
+    before;
+  const { ContributorInsightsSpecification: nextInsights, ...nextIdentity } =
+    after;
+  return (
+    same(oldIdentity, nextIdentity) &&
+    permitsContributorInsightsUpgrade(oldInsights, nextInsights)
+  );
+}
+
 function uniqueNamedMap(
   items,
   nameProperty,
@@ -182,7 +201,8 @@ export function assertRetainedResourcesSafe(existing, proposed) {
     if (!oldByName || !newByName) return false;
     for (const [name, oldIndex] of oldByName) {
       const nextIndex = newByName.get(name);
-      if (!nextIndex || !same(oldIndex, nextIndex)) return false;
+      if (!nextIndex) return false;
+      if (!preservesDynamoIndexIdentity(oldIndex, nextIndex)) return false;
     }
     return true;
   };
@@ -310,6 +330,10 @@ export function assertRetainedResourcesSafe(existing, proposed) {
               "SSEType",
               "KMSMasterKeyId",
             ]))) &&
+        permitsContributorInsightsUpgrade(
+          before.ContributorInsightsSpecification,
+          after.ContributorInsightsSpecification,
+        ) &&
         same(before.LocalSecondaryIndexes, after.LocalSecondaryIndexes) &&
         preservesNamedIndexes(
           before.GlobalSecondaryIndexes,
@@ -484,7 +508,7 @@ function analyzeDynamoGsiChanges(existing, proposed) {
       const nextIndex = newIndexes.get(name);
       if (!nextIndex)
         throw new Error(`GSI staging rejected index removal on ${logicalId}`);
-      if (!same(index, nextIndex))
+      if (!preservesDynamoIndexIdentity(index, nextIndex))
         throw new Error(`GSI staging rejected index mutation on ${logicalId}`);
     }
     const addedKeyAttributes = new Set();

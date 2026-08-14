@@ -578,6 +578,11 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
   };
   const upgraded = structuredClone(resources);
   upgraded.Table.Properties.Tags = [{ Key: "new", Value: "tag" }];
+  upgraded.Table.Properties.ContributorInsightsSpecification = {
+    Enabled: true,
+  };
+  upgraded.Table.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
+    { Enabled: true };
   upgraded.Table.Properties.PointInTimeRecoverySpecification.RecoveryPeriodInDays = 35;
   upgraded.Table.Properties.AttributeDefinitions.push(
     { AttributeName: "newPk", AttributeType: "S" },
@@ -615,6 +620,10 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
     (copy) =>
       (copy.Table.Properties.GlobalSecondaryIndexes[0].Projection.ProjectionType =
         "ALL"),
+    (copy) =>
+      (copy.Table.Properties.ContributorInsightsSpecification = {
+        Enabled: false,
+      }),
     (copy) => delete copy.Table.Properties.TimeToLiveSpecification,
     (copy) => delete copy.Table.Properties.StreamSpecification,
     (copy) => delete copy.Table.Properties.ResourcePolicy,
@@ -663,6 +672,19 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
       ),
     );
   }
+  const deployedWithInsights = structuredClone(upgraded);
+  const insightsRemoved = structuredClone(upgraded);
+  delete insightsRemoved.Table.Properties.ContributorInsightsSpecification;
+  delete insightsRemoved.Table.Properties.GlobalSecondaryIndexes[0]
+    .ContributorInsightsSpecification;
+  assert.throws(
+    () =>
+      assertRetainedResourcesSafe(
+        { Resources: deployedWithInsights },
+        { Resources: insightsRemoved },
+      ),
+    /protected properties/,
+  );
 });
 
 test("retained guard permits only GSI-backed additive attribute definitions", () => {
@@ -749,9 +771,7 @@ test("retained guard permits only GSI-backed additive attribute definitions", ()
         "ALL"),
     (copy) =>
       (copy.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
-        {
-          Enabled: true,
-        }),
+        { Enabled: false }),
   ]) {
     const unsafe = structuredClone(upgraded);
     mutate(unsafe);
@@ -831,6 +851,13 @@ test("GSI stage planning deterministically leaves only one index for the final d
   );
   assert.equal(
     planDynamoGsiDeploymentStages(stages[0].template, target).length,
+    0,
+  );
+  const insightsTarget = structuredClone(existing);
+  insightsTarget.Resources.EventIngestionTable.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
+    { Enabled: true };
+  assert.equal(
+    planDynamoGsiDeploymentStages(existing, insightsTarget).length,
     0,
   );
 });
