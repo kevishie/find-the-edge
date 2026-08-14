@@ -94,18 +94,22 @@ async function findEmptyDay(
 async function openEntitledExplorer(page: Page) {
   // This hosted-data smoke is not an identity lifecycle test: it supplies a
   // synthetic, client-only session and an explicit entitlement decision so
-  // the protected bundle can exercise real staging API data. The API's
+  // the protected bundle can exercise real staging API data. The owned-route
+  // cutover also makes the explorer load the account's watchlist, which this
+  // synthetic token cannot legitimately read; isolate that one account-owned
+  // seam as an empty list while every provider board remains live. The API's
   // product-access flag remains off during this migration, and the separate
   // signed-out test below still proves the live login boundary.
   let entitlementChecks = 0;
+  let watchlistChecks = 0;
+  const corsHeaders = {
+    "access-control-allow-origin": webOrigin,
+    "access-control-allow-methods": "GET, OPTIONS",
+    "access-control-allow-headers": "authorization",
+    "cache-control": "no-store",
+    vary: "origin",
+  };
   await page.route(`${apiBase}/billing/entitlement`, async (route) => {
-    const corsHeaders = {
-      "access-control-allow-origin": webOrigin,
-      "access-control-allow-methods": "GET, OPTIONS",
-      "access-control-allow-headers": "authorization",
-      "cache-control": "no-store",
-      vary: "origin",
-    };
     if (route.request().method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers: corsHeaders });
       return;
@@ -139,6 +143,38 @@ async function openEntitledExplorer(page: Page) {
     });
     entitlementChecks += 1;
   });
+  await page.route(`${apiBase}/watchlist`, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: corsHeaders });
+      return;
+    }
+    if (route.request().method() !== "GET") {
+      await route.fulfill({ status: 405, headers: corsHeaders });
+      return;
+    }
+    if (
+      route.request().headers()["authorization"] !==
+      `Bearer ${fixtureSession.token}`
+    ) {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        headers: corsHeaders,
+        body: JSON.stringify({ error: "unauthorized" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: corsHeaders,
+      body: JSON.stringify({
+        schemaVersion: "watchlist-page-v1",
+        items: [],
+      }),
+    });
+    watchlistChecks += 1;
+  });
   await page.addInitScript(({ token, accountId }) => {
     sessionStorage.removeItem("fte.oauth.session");
     sessionStorage.removeItem("fte.oauth.state");
@@ -158,6 +194,10 @@ async function openEntitledExplorer(page: Page) {
   // A stale pre-guard bundle could otherwise render against the still-open
   // migration API and falsely pass without exercising entitlement at all.
   await expect.poll(() => entitlementChecks).toBeGreaterThan(0);
+  // A stale pre-cutover bundle never asks for an owned watchlist. Requiring
+  // this request proves the hosted asset under test is the cutover bundle and
+  // that its exact bearer reached the account-owned transport boundary.
+  await expect.poll(() => watchlistChecks).toBeGreaterThan(0);
 }
 
 test("real hosted bundle loads provider MLB and MLS games by day", async ({
@@ -185,6 +225,13 @@ test("real hosted bundle loads provider MLB and MLS games by day", async ({
   const row = page.locator("[data-event-id]").first();
   await expect(row).toBeVisible();
   await expect(row).toContainText(/[+-]\d{2,4}/);
+  // A fulfilled route alone does not prove the hosted client accepted the
+  // watchlist contract: parsing failures deliberately hide this control while
+  // leaving provider rows visible. Requiring the enabled action closes that
+  // false-positive and proves the account-owned response reached ready state.
+  await expect(
+    row.getByRole("button", { name: /^Add .+ to watchlist$/ }),
+  ).toBeEnabled();
 
   // Lines-only listings: soccer earns a pill (and rows) only when a priced
   // slate exists, so the check navigates directly to a day known to have one.
