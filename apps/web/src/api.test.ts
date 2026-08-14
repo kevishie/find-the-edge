@@ -12,6 +12,7 @@ import {
   OWNED_SESSION_CAPABILITIES,
   parseOwnedSessionCapabilities,
   parsePublicScoutingJob,
+  type GamesClient,
   type OwnedSessionTransport,
 } from "./api";
 import type { RuntimeBootstrap } from "./runtime-config";
@@ -975,6 +976,382 @@ describe("owned session capabilities client", () => {
       { token: "legacy.jwt", accountId: ownedAccount },
       "authentication",
     );
+  });
+});
+
+type ElevatedDomainFixture = {
+  readonly label: string;
+  readonly capability: (typeof OWNED_SESSION_CAPABILITIES)[number];
+  readonly otherCapability: (typeof OWNED_SESSION_CAPABILITIES)[number];
+  readonly mutationPath: string;
+  readonly expectedBody: Readonly<Record<string, unknown>>;
+  readonly can: (client: GamesClient, signal: AbortSignal) => Promise<boolean>;
+  readonly mutate: (
+    client: GamesClient,
+    signal: AbortSignal,
+  ) => Promise<unknown>;
+};
+
+const retrospectiveVersionId = `retrospective-version:${"a".repeat(64)}`;
+const retrospectiveVersion = {
+  versionId: retrospectiveVersionId,
+  state: "draft",
+  stateVersion: 1,
+} as never;
+const experimentId = `strategy-experiment:${"b".repeat(64)}`;
+const experimentMutation = {
+  reason: "Reviewed evidence.",
+  idempotencyKey: "key-2",
+  expectedStateVersion: 1,
+  expectedDigest: "c".repeat(64),
+  artifactDigest: "d".repeat(64),
+};
+
+const elevatedDomains: readonly ElevatedDomainFixture[] = [
+  {
+    label: "retrospective review",
+    capability: "events/retrospectives:approve",
+    otherCapability: "events/strategies:promote",
+    mutationPath: `/retrospectives/${encodeURIComponent(
+      retrospectiveVersionId,
+    )}/review`,
+    expectedBody: {
+      reasonCode: "approve",
+      note: "Reviewed evidence.",
+      idempotencyKey: "key-1",
+      expectedState: "draft",
+      expectedStateVersion: 1,
+    },
+    can: (client, signal) => {
+      if (!client.canReviewRetrospectives)
+        throw new Error("review-capability-check-missing");
+      const abortableClient = client as GamesClient & {
+        canReviewRetrospectives(signal: AbortSignal): Promise<boolean>;
+      };
+      return abortableClient.canReviewRetrospectives(signal);
+    },
+    mutate: (client, signal) => {
+      if (!client.reviewRetrospective)
+        throw new Error("retrospective-mutation-missing");
+      return client.reviewRetrospective(
+        retrospectiveVersion,
+        {
+          reasonCode: "approve",
+          note: "Reviewed evidence.",
+          idempotencyKey: "key-1",
+        },
+        signal,
+      );
+    },
+  },
+  {
+    label: "strategy promotion",
+    capability: "events/strategies:promote",
+    otherCapability: "events/retrospectives:approve",
+    mutationPath: `/strategy-experiments/${encodeURIComponent(
+      experimentId,
+    )}/approve`,
+    expectedBody: experimentMutation,
+    can: (client, signal) => {
+      if (!client.canManageExperiments)
+        throw new Error("strategy-capability-check-missing");
+      const abortableClient = client as GamesClient & {
+        canManageExperiments(signal: AbortSignal): Promise<boolean>;
+      };
+      return abortableClient.canManageExperiments(signal);
+    },
+    mutate: (client, signal) => {
+      if (!client.manageExperiment)
+        throw new Error("strategy-mutation-missing");
+      return client.manageExperiment(
+        experimentId,
+        "approve",
+        experimentMutation,
+        signal,
+      );
+    },
+  },
+];
+
+const capabilityResponse = (
+  capabilities: readonly (typeof OWNED_SESSION_CAPABILITIES)[number][],
+) =>
+  new Response(
+    JSON.stringify({
+      schemaVersion: "owned-session-capabilities-v1",
+      accountId: ownedAccount,
+      capabilities,
+    }),
+  );
+
+const requestUrl = (request: RequestInfo | URL): string =>
+  typeof request === "string"
+    ? request
+    : request instanceof URL
+      ? request.toString()
+      : request.url;
+
+const elevatedClient = (
+  fetcher: typeof fetch,
+  session: OwnedSessionTransport = ownedSession(),
+): GamesClient => {
+  const result = createGamesClient(
+    { ok: true, value: bootstrap() },
+    fetcher,
+    session,
+  );
+  if (!result.ok) throw result.error;
+  return result.value;
+};
+
+describe.each(elevatedDomains)("$label owned capability gate", (domain) => {
+  const capabilityUrl = "https://api.example.test/auth/session/capabilities";
+  const mutationUrl = `https://api.example.test${domain.mutationPath}`;
+  const opaqueLegacyBearer = "opaque-legacy-bearer-without-jwt-claims";
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "session");
+  });
+
+  it("selects only the exact owned capability and forwards cancellation", async () => {
+    const getAccessToken = vi.fn(() => Promise.resolve(opaqueLegacyBearer));
+    Object.defineProperty(globalThis, "session", {
+      configurable: true,
+      value: { getAccessToken },
+    });
+
+    for (const [capabilities, expected] of [
+      [[domain.capability], true],
+      [[domain.otherCapability], false],
+      [[], false],
+    ] as const) {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(capabilityResponse(capabilities));
+      const signal = new AbortController().signal;
+
+      await expect(domain.can(elevatedClient(fetcher), signal)).resolves.toBe(
+        expected,
+      );
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+      expect(fetcher.mock.calls[0]![1]?.signal).toBe(signal);
+    }
+
+    expect(getAccessToken).not.toHaveBeenCalled();
+  });
+
+  it("rechecks owned authority and uses the legacy bearer only as an opaque POST credential", async () => {
+    const getAccessToken = vi.fn(() => Promise.resolve(opaqueLegacyBearer));
+    Object.defineProperty(globalThis, "session", {
+      configurable: true,
+      value: { getAccessToken },
+    });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation((request) =>
+        Promise.resolve(
+          requestUrl(request) === capabilityUrl
+            ? capabilityResponse([domain.capability])
+            : new Response("{}", { status: 409 }),
+        ),
+      );
+    const client = elevatedClient(fetcher);
+    const signal = new AbortController().signal;
+
+    await expect(domain.can(client, signal)).resolves.toBe(true);
+    await expect(domain.mutate(client, signal)).rejects.toMatchObject({
+      code: "conflict",
+    });
+
+    expect(fetcher.mock.calls.map(([request]) => requestUrl(request))).toEqual([
+      capabilityUrl,
+      capabilityUrl,
+      mutationUrl,
+    ]);
+    expect(getAccessToken).toHaveBeenCalledOnce();
+    expect(fetcher.mock.invocationCallOrder[1]).toBeLessThan(
+      getAccessToken.mock.invocationCallOrder[0]!,
+    );
+    expect(getAccessToken.mock.invocationCallOrder[0]).toBeLessThan(
+      fetcher.mock.invocationCallOrder[2]!,
+    );
+    const mutationRequest = fetcher.mock.calls[2]![1];
+    expect(new Headers(mutationRequest?.headers).get("authorization")).toBe(
+      `Bearer ${opaqueLegacyBearer}`,
+    );
+    const mutationBody = mutationRequest?.body;
+    expect(typeof mutationBody).toBe("string");
+    if (typeof mutationBody !== "string")
+      throw new Error("elevated-mutation-body-missing");
+    expect(JSON.parse(mutationBody)).toEqual(domain.expectedBody);
+  });
+
+  it.each([
+    ["denial", capabilityResponse([]), "forbidden"],
+    [
+      "capability failure",
+      new Response(null, { status: 503 }),
+      "request-failed",
+    ],
+  ])(
+    "stops on %s before reading a legacy bearer or sending a POST",
+    async (_case, response, code) => {
+      const getAccessToken = vi.fn(() => Promise.resolve(opaqueLegacyBearer));
+      Object.defineProperty(globalThis, "session", {
+        configurable: true,
+        value: { getAccessToken },
+      });
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+      await expect(
+        domain.mutate(elevatedClient(fetcher), new AbortController().signal),
+      ).rejects.toMatchObject({ code });
+      expect(getAccessToken).not.toHaveBeenCalled();
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+    },
+  );
+
+  it("aborts an in-flight capability recheck before reading a legacy bearer or sending a POST", async () => {
+    const getAccessToken = vi.fn(() => Promise.resolve(opaqueLegacyBearer));
+    Object.defineProperty(globalThis, "session", {
+      configurable: true,
+      value: { getAccessToken },
+    });
+    const controller = new AbortController();
+    const reason = new DOMException("Stopped", "AbortError");
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(
+      (_request, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              // Fetch rejects with the exact AbortSignal reason; preserve that
+              // identity so the client cannot replace cancellation with a
+              // generic request failure.
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+              reject(init.signal?.reason);
+            },
+            { once: true },
+          );
+        }),
+    );
+
+    const pending = domain
+      .mutate(elevatedClient(fetcher), controller.signal)
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    expect(fetcher.mock.calls[0]![1]?.signal).toBe(controller.signal);
+    controller.abort(reason);
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { name: "AbortError" },
+    });
+    expect(getAccessToken).not.toHaveBeenCalled();
+    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+  });
+
+  it("aborts after capability approval while the legacy bearer is still loading", async () => {
+    let resolveToken!: (token: string) => void;
+    const token = new Promise<string>((resolve) => {
+      resolveToken = resolve;
+    });
+    const getAccessToken = vi.fn(() => token);
+    Object.defineProperty(globalThis, "session", {
+      configurable: true,
+      value: { getAccessToken },
+    });
+    const controller = new AbortController();
+    const reason = new DOMException("Stopped", "AbortError");
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(capabilityResponse([domain.capability]));
+
+    const pending = domain
+      .mutate(elevatedClient(fetcher), controller.signal)
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    await vi.waitFor(() => expect(getAccessToken).toHaveBeenCalledOnce());
+    controller.abort(reason);
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { name: "AbortError" },
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+    resolveToken(opaqueLegacyBearer);
+  });
+
+  it("stops after an allowed capability when the legacy provider is missing", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(capabilityResponse([domain.capability]));
+
+    await expect(
+      domain.mutate(elevatedClient(fetcher), new AbortController().signal),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+  });
+
+  it.each([
+    ["whitespace", () => Promise.resolve("              ")],
+    ["too short", () => Promise.resolve("short")],
+    ["provider rejection", () => Promise.reject(new Error("provider down"))],
+  ])("stops on an invalid %s legacy bearer", async (_case, getAccessToken) => {
+    Object.defineProperty(globalThis, "session", {
+      configurable: true,
+      value: { getAccessToken: vi.fn(getAccessToken) },
+    });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(capabilityResponse([domain.capability]));
+
+    await expect(
+      domain.mutate(elevatedClient(fetcher), new AbortController().signal),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
+  });
+
+  it("stops when the owned session changes after capability approval", async () => {
+    const replacement = {
+      token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+      accountId: `account:${"d".repeat(64)}`,
+    };
+    const authorize = vi
+      .fn<OwnedSessionTransport["authorize"]>()
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(authorization())
+      .mockResolvedValueOnce(replacement);
+    Object.defineProperty(globalThis, "session", {
+      configurable: true,
+      value: {
+        getAccessToken: vi.fn(() =>
+          Promise.resolve("opaque-legacy-bearer-without-jwt-claims"),
+        ),
+      },
+    });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(capabilityResponse([domain.capability]));
+
+    await expect(
+      domain.mutate(
+        elevatedClient(fetcher, { authorize, refuse: vi.fn() }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "authentication" });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(capabilityUrl);
   });
 });
 
@@ -2493,51 +2870,6 @@ describe("games client", () => {
           ? secondRequest.toString()
           : secondRequest?.url;
     expect(secondUrl).toContain("cursor=next");
-  });
-  it("enables review only for approval-scoped reviewer-group sessions and sends concurrency guards", async () => {
-    const token = `x.${btoa(JSON.stringify({ scope: "events/events:read events/retrospectives:approve", "cognito:groups": ["fte-retrospective-reviewers"] }))}.x`;
-    Object.defineProperty(globalThis, "session", {
-      configurable: true,
-      value: { getAccessToken: vi.fn(() => Promise.resolve(token)) },
-    });
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(new Response("{}", { status: 409 }));
-    const result = createGamesClient({ ok: true, value: bootstrap() }, fetcher);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    await expect(result.value.canReviewRetrospectives?.()).resolves.toBe(true);
-    const version = {
-      versionId: `retrospective-version:${"a".repeat(64)}`,
-      state: "draft",
-      stateVersion: 1,
-    } as never;
-    await expect(
-      result.value.reviewRetrospective?.(
-        version,
-        {
-          reasonCode: "approve",
-          note: "Reviewed evidence.",
-          idempotencyKey: "key-1",
-        },
-        new AbortController().signal,
-      ),
-    ).rejects.toMatchObject({ code: "conflict" });
-    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-    });
-    const requestBody = fetcher.mock.calls[0]?.[1]?.body;
-    expect(typeof requestBody).toBe("string");
-    expect(JSON.parse(requestBody as string)).toMatchObject({
-      expectedState: "draft",
-      expectedStateVersion: 1,
-      idempotencyKey: "key-1",
-    });
-    Reflect.deleteProperty(globalThis, "session");
   });
   it("uses the runtime API base with the owned authorization header", async () => {
     const fetcher = vi

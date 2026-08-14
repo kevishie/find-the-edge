@@ -1,0 +1,152 @@
+name: Provision identity authorization
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Dry run reports exact current state; apply performs the conditional transaction
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - apply
+      desired:
+        description: Complete desired elevated-role set
+        required: true
+        type: choice
+        options:
+          - none
+          - retrospective-reviewer
+          - strategy-promoter
+          - both
+      account_id:
+        description: Stage-specific account:<64 lowercase hex> from the owned session
+        required: true
+        type: string
+      expected_updated_at:
+        description: Current canonical updatedAt, or absent for first provisioning
+        required: true
+        type: string
+      confirmation:
+        description: Type SET-ROLES only when mode is apply
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  target:
+    name: Bind protected branch to environment
+    if: github.repository == 'kevishie/find-the-edge'
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.target.outputs.branch }}
+      github_environment: ${{ steps.target.outputs.github_environment }}
+      stage: ${{ steps.target.outputs.stage }}
+      sha: ${{ steps.target.outputs.sha }}
+    steps:
+      - id: target
+        name: Resolve exact target
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_SHA: ${{ github.sha }}
+          AUTHORIZATION_MODE: ${{ inputs.mode }}
+          AUTHORIZATION_CONFIRMATION: ${{ inputs.confirmation }}
+          AUTHORIZATION_ACCOUNT_ID: ${{ inputs.account_id }}
+          AUTHORIZATION_EXPECTED: ${{ inputs.expected_updated_at }}
+        run: |
+          set -euo pipefail
+          case "$REF_NAME" in
+            main)
+              echo "stage=staging" >> "$GITHUB_OUTPUT"
+              echo "github_environment=staging" >> "$GITHUB_OUTPUT"
+              ;;
+            production)
+              echo "stage=prod" >> "$GITHUB_OUTPUT"
+              echo "github_environment=production" >> "$GITHUB_OUTPUT"
+              ;;
+            *) exit 1 ;;
+          esac
+          test "$AUTHORIZATION_MODE" = "dry-run" -o "$AUTHORIZATION_MODE" = "apply"
+          if test "$AUTHORIZATION_MODE" = "apply"; then
+            test "$AUTHORIZATION_CONFIRMATION" = "SET-ROLES"
+          else
+            test -z "$AUTHORIZATION_CONFIRMATION"
+          fi
+          printf '%s' "$AUTHORIZATION_ACCOUNT_ID" | grep -Eq '^account:[a-f0-9]{64}$'
+          test "$AUTHORIZATION_EXPECTED" = "absent" || printf '%s' "$AUTHORIZATION_EXPECTED" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+          echo "branch=$REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "sha=$DISPATCH_SHA" >> "$GITHUB_OUTPUT"
+
+  provision:
+    name: ${{ inputs.mode }} ${{ inputs.desired }} in ${{ needs.target.outputs.github_environment }}
+    needs: target
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ needs.target.outputs.github_environment }}
+    concurrency:
+      group: phase1-${{ needs.target.outputs.stage }}-environment
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Refuse an outdated protected-branch revision
+        env:
+          BRANCH: ${{ needs.target.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_SHA: ${{ needs.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          latest_sha=$(gh api "repos/${{ github.repository }}/commits/$BRANCH" --jq .sha)
+          test "$DISPATCH_SHA" = "$latest_sha"
+
+      - name: Check out dispatched protected revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.12"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify authorization provisioning safety tests
+        run: pnpm test:identity-authorization-provision
+
+      - name: Assume isolated authorization operator role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AUTHORIZATION_OPERATOR_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Reconfirm latest protected-branch revision
+        env:
+          BRANCH: ${{ needs.target.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_SHA: ${{ needs.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          latest_sha=$(gh api "repos/${{ github.repository }}/commits/$BRANCH" --jq .sha)
+          test "$DISPATCH_SHA" = "$latest_sha"
+
+      - name: Run exact-key authorization provisioner
+        env:
+          AWS_ACCOUNT_ID: "228246988391"
+          AWS_REGION: us-east-1
+          FTE_AWS_STAGE: ${{ needs.target.outputs.stage }}
+          FTE_AUTHORIZATION_MODE: ${{ inputs.mode }}
+          FTE_AUTHORIZATION_DESIRED: ${{ inputs.desired }}
+          FTE_AUTHORIZATION_ACCOUNT_ID: ${{ inputs.account_id }}
+          FTE_AUTHORIZATION_EXPECTED_UPDATED_AT: ${{ inputs.expected_updated_at }}
+          FTE_AUTHORIZATION_APPLY: ${{ inputs.confirmation }}
+        run: pnpm identity-authorization:provision

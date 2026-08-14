@@ -92,6 +92,19 @@ test("classifier uses exact key shapes and preserves immutable odds evidence", (
     );
 
   const preserved = [
+    key(`ACCOUNT#account:${hash}`, "RECORD"),
+    key(`ACCOUNT#account:${hash}`, "AUTHORIZATION"),
+    key(
+      `ACCOUNT#account:${hash}`,
+      "AUTHORIZATION_AUDIT#2026-08-05T19:30:00.000Z#github:123456:2",
+    ),
+    key("OTP#+15557654321", "CHALLENGE"),
+    key("OTP_RATE#+15557654321", "WINDOW#2026-08-05T19:30:00.000Z"),
+    key("OTP_RATE#verify:+15557654321", "WINDOW#2026-08-05T19:30:00.000Z"),
+    key("OTP_RATE#ip:203.0.113.4", "WINDOW#2026-08-05T19:30:00.000Z"),
+    key("OTP_RATE#verify-ip:2001:db8::1", "WINDOW#2026-08-05T19:30:00.000Z"),
+    key(`ENTITLEMENT#account:${hash}`, "RECORD"),
+    key("STRIPE_CUSTOMER#cus_test_123", "ACCOUNT"),
     key(fixturePk, snapshotSk),
     key(
       'FIXTURE_ODDS#["event?one",1,"baseball","moneyline","away","book&one"]',
@@ -146,6 +159,17 @@ test("classifier uses exact key shapes and preserves immutable odds evidence", (
     );
 
   for (const candidate of [
+    key(`ACCOUNT#account:${hash}`, "AUTHORIZATION_AUDIT#bad#github:1:1"),
+    key(
+      `ACCOUNT#account:${hash}`,
+      "AUTHORIZATION_AUDIT#2026-08-05T19:30:00.000Z#manual:1",
+    ),
+    key(`ACCOUNT#account:${hash}`, "FUTURE"),
+    key(`ACCOUNT#account:${hash.toUpperCase()}`, "RECORD"),
+    key("OTP#+1555", "CHALLENGE"),
+    key("OTP_RATE#ip:not-an-address", "WINDOW#2026-08-05T19:30:00.000Z"),
+    key(`ENTITLEMENT#account:${hash}`, "CURRENT"),
+    key("STRIPE_CUSTOMER#cus_bad-hyphen", "ACCOUNT"),
     key("EVENT#event-1", "FUTURE"),
     key(fixturePk, `SNAPSHOT#bad#${hash}`),
     key("RESULT#one", "FUTURE"),

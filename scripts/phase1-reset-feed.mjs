@@ -84,6 +84,48 @@ const isoComposite = (sk, suffixPattern) => {
   );
 };
 
+const ACCOUNT_ID = /^account:[a-f0-9]{64}$/;
+const E164 = /^\+[1-9][0-9]{7,14}$/;
+const SOURCE_ADDRESS = /^[0-9a-fA-F:.]{3,45}$/;
+const canonicalIso = (value) =>
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(value).toISOString() === value;
+
+const preservedIdentityAndBilling = (pk, sk) => {
+  if (pk.startsWith("ACCOUNT#")) {
+    const accountId = pk.slice("ACCOUNT#".length);
+    if (!ACCOUNT_ID.test(accountId)) return false;
+    if (["RECORD", "AUTHORIZATION"].includes(sk)) return true;
+    const audit =
+      /^AUTHORIZATION_AUDIT#(.+Z)#github:(\d{1,20}):(\d{1,5})$/.exec(sk);
+    return !!audit && canonicalIso(audit[1]);
+  }
+  if (pk.startsWith("OTP#"))
+    return E164.test(pk.slice("OTP#".length)) && sk === "CHALLENGE";
+  if (pk.startsWith("OTP_RATE#")) {
+    const subject = pk.slice("OTP_RATE#".length);
+    const validSubject = subject.startsWith("verify:")
+      ? E164.test(subject.slice("verify:".length))
+      : subject.startsWith("ip:")
+        ? SOURCE_ADDRESS.test(subject.slice("ip:".length))
+        : subject.startsWith("verify-ip:")
+          ? SOURCE_ADDRESS.test(subject.slice("verify-ip:".length))
+          : E164.test(subject);
+    return (
+      validSubject && sk.startsWith("WINDOW#") && canonicalIso(sk.slice(7))
+    );
+  }
+  if (pk.startsWith("ENTITLEMENT#"))
+    return ACCOUNT_ID.test(pk.slice("ENTITLEMENT#".length)) && sk === "RECORD";
+  if (pk.startsWith("STRIPE_CUSTOMER#"))
+    return (
+      /^cus_[A-Za-z0-9_]{1,80}$/.test(pk.slice("STRIPE_CUSTOMER#".length)) &&
+      sk === "ACCOUNT"
+    );
+  return false;
+};
+
 const deleteClassification = (pk, sk) => {
   if (pk === "EVENT_PROJECTIONS" && sk === "READINESS")
     return "event-projection-readiness";
@@ -173,6 +215,7 @@ const deleteClassification = (pk, sk) => {
 };
 
 const preserveClassification = (pk, sk) => {
+  if (preservedIdentityAndBilling(pk, sk)) return "identity-and-billing-record";
   if (fixturePartition(pk) && snapshotSortKey(sk))
     return "fixture-odds-snapshot";
   if (pk === "ODDS_SNAPSHOTS_BY_ID" && HEX_64.test(sk))
