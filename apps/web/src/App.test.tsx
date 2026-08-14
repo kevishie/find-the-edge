@@ -784,6 +784,33 @@ it("keeps strategy controls read-only when capability resolution rejects", async
   expect(screen.queryByRole("button", { name: "approve" })).toBeNull();
 });
 
+it("renders a bounded experiment error instead of remaining in loading", async () => {
+  const getExperiment = vi.fn(() =>
+    Promise.reject(new Error("invalid experiment id")),
+  );
+  render(
+    <App
+      sessionStore={activeSession()}
+      initialPath="/experiments/probe"
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getExperiment,
+          canManageExperiments: vi.fn(() => Promise.resolve(true)),
+        },
+      }}
+    />,
+  );
+
+  expect(
+    await screen.findByText("Strategy experiment evidence is unavailable."),
+  ).toHaveAttribute("role", "alert");
+  expect(
+    screen.queryByText("Loading immutable experiment evidence…"),
+  ).not.toBeInTheDocument();
+});
+
 it("aborts a pending retrospective capability check on unmount", async () => {
   const pending = deferred<boolean>();
   const capabilitySignals: AbortSignal[] = [];
