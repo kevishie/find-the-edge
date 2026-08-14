@@ -11,7 +11,10 @@ import {
   fetchSharpApiSchedulePage,
   sharpApiLeagueByKey,
 } from "@find-the-edge/providers";
-import { usableScheduleListings } from "@find-the-edge/database";
+import {
+  instrumentDynamoCapacity,
+  usableScheduleListings,
+} from "@find-the-edge/database";
 import { captureClosingLines } from "./closing-lines-capture";
 import {
   AwsDynamoGateway,
@@ -33,6 +36,7 @@ import {
   runProductionOddsControlPlane,
 } from "./production-odds-control-plane";
 import { embeddedOddsControlPlaneMetrics } from "./odds-control-plane";
+import { emitDynamoCapacityMetrics } from "./dynamo-capacity-metrics";
 import { decideOddsRetry } from "./odds-control-plane";
 
 export function parseProviderApiSecret(value: string | undefined): string {
@@ -465,7 +469,10 @@ const runLiveOddsHandler = async (event?: unknown) => {
   if (!tableName || !sharpEnabled || !sharpSecretId)
     throw new Error("live-odds-configuration-invalid");
   const secrets = new SecretsManagerClient({});
-  const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  const client = instrumentDynamoCapacity(
+    DynamoDBDocumentClient.from(new DynamoDBClient({})),
+    emitDynamoCapacityMetrics,
+  );
   await assertLiveOddsMaintenanceOwnership(
     client,
     tableName,

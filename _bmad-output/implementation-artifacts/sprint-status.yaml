@@ -938,7 +938,7 @@ stories:
     title: Cost Attribution Baseline for the Ingestion Table
     epic: Ingestion cost, measurement, and streaming
     priority: P0
-    status: ready
+    status: in-progress
     dependencies: []
     validationCommands: [pnpm check]
     blockerReason:
