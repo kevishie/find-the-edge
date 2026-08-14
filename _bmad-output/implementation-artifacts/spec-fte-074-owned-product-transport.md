@@ -3,7 +3,7 @@ title: 'FTE-074 Owned Product Transport'
 type: 'feature'
 created: '2026-08-13'
 status: 'done'
-review_loop_iteration: 5
+review_loop_iteration: 6
 baseline_commit: 'a5f06e71bf7fabdbe11e3b2b65fe38e579eb8def'
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-12-context.md'
@@ -45,6 +45,7 @@ context:
 - `apps/web/src/App.tsx` -- TanStack Router session and entitlement guards.
 - `apps/web/src/api.test.ts`, `apps/web/src/session.test.ts`, `apps/web/src/App.test.tsx` -- focused transport, lifecycle, and navigation contracts.
 - `tests/e2e/session.ts` and protected E2E specs -- explicit owned access fixtures and browser-level authority checks.
+- `tests/phase1-e2e/environment.spec.ts` -- hosted-data smoke fixture for the migration-period entitlement boundary.
 
 ## Tasks & Acceptance
 
@@ -56,6 +57,7 @@ context:
 - [x] `apps/web/src/api.test.ts` -- cover all product request families and pagination plus missing token, refresh, 401, 402, and unchanged public/Cognito calls.
 - [x] `apps/web/src/session.test.ts` and `apps/web/src/App.test.tsx` -- pin session invalidation and anonymous/unentitled/entitled/no-loop navigation.
 - [x] `tests/e2e/session.ts` and protected E2E specs -- seed entitled owned sessions, retain anonymous sign-in lifecycle coverage, and assert exact product bearer authority across desktop and mobile.
+- [x] `tests/phase1-e2e/environment.spec.ts` -- answer the hosted bundle's entitlement check with an explicit test decision while retaining real staging assets/API data and the independent signed-out redirect smoke.
 
 **Acceptance Criteria:**
 
@@ -71,6 +73,7 @@ context:
 - Review loop 3: targeted re-review found that missing entitlement configuration preceded anonymous identity routing, route authorization did not settle with canceled navigation, and an old in-flight refresh could overwrite or clear a replacement account. Identity now resolves before entitlement configuration, canceled guards settle through a router-safe sentinel without later side effects, and refresh success/error paths require the initiating token to remain current before changing or authorizing store state.
 - Review loop 4: final concurrency review found that a replacement account could still inherit the prior account's globally shared refresh promise. In-flight renewal is now keyed by its source token: concurrent requests for one token share, a replacement token starts independently, and each completion clears only its own entry.
 - Review loop 5: root validation exposed that protected Playwright scenarios seeded browser identity without serving the new entitlement dependency, so they correctly redirected to sign-in. The E2E harness now provides separate entitled-product and anonymous-lifecycle fixtures, verifies exact owned bearer authority, and leaves production guards unchanged.
+- Review loop 6: staging deployment exposed the equivalent gap in the hosted-data smoke: its synthetic migration session reached the new live entitlement check and correctly redirected before its data assertions. The phase-one harness now serves an explicit entitlement fixture only for that synthetic token; the hosted bundle and product data remain live, the signed-out redirect remains independent, and production authorization is unchanged.
 
 ## Design Notes
 
@@ -84,10 +87,11 @@ The production games client always exposes the owned entitlement method, and pro
 - `pnpm --filter @find-the-edge/web typecheck` -- expected: router context and transport contracts compile strictly.
 - `pnpm --filter @find-the-edge/web lint` -- expected: changed web files satisfy lint rules.
 - `pnpm exec playwright test` -- expected: all protected and anonymous desktop/mobile scenarios pass.
+- `FTE_PHASE1_API_BASE=https://api-staging.kevishie.com FTE_WEB_ORIGIN=https://staging.kevishie.com FTE_PHASE1_BROWSER_BASE_URL=https://staging.kevishie.com pnpm exec playwright test --config playwright.phase1.config.ts` -- expected: all three hosted staging smokes pass.
 - `pnpm exec prettier --check apps/web/src _bmad-output/implementation-artifacts/spec-fte-074-owned-product-transport.md` -- expected: formatting passes.
 - `git diff --check` -- expected: no whitespace errors and no API/CDK/flag changes.
 
-**Verified:** 10 web test files / 357 tests and 34 Playwright desktop/mobile scenarios pass; web typecheck/lint, tools typecheck, targeted E2E lint, Prettier, and diff-check pass.
+**Verified:** 10 web test files / 357 tests, 34 Playwright desktop/mobile scenarios, and 3 live hosted staging smokes pass; web typecheck/lint, tools typecheck, targeted E2E lint, Prettier, and diff-check pass.
 
 ## Suggested Review Order
 
@@ -114,6 +118,9 @@ The production games client always exposes the owned entitlement method, and pro
 
 - E2E fixtures separate entitled product access from anonymous sign-in lifecycle.
   [`session.ts:1`](../../tests/e2e/session.ts#L1)
+
+- The hosted migration smoke supplies entitlement explicitly without replacing live assets or product data.
+  [`environment.spec.ts:1`](../../tests/phase1-e2e/environment.spec.ts#L1)
 
 - Transport tests pin refusal classification, pagination refresh, and cancellation boundaries.
   [`api.test.ts:676`](../../apps/web/src/api.test.ts#L676)
