@@ -2,6 +2,7 @@
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { GamesClientContext, type StrategyExperimentDto } from "./App";
+import { isRequestCancellation } from "./api";
 import { SessionContext, useSession } from "./session";
 export function ExperimentsList() {
   const client = useContext(GamesClientContext);
@@ -76,20 +77,44 @@ export function ExperimentDetail() {
   const session = useSession(useContext(SessionContext));
   const sessionKey =
     session === null ? null : `${session.accountId}\u0000${session.token}`;
-  const [item, setItem] = useState<
-    | (StrategyExperimentDto & {
-        readonly train: { startsAt: string; endsAt: string; digest: string };
-        readonly tune: { startsAt: string; endsAt: string; digest: string };
-        readonly holdout: { startsAt: string; endsAt: string; digest: string };
-        readonly contentDigest: string;
-        readonly audit: readonly {
-          readonly activationId?: string;
-          readonly effectiveAt?: string;
-        }[];
-        readonly active: { readonly activationId: string } | null;
-      })
-    | null
-  >(null);
+  type ExperimentDetailItem = StrategyExperimentDto & {
+    readonly train: { startsAt: string; endsAt: string; digest: string };
+    readonly tune: { startsAt: string; endsAt: string; digest: string };
+    readonly holdout: { startsAt: string; endsAt: string; digest: string };
+    readonly contentDigest: string;
+    readonly audit: readonly {
+      readonly activationId?: string;
+      readonly effectiveAt?: string;
+    }[];
+    readonly active: { readonly activationId: string } | null;
+  };
+  type ExperimentDetailState =
+    | {
+        readonly kind: "loading";
+        readonly client: typeof client;
+        readonly experimentId: string;
+      }
+    | {
+        readonly kind: "ready";
+        readonly client: typeof client;
+        readonly experimentId: string;
+        readonly item: ExperimentDetailItem;
+      }
+    | {
+        readonly kind: "error";
+        readonly client: typeof client;
+        readonly experimentId: string;
+      };
+  const [detail, setDetail] = useState<ExperimentDetailState>({
+    kind: "loading",
+    client,
+    experimentId,
+  });
+  const currentDetail =
+    detail.client === client && detail.experimentId === experimentId
+      ? detail
+      : ({ kind: "loading", client, experimentId } as const);
+  const item = currentDetail.kind === "ready" ? currentDetail.item : null;
   const [authority, setAuthority] = useState<{
     readonly client: unknown;
     readonly sessionKey: string | null;
@@ -105,19 +130,34 @@ export function ExperimentDetail() {
   const [actionState, setActionState] = useState<string | null>(null);
   const actionController = useRef<AbortController | null>(null);
   const load = useCallback(
-    (signal: AbortSignal) =>
-      client.ok && client.value.getExperiment
-        ? client.value
-            .getExperiment(experimentId, signal)
-            .then((value) => setItem(value as never))
-        : Promise.resolve(),
+    async (signal: AbortSignal) => {
+      await Promise.resolve();
+      if (signal.aborted) return;
+      if (!client.ok || !client.value.getExperiment) {
+        setDetail({ kind: "error", client, experimentId });
+        return;
+      }
+      try {
+        const value = await client.value.getExperiment(experimentId, signal);
+        if (!signal.aborted)
+          setDetail({
+            kind: "ready",
+            client,
+            experimentId,
+            item: value as ExperimentDetailItem,
+          });
+      } catch (error) {
+        if (signal.aborted || isRequestCancellation(error)) return;
+        setDetail({ kind: "error", client, experimentId });
+      }
+    },
     [client, experimentId],
   );
   useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal);
+    void Promise.resolve().then(() => load(controller.signal));
     return () => controller.abort();
-  }, [client, load]);
+  }, [client, experimentId, load]);
   useEffect(() => {
     const controller = new AbortController();
     if (client.ok && sessionKey !== null)
@@ -140,6 +180,12 @@ export function ExperimentDetail() {
     },
     [sessionKey],
   );
+  if (currentDetail.kind === "error")
+    return (
+      <section className="empty-state" role="alert">
+        Strategy experiment evidence is unavailable.
+      </section>
+    );
   if (!item)
     return (
       <section className="empty-state">
