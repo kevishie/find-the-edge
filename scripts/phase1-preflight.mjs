@@ -35,6 +35,7 @@ export async function phase1Preflight(environment = process.env) {
     FTE_API_CERTIFICATE_ARN: config.apiCertificateArn,
     FTE_WEB_ORIGIN: config.webOrigin,
     FTE_FIXTURE_ODDS_SEED_ENABLED: "false",
+    FTE_PRODUCT_ACCESS_ENFORCED: String(config.productAccessEnforced),
     FTE_UPCOMING_SCHEDULER_ENABLED: "true",
     CDK_DEFAULT_ACCOUNT: "228246988391",
     CDK_DEFAULT_REGION: "us-east-1",

@@ -34,6 +34,7 @@ const valid = {
   FTE_PHASE1_USERNAME: "operator@example.com",
   FTE_EVENT_CURSOR_SECRET_ARN:
     "arn:aws:secretsmanager:us-east-1:228246988391:secret:cursor",
+  FTE_PRODUCT_ACCESS_ENFORCED: "false",
 };
 test("launch requires explicit opt-in and exact account/region", () => {
   assert.doesNotThrow(() => validateLaunchEnvironment(valid));
@@ -59,6 +60,7 @@ test("launch binds verified branches, stages, certificates, and release provenan
     FTE_AWS_STAGE: "staging",
     FTE_DEPLOY_BRANCH: "main",
     FTE_RELEASE_SHA: "0123456789abcdef0123456789abcdef01234567",
+    FTE_PRODUCT_ACCESS_ENFORCED: "false",
     FTE_WEB_CERTIFICATE_ARN: certificate,
     FTE_API_CERTIFICATE_ARN: certificate,
   };
@@ -77,6 +79,24 @@ test("launch binds verified branches, stages, certificates, and release provenan
   assert.throws(
     () => validateLaunchEnvironment({ ...staging, FTE_RELEASE_SHA: "latest" }),
     /verified commit/,
+  );
+  for (const value of [undefined, "", "1", "TRUE", " false", "false "]) {
+    assert.throws(
+      () =>
+        validateLaunchEnvironment({
+          ...staging,
+          FTE_PRODUCT_ACCESS_ENFORCED: value,
+        }),
+      /PRODUCT_ACCESS_ENFORCED/,
+    );
+  }
+  assert.throws(
+    () =>
+      validateLaunchEnvironment({
+        ...staging,
+        FTE_PRODUCT_ACCESS_ENFORCED: "true",
+      }),
+    /cutover/,
   );
   assert.throws(
     () =>

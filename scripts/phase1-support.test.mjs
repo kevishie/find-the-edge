@@ -7,6 +7,8 @@ import test from "node:test";
 import {
   checksums,
   failureDetail,
+  parseProductAccessEnforcement,
+  safeDeploymentConfig,
   safeDevConfig,
   validateSafeDevConfig,
   validateTemplate,
@@ -39,6 +41,40 @@ test("safe defaults are credential-free dev placeholders", () => {
     "events/scouting:read",
     "events/scouting:write",
   ]);
+});
+
+test("product access enforcement accepts only exact boolean strings", () => {
+  assert.equal(parseProductAccessEnforcement(undefined), false);
+  assert.equal(
+    parseProductAccessEnforcement("false", { required: true }),
+    false,
+  );
+  assert.equal(parseProductAccessEnforcement("true", { required: true }), true);
+  assert.throws(
+    () => parseProductAccessEnforcement(undefined, { required: true }),
+    /required/,
+  );
+  for (const value of ["", "1", "TRUE", " false", "false "])
+    assert.throws(() => parseProductAccessEnforcement(value), /true or false/);
+});
+
+test("protected deployment config requires its explicit enforcement value", () => {
+  assert.throws(() => safeDeploymentConfig({}), /required/);
+  assert.equal(
+    safeDeploymentConfig({
+      FTE_AWS_STAGE: "staging",
+      FTE_PRODUCT_ACCESS_ENFORCED: "false",
+    }).productAccessEnforced,
+    false,
+  );
+  assert.throws(
+    () =>
+      safeDeploymentConfig({
+        FTE_AWS_STAGE: "prod",
+        FTE_PRODUCT_ACCESS_ENFORCED: "true",
+      }),
+    /cutover/,
+  );
 });
 
 test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs", () => {
@@ -747,7 +783,12 @@ function validTemplate() {
       SeedRole: { Type: "AWS::IAM::Role", Properties: {} },
       ApiLambda: {
         Type: "AWS::Lambda::Function",
-        Properties: { Role: { "Fn::GetAtt": ["ApiRole", "Arn"] } },
+        Properties: {
+          Role: { "Fn::GetAtt": ["ApiRole", "Arn"] },
+          Environment: {
+            Variables: { FTE_PRODUCT_ACCESS_ENFORCED: "false" },
+          },
+        },
       },
       Seed: {
         Type: "AWS::Lambda::Function",
@@ -934,6 +975,7 @@ const templateConfig = {
   webOrigin: "https://app.example.com",
   issuer: "https://issuer.example.com",
   audience: "audience",
+  productAccessEnforced: false,
 };
 
 test("template validation structurally binds public reads, outputs, and scoped IAM", () => {
@@ -1381,6 +1423,30 @@ test("template validation structurally binds public reads, outputs, and scoped I
       /API output/,
     );
   }
+});
+
+test("template validation binds product access to the shared API Lambda", () => {
+  const enabled = validTemplate();
+  enabled.Resources.ApiLambda.Properties.Environment.Variables.FTE_PRODUCT_ACCESS_ENFORCED =
+    "true";
+  assert.doesNotThrow(() =>
+    validateTemplate(enabled, {
+      ...templateConfig,
+      productAccessEnforced: true,
+    }),
+  );
+  assert.throws(
+    () => validateTemplate(enabled, templateConfig),
+    /product access enforcement/i,
+  );
+  assert.throws(
+    () =>
+      validateTemplate(validTemplate(), {
+        ...templateConfig,
+        productAccessEnforced: undefined,
+      }),
+    /explicit boolean/i,
+  );
 });
 
 test("checksum walk rejects symlinks without following them", async (t) => {

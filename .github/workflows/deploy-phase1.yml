@@ -22,6 +22,7 @@ jobs:
     outputs:
       branch: ${{ steps.target.outputs.branch }}
       github_environment: ${{ steps.target.outputs.github_environment }}
+      product_access_enforced: ${{ steps.target.outputs.product_access_enforced }}
       sha: ${{ steps.target.outputs.sha }}
       stage: ${{ steps.target.outputs.stage }}
     steps:
@@ -35,10 +36,12 @@ jobs:
             main)
               echo "stage=staging" >> "$GITHUB_OUTPUT"
               echo "github_environment=staging" >> "$GITHUB_OUTPUT"
+              echo "product_access_enforced=false" >> "$GITHUB_OUTPUT"
               ;;
             production)
               echo "stage=prod" >> "$GITHUB_OUTPUT"
               echo "github_environment=production" >> "$GITHUB_OUTPUT"
+              echo "product_access_enforced=false" >> "$GITHUB_OUTPUT"
               ;;
             *) exit 1 ;;
           esac
@@ -66,6 +69,11 @@ jobs:
         run: |
           latest_sha=$(gh api "repos/${{ github.repository }}/commits/$BRANCH" --jq .sha)
           test "$VERIFIED_SHA" = "$latest_sha"
+
+      - name: Refuse premature product-access cutover
+        env:
+          FTE_PRODUCT_ACCESS_ENFORCED: ${{ needs.target.outputs.product_access_enforced }}
+        run: test "$FTE_PRODUCT_ACCESS_ENFORCED" = "false"
 
       - name: Check out verified revision
         uses: actions/checkout@v4
@@ -117,6 +125,20 @@ jobs:
           FTE_DEPLOY_BRANCH: ${{ needs.target.outputs.branch }}
           FTE_EVENT_CURSOR_SECRET_ARN: ${{ vars.EVENT_CURSOR_SECRET_ARN }}
           FTE_PHASE1_LAUNCH: "1"
+          FTE_PRODUCT_ACCESS_ENFORCED: ${{ needs.target.outputs.product_access_enforced }}
           FTE_RELEASE_SHA: ${{ needs.target.outputs.sha }}
           FTE_WEB_CERTIFICATE_ARN: ${{ vars.WEB_CERTIFICATE_ARN }}
         run: pnpm phase1:launch
+
+      - name: Verify live product-access setting
+        env:
+          FTE_AWS_STAGE: ${{ needs.target.outputs.stage }}
+        run: |
+          stack="FindTheEdge-$FTE_AWS_STAGE-Foundation"
+          api_id=$(aws cloudformation describe-stacks --stack-name "$stack" --region us-east-1 --output json | jq -er '.Stacks[0].Outputs | map(select(.OutputKey == "EventsApiId")) | if length == 1 then .[0].OutputValue else error("events-api-binding") end')
+          target=$(aws apigatewayv2 get-routes --api-id "$api_id" --region us-east-1 --output json | jq -er '.Items | map(select(.RouteKey == "GET /auth/session/capabilities")) | if length == 1 then .[0].Target else error("capability-route-binding") end')
+          integration_id=${target#integrations/}
+          test "$integration_id" != "$target"
+          integration_uri=$(aws apigatewayv2 get-integration --api-id "$api_id" --integration-id "$integration_id" --region us-east-1 --query IntegrationUri --output text)
+          [[ "$integration_uri" =~ ^arn:aws:lambda:us-east-1:228246988391:function:[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$ ]]
+          test "$(aws lambda get-function-configuration --function-name "$integration_uri" --region us-east-1 --query 'Environment.Variables.FTE_PRODUCT_ACCESS_ENFORCED' --output text)" = false

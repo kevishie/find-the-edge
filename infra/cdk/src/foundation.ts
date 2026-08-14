@@ -135,6 +135,7 @@ export interface FoundationConfig {
   alarmEmail?: string;
   cursorSecretArn?: string;
   fixtureOddsSeedEnabled?: boolean;
+  productAccessEnforced: boolean;
   webOrigin?: string;
 }
 
@@ -152,8 +153,8 @@ interface FoundationStackProps extends StackProps {
   apiCertificateArn?: string;
   cursorSecretArn: string;
   fixtureOddsSeedEnabled: boolean;
-  /** FTE-073. Defaults to false so a stage without billing keeps serving. */
-  productAccessEnforced?: boolean;
+  /** FTE-073. Required so persistent deployments cannot silently default. */
+  productAccessEnforced: boolean;
 }
 
 export class FoundationStack extends Stack {
@@ -1339,9 +1340,7 @@ export class FoundationStack extends Stack {
         // entitlement is only reachable via Stripe checkout, so enforcing on
         // an unbilled stage refuses everyone, including us. Turning it on is
         // this one string.
-        FTE_PRODUCT_ACCESS_ENFORCED: String(
-          props.productAccessEnforced ?? false,
-        ),
+        FTE_PRODUCT_ACCESS_ENFORCED: String(props.productAccessEnforced),
       },
       bundling: { minify: true, sourceMap: true },
     });
@@ -2310,6 +2309,8 @@ export function createFoundationApp(config: FoundationConfig): {
   }
   if (config.fixtureOddsSeedEnabled && config.stage !== "dev")
     throw new Error("fixture odds seed can only be enabled for the dev stage");
+  if (typeof config.productAccessEnforced !== "boolean")
+    throw new Error("product access enforcement must be an explicit boolean");
   const paperPickGenerationMinutes = config.paperPickGenerationMinutes ?? 15;
   if (
     !Number.isSafeInteger(paperPickGenerationMinutes) ||
@@ -2382,6 +2383,7 @@ export function createFoundationApp(config: FoundationConfig): {
         : {}),
       cursorSecretArn: config.cursorSecretArn,
       fixtureOddsSeedEnabled: config.fixtureOddsSeedEnabled ?? false,
+      productAccessEnforced: config.productAccessEnforced,
       ...(config.alarmTopicArn ? { alarmTopicArn: config.alarmTopicArn } : {}),
       ...(config.alarmEmail ? { alarmEmail: config.alarmEmail } : {}),
       ...(environment ? { env: environment } : {}),

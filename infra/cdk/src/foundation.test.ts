@@ -9,6 +9,7 @@ const eventConfig = {
   cursorSecretArn:
     "arn:aws:secretsmanager:us-east-1:123456789012:secret:event-cursor",
   webOrigin: "https://app.example.com",
+  productAccessEnforced: false,
 };
 
 describe("foundation CDK app", () => {
@@ -244,6 +245,29 @@ describe("foundation CDK app", () => {
         ...eventConfig,
       }),
     ).toThrow("only be enabled for the dev stage");
+  });
+
+  it("carries the explicit product-access setting into the Event API", () => {
+    const { stack } = createFoundationApp({
+      stage: "test",
+      ...eventConfig,
+      productAccessEnforced: true,
+    });
+    const template = Template.fromStack(stack);
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({
+          FTE_PRODUCT_ACCESS_ENFORCED: "true",
+        }),
+      },
+    });
+    expect(() =>
+      createFoundationApp({
+        stage: "test",
+        ...eventConfig,
+        productAccessEnforced: "false" as unknown as boolean,
+      }),
+    ).toThrow(/explicit boolean/i);
   });
 
   it("synthesizes the full durable ingestion contract", () => {
