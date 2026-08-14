@@ -106,7 +106,7 @@ so that later lifecycle, display, completeness, and settlement work is authorize
   - [x] Scan fixtures/output for credentials, raw-response fields, unbounded labels, and accidental user/commercial data.
 - [ ] Execute the evidence protocol (AC: 1–10)
   - [x] Run a one-request-per-route entitlement/schema/rate-budget preflight; stop and record the external blocker if access is not active.
-  - [ ] Run a short low-cadence probe across every served sport before the full-slate window.
+  - [x] Run a short low-cadence probe across every served sport before the full-slate window.
   - [ ] Freeze and observe the next complete MLB slate from pregame through the stated post-final retention window, with manual/official truth checkpoints.
   - [ ] If delay or final-revision events do not occur within the maximum window, record them as unknown rather than extending indefinitely.
 - [ ] Publish and review the decision (AC: 10, 11, 13)
@@ -190,8 +190,9 @@ GPT-5 Codex
 - Built and adversarially reviewed the bounded sampler, atomic failure/success evidence paths, schema/identity/lifecycle analyzers, disagreement counters, and offline independent-truth join.
 - Split the frozen identity denominator from later independent truth observations and added transcript/evidence hash sealing so prospective truth cannot be backfilled into the pre-run contract.
 - Added an exclusive pre-run truth initializer and sampler-bound header/manifest hashes so the comparison protocol is reproducible and hindsight-created headers are rejected.
-- Identified the 2026-08-15 official 15-game MLB slate as the next denominator candidate; staging currently exposes 13 canonical events, so the final manifest remains deliberately unfrozen pending exact resolution of Cardinals-Cubs and Rangers-Athletics. See `fte-082-mlb-slate-readiness-2026-08-15.md`.
+- Identified the 2026-08-15 official 15-game MLB slate as the next denominator candidate. Staging and the provider schedule now reconcile all 15 fixtures, but the Game State catalogue exposed only 9 uniquely participant-mappable fixtures during the short-probe window and its event ids did not equal schedule ids. The full-slate manifest therefore remains deliberately unfrozen until a near-first-pitch identity recheck. See `fte-082-mlb-slate-readiness-2026-08-15.md`.
 - Completed the 2026-08-14 staging preflight: 4/4 requests, 448 derived observations, exact aggregate/sport agreement for baseball, football, and soccer, and material off-roster pollution.
+- Completed the 2026-08-14 short fixed-cadence probe: 4 ticks, 16/16 requests, 1,633 derived observations, exact aggregate/sport agreement across every served sport, and bounded authoritative rate metadata throughout. See `fte-082-game-state-short-probe-2026-08-14.md`.
 - Kept the story in progress because a full MLB slate, post-final window, final report, and approval are still outstanding.
 
 ### File List
@@ -212,3 +213,4 @@ GPT-5 Codex
 - 2026-08-14: Created the implementation-ready research story, corrected the historical-slate and dependency-order contradictions, and froze security, request-budget, evidence, and truth-source gates before any paid observation.
 - 2026-08-14: Completed the bounded live preflight, repaired the observed provider envelope/timestamp/disagreement contract, added the two-phase truth workflow, and retained `in-progress` pending the full observation window and decision report.
 - 2026-08-14: Closed three adversarial review iterations, passed 46 focused tests and the full repository gate, and recorded the 15-game 2026-08-15 slate candidate plus its two unresolved staging mappings.
+- 2026-08-14: Completed and recorded the four-tick short probe; retained `in-progress` because the full MLB lifecycle/retention window, independent truth comparison, final report, and approval remain outstanding.
