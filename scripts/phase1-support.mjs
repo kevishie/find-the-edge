@@ -687,6 +687,7 @@ export function validateTemplate(template, config) {
     "POST /auth/otp/verify",
     "POST /auth/session/refresh",
     "POST /auth/session/revoke",
+    "GET /auth/session/capabilities",
     "POST /billing/webhook",
     "GET /billing/entitlement",
     "POST /billing/checkout",
@@ -746,6 +747,9 @@ export function validateTemplate(template, config) {
       // The identity routes are how a caller obtains a token, so they must
       // stay public: an authorizer here would lock everybody out, and a
       // scope would be meaningless on an unauthenticated request.
+      // The capabilities route also has no gateway authorizer because it
+      // verifies the owned session token and account version in the shared
+      // Lambda before projecting server-owned authority.
       //
       // The billing routes carry no gateway authorizer for two reasons.
       // `POST /billing/webhook` is called by Stripe and proves itself with a
@@ -760,6 +764,7 @@ export function validateTemplate(template, config) {
           "POST /auth/otp/verify",
           "POST /auth/session/refresh",
           "POST /auth/session/revoke",
+          "GET /auth/session/capabilities",
           "POST /billing/webhook",
           "GET /billing/entitlement",
           "POST /billing/checkout",

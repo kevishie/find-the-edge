@@ -81,6 +81,7 @@ This slice may be deployed with product enforcement still false and all Cognito 
 
 - Repository-wide `pnpm check` passed after the final repairs: formatting, lint, package boundaries, all type checks, all package tests, all builds, and 34/34 Playwright tests across desktop and mobile.
 - Focused final web verification passed 10 files / 370 tests plus typecheck and lint.
+- The credential-free Phase 1 preflight and its structural route-contract tests pass with the new capability route pinned as unauthorizer-free.
 
 ## Suggested Review Order
 
