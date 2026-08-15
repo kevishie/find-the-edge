@@ -5,11 +5,14 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
+  type AccountRateTerminalReason,
+  type AccountRateCoordinationStore,
   DynamoOddsControlPlaneStore,
   DynamoProviderLandingRepository,
   instrumentDynamoCapacity,
 } from "@find-the-edge/database";
 import {
+  fetchSharpApiAccount,
   fetchSharpApiCatalog,
   fetchSharpApiUniversalEventsPage,
   fetchSharpApiUniversalOddsPage,
@@ -145,6 +148,93 @@ const inferredMetricStage = () => {
   );
 };
 
+const SHARP_API_ACCOUNT_HEALTH_KEY = "sharpapi:account:account";
+const ACCOUNT_PROBE_LEASE_MS = 60_000;
+const ACCOUNT_PROBE_POLL_MS = 2_000;
+const ACCOUNT_PROBE_POLL_ATTEMPTS = 6;
+const sleep = (milliseconds: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+
+export const recoverProviderLandingAccountWindow = async (input: {
+  readonly control: AccountRateCoordinationStore;
+  readonly fetchAccount: () => ReturnType<typeof fetchSharpApiAccount>;
+  readonly now?: () => Date;
+  readonly pause?: (milliseconds: number) => Promise<void>;
+  readonly shouldContinue?: () => boolean;
+}) => {
+  const now = input.now ?? (() => new Date());
+  const pause = input.pause ?? sleep;
+  const shouldContinue = input.shouldContinue ?? (() => true);
+  for (let attempt = 0; attempt < ACCOUNT_PROBE_POLL_ATTEMPTS; attempt += 1) {
+    if (!shouldContinue()) return "unavailable" as const;
+    const requestedAt = now();
+    const probeUntil = new Date(
+      requestedAt.getTime() + ACCOUNT_PROBE_LEASE_MS,
+    ).toISOString();
+    const claimVersion = await input.control.claimAccountRateProbe(
+      SHARP_API_ACCOUNT_HEALTH_KEY,
+      requestedAt.toISOString(),
+      probeUntil,
+    );
+    if (claimVersion !== null)
+      try {
+        // Claiming consumes this provider window even when the invocation is
+        // too close to its checkpoint-safety boundary to dispatch. Leaving
+        // the durable lease in place prevents another consumer from turning
+        // an abandoned claim into a duplicate paid probe.
+        if (!shouldContinue()) return "unavailable" as const;
+        const account = await input.fetchAccount();
+        const observedWindow = account.responseMetadata?.rateWindow;
+        if (!observedWindow) return "unavailable" as const;
+        const completed = await input.control.completeAccountRateProbe(
+          SHARP_API_ACCOUNT_HEALTH_KEY,
+          probeUntil,
+          claimVersion,
+          observedWindow,
+          now().toISOString(),
+        );
+        return completed ? ("recovered" as const) : ("unavailable" as const);
+      } catch (error) {
+        const failedAt = now();
+        if (
+          error instanceof SharpApiError &&
+          (["configuration", "not-entitled", "unauthorized"].includes(
+            error.code,
+          ) ||
+            (error.code === "provider-rejected" && !error.retryable))
+        )
+          await input.control.blockAccountTerminal(
+            SHARP_API_ACCOUNT_HEALTH_KEY,
+            error.code as AccountRateTerminalReason,
+            failedAt.toISOString(),
+          );
+        else if (
+          error instanceof SharpApiError &&
+          error.code === "rate-limited"
+        )
+          await input.control.blockAccountRateWindow(
+            SHARP_API_ACCOUNT_HEALTH_KEY,
+            error.retryAt ??
+              new Date(failedAt.getTime() + 60_000).toISOString(),
+            failedAt.toISOString(),
+          );
+        throw error;
+      }
+    const winner = await input.control.getHealth(SHARP_API_ACCOUNT_HEALTH_KEY);
+    if (
+      winner?.rateWindow?.remaining !== undefined &&
+      winner.rateWindow.resetsAt !== undefined &&
+      Date.parse(winner.rateWindow.resetsAt) > now().getTime() + 10_000
+    )
+      return "observed" as const;
+    if (attempt + 1 < ACCOUNT_PROBE_POLL_ATTEMPTS)
+      await pause(ACCOUNT_PROBE_POLL_MS);
+  }
+  return "unavailable" as const;
+};
+
 export const handler = async (event: unknown, context: Context) => {
   void event;
   const tableName = process.env["FTE_EVENT_TABLE"];
@@ -160,14 +250,28 @@ export const handler = async (event: unknown, context: Context) => {
       emitDynamoCapacityMetrics,
     );
     const store = new DynamoProviderLandingRepository(client, tableName);
-    accountRate = new SharedSharpApiAccountRateCoordinator(
-      new DynamoOddsControlPlaneStore(client, tableName),
-    );
+    const control = new DynamoOddsControlPlaneStore(client, tableName);
     const secrets = new SecretsManagerClient({});
     const secret = await secrets.send(
       new GetSecretValueCommand({ SecretId: secretId }),
     );
     const apiKey = parseProviderLandingSecret(secret.SecretString);
+    accountRate = new SharedSharpApiAccountRateCoordinator(control, {
+      recoverWindow: async () => {
+        const outcome = await recoverProviderLandingAccountWindow({
+          control,
+          fetchAccount: () => fetchSharpApiAccount(apiKey),
+          shouldContinue: () => context.getRemainingTimeInMillis() > 60_000,
+        });
+        metrics.emit("ProviderLandingRecovery", 1, {
+          stream: "account",
+          outcome,
+        });
+      },
+      now: () => new Date(),
+      canRecoverWindow: () => context.getRemainingTimeInMillis() > 90_000,
+      canDispatch: () => context.getRemainingTimeInMillis() > 60_000,
+    });
     const summary = await runProviderLanding({
       source: {
         fetchCatalog: () => fetchSharpApiCatalog(apiKey),

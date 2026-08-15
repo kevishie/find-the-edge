@@ -85,6 +85,18 @@ export interface ProviderLandingAccountRateCoordinator {
   ): Promise<void>;
 }
 
+export interface SharedSharpApiAccountRateCoordinatorOptions {
+  /**
+   * The live odds and landing control planes elect exactly one new-window
+   * probe through the shared health row. The recovery callback either observes
+   * the winner or publishes provider truth before admission retries.
+   */
+  readonly recoverWindow?: () => Promise<void>;
+  readonly now?: () => Date;
+  readonly canRecoverWindow?: () => boolean;
+  readonly canDispatch?: () => boolean;
+}
+
 export interface ProviderLandingRunInput {
   readonly source: ProviderLandingSource;
   readonly store: ProviderLandingStore;
@@ -108,6 +120,7 @@ const INITIAL_CURSOR = "__initial__";
 const DEFAULT_CATALOG_REFRESH_MS = 6 * 60 * 60 * 1_000;
 const DEFAULT_STREAM_REFRESH_MS = 10 * 60 * 1_000;
 const DEFAULT_RATE_PAUSE_MS = 60 * 1_000;
+const ACCOUNT_RATE_RESET_GUARD_MS = 10 * 1_000;
 const NON_RETRYABLE_PAUSE_MS = 24 * 60 * 60 * 1_000;
 const SHARP_API_ACCOUNT_HEALTH_KEY = "sharpapi:account:account";
 const MINIMUM_LANDING_ACCOUNT_RESERVE = 250;
@@ -168,14 +181,162 @@ const accountHealthIsTerminal = (health: OddsProviderHealth) =>
   ["configuration", "unauthorized", "not-entitled"].includes(
     health.failureReason ?? "",
   );
+const accountHealthCanRecover = (health: OddsProviderHealth, now: Date) =>
+  health.failureClass === "transient" &&
+  [health.cooldownUntil, health.retryAt, health.rateWindow?.resetsAt].every(
+    (candidate) => !candidate || Date.parse(candidate) <= now.getTime(),
+  );
 
 /**
- * Low-priority account admission for universal acquisition. The live odds
- * control plane remains the sole owner of unknown-window probes; this worker
- * only spends after provider truth has established a usable shared balance.
+ * Low-priority account admission for universal acquisition. Live odds and
+ * landing share one durable probe lease, while landing spends only after the
+ * elected winner establishes an authoritative account window.
  */
 export class SharedSharpApiAccountRateCoordinator implements ProviderLandingAccountRateCoordinator {
-  constructor(private readonly store: AccountRateCoordinationStore) {}
+  private readonly attemptedRecoveryKeys = new Set<string>();
+  private refreshDispatchBlocked = false;
+
+  constructor(
+    private readonly store: AccountRateCoordinationStore,
+    private readonly options: SharedSharpApiAccountRateCoordinatorOptions = {},
+  ) {}
+
+  private unavailable(
+    requestedAt: Date,
+    health?: OddsProviderHealth | null,
+  ): ProviderLandingAccountRateAdmission {
+    return {
+      admitted: false,
+      reason: "account-health-unavailable",
+      resumeAfter: futureBoundary(
+        requestedAt,
+        health?.cooldownUntil,
+        health?.retryAt,
+        health?.rateWindow?.resetsAt,
+      ),
+    };
+  }
+
+  private async reserveOnce(
+    cost: number,
+    requestedAt: Date,
+  ): Promise<ProviderLandingAccountRateAdmission> {
+    let health = await this.store.getHealth(SHARP_API_ACCOUNT_HEALTH_KEY);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const attemptAt = this.options.now?.() ?? requestedAt;
+      if (!health) return this.unavailable(attemptAt);
+      if (accountHealthIsTerminal(health))
+        throw new Error("provider-landing-account-terminal");
+      if (!health.healthy && accountHealthCanRecover(health, attemptAt))
+        return this.unavailable(attemptAt, health);
+      if (!health.healthy)
+        return {
+          admitted: false,
+          reason: "account-provider-unhealthy",
+          resumeAfter: futureBoundary(
+            attemptAt,
+            health.cooldownUntil,
+            health.retryAt,
+            health.rateWindow?.resetsAt,
+          ),
+        };
+      const remaining = health.rateWindow?.remaining ?? health.quotaRemaining;
+      if (remaining === undefined) return this.unavailable(attemptAt, health);
+      const resetsAt = health.rateWindow?.resetsAt;
+      if (
+        resetsAt &&
+        Date.parse(resetsAt) <=
+          attemptAt.getTime() + ACCOUNT_RATE_RESET_GUARD_MS
+      )
+        return this.unavailable(attemptAt, health);
+      if (this.options.canDispatch?.() === false) {
+        this.refreshDispatchBlocked = true;
+        return this.unavailable(attemptAt, health);
+      }
+      const limit = health.rateWindow?.limit;
+      const reserve = Math.max(
+        MINIMUM_LANDING_ACCOUNT_RESERVE,
+        limit === undefined
+          ? 0
+          : Math.ceil(limit * LANDING_ACCOUNT_RESERVE_FRACTION),
+      );
+      const admitted = await this.store.reserveAccountRate(
+        SHARP_API_ACCOUNT_HEALTH_KEY,
+        reserve,
+        cost,
+        attemptAt.toISOString(),
+        {
+          ...(health.version === undefined ? {} : { version: health.version }),
+          ...(limit === undefined ? {} : { limit }),
+          ...(resetsAt === undefined ? {} : { resetsAt }),
+        },
+      );
+      if (admitted) {
+        const dispatchAt = this.options.now?.() ?? attemptAt;
+        if (this.options.canDispatch?.() === false) {
+          this.refreshDispatchBlocked = true;
+          return this.unavailable(dispatchAt, health);
+        }
+        if (
+          resetsAt !== undefined &&
+          Date.parse(resetsAt) <=
+            dispatchAt.getTime() + ACCOUNT_RATE_RESET_GUARD_MS
+        )
+          return this.unavailable(dispatchAt, health);
+        return { admitted: true };
+      }
+      const current =
+        (await this.store.getHealth(SHARP_API_ACCOUNT_HEALTH_KEY)) ?? health;
+      if (accountHealthIsTerminal(current))
+        throw new Error("provider-landing-account-terminal");
+      if (!current.healthy && accountHealthCanRecover(current, attemptAt))
+        return this.unavailable(attemptAt, current);
+      if (!current.healthy)
+        return {
+          admitted: false,
+          reason: "account-provider-unhealthy",
+          resumeAfter: futureBoundary(
+            attemptAt,
+            current.cooldownUntil,
+            current.retryAt,
+            current.rateWindow?.resetsAt,
+          ),
+        };
+      const currentRemaining =
+        current.rateWindow?.remaining ?? current.quotaRemaining;
+      if (currentRemaining === undefined)
+        return this.unavailable(attemptAt, current);
+      const currentReset = current.rateWindow?.resetsAt;
+      if (
+        currentReset &&
+        Date.parse(currentReset) <=
+          attemptAt.getTime() + ACCOUNT_RATE_RESET_GUARD_MS
+      )
+        return this.unavailable(attemptAt, current);
+      const currentLimit = current.rateWindow?.limit;
+      const currentReserve = Math.max(
+        MINIMUM_LANDING_ACCOUNT_RESERVE,
+        currentLimit === undefined
+          ? 0
+          : Math.ceil(currentLimit * LANDING_ACCOUNT_RESERVE_FRACTION),
+      );
+      if (attempt === 0 && currentRemaining - cost >= currentReserve) {
+        health = current;
+        continue;
+      }
+      return {
+        admitted: false,
+        reason: "account-rate-reserve",
+        resumeAfter: futureBoundary(
+          attemptAt,
+          current.cooldownUntil,
+          current.retryAt,
+          current.rateWindow?.resetsAt,
+        ),
+      };
+    }
+    throw new Error("provider-landing-account-reserve-unreachable");
+  }
 
   async reserve(
     cost: number,
@@ -183,64 +344,46 @@ export class SharedSharpApiAccountRateCoordinator implements ProviderLandingAcco
   ): Promise<ProviderLandingAccountRateAdmission> {
     if (!Number.isSafeInteger(cost) || cost <= 0 || cost > 2)
       throw new Error("provider-landing-account-cost-invalid");
+    const firstAttemptAt = this.options.now?.() ?? requestedAt;
+    if (this.refreshDispatchBlocked) return this.unavailable(firstAttemptAt);
+    const first = await this.reserveOnce(cost, firstAttemptAt);
+    if (
+      first.admitted ||
+      first.reason !== "account-health-unavailable" ||
+      !this.options.recoverWindow ||
+      this.options.canRecoverWindow?.() === false
+    )
+      return first;
     const health = await this.store.getHealth(SHARP_API_ACCOUNT_HEALTH_KEY);
-    if (!health)
-      return {
-        admitted: false,
-        reason: "account-health-unavailable",
-        resumeAfter: futureBoundary(requestedAt),
-      };
-    if (accountHealthIsTerminal(health))
-      throw new Error("provider-landing-account-terminal");
-    if (!health.healthy)
-      return {
-        admitted: false,
-        reason: "account-provider-unhealthy",
-        resumeAfter: futureBoundary(
-          requestedAt,
-          health.cooldownUntil,
-          health.retryAt,
-          health.rateWindow?.resetsAt,
-        ),
-      };
-    const remaining = health.rateWindow?.remaining ?? health.quotaRemaining;
-    if (remaining === undefined)
-      return {
-        admitted: false,
-        reason: "account-health-unavailable",
-        resumeAfter: futureBoundary(
-          requestedAt,
-          health.cooldownUntil,
-          health.retryAt,
-          health.rateWindow?.resetsAt,
-        ),
-      };
-    const limit = health.rateWindow?.limit;
-    const reserve = Math.max(
-      MINIMUM_LANDING_ACCOUNT_RESERVE,
-      limit === undefined
-        ? 0
-        : Math.ceil(limit * LANDING_ACCOUNT_RESERVE_FRACTION),
-    );
-    const admitted = await this.store.reserveAccountRate(
-      SHARP_API_ACCOUNT_HEALTH_KEY,
-      reserve,
+    const recoveryKey =
+      health?.rateWindow?.resetsAt ?? health?.updatedAt ?? "missing";
+    if (this.attemptedRecoveryKeys.has(recoveryKey)) return first;
+    if (this.attemptedRecoveryKeys.size >= 32) {
+      const oldest = this.attemptedRecoveryKeys.values().next().value;
+      if (oldest !== undefined) this.attemptedRecoveryKeys.delete(oldest);
+    }
+    this.attemptedRecoveryKeys.add(recoveryKey);
+    await this.options.recoverWindow();
+    if (this.options.canDispatch?.() === false) {
+      this.refreshDispatchBlocked = true;
+      return first;
+    }
+    const second = await this.reserveOnce(
       cost,
-      requestedAt.toISOString(),
+      this.options.now?.() ?? new Date(),
     );
-    if (admitted) return { admitted: true };
-    const current =
-      (await this.store.getHealth(SHARP_API_ACCOUNT_HEALTH_KEY)) ?? health;
-    return {
-      admitted: false,
-      reason: "account-rate-reserve",
-      resumeAfter: futureBoundary(
-        requestedAt,
-        current.cooldownUntil,
-        current.retryAt,
-        current.rateWindow?.resetsAt,
-      ),
-    };
+    if (!second.admitted && second.reason === "account-health-unavailable") {
+      const unresolved = await this.store.getHealth(
+        SHARP_API_ACCOUNT_HEALTH_KEY,
+      );
+      const unresolvedKey =
+        unresolved?.rateWindow?.probeUntil ??
+        unresolved?.rateWindow?.resetsAt ??
+        unresolved?.updatedAt ??
+        "missing";
+      this.attemptedRecoveryKeys.add(unresolvedKey);
+    }
+    return second;
   }
 
   reconcile(
