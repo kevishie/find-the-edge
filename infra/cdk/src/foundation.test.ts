@@ -106,7 +106,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 16);
+    template.resourceCountIs("AWS::Lambda::Function", 17);
     // The request-path API is CPU-bound, and Lambda scales CPU with memory.
     // Starving it shows up directly as page load time.
     template.hasResourceProperties("AWS::Lambda::Function", {
@@ -118,6 +118,24 @@ describe("foundation CDK app", () => {
         }),
       },
     });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      MemorySize: 1024,
+      Timeout: 840,
+      ReservedConcurrentExecutions: 1,
+      Environment: {
+        Variables: Match.objectLike({
+          FTE_AWS_STAGE: "dev",
+          FTE_EVENT_TABLE: Match.anyValue(),
+          FTE_SHARP_API_SECRET_ID: Match.anyValue(),
+        }),
+      },
+    });
+    template.hasResourceProperties("AWS::Events::Rule", {
+      State: "DISABLED",
+      ScheduleExpression: "rate(15 minutes)",
+    });
+    template.hasOutput("ProviderLandingFunctionName", {});
+    template.hasOutput("ProviderLandingDlqUrl", {});
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -147,6 +165,68 @@ describe("foundation CDK app", () => {
     expect(sharpRendered).toContain("dynamodb:DeleteItem");
     expect(sharpRendered).toContain("EVENT_RECONCILIATION#*");
     expect(sharpRendered).toContain("ODDS_CONTROL#CONTINUATION#*");
+    expect(sharpRendered).toContain("dynamodb:BatchWriteItem");
+    expect(sharpRendered).toContain("dynamodb:BatchGetItem");
+    expect(sharpRendered).toContain("PROVIDER_LANDING#SHARPAPI#*");
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: [
+              "dynamodb:GetItem",
+              "dynamodb:PutItem",
+              "dynamodb:UpdateItem",
+            ],
+            Effect: "Allow",
+            Condition: {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "ODDS_CONTROL#HEALTH#sharpapi:account:account",
+                ],
+              },
+            },
+          }),
+        ]),
+      },
+    });
+    expect(sharpRendered).toContain("ProviderLandingErrorsAlarm");
+    expect(sharpRendered).toContain("ProviderLandingTerminalFailureAlarm");
+    expect(sharpRendered).toContain("ProviderLandingDlqAlarm");
+    expect(sharpRendered).toContain("ProviderLandingCatalogRecoveryAlarm");
+    expect(sharpRendered).toContain("ProviderLandingEventsRecoveryAlarm");
+    expect(sharpRendered).toContain("ProviderLandingOddsRecoveryAlarm");
+    template.hasResourceProperties("AWS::Lambda::EventInvokeConfig", {
+      MaximumEventAgeInSeconds: 3600,
+      MaximumRetryAttempts: 2,
+      DestinationConfig: {
+        OnFailure: { Destination: Match.anyValue() },
+      },
+    });
+    expect(sharpRendered).toContain("ProviderLandingCatalogFreshnessAlarm");
+    expect(sharpRendered).toContain("ProviderLandingEventsFreshnessAlarm");
+    expect(sharpRendered).toContain("ProviderLandingOddsFreshnessAlarm");
+    expect(sharpRendered).toContain("ProviderLandingCatalogRunAgeAlarm");
+    expect(sharpRendered).toContain("ProviderLandingEventsRunAgeAlarm");
+    expect(sharpRendered).toContain("ProviderLandingOddsRunAgeAlarm");
+    expect(sharpRendered).toContain("ProviderLandingCatalogQuarantineAlarm");
+    expect(sharpRendered).toContain("ProviderLandingEventsQuarantineAlarm");
+    expect(sharpRendered).toContain("ProviderLandingOddsQuarantineAlarm");
+    expect(sharpRendered).toContain("ProviderLandingCatalogWarningAlarm");
+    expect(sharpRendered).toContain("ProviderLandingEventsWarningAlarm");
+    expect(sharpRendered).toContain("ProviderLandingOddsWarningAlarm");
+    expect(sharpRendered).toContain("FindTheEdge/ProviderLanding");
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "ProviderLandingRows",
+      Dimensions: Match.arrayWith([{ Name: "Outcome", Value: "warning" }]),
+      EvaluationPeriods: 2,
+      DatapointsToAlarm: 2,
+    });
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "ProviderLandingRows",
+      Dimensions: Match.arrayWith([{ Name: "Outcome", Value: "quarantined" }]),
+      EvaluationPeriods: 1,
+      DatapointsToAlarm: 1,
+    });
     const liveOddsPolicy = Object.entries(
       template.toJSON().Resources as Record<
         string,
@@ -237,7 +317,7 @@ describe("foundation CDK app", () => {
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 15);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 16);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -276,9 +356,9 @@ describe("foundation CDK app", () => {
 
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
-    template.resourceCountIs("AWS::SQS::Queue", 9);
-    template.resourceCountIs("AWS::Lambda::Function", 15);
-    template.resourceCountIs("AWS::Events::Rule", 7);
+    template.resourceCountIs("AWS::SQS::Queue", 10);
+    template.resourceCountIs("AWS::Lambda::Function", 16);
+    template.resourceCountIs("AWS::Events::Rule", 8);
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 2);
     // Live odds tick every minute; opportunity expiration keeps five.
     template.hasResourceProperties("AWS::Events::Rule", {
@@ -288,6 +368,10 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
       ScheduleExpression: "rate(5 minutes)",
+    });
+    template.hasResourceProperties("AWS::Events::Rule", {
+      State: "DISABLED",
+      ScheduleExpression: "rate(15 minutes)",
     });
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
@@ -308,7 +392,8 @@ describe("foundation CDK app", () => {
     expect(paperResources).toContain("QueuePaperPickWorkflowFailure");
     expect(paperResources).toContain("aws.states");
     expect(paperResources).not.toContain("replayCommand");
-    expect(paperResources).not.toContain('"DeadLetterConfig"');
+    expect(paperResources).toContain('"DeadLetterConfig"');
+    expect(paperResources).toContain("ProviderLandingDlq");
     expect(paperResources).not.toContain("dynamodb:Scan");
     for (const alarm of [
       "OddsCommandOutcomeAlarm",
@@ -1184,6 +1269,8 @@ describe("foundation CDK app", () => {
       "EventsApiEndpoint",
       "WebOrigin",
       "LiveOddsIngestionFunctionName",
+      "ProviderLandingFunctionName",
+      "ProviderLandingDlqUrl",
     ])
       expect(rendered.Outputs).toHaveProperty(output);
   });
@@ -1251,14 +1338,14 @@ describe("foundation CDK app", () => {
 
   it("enables scheduling only by config and wires configured SNS alarm actions", () => {
     const { stack } = createFoundationApp({
-      stage: "alerts",
+      stage: "staging",
       ...eventConfig,
       schedulerEnabled: true,
       alarmTopicArn: "arn:aws:sns:us-east-1:123456789012:fte-alerts",
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 80);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 98);
     // Every board alarm must carry the dimension its metric is published
     // with. Declared without one, a CloudWatch alarm watches a metric that is
     // never emitted and sits OK forever — which is exactly what shipped on
@@ -1274,9 +1361,30 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
     });
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "ProviderLandingCompletionAgeSeconds",
+      TreatMissingData: "breaching",
+    });
     expect(JSON.stringify(template.toJSON())).toContain(
       "FindTheEdge/OddsControlPlane",
     );
+  });
+
+  it("keeps universal provider acquisition inert in production until the staging gate is promoted", () => {
+    const { stack } = createFoundationApp({
+      stage: "prod",
+      ...eventConfig,
+      schedulerEnabled: true,
+    });
+    const template = Template.fromStack(stack);
+    template.hasResourceProperties("AWS::Events::Rule", {
+      State: "DISABLED",
+      ScheduleExpression: "rate(15 minutes)",
+    });
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "ProviderLandingCompletionAgeSeconds",
+      TreatMissingData: "notBreaching",
+    });
   });
 
   it("subscribes the alarm email and routes every alarm to it", () => {
@@ -1300,7 +1408,7 @@ describe("foundation CDK app", () => {
     const alarms = Object.values(rendered.Resources).filter(
       ({ Type }) => Type === "AWS::CloudWatch::Alarm",
     );
-    expect(alarms.length).toBe(80);
+    expect(alarms.length).toBe(98);
     expect(
       alarms.every((alarm) => alarm.Properties?.AlarmActions?.length === 1),
     ).toBe(true);

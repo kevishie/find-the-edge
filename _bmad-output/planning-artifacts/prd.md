@@ -8,6 +8,20 @@ source: "_bmad-output/planning-artifacts/product-brief.md"
 
 # PRD: FIND THE EDGE
 
+## 0D. Binding Universal Provider Acquisition Amendment (2026-08-14)
+
+This amendment supersedes any requirement that limits provider acquisition to enabled competitions, markets, live state, or implemented sport modules. FIND THE EDGE must continuously acquire every sport, league, event, and entitled unfiltered odds record discoverable from SharpAPI. Product support is allowed to trail acquisition, but source records may not be silently omitted because a parser, strategy, or UI is not ready.
+
+**FR-DQ-001 — Dynamic acquisition roster.** Provider `/sports` and `/leagues` discovery defines collection coverage; new provider entries require no application release.
+
+**FR-DQ-002 — Universal source landing.** Provider-wide events and unfiltered odds are acquired through resumable page checkpoints and represented exactly once as landed or quarantined. Acquisition never applies a sport, league, market, live-state, or product-support allowlist.
+
+**FR-DQ-003 — No silent loss.** Unsupported or malformed individual rows retain bounded safe identity, field inventory, provenance, and reason evidence while valid siblings continue.
+
+**FR-DQ-004 — Completeness and freshness gate.** Catalog counts, provider page totals, landed/quarantined totals, sweep completion, freshness, flagship schedule denominators, and offered core-market coverage reconcile before the product is considered healthy.
+
+**FR-DQ-005 — Roadmap gate.** Feature delivery remains paused until staging sustains the approved data-quality exit gate. HTTP success or nonzero coverage is not sufficient.
+
 ## 0A. Binding Multi-Sport Product Amendment (2026-07-26)
 
 This amendment supersedes soccer-first platform assumptions in the original PRD while preserving soccer requirements as module requirements. FIND THE EDGE must support MLB, soccer/MLS, tennis, NFL, NCAAF, and later sports through registration rather than core rewrites.

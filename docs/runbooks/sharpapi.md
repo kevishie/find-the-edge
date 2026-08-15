@@ -37,6 +37,135 @@ freshness, not the exact time a line moved. Split `fetched_at` remains separate.
 The operator approved Pro activation. A plan upgrade or add-on remains a manual
 decision and is never performed by deployment automation.
 
+## Universal provider acquisition
+
+FTE-DQ-001 separates source acquisition from product normalization. SharpAPI's
+live `/sports` and `/leagues` responses are the acquisition roster. The
+provider-landing worker therefore requests provider-wide `/events` and
+unfiltered `/odds`; it never accepts a configured sport, league, live-state, or
+market filter. A new provider sport, league, market, or book must land without a
+code or configuration change even when no sport module, strategy, API route, or
+UI exists for it yet.
+
+The worker stores bounded, two-slot source snapshots in the retained ingestion
+table. Every non-quarantine sort key starts with `SLOT#0` or `SLOT#1`. A new
+sweep builds only in the inactive slot, so it cannot overwrite the completed
+slot that readers currently trust:
+
+- `PROVIDER_LANDING#SHARPAPI#CATALOG#SPORT` and `#LEAGUE` retain provider catalog
+  identity, display label, live/event counts, and sport-to-league membership.
+- sport-scoped `PROVIDER_LANDING#SHARPAPI#EVENT#...` records retain provider event
+  identity, external identifiers, participants when present, start/lifecycle,
+  markets, books, and source retrieval time.
+- sharded `PROVIDER_LANDING#SHARPAPI#ODDS#...` records retain provider event and
+  price identity, sport/league/book, market/selection, line and price, lifecycle
+  flags, and provider/retrieval timestamps.
+- dated quarantine partitions retain only safe provider identity, a bounded field
+  inventory, and a reason for any row that cannot satisfy the generic source
+  contract. One invalid row never suppresses valid siblings.
+
+Verbatim response bodies remain ephemeral and are not written to DynamoDB, S3,
+logs, fixtures, or diagnostics. This preserves the existing licensing boundary
+while preventing sport/module/UI maturity from dropping source data.
+Catalog envelopes accept as many as 50,000 rows under the independently enforced
+10 MB streamed-response limit. Generic values are walked under a bounded node
+budget, and numeric source tokens must fit DynamoDB's exact 38-digit,
+`1E-130` through `9.999E+125` range and round-trip exactly through the runtime
+number representation. Provider timestamps are calendar-valid ISO instants
+with millisecond precision or less. An unsafe number or timestamp quarantines
+only its row; it never rejects a batch containing valid siblings.
+
+Catalog refresh is due every six hours. Event offsets and odds cursors are
+strongly read and conditionally advanced only after every current/quarantine
+write for that page succeeds. Each fetched page is first sealed in the
+checkpoint with a position and content hash. A crash can replay the same sealed
+page. If the provider changed that page before replay, or if count, total,
+cursor, or generation drift makes the walk incoherent, the worker abandons that
+inactive sweep, keeps the last completed slot live, and restarts in the same
+inactive slot under a new sweep ID. Old partial rows cannot join the replacement
+sweep because readers require both the selected slot and exact sweep ID.
+Provider identifiers repeated on another page in the same sweep become bounded
+quarantine evidence and cannot overwrite the first row.
+Events and odds must expose a provider generation timestamp and total on every
+page. Neither stream can publish without a stable generation and exact total
+denominator. Before each request, the worker conditionally claims the exact
+`{stream, sweepId, slot, positionHash, pageNumber}` in DynamoDB. Reclaiming the
+same position for the same page is a valid crash replay; seeing it under a later
+page is a proven cursor cycle and restarts before another paid request. The
+bounded position list in the checkpoint is diagnostic only, never probabilistic
+authority. Catalog records write in checkpointed chunks and stop at the Lambda
+safety deadline; replay validates the durable prefix count and cannot skip rows
+or publish a partial catalog.
+
+The isolated worker runs every fifteen minutes with reserved concurrency one.
+Events and odds take one page each in a fair, serialized round robin. Before a
+paid request, the landing worker atomically reserves against the same
+account-level SharpAPI health row used by live odds. Landing is lower priority:
+it refuses unknown or unhealthy windows and preserves at least fifty percent of
+the authoritative limit (minimum 250 requests) for the live path. Response
+headers are conservatively reconciled without refunding concurrent reservations;
+an older delayed response cannot alter a newer account window, and the atomic
+reservation itself requires the same present, healthy, nonterminal authoritative
+window observed by the caller. An observed 429 cannot downgrade terminal health
+and blocks every account consumer until the bounded retry/reset time. Untrusted
+rate/reset headers retain a five-minute past grace and may schedule at most 24
+hours ahead; farther values are ignored rather than becoming a permanent pause. A
+secondary local twenty-percent/minimum-twenty-five brake protects the current
+invocation. DynamoDB unprocessed batches retry with capped jitter.
+Terminal provider authorization/configuration failures stop all paid streams
+for that invocation, while independent event or odds failures do not erase the
+other stream's durable progress. A nonretryable endpoint rejection pauses only
+that landing stream for 24 hours, emits one terminal outcome, and does not poison
+the shared account health used by live odds.
+
+A terminal page records exact page, source-row, landed-row, quarantined-row, and
+warning-row counts. `sourceRows = landedRows + quarantinedRows` must hold, and a
+provider total must equal terminal `sourceRows`. A complete checkpoint selects
+records whose `slot` and `sweepId` equal its own. While the next checkpoint is
+`running`, readers remain bound to `lastCompletedSlot` plus
+`lastCompletedSweepId`; the switch is one conditional checkpoint write, and
+identities removed by the provider disappear from the logical view at that
+boundary. Reusing a slot does not revive an older row because its sweep ID no
+longer matches. Snapshot and identity rows expire after ninety days; quarantine
+expires after thirty days, both measured from retrieval time rather than sweep
+start. Health alarms fire long before a current snapshot can expire.
+
+Low-cardinality EMF records exact persisted pages and landed, quarantined, and
+warning rows. Durable cumulative quarantine/warning counts are replayed at the
+next invocation, so a crash after checkpoint commit but before EMF publication
+cannot permanently hide bad data. Completion-age alarms require two consecutive fifteen-minute
+periods beyond eight hours for catalog or one hour for events/odds. Run-age
+alarms require two periods beyond thirty minutes for catalog, two hours for
+events, or twelve hours for odds. Recovery preserves the original run-age
+boundary, and two consecutive recovery periods alert instead of presenting a
+perpetually young run. Lambda errors require sustained failures; EventBridge
+delivery failures and exhausted asynchronous Lambda-handler failures both reach
+the retained DLQ, whose messages alert immediately. Quarantine rows alert immediately. Warning rows remain exact
+metrics and alert only after two consecutive thirty-minute windows. Missing
+completion metrics breach only where this worker is scheduled,
+so inert development and production stacks do not page. Universal acquisition
+is enabled in staging only until the data-quality promotion gate passes.
+Configuration, entitlement, and authorization failures mark the shared account
+health terminal and raise one immediate terminal alarm; the scheduled delivery
+then completes without two identical blind retries. Unexpected Lambda/storage
+failures retain bounded asynchronous retries and page only when sustained (or
+immediately if they reach the DLQ). The schedule is enabled only when both the
+scheduler flag is true and the stage is exactly `staging`; `dev`, test aliases,
+and production remain inert.
+
+Staging verification resolves `ProviderLandingFunctionName` from the exact stack,
+invokes it only with the deployed SharpAPI secret binding, then strongly reads
+the three `CHECKPOINT#catalog|events|odds` records. A healthy completed sweep has
+`sourceRows = landedRows + quarantinedRows`; catalog source rows equal the live
+`/sports` plus `/leagues` counts; and an odds/event checkpoint is never called
+complete while it retains a cursor, offset, or pending page. Any `resumeAfter`
+must match a bounded provider reset/retry time and prevent every paid stream
+before that instant. Provider totals and generations remain coherent, and every
+warning/quarantine count has a bounded reason that must be explained before the
+data-quality release gate can pass. Production scheduling remains disabled
+until repeated staging sweeps prove these invariants and the promotion story
+records the decision.
+
 ## Live Game State research preflight
 
 FTE-082 uses `scripts/game-state-spike.mjs`, a read-only research tool. It reads
@@ -155,13 +284,14 @@ sport. A checkpoint later than a provider observation is never used to judge
 that observation. The sidecar and analysis are evidence for the research
 report; neither is a settlement authority.
 
-## Entitled collection roster and consensus policy
+## Entitled evaluation roster and consensus policy
 
 ADR 0003 defines Hard Rock (`hardrock`) as the offered sportsbook and
 DraftKings, FanDuel, BetMGM, and Caesars as equal-weight comparison books. The
-production collector accepts the closed, versioned collection allowlist across
-enabled leagues and excludes Hard Rock unconditionally from a Hard Rock
-consensus. Collection approval never grants an evaluation weight.
+canonical pricing path accepts the closed, versioned sportsbook roster across
+promoted leagues and excludes Hard Rock unconditionally from a Hard Rock
+consensus. This roster does not limit universal provider acquisition. Collection
+approval never grants an evaluation weight.
 
 The upgraded entitlement is modeled separately from evaluation. Approved
 Pinnacle, Circa, Bally Bet, Betano, Fanatics, Fanatics Markets, BetRivers,

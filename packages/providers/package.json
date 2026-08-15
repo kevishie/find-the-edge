@@ -21,6 +21,7 @@
     "@find-the-edge/observability": "workspace:*"
   },
   "devDependencies": {
+    "@aws-sdk/util-dynamodb": "3.996.7",
     "vitest": "^4.0.18"
   }
 }

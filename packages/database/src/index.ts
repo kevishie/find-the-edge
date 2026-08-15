@@ -68,3 +68,4 @@ export * from "./identity-repository";
 export * from "./identity-authorization-repository.js";
 export * from "./entitlement-repository";
 export * from "./dynamo-capacity-attribution";
+export * from "./provider-landing-repository";
