@@ -665,14 +665,14 @@ function validateCheckpoint(
     checkpoint.status === "running" &&
     (checkpoint.stream === "events" || checkpoint.stream === "odds")
   ) {
-    const currentPositionHash = checkpointPositionHash(checkpoint);
+    const currentPositionHash = providerLandingPositionHash(checkpoint);
     if (!checkpoint.visitedPositionHashes?.includes(currentPositionHash))
       throw new Error("provider-landing-checkpoint-invalid");
   }
   if (
     checkpoint.pendingPage &&
     checkpoint.pendingPage.positionHash !==
-      checkpointPositionHash(checkpoint, 64)
+      providerLandingPositionHash(checkpoint, 64)
   )
     throw new Error("provider-landing-checkpoint-invalid");
 }
@@ -791,19 +791,31 @@ const cursorPosition = (
   "cursor" in value &&
   canonical(value.cursor, 4096);
 
-const checkpointPositionHash = (
+/** Hash by position meaning rather than map insertion order. DynamoDB may read
+ * `{ partition, offset }` back as `{ offset, partition }`. */
+export const providerLandingPositionHash = (
   checkpoint: Pick<ProviderLandingCheckpoint, "stream" | "position">,
-  length = 32,
-) =>
-  createHash("sha256")
+  length: 32 | 64 = 32,
+) => {
+  const position = checkpoint.position;
+  const canonicalPosition =
+    position === null
+      ? null
+      : "partition" in position
+        ? { partition: position.partition, offset: position.offset }
+        : "cursor" in position
+          ? { cursor: position.cursor }
+          : { offset: position.offset };
+  return createHash("sha256")
     .update(
       JSON.stringify({
         stream: checkpoint.stream,
-        position: checkpoint.position,
+        position: canonicalPosition,
       }),
     )
     .digest("hex")
     .slice(0, length);
+};
 
 const storageKey = (record: ProviderLandingRecord) => {
   const key = providerLandingKey(record);

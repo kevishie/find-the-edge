@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   BatchGetCommand,
   BatchWriteCommand,
@@ -15,6 +14,7 @@ import {
   PROVIDER_LANDING_SCHEMA_VERSION,
   isProviderLandingRecordCurrent,
   providerLandingKey,
+  providerLandingPositionHash,
   type ProviderLandingCheckpoint,
   type ProviderLandingRecord,
 } from "./provider-landing-repository";
@@ -38,12 +38,8 @@ const eventRecord = (
 const testPositionHash = (
   stream: ProviderLandingCheckpoint["stream"],
   position: ProviderLandingCheckpoint["position"],
-  length = 32,
-) =>
-  createHash("sha256")
-    .update(JSON.stringify({ stream, position }))
-    .digest("hex")
-    .slice(0, length);
+  length: 32 | 64 = 32,
+) => providerLandingPositionHash({ stream, position }, length);
 
 const checkpoint = (
   overrides: Partial<ProviderLandingCheckpoint> = {},
@@ -621,6 +617,39 @@ describe("provider landing repository", () => {
       ConditionExpression: "#version = :expectedVersion",
       ExpressionAttributeValues: { ":expectedVersion": 0 },
     });
+  });
+
+  it("validates partition checkpoints after DynamoDB reorders map keys", async () => {
+    const writtenPosition = { partition: 1, offset: 0 } as const;
+    const stored = checkpoint({
+      // DynamoDB document maps may return these fields in a different order
+      // from the object the worker originally hashed.
+      position: { offset: 0, partition: 1 },
+      eventPartitions: [{ sport: "baseball" }, { sport: "football" }],
+      eventPartitionSourceRows: 0,
+      visitedPositionHashes: [
+        providerLandingPositionHash({
+          stream: "events",
+          position: writtenPosition,
+        }),
+      ],
+    });
+    expect(
+      providerLandingPositionHash({
+        stream: "events",
+        position: stored.position,
+      }),
+    ).toBe(stored.visitedPositionHashes?.[0]);
+
+    const repository = new DynamoProviderLandingRepository(
+      {
+        send: vi.fn(() =>
+          Promise.resolve({ Item: { version: stored.version, value: stored } }),
+        ),
+      } as unknown as DynamoDBDocumentClient,
+      "Table",
+    );
+    await expect(repository.getCheckpoint("events")).resolves.toEqual(stored);
   });
 
   it("marks records current only for their completed matching sweep", () => {

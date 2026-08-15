@@ -2,6 +2,7 @@ import {
   type AccountRateCoordinationStore,
   PROVIDER_LANDING_CHECKPOINT_SCHEMA_VERSION,
   PROVIDER_LANDING_SCHEMA_VERSION,
+  providerLandingPositionHash,
   type OddsProviderHealth,
   type ProviderLandingCheckpoint,
   type ProviderLandingEventPartition,
@@ -529,7 +530,7 @@ const digest = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 const positionHash = (checkpoint: ProviderLandingCheckpoint) =>
-  digest({ stream: checkpoint.stream, position: checkpoint.position });
+  providerLandingPositionHash(checkpoint, 64);
 
 const advancePositionHistory = (
   history: readonly string[],
@@ -686,7 +687,9 @@ const startCheckpoint = async (
       : {}),
     ...(position
       ? {
-          visitedPositionHashes: [digest({ stream, position }).slice(0, 32)],
+          visitedPositionHashes: [
+            providerLandingPositionHash({ stream, position }),
+          ],
         }
       : {}),
     ...(prior?.lastCompletedAt
@@ -746,7 +749,10 @@ const restartCheckpointAfterDrift = async (
     ...(position
       ? {
           visitedPositionHashes: [
-            digest({ stream: checkpoint.stream, position }).slice(0, 32),
+            providerLandingPositionHash({
+              stream: checkpoint.stream,
+              position,
+            }),
           ],
         }
       : {}),
@@ -956,7 +962,10 @@ const runCatalog = async (input: {
   input.rateGate.observe(snapshot.responseMetadata);
   const eventPartitions = buildSharpApiEventPartitions(snapshot);
   const sealedPage = {
-    positionHash: digest({ stream: "catalog", position: null }),
+    positionHash: providerLandingPositionHash(
+      { stream: "catalog", position: null },
+      64,
+    ),
     pageHash: digest({
       sports: snapshot.sports,
       leagues: snapshot.leagues,
@@ -1467,10 +1476,10 @@ const runPagedStream = async (input: {
         currentPartition + 1 < checkpoint.eventPartitions!.length
       ) {
         const position = { partition: currentPartition + 1, offset: 0 };
-        const nextPositionHash = digest({
+        const nextPositionHash = providerLandingPositionHash({
           stream: input.stream,
           position,
-        }).slice(0, 32);
+        });
         const nextCheckpoint = {
           ...committed,
           version: priorVersion + 1,
@@ -1534,10 +1543,10 @@ const runPagedStream = async (input: {
         position.offset !== checkpoint.position.offset + 200
       )
         throw new Error("provider-landing-pagination-invalid");
-      const nextPositionHash = digest({ stream: input.stream, position }).slice(
-        0,
-        32,
-      );
+      const nextPositionHash = providerLandingPositionHash({
+        stream: input.stream,
+        position,
+      });
       const visited = checkpoint.visitedPositionHashes ?? [];
       const resumeAfter = input.rateGate.canRequest()
         ? undefined
