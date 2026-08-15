@@ -668,7 +668,12 @@ describe("SharpAPI activation boundary", () => {
       new Response(
         JSON.stringify({
           data: [],
-          pagination: { has_more: false, next_cursor: null, next_offset: null },
+          pagination: {
+            limit: 25,
+            has_more: false,
+            next_cursor: null,
+            next_offset: null,
+          },
           updated_at: "2026-08-14T20:00:00.123456789Z",
         }),
       ),
@@ -713,7 +718,7 @@ describe("SharpAPI activation boundary", () => {
       "cursor",
       "limit",
     ]);
-    expect(urls[3]?.searchParams.get("limit")).toBe("200");
+    expect(urls[3]?.searchParams.get("limit")).toBe("25");
     expect(urls[3]?.searchParams.get("cursor")).toBe("cursor-1");
   });
 
