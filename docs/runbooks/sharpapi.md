@@ -40,12 +40,33 @@ decision and is never performed by deployment automation.
 ## Universal provider acquisition
 
 FTE-DQ-001 separates source acquisition from product normalization. SharpAPI's
-live `/sports` and `/leagues` responses are the acquisition roster. The
-provider-landing worker therefore requests provider-wide `/events` and
-unfiltered `/odds`; it never accepts a configured sport, league, live-state, or
-market filter. A new provider sport, league, market, or book must land without a
-code or configuration change even when no sport module, strategy, API route, or
-UI exists for it yet.
+live `/sports?include_empty=true` and `/leagues?include_empty=true` responses are
+the acquisition roster. `include_empty=true` is required by the provider's
+OpenAPI contract so off-season entries remain discoverable before their first
+event returns. The worker fetches every catalog sport through deterministic
+`/events?sport=...` partitions; large sports are additionally narrowed by exact
+comma-separated `league` values from that sport's catalog membership. Odds use
+the provider-wide `/odds` cursor chain. The worker never accepts a configured
+sport or league allowlist, live-state filter, or market filter. A new provider
+sport, league, market, or book must land without a code or configuration change
+even when no sport module, strategy, API route, or UI exists for it yet.
+
+SharpAPI documents `/events` at a maximum 200 rows per page and offset 5,000.
+An unfiltered result larger than 5,200 rows is therefore not a complete walk:
+the provider may return `has_more=false` and `next_offset=null` at the ceiling
+while `total` remains larger. The catalog-derived event plan groups every valid
+league slug under conservative row, count, and encoded-query bounds, freezes
+the exact sport/league filters in both the catalog and event checkpoints, and
+reconciles `total` separately inside each partition. A live league partition
+above the reachable bound splits deterministically and restarts the inactive
+sweep; an indivisible sport or league above the provider's reachable offset
+range fails visibly without publishing a partial generation.
+SharpAPI documents `league` as a comma-separated filter and its catalog IDs as
+filter inputs. A catalog ID containing a comma cannot be represented atomically
+under that contract. Such a provider inconsistency is retained as
+`unrepresentable-filter-id` quarantine evidence, while that sport falls back to
+a sport-wide Events partition so its events are still acquired. It is never
+silently discarded or misinterpreted as two leagues.
 
 The worker stores bounded, two-slot source snapshots in the retained ingestion
 table. Every non-quarantine sort key starts with `SLOT#0` or `SLOT#1`. A new
@@ -71,24 +92,34 @@ Catalog envelopes accept as many as 50,000 rows under the independently enforced
 10 MB streamed-response limit. Generic values are walked under a bounded node
 budget, and numeric source tokens must fit DynamoDB's exact 38-digit,
 `1E-130` through `9.999E+125` range and round-trip exactly through the runtime
-number representation. Provider timestamps are calendar-valid ISO instants
-with millisecond precision or less. An unsafe number or timestamp quarantines
+number representation. Provider timestamps are calendar-valid RFC 3339/ISO
+8601 instants and retain SharpAPI's documented nanosecond precision as exact
+comparison evidence. An unsafe number or timestamp quarantines
 only its row; it never rejects a batch containing valid siblings.
 
-Catalog refresh is due every six hours. Event offsets and odds cursors are
+Catalog refresh is due every scheduled fifteen-minute pass. If a stream-local
+filter rejection is paused and the newly completed catalog changes its frozen
+event plan, the inactive event sweep restarts immediately with that plan;
+unchanged bad filters remain paused and alert instead of hot-looping. Event offsets and odds cursors are
 strongly read and conditionally advanced only after every current/quarantine
 write for that page succeeds. Each fetched page is first sealed in the
 checkpoint with a position and content hash. A crash can replay the same sealed
-page. If the provider changed that page before replay, or if count, total,
-cursor, or generation drift makes the walk incoherent, the worker abandons that
+page. If the provider changed that page before replay, or if count, total, or
+cursor drift makes the walk incoherent, the worker abandons that
 inactive sweep, keeps the last completed slot live, and restarts in the same
 inactive slot under a new sweep ID. Old partial rows cannot join the replacement
 sweep because readers require both the selected slot and exact sweep ID.
 Provider identifiers repeated on another page in the same sweep become bounded
 quarantine evidence and cannot overwrite the first row.
 `updated_at` is retained as bounded observation evidence, not treated as an
-immutable pagination generation. Offset-paginated events must expose and
-reconcile a provider total on every page. Cursor-paginated odds may omit total;
+immutable pagination generation. `/sports` and `/leagues` are sequential
+responses, so their valid emission timestamps are not required to be equal.
+They are not a cross-endpoint transaction: a league may briefly appear in one
+membership list before the other. The frozen plan uses the bounded union keyed
+by `(sport, league)` rather than failing or omitting the new league during that
+normal propagation window.
+Offset-paginated event partitions must expose and reconcile a provider total on
+every page. Cursor-paginated odds may omit total;
 their exact cursor progression, durable position claims, and terminal page are
 the completion authority. Before each request, the worker conditionally claims the exact
 `{stream, sweepId, slot, positionHash, pageNumber}` in DynamoDB. Reclaiming the
@@ -123,13 +154,18 @@ secondary local twenty-percent/minimum-twenty-five brake protects the current
 invocation. DynamoDB unprocessed batches retry with capped jitter.
 Terminal provider authorization/configuration failures stop all paid streams
 for that invocation, while independent event or odds failures do not erase the
-other stream's durable progress. A nonretryable endpoint rejection pauses only
-that landing stream for 24 hours, emits one terminal outcome, and does not poison
-the shared account health used by live odds.
+other stream's durable progress. Clients branch on the stable SharpAPI
+`error.code`, never its prose `message`. A nonretryable first-page endpoint
+rejection pauses only that landing stream for 24 hours, emits one terminal
+outcome, and does not poison the shared account health used by live odds. A
+rejected non-initial `/odds` cursor is different: the cursor is opaque and tied
+to the exact filter set, so the inactive odds sweep restarts from a new
+provider-issued cursor chain without a 24-hour pause.
 
 A terminal page records exact page, source-row, landed-row, quarantined-row, and
 warning-row counts. `sourceRows = landedRows + quarantinedRows` must hold, and a
-provider total must equal terminal event `sourceRows`; odds without a provider
+provider total must equal the terminal source rows for its event partition;
+global event counts accumulate only after each partition reconciles. Odds without a provider
 total must reach a valid terminal cursor page. A complete checkpoint selects
 records whose `slot` and `sweepId` equal its own. While the next checkpoint is
 `running`, readers remain bound to `lastCompletedSlot` plus
@@ -167,7 +203,9 @@ Staging verification resolves `ProviderLandingFunctionName` from the exact stack
 invokes it only with the deployed SharpAPI secret binding, then strongly reads
 the three `CHECKPOINT#catalog|events|odds` records. A healthy completed sweep has
 `sourceRows = landedRows + quarantinedRows`; catalog source rows equal the live
-`/sports` plus `/leagues` counts; and an odds/event checkpoint is never called
+include-empty `/sports` plus `/leagues` counts; the event plan covers every
+catalog sport exactly once, either sport-wide or through non-overlapping
+sport-scoped league groups; and an odds/event checkpoint is never called
 complete while it retains a cursor, offset, or pending page. Any `resumeAfter`
 must match a bounded provider reset/retry time and prevent every paid stream
 before that instant. Provider totals and generations remain coherent, and every

@@ -778,6 +778,21 @@ describe("provider landing repository", () => {
         null,
       ),
     ).resolves.toBeUndefined();
+    const plannedPosition = { partition: 1, offset: 200 } as const;
+    await expect(
+      repository.putCheckpoint(
+        checkpoint({
+          position: plannedPosition,
+          eventPartitions: [
+            { sport: "tennis", leagues: ["atp", "wta"] },
+            { sport: "baseball", leagues: ["mlb"] },
+          ],
+          eventPartitionSourceRows: 200,
+          visitedPositionHashes: [testPositionHash("events", plannedPosition)],
+        }),
+        null,
+      ),
+    ).resolves.toBeUndefined();
     await expect(
       repository.putCheckpoint(
         checkpoint({
@@ -797,6 +812,71 @@ describe("provider landing repository", () => {
     ["unknown status", { status: "paused" }],
     ["events cursor", { position: { cursor: "cursor-1" } }],
     ["events unaligned offset", { position: { offset: 201 } }],
+    [
+      "planned events missing plan",
+      { position: { partition: 0, offset: 0 }, eventPartitionSourceRows: 0 },
+    ],
+    [
+      "planned events missing partition count",
+      {
+        position: { partition: 0, offset: 0 },
+        eventPartitions: [{ sport: "tennis", leagues: ["atp"] }],
+      },
+    ],
+    [
+      "planned events partition out of range",
+      {
+        position: { partition: 1, offset: 0 },
+        eventPartitions: [{ sport: "tennis", leagues: ["atp"] }],
+        eventPartitionSourceRows: 0,
+      },
+    ],
+    [
+      "planned events duplicate league",
+      {
+        position: { partition: 0, offset: 0 },
+        eventPartitions: [
+          { sport: "tennis", leagues: ["atp", "wta"] },
+          { sport: "tennis", leagues: ["atp"] },
+        ],
+        eventPartitionSourceRows: 0,
+      },
+    ],
+    [
+      "planned events empty filter member",
+      {
+        position: { partition: 0, offset: 0 },
+        eventPartitions: [{ sport: "tennis", leagues: ["atp", "", "wta"] }],
+        eventPartitionSourceRows: 0,
+      },
+    ],
+    [
+      "planned events overlapping sport-wide and league filters",
+      {
+        position: { partition: 0, offset: 0 },
+        eventPartitions: [
+          { sport: "tennis" },
+          { sport: "tennis", leagues: ["atp"] },
+        ],
+        eventPartitionSourceRows: 0,
+      },
+    ],
+    [
+      "planned events oversized encoded filter",
+      {
+        position: { partition: 0, offset: 0 },
+        eventPartitions: [
+          {
+            sport: "tennis",
+            leagues: Array.from(
+              { length: 50 },
+              (_, index) => `${index}-${"x".repeat(120)}`,
+            ),
+          },
+        ],
+        eventPartitionSourceRows: 0,
+      },
+    ],
     ["odds offset", { stream: "odds", position: { offset: 200 } }],
     ["catalog offset", { stream: "catalog", position: { offset: 200 } }],
     [

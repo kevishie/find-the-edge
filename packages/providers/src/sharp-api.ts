@@ -153,7 +153,8 @@ export interface SharpApiCatalogLeague extends SharpApiSourceShapeEvidence {
 
 export interface SharpApiLandingQuarantine {
   readonly rowIndex: number;
-  readonly reason: "invalid-row" | "duplicate-provider-id";
+  readonly reason:
+    "invalid-row" | "duplicate-provider-id" | "unrepresentable-filter-id";
   readonly endpoint: "sports" | "leagues" | "events" | "odds";
   readonly providerRecordId?: string;
   readonly sourceFields: readonly string[];
@@ -237,6 +238,11 @@ export interface SharpApiUniversalPage<T> {
   readonly providerUpdatedAt?: string;
   readonly retrievedAt: IsoTimestamp;
   readonly responseMetadata?: SharpApiResponseMetadata;
+}
+
+export interface SharpApiUniversalEventFilter {
+  readonly sport: string;
+  readonly leagues?: readonly string[];
 }
 
 /** Provider-enforced request window. This is deliberately not the customer's
@@ -549,6 +555,9 @@ export class SharpApiError extends Error {
     readonly retryable = false,
     readonly retryAt?: IsoTimestamp,
     readonly stage?: string,
+    /** Stable SharpAPI error-envelope code. Never match the prose message. */
+    readonly providerCode?: string,
+    readonly httpStatus?: number,
   ) {
     super(code);
   }
@@ -969,12 +978,50 @@ const request = async (
     }
     if (response.status === 429) {
       const metadata = parseSharpApiResponseMetadata(response.headers);
-      const retryAt = metadata.retryAt ?? metadata.rateWindow.resetsAt;
+      let retryAt = metadata.retryAt ?? metadata.rateWindow.resetsAt;
+      if (!retryAt)
+        try {
+          const body = await boundedJson(response, endpoint);
+          const error =
+            record(body) && record(body["error"]) ? body["error"] : {};
+          const observedAt = Date.now();
+          if (
+            safeInteger(error["retryAfter"]) &&
+            error["retryAfter"] >= 0 &&
+            error["retryAfter"] <= 86_400
+          )
+            retryAt = new Date(
+              observedAt + error["retryAfter"] * 1_000,
+            ).toISOString() as IsoTimestamp;
+          else if (safeInteger(error["retry_after"])) {
+            const candidate = error["retry_after"];
+            if (
+              candidate >= observedAt - 5 * 60_000 &&
+              candidate <= observedAt + 24 * 60 * 60_000
+            )
+              retryAt = new Date(candidate).toISOString() as IsoTimestamp;
+          }
+        } catch {
+          // A malformed rate-limit body cannot override bounded header truth.
+        }
       throw new SharpApiError("rate-limited", true, retryAt);
+    }
+    let providerCode: string | undefined;
+    try {
+      const body = await boundedJson(response, endpoint);
+      const error = record(body) && record(body["error"]) ? body["error"] : {};
+      if (canonical(error["code"], 64)) providerCode = error["code"];
+    } catch {
+      // HTTP status remains authoritative when a proxy/provider sends a
+      // malformed error body. Never inspect or retain the prose message.
     }
     throw new SharpApiError(
       response.status >= 500 ? "provider-unavailable" : "provider-rejected",
       response.status >= 500,
+      undefined,
+      `${endpoint}:http-${response.status}`,
+      providerCode,
+      response.status,
     );
   }
   return {
@@ -1214,11 +1261,18 @@ export function parseSharpApiLeaguesCatalog(
   const quarantines: SharpApiLandingQuarantine[] = [];
   const ids = new Set<string>();
   (payload["data"] as unknown[]).forEach((value, rowIndex) => {
+    const displayName = record(value)
+      ? canonical(value["display_name"], 256)
+        ? value["display_name"]
+        : canonical(value["name"], 256)
+          ? value["name"]
+          : undefined
+      : undefined;
     if (
       !record(value) ||
       !dynamoJsonValueSafe(value) ||
       !storageKeyComponent(value["id"], 128) ||
-      !canonical(value["display_name"], 256) ||
+      !displayName ||
       !storageKeyComponent(value["sport"], 64) ||
       !landingKeyFits(
         `${LANDING_SLOT_PREFIX}LEAGUE#`,
@@ -1233,15 +1287,26 @@ export function parseSharpApiLeaguesCatalog(
       quarantines.push(quarantineRow(value, rowIndex, "leagues"));
       return;
     }
-    if (ids.has(value["id"])) {
+    const compoundId = `${value["sport"]}\u0000${value["id"]}`;
+    if (ids.has(compoundId)) {
       quarantines.push(
         quarantineRow(value, rowIndex, "leagues", "duplicate-provider-id"),
       );
       return;
     }
+    // SharpAPI documents `league` as a comma-separated filter. A catalog ID
+    // containing a comma cannot be represented as one atomic value after URL
+    // decoding. Preserve bounded quarantine evidence instead of silently
+    // omitting it or accidentally requesting two different leagues.
+    if (value["id"].includes(",")) {
+      quarantines.push(
+        quarantineRow(value, rowIndex, "leagues", "unrepresentable-filter-id"),
+      );
+      return;
+    }
     const league: SharpApiCatalogLeague = {
       providerLeagueId: value["id"],
-      displayName: value["display_name"],
+      displayName,
       ...(value["numerical_id"] === undefined
         ? {}
         : { numericalId: value["numerical_id"] }),
@@ -1256,7 +1321,7 @@ export function parseSharpApiLeaguesCatalog(
       quarantines.push(quarantineRow(value, rowIndex, "leagues"));
       return;
     }
-    ids.add(value["id"]);
+    ids.add(compoundId);
     leagues.push(league);
   });
   return {
@@ -1276,16 +1341,23 @@ const universalPageEnvelope = (
 ) => {
   if (!record(input)) throw invalidResponse(endpoint, "envelope");
   assertProviderEnvelope(input, endpoint);
+  const pagination = input["pagination"];
+  const nullEmptyPage =
+    input["data"] === null &&
+    record(pagination) &&
+    pagination["has_more"] === false &&
+    pagination["count"] === 0 &&
+    (pagination["total"] === undefined || pagination["total"] === 0);
   if (
-    !Array.isArray(input["data"]) ||
-    input["data"].length > 200 ||
-    !record(input["pagination"]) ||
-    typeof input["pagination"]["has_more"] !== "boolean"
+    (!Array.isArray(input["data"]) && !nullEmptyPage) ||
+    (Array.isArray(input["data"]) && input["data"].length > 200) ||
+    !record(pagination) ||
+    typeof pagination["has_more"] !== "boolean"
   )
     throw invalidResponse(endpoint, "page");
   if (input["updated_at"] !== undefined && !instant(input["updated_at"]))
     throw invalidResponse(endpoint, "updated-at");
-  return input;
+  return nullEmptyPage ? { ...input, data: [] } : input;
 };
 
 export function parseSharpApiUniversalEventsPage(
@@ -2682,25 +2754,6 @@ export async function fetchSharpApiAccount(
   }
 }
 
-const catalogMembershipCoherent = (
-  sports: readonly SharpApiCatalogSport[],
-  leagues: readonly SharpApiCatalogLeague[],
-) => {
-  const sportsById = new Map(
-    sports.map((sport) => [sport.providerSportId, sport] as const),
-  );
-  // League slugs are not globally unique: the same `club_friendlies`-style
-  // slug can appear in several sport membership lists while /leagues returns
-  // the authoritative compound (sport, league) rows. Require every league row
-  // to have its matching sport membership, but do not flatten the inverse
-  // sport list into a globally keyed map and call legitimate collisions drift.
-  return leagues.every((league) =>
-    sportsById
-      .get(league.providerSportId)
-      ?.providerLeagueIds.includes(league.providerLeagueId),
-  );
-};
-
 export async function fetchSharpApiCatalog(
   apiKey: string,
   fetcher: typeof fetch = fetch,
@@ -2711,14 +2764,14 @@ export async function fetchSharpApiCatalog(
     // ordered so the second response carries the conservative remaining
     // allowance and a low balance cannot be overshot by a concurrent request.
     const sportsResponse = await request(
-      "/sports",
+      "/sports?include_empty=true",
       "sports",
       apiKey,
       fetcher,
       20_000,
     );
     const leaguesResponse = await request(
-      "/leagues",
+      "/leagues?include_empty=true",
       "leagues",
       apiKey,
       fetcher,
@@ -2732,18 +2785,8 @@ export async function fetchSharpApiCatalog(
       leaguesResponse.payload,
       retrievedAt,
     );
-    if (
-      !sports.providerUpdatedAt ||
-      !leagues.providerUpdatedAt ||
-      sports.providerUpdatedAt !== leagues.providerUpdatedAt
-    )
+    if (!sports.providerUpdatedAt || !leagues.providerUpdatedAt)
       throw invalidResponse("leagues", "catalog-generation");
-    if (
-      sports.quarantines.length === 0 &&
-      leagues.quarantines.length === 0 &&
-      !catalogMembershipCoherent(sports.sports, leagues.leagues)
-    )
-      throw invalidResponse("leagues", "catalog-membership");
     return {
       sports: sports.sports,
       leagues: leagues.leagues,
@@ -2755,7 +2798,12 @@ export async function fetchSharpApiCatalog(
         })),
       ],
       sourceRows: sports.sourceRows + leagues.sourceRows,
-      providerUpdatedAt: sports.providerUpdatedAt,
+      // SharpAPI documents updated_at as the emission time of each response,
+      // not a cross-endpoint transaction identifier. The ordered /leagues
+      // response is the latest bounded catalog observation. The endpoints are
+      // not transactional, so the worker reconciles their membership union
+      // instead of rejecting a short-lived cross-response mismatch.
+      providerUpdatedAt: leagues.providerUpdatedAt,
       retrievedAt,
       responseMetadata: leaguesResponse.metadata,
     };
@@ -2772,11 +2820,33 @@ export async function fetchSharpApiCatalog(
 
 export async function fetchSharpApiUniversalEventsPage(
   apiKey: string,
+  filter: SharpApiUniversalEventFilter,
   offset = 0,
   fetcher: typeof fetch = fetch,
 ): Promise<SharpApiUniversalPage<SharpApiUniversalEvent>> {
-  if (!nonNegativeInteger(offset)) throw new SharpApiError("configuration");
-  const query = new URLSearchParams({ limit: "200", offset: String(offset) });
+  const leagues = filter.leagues;
+  if (
+    !nonNegativeInteger(offset) ||
+    offset > 5_000 ||
+    !storageKeyComponent(filter.sport, 64) ||
+    filter.sport.includes(",") ||
+    (leagues !== undefined &&
+      (!Array.isArray(leagues) ||
+        leagues.length === 0 ||
+        leagues.length > 50 ||
+        new Set(leagues).size !== leagues.length ||
+        leagues.some(
+          (league) => !storageKeyComponent(league, 128) || league.includes(","),
+        )))
+  )
+    throw new SharpApiError("configuration");
+  const query = new URLSearchParams({
+    sport: filter.sport,
+    limit: "200",
+    offset: String(offset),
+  });
+  if (leagues) query.set("league", leagues.join(","));
+  if (query.toString().length > 4_096) throw new SharpApiError("configuration");
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
   try {
     const { payload, metadata } = await request(
@@ -2786,8 +2856,11 @@ export async function fetchSharpApiUniversalEventsPage(
       fetcher,
       20_000,
     );
+    const page = parseSharpApiUniversalEventsPage(payload, retrievedAt, offset);
+    if (!page.providerUpdatedAt)
+      throw invalidResponse("universal-events", "updated-at-missing");
     return {
-      ...parseSharpApiUniversalEventsPage(payload, retrievedAt, offset),
+      ...page,
       responseMetadata: metadata,
     };
   } catch (error) {
@@ -2813,8 +2886,11 @@ export async function fetchSharpApiUniversalOddsPage(
       fetcher,
       25_000,
     );
+    const page = parseSharpApiUniversalOddsPage(payload, retrievedAt);
+    if (!page.providerUpdatedAt)
+      throw invalidResponse("universal-odds", "updated-at-missing");
     return {
-      ...parseSharpApiUniversalOddsPage(payload, retrievedAt),
+      ...page,
       responseMetadata: metadata,
     };
   } catch (error) {

@@ -4,6 +4,7 @@ import {
   PROVIDER_LANDING_SCHEMA_VERSION,
   type OddsProviderHealth,
   type ProviderLandingCheckpoint,
+  type ProviderLandingEventPartition,
   type ProviderLandingPositionClaimStore,
   type ProviderLandingRecord,
   type ProviderLandingStream,
@@ -22,6 +23,7 @@ import { createHash } from "node:crypto";
 export interface ProviderLandingSource {
   fetchCatalog(): Promise<SharpApiCatalogSnapshot>;
   fetchEvents(
+    filter: ProviderLandingEventPartition,
     offset: number,
   ): Promise<SharpApiUniversalPage<SharpApiUniversalEvent>>;
   fetchOdds(
@@ -117,7 +119,7 @@ export interface ProviderLandingRunSummary {
 }
 
 const INITIAL_CURSOR = "__initial__";
-const DEFAULT_CATALOG_REFRESH_MS = 6 * 60 * 60 * 1_000;
+const DEFAULT_CATALOG_REFRESH_MS = 15 * 60 * 1_000;
 const DEFAULT_STREAM_REFRESH_MS = 10 * 60 * 1_000;
 const DEFAULT_RATE_PAUSE_MS = 60 * 1_000;
 const ACCOUNT_RATE_RESET_GUARD_MS = 10 * 1_000;
@@ -127,6 +129,10 @@ const MINIMUM_LANDING_ACCOUNT_RESERVE = 250;
 const LANDING_ACCOUNT_RESERVE_FRACTION = 0.5;
 const MAX_VISITED_POSITION_HASHES = 4_096;
 const CATALOG_WRITE_CHUNK_SIZE = 25;
+const MAX_EVENT_PARTITION_EXPECTED_ROWS = 3_000;
+const MAX_EVENT_PARTITION_LEAGUES = 50;
+const MAX_EVENT_PARTITION_QUERY_LENGTH = 3_800;
+const MAX_ACCESSIBLE_EVENT_PARTITION_ROWS = 5_200;
 const SAFE_FAILURE_REASONS = new Set([
   "unauthorized",
   "not-entitled",
@@ -144,7 +150,92 @@ const SAFE_FAILURE_REASONS = new Set([
   "provider-landing-catalog-empty",
   "provider-landing-write-exhausted",
   "provider-landing-account-terminal",
+  "provider-landing-event-partition-too-large",
 ]);
+
+/** Build a deterministic request plan from SharpAPI's complete reference
+ * catalog. Every partition is sport-scoped; large sports are additionally
+ * narrowed by exact league slugs. This prevents same-slug leagues in different
+ * sports from colliding and lets a sport-level request safely cover any
+ * provider league ID that cannot be represented in a comma-separated filter.
+ * No sport or league allowlist participates in this plan. */
+export const buildSharpApiEventPartitions = (
+  snapshot: Pick<SharpApiCatalogSnapshot, "sports" | "leagues">,
+) => {
+  const leagues = new Map(
+    snapshot.leagues.map((league) => [
+      `${league.providerSportId}\u0000${league.providerLeagueId}`,
+      league,
+    ]),
+  );
+  const sports = new Map(
+    snapshot.sports.map((sport) => [sport.providerSportId, sport] as const),
+  );
+  const leagueIdsBySport = new Map<string, Set<string>>();
+  for (const league of snapshot.leagues) {
+    const ids = leagueIdsBySport.get(league.providerSportId) ?? new Set();
+    ids.add(league.providerLeagueId);
+    leagueIdsBySport.set(league.providerSportId, ids);
+  }
+  const sportIds = new Set([...sports.keys(), ...leagueIdsBySport.keys()]);
+  const partitions: ProviderLandingEventPartition[] = [];
+  const queryLength = (sport: string, members: readonly string[]) => {
+    const query = new URLSearchParams({ sport });
+    if (members.length > 0) query.set("league", members.join(","));
+    return query.toString().length;
+  };
+  for (const sportId of [...sportIds].sort((left, right) =>
+    left.localeCompare(right),
+  )) {
+    const sport = sports.get(sportId);
+    const catalogLeagueIds = new Set([
+      ...(sport?.providerLeagueIds ?? []),
+      ...(leagueIdsBySport.get(sportId) ?? []),
+    ]);
+    const sportLeagues = [...catalogLeagueIds].map((leagueId) =>
+      leagues.get(`${sportId}\u0000${leagueId}`),
+    );
+    const missingLeague = sportLeagues.some((league) => !league);
+    const available = sportLeagues.filter(
+      (league): league is NonNullable<typeof league> => !!league,
+    );
+    if (
+      (sport?.eventCount ??
+        available.reduce((total, league) => total + league.eventCount, 0)) <=
+        MAX_EVENT_PARTITION_EXPECTED_ROWS ||
+      missingLeague ||
+      available.length === 0
+    ) {
+      partitions.push({ sport: sportId });
+      continue;
+    }
+    let current: string[] = [];
+    let expectedRows = 0;
+    const flush = () => {
+      if (current.length > 0)
+        partitions.push({ sport: sportId, leagues: current });
+      current = [];
+      expectedRows = 0;
+    };
+    for (const league of available.sort((left, right) =>
+      left.providerLeagueId.localeCompare(right.providerLeagueId),
+    )) {
+      const candidate = [...current, league.providerLeagueId];
+      if (
+        current.length > 0 &&
+        (candidate.length > MAX_EVENT_PARTITION_LEAGUES ||
+          expectedRows + league.eventCount >
+            MAX_EVENT_PARTITION_EXPECTED_ROWS ||
+          queryLength(sportId, candidate) > MAX_EVENT_PARTITION_QUERY_LENGTH)
+      )
+        flush();
+      current.push(league.providerLeagueId);
+      expectedRows += league.eventCount;
+    }
+    flush();
+  }
+  return partitions;
+};
 
 type TerminalSharpApiCode = "configuration" | "not-entitled" | "unauthorized";
 const TERMINAL_SHARP_API_CODES = new Set<TerminalSharpApiCode>([
@@ -461,7 +552,6 @@ const pageHash = (
     nextOffset: page.nextOffset ?? null,
     nextCursor: page.nextCursor ?? null,
     providerTotal: page.providerTotal ?? null,
-    providerUpdatedAt: page.providerUpdatedAt ?? null,
   });
 
 const zeroCounts = () => ({
@@ -570,11 +660,12 @@ const startCheckpoint = async (
   stream: ProviderLandingStream,
   prior: ProviderLandingCheckpoint | null,
   now: Date,
+  eventPartitions?: readonly ProviderLandingEventPartition[],
 ) => {
   if (prior?.status === "running") return prior;
   const position =
     stream === "events"
-      ? { offset: 0 }
+      ? { partition: 0, offset: 0 }
       : stream === "odds"
         ? { cursor: INITIAL_CURSOR }
         : null;
@@ -590,6 +681,9 @@ const startCheckpoint = async (
     startedAt: now.toISOString(),
     updatedAt: now.toISOString(),
     counts: zeroCounts(),
+    ...(stream === "events" && eventPartitions
+      ? { eventPartitions, eventPartitionSourceRows: 0 }
+      : {}),
     ...(position
       ? {
           visitedPositionHashes: [digest({ stream, position }).slice(0, 32)],
@@ -621,11 +715,15 @@ const restartCheckpointAfterDrift = async (
     | "provider-landing-page-replay-drift"
     | "provider-landing-pagination-cycle"
     | "provider-landing-total-missing"
-    | "provider-landing-total-mismatch",
+    | "provider-landing-total-mismatch"
+    | "provider-landing-event-plan-migrated"
+    | "provider-landing-cursor-rejected"
+    | "provider-landing-event-partition-split",
+  eventPartitions = checkpoint.eventPartitions,
 ) => {
   const position =
     checkpoint.stream === "events"
-      ? { offset: 0 }
+      ? { partition: 0, offset: 0 }
       : checkpoint.stream === "odds"
         ? { cursor: INITIAL_CURSOR }
         : null;
@@ -642,6 +740,9 @@ const restartCheckpointAfterDrift = async (
     startedAt: checkpoint.startedAt,
     updatedAt: now.toISOString(),
     counts: zeroCounts(),
+    ...(checkpoint.stream === "events" && eventPartitions
+      ? { eventPartitions, eventPartitionSourceRows: 0 }
+      : {}),
     ...(position
       ? {
           visitedPositionHashes: [
@@ -757,6 +858,7 @@ const catalogDue = (
   refreshMs: number,
 ) =>
   checkpoint?.status === "running" ||
+  !checkpoint?.eventPartitions ||
   !checkpoint?.lastCompletedAt ||
   now.getTime() - Date.parse(checkpoint.lastCompletedAt) >= refreshMs;
 
@@ -852,6 +954,7 @@ const runCatalog = async (input: {
   }
   await input.accountRate?.reconcile(2, snapshot.responseMetadata, input.now());
   input.rateGate.observe(snapshot.responseMetadata);
+  const eventPartitions = buildSharpApiEventPartitions(snapshot);
   const sealedPage = {
     positionHash: digest({ stream: "catalog", position: null }),
     pageHash: digest({
@@ -860,6 +963,7 @@ const runCatalog = async (input: {
       quarantines: snapshot.quarantines,
       sourceRows: snapshot.sourceRows,
       providerUpdatedAt: snapshot.providerUpdatedAt ?? null,
+      ...(eventPartitions.length > 0 ? { eventPartitions } : {}),
     }),
   };
   if (checkpoint.pendingPage) {
@@ -884,6 +988,7 @@ const runCatalog = async (input: {
       ...(snapshot.providerUpdatedAt
         ? { providerUpdatedAt: snapshot.providerUpdatedAt }
         : {}),
+      eventPartitions,
     };
     await input.store.putCheckpoint(checkpoint, priorVersion);
   }
@@ -997,6 +1102,7 @@ const runCatalog = async (input: {
     lastCompletedSweepId: checkpoint.sweepId,
     lastCompletedAt: completedAt,
     lastCompletedCounts: counts,
+    eventPartitions,
     ...(catalogResumeAfter
       ? { resumeAfter: catalogResumeAfter, pauseScope: "account" as const }
       : {}),
@@ -1062,6 +1168,7 @@ const runPagedStream = async (input: {
   shouldContinue: () => boolean;
   rateGate: ReturnType<typeof createRateGate>;
   metrics?: ProviderLandingMetricSink;
+  eventPartitions?: readonly ProviderLandingEventPartition[];
 }) => {
   if (!streamDue(input.prior, input.now(), input.refreshMs))
     return input.prior!;
@@ -1070,7 +1177,41 @@ const runPagedStream = async (input: {
     input.stream,
     input.prior,
     input.now(),
+    input.eventPartitions,
   );
+  if (
+    input.stream === "events" &&
+    input.eventPartitions &&
+    (checkpoint.eventPartitions === undefined ||
+      !checkpoint.position ||
+      !("partition" in checkpoint.position) ||
+      (checkpoint.pauseScope === "stream" &&
+        JSON.stringify(checkpoint.eventPartitions) !==
+          JSON.stringify(input.eventPartitions)))
+  )
+    checkpoint = await restartCheckpointAfterDrift(
+      input.store,
+      checkpoint,
+      input.now(),
+      input.metrics,
+      "provider-landing-event-plan-migrated",
+      input.eventPartitions,
+    );
+  if (
+    input.stream === "odds" &&
+    checkpoint.status === "running" &&
+    checkpoint.pauseScope === "stream" &&
+    checkpoint.position &&
+    "cursor" in checkpoint.position &&
+    checkpoint.position.cursor !== INITIAL_CURSOR
+  )
+    checkpoint = await restartCheckpointAfterDrift(
+      input.store,
+      checkpoint,
+      input.now(),
+      input.metrics,
+      "provider-landing-cursor-rejected",
+    );
   if (
     checkpoint.resumeAfter &&
     input.now().getTime() < Date.parse(checkpoint.resumeAfter)
@@ -1116,6 +1257,11 @@ const runPagedStream = async (input: {
       page =
         input.stream === "events"
           ? await input.source.fetchEvents(
+              checkpoint.eventPartitions![
+                checkpoint.position && "partition" in checkpoint.position
+                  ? checkpoint.position.partition
+                  : 0
+              ]!,
               checkpoint.position && "offset" in checkpoint.position
                 ? checkpoint.position.offset
                 : 0,
@@ -1130,6 +1276,21 @@ const runPagedStream = async (input: {
     } catch (error) {
       if (error instanceof SharpApiError && terminalSharpApiCode(error.code))
         await input.accountRate?.terminal(error.code, input.now());
+      if (
+        input.stream === "odds" &&
+        error instanceof SharpApiError &&
+        error.code === "provider-rejected" &&
+        checkpoint.position &&
+        "cursor" in checkpoint.position &&
+        checkpoint.position.cursor !== INITIAL_CURSOR
+      )
+        return restartCheckpointAfterDrift(
+          input.store,
+          checkpoint,
+          input.now(),
+          input.metrics,
+          "provider-landing-cursor-rejected",
+        );
       if (
         error instanceof SharpApiError &&
         !error.retryable &&
@@ -1185,6 +1346,35 @@ const runPagedStream = async (input: {
         input.metrics,
         "provider-landing-total-missing",
       );
+    if (
+      input.stream === "events" &&
+      page.providerTotal! > MAX_ACCESSIBLE_EVENT_PARTITION_ROWS
+    ) {
+      const partitionIndex =
+        checkpoint.position && "partition" in checkpoint.position
+          ? checkpoint.position.partition
+          : 0;
+      const partition = checkpoint.eventPartitions![partitionIndex]!;
+      const members = partition.leagues;
+      if (!members || members.length === 1)
+        throw new Error("provider-landing-event-partition-too-large");
+      const midpoint = Math.ceil(members.length / 2);
+      const replacement = [
+        { ...partition, leagues: members.slice(0, midpoint) },
+        { ...partition, leagues: members.slice(midpoint) },
+      ];
+      const eventPartitions = checkpoint.eventPartitions!.flatMap(
+        (filter, index) => (index === partitionIndex ? replacement : [filter]),
+      );
+      return restartCheckpointAfterDrift(
+        input.store,
+        checkpoint,
+        input.now(),
+        input.metrics,
+        "provider-landing-event-partition-split",
+        eventPartitions,
+      );
+    }
     const currentPositionHash = positionHash(checkpoint);
     const sealedPage = {
       positionHash: currentPositionHash,
@@ -1213,9 +1403,13 @@ const runPagedStream = async (input: {
       await input.store.putCheckpoint(checkpoint, priorVersion);
     }
     const pageNumber = checkpoint.counts.pages + 1;
+    const eventPartitionSourceRows =
+      (checkpoint.eventPartitionSourceRows ?? 0) + page.sourceRows;
     if (
       page.providerTotal !== undefined &&
-      checkpoint.counts.sourceRows + page.sourceRows > page.providerTotal
+      (input.stream === "events"
+        ? eventPartitionSourceRows
+        : checkpoint.counts.sourceRows + page.sourceRows) > page.providerTotal
     )
       return restartCheckpointAfterDrift(
         input.store,
@@ -1251,7 +1445,12 @@ const runPagedStream = async (input: {
       page,
     );
     if (!page.hasMore) {
-      if (effectiveTotal !== undefined && counts.sourceRows !== effectiveTotal)
+      if (
+        effectiveTotal !== undefined &&
+        (input.stream === "events"
+          ? eventPartitionSourceRows
+          : counts.sourceRows) !== effectiveTotal
+      )
         return restartCheckpointAfterDrift(
           input.store,
           checkpoint,
@@ -1259,27 +1458,70 @@ const runPagedStream = async (input: {
           input.metrics,
           "provider-landing-total-mismatch",
         );
-      checkpoint = {
-        ...committed,
-        version: priorVersion + 1,
-        status: "complete",
-        position: null,
-        updatedAt,
-        counts,
-        ...(effectiveTotal === undefined
-          ? {}
-          : { providerTotal: effectiveTotal }),
-        lastCompletedSlot: checkpoint.slot,
-        lastCompletedSweepId: checkpoint.sweepId,
-        lastCompletedAt: updatedAt,
-        lastCompletedCounts: counts,
-      };
+      const currentPartition =
+        checkpoint.position && "partition" in checkpoint.position
+          ? checkpoint.position.partition
+          : 0;
+      if (
+        input.stream === "events" &&
+        currentPartition + 1 < checkpoint.eventPartitions!.length
+      ) {
+        const position = { partition: currentPartition + 1, offset: 0 };
+        const nextPositionHash = digest({
+          stream: input.stream,
+          position,
+        }).slice(0, 32);
+        const nextCheckpoint = {
+          ...committed,
+          version: priorVersion + 1,
+          status: "running" as const,
+          position,
+          updatedAt,
+          counts,
+          eventPartitionSourceRows: 0,
+          visitedPositionHashes: advancePositionHistory(
+            checkpoint.visitedPositionHashes ?? [],
+            nextPositionHash,
+          ),
+        };
+        delete nextCheckpoint.providerTotal;
+        checkpoint = nextCheckpoint;
+      } else {
+        const completedCheckpoint = {
+          ...committed,
+          version: priorVersion + 1,
+          status: "complete" as const,
+          position: null,
+          updatedAt,
+          counts,
+          ...(effectiveTotal === undefined
+            ? {}
+            : { providerTotal: effectiveTotal }),
+          lastCompletedSlot: checkpoint.slot,
+          lastCompletedSweepId: checkpoint.sweepId,
+          lastCompletedAt: updatedAt,
+          lastCompletedCounts: counts,
+        };
+        // Event partitions each have their own exact denominator. Retaining
+        // only the last partition's total beside all-partition counts would
+        // falsely present it as a provider-wide total. Equality for every
+        // partition has already been enforced before reaching this commit.
+        if (input.stream === "events") delete completedCheckpoint.providerTotal;
+        delete completedCheckpoint.eventPartitionSourceRows;
+        checkpoint = completedCheckpoint;
+      }
     } else {
       const position =
         input.stream === "events"
           ? page.nextOffset === undefined
             ? null
-            : { offset: page.nextOffset }
+            : {
+                partition:
+                  checkpoint.position && "partition" in checkpoint.position
+                    ? checkpoint.position.partition
+                    : 0,
+                offset: page.nextOffset,
+              }
           : page.nextCursor === undefined
             ? null
             : { cursor: page.nextCursor };
@@ -1307,6 +1549,7 @@ const runPagedStream = async (input: {
         position,
         updatedAt,
         counts,
+        ...(input.stream === "events" ? { eventPartitionSourceRows } : {}),
         visitedPositionHashes: advancePositionHistory(
           visited,
           nextPositionHash,
@@ -1461,6 +1704,17 @@ export const runProviderLanding = async (
     throw catalogFailure;
   }
   const shouldContinue = input.shouldContinue ?? (() => true);
+  const completedCatalog =
+    summary.catalog?.status === "complete"
+      ? summary.catalog
+      : catalogPrior?.status === "complete"
+        ? catalogPrior
+        : null;
+  const eventPartitions =
+    completedCatalog?.eventPartitions ??
+    (eventsPrior?.status === "running"
+      ? eventsPrior.eventPartitions
+      : undefined);
   const states: Record<
     Extract<ProviderLandingStream, "events" | "odds">,
     ProviderLandingCheckpoint | null
@@ -1470,6 +1724,7 @@ export const runProviderLanding = async (
     odds: input.oddsPageBudget ?? 800,
   };
   const inactive = new Set<Extract<ProviderLandingStream, "events" | "odds">>();
+  if (!eventPartitions) inactive.add("events");
   while (
     shouldContinue() &&
     rateGate.canRequest() &&
@@ -1498,12 +1753,17 @@ export const runProviderLanding = async (
           pageBudget: 1,
           shouldContinue,
           rateGate,
+          ...(stream === "events" && eventPartitions
+            ? { eventPartitions }
+            : {}),
           ...(input.metrics ? { metrics: input.metrics } : {}),
         });
         states[stream] = checkpoint;
         summary[stream] = checkpoint;
         const pageAdvanced =
-          checkpoint.counts.pages > (prior?.counts.pages ?? 0);
+          checkpoint.sweepId === prior?.sweepId
+            ? checkpoint.counts.pages > (prior?.counts.pages ?? 0)
+            : checkpoint.counts.pages > 0;
         if (pageAdvanced) {
           remaining[stream] -= 1;
           progressed = true;

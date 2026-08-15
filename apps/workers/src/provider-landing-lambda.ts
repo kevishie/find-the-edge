@@ -275,8 +275,8 @@ export const handler = async (event: unknown, context: Context) => {
     const summary = await runProviderLanding({
       source: {
         fetchCatalog: () => fetchSharpApiCatalog(apiKey),
-        fetchEvents: (offset) =>
-          fetchSharpApiUniversalEventsPage(apiKey, offset),
+        fetchEvents: (filter, offset) =>
+          fetchSharpApiUniversalEventsPage(apiKey, filter, offset),
         fetchOdds: (cursor) => fetchSharpApiUniversalOddsPage(apiKey, cursor),
       },
       store,
