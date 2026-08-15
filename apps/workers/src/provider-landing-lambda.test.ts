@@ -69,7 +69,6 @@ describe("provider landing Lambda boundary", () => {
     [new SharpApiError("configuration"), "configuration"],
     [new SharpApiError("not-entitled"), "not-entitled"],
     [new SharpApiError("unauthorized"), "unauthorized"],
-    [new SharpApiError("provider-rejected", false), "provider-rejected"],
     [new Error("provider-landing-account-terminal"), "account-terminal"],
     [new Error("provider-landing-configuration-invalid"), "configuration"],
     [new Error("provider-landing-secret-missing"), "configuration"],
@@ -94,6 +93,11 @@ describe("provider landing Lambda boundary", () => {
     expect(
       providerLandingTerminalReason(
         new SharpApiError("provider-rejected", true),
+      ),
+    ).toBe(null);
+    expect(
+      providerLandingTerminalReason(
+        new SharpApiError("provider-rejected", false),
       ),
     ).toBe(null);
   });
@@ -263,7 +267,7 @@ describe("provider landing Lambda boundary", () => {
           Promise.reject(new SharpApiError("provider-rejected", false)),
         now: () => new Date("2026-08-15T00:00:05.000Z"),
       }),
-    ).rejects.toThrow("provider-rejected");
+    ).rejects.toThrow("provider-landing-account-terminal");
     expect(await store.getHealth(key)).toMatchObject({
       healthy: false,
       status: "unhealthy",

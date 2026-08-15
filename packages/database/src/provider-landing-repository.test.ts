@@ -816,8 +816,38 @@ describe("provider landing repository", () => {
             { sport: "tennis", leagues: ["atp", "wta"] },
             { sport: "baseball", leagues: ["mlb"] },
           ],
+          eventCatalogPlanHash: "c".repeat(64),
           eventPartitionSourceRows: 200,
           visitedPositionHashes: [testPositionHash("events", plannedPosition)],
+        }),
+        null,
+      ),
+    ).resolves.toBeUndefined();
+    const deferredPosition = { partition: 1, offset: 0 } as const;
+    const deferredRevision = 3;
+    await expect(
+      repository.putCheckpoint(
+        checkpoint({
+          position: deferredPosition,
+          eventPartitions: [
+            { sport: "baseball" },
+            { sport: "futsal" },
+            { sport: "golf" },
+          ],
+          eventCatalogPlanHash: "e".repeat(64),
+          eventPartitionSourceRows: 0,
+          eventDeferredPartitions: [1],
+          eventPrimaryTraversalComplete: true,
+          eventPositionRevision: deferredRevision,
+          visitedPositionHashes: [
+            providerLandingPositionHash({
+              stream: "events",
+              position: deferredPosition,
+              eventPositionRevision: deferredRevision,
+            }),
+          ],
+          resumeAfter: "2026-08-14T20:15:00.000Z",
+          pauseScope: "stream",
         }),
         null,
       ),
@@ -930,6 +960,43 @@ describe("provider landing repository", () => {
       { visitedPositionHashes: ["a".repeat(32)] },
     ],
     ["uppercase position hash", { visitedPositionHashes: ["A".repeat(32)] }],
+    [
+      "excess position history",
+      {
+        visitedPositionHashes: Array.from({ length: 513 }, (_, index) =>
+          index.toString(16).padStart(32, "0"),
+        ),
+      },
+    ],
+    ["invalid event plan lineage", { eventCatalogPlanHash: "z".repeat(64) }],
+    [
+      "duplicate deferred event partition",
+      {
+        position: { partition: 1, offset: 0 },
+        eventPartitions: [{ sport: "baseball" }, { sport: "futsal" }],
+        eventPartitionSourceRows: 0,
+        eventDeferredPartitions: [1, 1],
+      },
+    ],
+    [
+      "deferred event partition outside plan",
+      {
+        position: { partition: 1, offset: 0 },
+        eventPartitions: [{ sport: "baseball" }, { sport: "futsal" }],
+        eventPartitionSourceRows: 0,
+        eventDeferredPartitions: [2],
+      },
+    ],
+    [
+      "deferred retry position outside queue",
+      {
+        position: { partition: 0, offset: 0 },
+        eventPartitions: [{ sport: "baseball" }, { sport: "futsal" }],
+        eventPartitionSourceRows: 0,
+        eventDeferredPartitions: [1],
+        eventPrimaryTraversalComplete: true,
+      },
+    ],
     ["invalid provider timestamp", { providerUpdatedAt: "not-an-instant" }],
     [
       "invalid provider calendar timestamp",

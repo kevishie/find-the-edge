@@ -154,13 +154,19 @@ export interface SharpApiCatalogLeague extends SharpApiSourceShapeEvidence {
 export interface SharpApiLandingQuarantine {
   readonly rowIndex: number;
   readonly reason:
-    "invalid-row" | "duplicate-provider-id" | "unrepresentable-filter-id";
+    | "invalid-row"
+    | "duplicate-provider-id"
+    | "unrepresentable-filter-id"
+    | "provider-filter-rejected";
   readonly endpoint: "sports" | "leagues" | "events" | "odds";
   readonly providerRecordId?: string;
   readonly sourceFields: readonly string[];
   readonly sourceFieldCount?: number;
   readonly sourceFieldsTruncated?: true;
   readonly sourceSchemaHash?: string;
+  readonly providerCode?: string;
+  readonly httpStatus?: number;
+  readonly requestId?: string;
 }
 
 export interface SharpApiCatalogSnapshot {
@@ -558,6 +564,8 @@ export class SharpApiError extends Error {
     /** Stable SharpAPI error-envelope code. Never match the prose message. */
     readonly providerCode?: string,
     readonly httpStatus?: number,
+    /** Bounded provider trace identifier documented for support requests. */
+    readonly requestId?: string,
   ) {
     super(code);
   }
@@ -683,6 +691,7 @@ const iso = (value: string) => new Date(value).toISOString() as IsoTimestamp;
 const MAX_RESPONSE_BYTES = 10_000_000;
 const MAX_CATALOG_ROWS = 50_000;
 const UNIVERSAL_EVENTS_PAGE_LIMIT = 200;
+const UNIVERSAL_EVENTS_MAX_OFFSET = 5_000;
 // SharpAPI permits up to 200 Odds rows, but the unfiltered staging response at
 // that maximum exceeded the bounded request timeout. A 25-row opaque-cursor
 // page is provider-supported and completed with materially better throughput.
@@ -969,26 +978,60 @@ const request = async (
     throw new SharpApiError("provider-request-ambiguous", false);
   }
   if (!response.ok) {
+    const observedRequestId = response.headers.get("x-request-id");
+    const requestId = storageKeyComponent(observedRequestId, 128)
+      ? observedRequestId
+      : undefined;
     if ([401, 403].includes(response.status)) {
       let body: unknown;
       try {
         body = await boundedJson(response, endpoint);
       } catch {
-        throw new SharpApiError("unauthorized");
+        throw new SharpApiError(
+          "unauthorized",
+          false,
+          undefined,
+          `${endpoint}:http-${response.status}`,
+          undefined,
+          response.status,
+          requestId,
+        );
       }
       const error = record(body) && record(body["error"]) ? body["error"] : {};
+      const providerCode = storageKeyComponent(error["code"], 64)
+        ? error["code"]
+        : undefined;
       if (error["code"] === "tier_restricted")
-        throw new SharpApiError("not-entitled");
-      throw new SharpApiError("unauthorized");
+        throw new SharpApiError(
+          "not-entitled",
+          false,
+          undefined,
+          `${endpoint}:http-${response.status}`,
+          providerCode,
+          response.status,
+          requestId,
+        );
+      throw new SharpApiError(
+        "unauthorized",
+        false,
+        undefined,
+        `${endpoint}:http-${response.status}`,
+        providerCode,
+        response.status,
+        requestId,
+      );
     }
     if (response.status === 429) {
       const metadata = parseSharpApiResponseMetadata(response.headers);
       let retryAt = metadata.retryAt ?? metadata.rateWindow.resetsAt;
-      if (!retryAt)
-        try {
-          const body = await boundedJson(response, endpoint);
-          const error =
-            record(body) && record(body["error"]) ? body["error"] : {};
+      let providerCode: string | undefined;
+      try {
+        const body = await boundedJson(response, endpoint);
+        const error =
+          record(body) && record(body["error"]) ? body["error"] : {};
+        if (storageKeyComponent(error["code"], 64))
+          providerCode = error["code"];
+        if (!retryAt) {
           const observedAt = Date.now();
           if (
             safeInteger(error["retryAfter"]) &&
@@ -1006,16 +1049,25 @@ const request = async (
             )
               retryAt = new Date(candidate).toISOString() as IsoTimestamp;
           }
-        } catch {
-          // A malformed rate-limit body cannot override bounded header truth.
         }
-      throw new SharpApiError("rate-limited", true, retryAt);
+      } catch {
+        // A malformed rate-limit body cannot override bounded header truth.
+      }
+      throw new SharpApiError(
+        "rate-limited",
+        true,
+        retryAt,
+        `${endpoint}:http-429`,
+        providerCode,
+        429,
+        requestId,
+      );
     }
     let providerCode: string | undefined;
     try {
       const body = await boundedJson(response, endpoint);
       const error = record(body) && record(body["error"]) ? body["error"] : {};
-      if (canonical(error["code"], 64)) providerCode = error["code"];
+      if (storageKeyComponent(error["code"], 64)) providerCode = error["code"];
     } catch {
       // HTTP status remains authoritative when a proxy/provider sends a
       // malformed error body. Never inspect or retain the prose message.
@@ -1027,6 +1079,7 @@ const request = async (
       `${endpoint}:http-${response.status}`,
       providerCode,
       response.status,
+      requestId,
     );
   }
   return {
@@ -1200,6 +1253,7 @@ export function parseSharpApiSportsCatalog(
     const leagues = boundedStringArray(value["leagues"], 5_000, 128);
     if (
       !storageKeyComponent(value["id"], 64) ||
+      value["id"].includes(",") ||
       !landingKeyFits(`${LANDING_SLOT_PREFIX}SPORT#`, [value["id"]], 1_024) ||
       !canonical(value["name"], 128) ||
       !nonNegativeInteger(value["event_count"]) ||
@@ -1279,6 +1333,7 @@ export function parseSharpApiLeaguesCatalog(
       !storageKeyComponent(value["id"], 128) ||
       !displayName ||
       !storageKeyComponent(value["sport"], 64) ||
+      value["sport"].includes(",") ||
       !landingKeyFits(
         `${LANDING_SLOT_PREFIX}LEAGUE#`,
         [value["sport"], value["id"]],
@@ -1540,7 +1595,8 @@ export function parseSharpApiUniversalOddsPage(
       !canonical(value["selection_type"], 128) ||
       !instant(value["timestamp"]) ||
       typeof value["is_live"] !== "boolean" ||
-      typeof value["is_active"] !== "boolean" ||
+      (value["is_active"] !== undefined &&
+        typeof value["is_active"] !== "boolean") ||
       (!americanOddsValid && !decimalOddsValid && !probabilityValid) ||
       priceFieldInvalid ||
       (value["line"] !== undefined &&
@@ -1643,7 +1699,7 @@ export function parseSharpApiUniversalOddsPage(
         : {}),
       providerTimestamp: iso(value["timestamp"]),
       isLive: value["is_live"],
-      ...optionalBoolean("is_active", "isActive"),
+      isActive: value["is_active"] !== false,
       ...optionalBoolean("is_main_line", "isMainLine"),
       ...optionalBoolean("is_alternate_line", "isAlternateLine"),
       ...optionalBoolean("is_player_prop", "isPlayerProp"),
@@ -1693,6 +1749,7 @@ const universalPagination = <T>(
   const count = pagination["count"];
   const declaredLimit = pagination["limit"];
   const declaredOffset = pagination["offset"];
+  const providerTotal = pagination["total"];
   if (
     (count !== undefined &&
       (!nonNegativeInteger(count) || count !== data.length)) ||
@@ -1710,7 +1767,11 @@ const universalPagination = <T>(
     (hasMore &&
       ((mode === "offset" &&
         (!nonNegativeInteger(nextOffset) ||
-          nextOffset !== (requestedOffset ?? 0) + expectedLimit)) ||
+          nextOffset !== (requestedOffset ?? 0) + expectedLimit ||
+          (nextOffset > UNIVERSAL_EVENTS_MAX_OFFSET &&
+            (!nonNegativeInteger(providerTotal) ||
+              providerTotal <=
+                UNIVERSAL_EVENTS_MAX_OFFSET + expectedLimit)))) ||
         (mode === "cursor" && !storageKeyComponent(nextCursor, 4096)))) ||
     (!hasMore &&
       (mode === "offset"
@@ -1718,7 +1779,6 @@ const universalPagination = <T>(
         : nextCursor !== null && nextCursor !== undefined))
   )
     throw invalidResponse(endpoint, "pagination");
-  const providerTotal = pagination["total"];
   if (providerTotal !== undefined && !nonNegativeInteger(providerTotal))
     throw invalidResponse(endpoint, "pagination-total");
   if (
@@ -2837,7 +2897,7 @@ export async function fetchSharpApiUniversalEventsPage(
   const leagues = filter.leagues;
   if (
     !nonNegativeInteger(offset) ||
-    offset > 5_000 ||
+    offset > UNIVERSAL_EVENTS_MAX_OFFSET ||
     !storageKeyComponent(filter.sport, 64) ||
     filter.sport.includes(",") ||
     (leagues !== undefined &&

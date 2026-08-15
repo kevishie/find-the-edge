@@ -214,6 +214,9 @@ describe("foundation CDK app", () => {
     expect(sharpRendered).toContain("ProviderLandingCatalogWarningAlarm");
     expect(sharpRendered).toContain("ProviderLandingEventsWarningAlarm");
     expect(sharpRendered).toContain("ProviderLandingOddsWarningAlarm");
+    expect(sharpRendered).toContain("ProviderLandingCatalogDiagnosticAlarm");
+    expect(sharpRendered).toContain("ProviderLandingEventsDiagnosticAlarm");
+    expect(sharpRendered).toContain("ProviderLandingOddsDiagnosticAlarm");
     expect(sharpRendered).toContain("FindTheEdge/ProviderLanding");
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       MetricName: "ProviderLandingRows",
@@ -1345,7 +1348,7 @@ describe("foundation CDK app", () => {
     });
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 98);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 101);
     // Every board alarm must carry the dimension its metric is published
     // with. Declared without one, a CloudWatch alarm watches a metric that is
     // never emitted and sits OK forever — which is exactly what shipped on
@@ -1408,7 +1411,7 @@ describe("foundation CDK app", () => {
     const alarms = Object.values(rendered.Resources).filter(
       ({ Type }) => Type === "AWS::CloudWatch::Alarm",
     );
-    expect(alarms.length).toBe(98);
+    expect(alarms.length).toBe(101);
     expect(
       alarms.every((alarm) => alarm.Properties?.AlarmActions?.length === 1),
     ).toBe(true);

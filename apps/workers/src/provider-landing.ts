@@ -53,6 +53,7 @@ export interface ProviderLandingMetricSink {
       | "ProviderLandingRows"
       | "ProviderLandingSweep"
       | "ProviderLandingFailure"
+      | "ProviderLandingDiagnostic"
       | "ProviderLandingTerminalFailure"
       | "ProviderLandingRecovery"
       | "ProviderLandingCompletionAgeSeconds"
@@ -128,12 +129,19 @@ const NON_RETRYABLE_PAUSE_MS = 24 * 60 * 60 * 1_000;
 const SHARP_API_ACCOUNT_HEALTH_KEY = "sharpapi:account:account";
 const MINIMUM_LANDING_ACCOUNT_RESERVE = 250;
 const LANDING_ACCOUNT_RESERVE_FRACTION = 0.5;
-const MAX_VISITED_POSITION_HASHES = 4_096;
+// Durable position claims retain the exact sweep-wide replay/cycle history.
+// The checkpoint keeps only a small recent diagnostic window so its complete
+// DynamoDB item remains safely below the 400 KiB service limit.
+const MAX_VISITED_POSITION_HASHES = 512;
+const FILTER_RETRY_PAUSE_MS = 15 * 60 * 1_000;
 const CATALOG_WRITE_CHUNK_SIZE = 25;
 const MAX_EVENT_PARTITION_EXPECTED_ROWS = 3_000;
 const MAX_EVENT_PARTITION_LEAGUES = 50;
 const MAX_EVENT_PARTITION_QUERY_LENGTH = 3_800;
 const MAX_ACCESSIBLE_EVENT_PARTITION_ROWS = 5_200;
+const MAX_EVENT_PARTITIONS = 2_048;
+const MAX_EVENT_PLAN_BYTES = 300_000;
+const MAX_EVENT_CHECKPOINT_BYTES = 360_000;
 const SAFE_FAILURE_REASONS = new Set([
   "unauthorized",
   "not-entitled",
@@ -141,6 +149,7 @@ const SAFE_FAILURE_REASONS = new Set([
   "provider-request-ambiguous",
   "provider-unavailable",
   "provider-rejected",
+  "provider-filter-rejected",
   "invalid-response",
   "provider-landing-reconciliation-failed",
   "provider-landing-pagination-invalid",
@@ -152,6 +161,8 @@ const SAFE_FAILURE_REASONS = new Set([
   "provider-landing-write-exhausted",
   "provider-landing-account-terminal",
   "provider-landing-event-partition-too-large",
+  "provider-landing-event-plan-capacity",
+  "provider-landing-event-partition-deferred",
 ]);
 
 /** Build a deterministic request plan from SharpAPI's complete reference
@@ -529,6 +540,38 @@ const recoverySweepId = (
 const digest = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
+// DynamoDB map key order is not contractual. Rebuild every partition in one
+// canonical field order before hashing catalog lineage so a semantically
+// identical checkpoint cannot look like a new plan after a read round-trip.
+const eventPlanDigest = (
+  partitions: readonly ProviderLandingEventPartition[],
+) =>
+  digest(
+    partitions.map((partition) => ({
+      sport: partition.sport,
+      ...(partition.leagues ? { leagues: [...partition.leagues] } : {}),
+    })),
+  );
+
+const encodedBytes = (value: unknown) =>
+  new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
+const eventPlanFits = (
+  eventPartitions: readonly ProviderLandingEventPartition[],
+) =>
+  eventPartitions.length <= MAX_EVENT_PARTITIONS &&
+  eventPartitions.reduce(
+    (total, partition) => total + encodedBytes(partition),
+    0,
+  ) <= MAX_EVENT_PLAN_BYTES;
+
+const refinedEventCheckpointFits = (
+  eventPartitions: readonly ProviderLandingEventPartition[],
+  checkpoint: ProviderLandingCheckpoint,
+) =>
+  eventPlanFits(eventPartitions) &&
+  encodedBytes(checkpoint) <= MAX_EVENT_CHECKPOINT_BYTES;
+
 const positionHash = (checkpoint: ProviderLandingCheckpoint) =>
   providerLandingPositionHash(checkpoint, 64);
 
@@ -569,6 +612,17 @@ const withoutTransientPageState = (checkpoint: ProviderLandingCheckpoint) => {
   delete committed.resumeAfter;
   delete committed.pauseScope;
   return committed;
+};
+
+const withoutEventPartitionProgress = (
+  checkpoint: ProviderLandingCheckpoint,
+) => {
+  const completed = { ...checkpoint };
+  delete completed.eventPartitionSourceRows;
+  delete completed.eventDeferredPartitions;
+  delete completed.eventPrimaryTraversalComplete;
+  delete completed.eventPositionRevision;
+  return completed;
 };
 
 const withCurrentPageMetadata = (
@@ -662,6 +716,7 @@ const startCheckpoint = async (
   prior: ProviderLandingCheckpoint | null,
   now: Date,
   eventPartitions?: readonly ProviderLandingEventPartition[],
+  eventCatalogPlanHash?: string,
 ) => {
   if (prior?.status === "running") return prior;
   const position =
@@ -683,12 +738,22 @@ const startCheckpoint = async (
     updatedAt: now.toISOString(),
     counts: zeroCounts(),
     ...(stream === "events" && eventPartitions
-      ? { eventPartitions, eventPartitionSourceRows: 0 }
+      ? {
+          eventPartitions,
+          eventCatalogPlanHash:
+            eventCatalogPlanHash ?? eventPlanDigest(eventPartitions),
+          eventPartitionSourceRows: 0,
+          eventPositionRevision: 0,
+        }
       : {}),
     ...(position
       ? {
           visitedPositionHashes: [
-            providerLandingPositionHash({ stream, position }),
+            providerLandingPositionHash({
+              stream,
+              position,
+              ...(stream === "events" ? { eventPositionRevision: 0 } : {}),
+            }),
           ],
         }
       : {}),
@@ -721,12 +786,30 @@ const restartCheckpointAfterDrift = async (
     | "provider-landing-total-mismatch"
     | "provider-landing-event-plan-migrated"
     | "provider-landing-cursor-rejected"
-    | "provider-landing-event-partition-split",
+    | "provider-landing-event-partition-split"
+    | "provider-landing-event-partition-deferred",
   eventPartitions = checkpoint.eventPartitions,
+  eventCatalogPlanHash = checkpoint.eventCatalogPlanHash,
+  eventDeferredPartitions?: readonly number[],
 ) => {
+  const firstPrimaryEventPartition =
+    checkpoint.stream === "events" && eventPartitions
+      ? eventPartitions.findIndex(
+          (_, index) => !eventDeferredPartitions?.includes(index),
+        )
+      : -1;
+  const eventPrimaryTraversalComplete =
+    checkpoint.stream === "events" &&
+    !!eventDeferredPartitions?.length &&
+    firstPrimaryEventPartition < 0;
   const position =
     checkpoint.stream === "events"
-      ? { partition: 0, offset: 0 }
+      ? {
+          partition: eventPrimaryTraversalComplete
+            ? (eventDeferredPartitions?.[0] ?? 0)
+            : Math.max(firstPrimaryEventPartition, 0),
+          offset: 0,
+        }
       : checkpoint.stream === "odds"
         ? { cursor: INITIAL_CURSOR }
         : null;
@@ -744,7 +827,19 @@ const restartCheckpointAfterDrift = async (
     updatedAt: now.toISOString(),
     counts: zeroCounts(),
     ...(checkpoint.stream === "events" && eventPartitions
-      ? { eventPartitions, eventPartitionSourceRows: 0 }
+      ? {
+          eventPartitions,
+          eventCatalogPlanHash:
+            eventCatalogPlanHash ?? eventPlanDigest(eventPartitions),
+          eventPartitionSourceRows: 0,
+          eventPositionRevision: 0,
+          ...(eventDeferredPartitions?.length
+            ? { eventDeferredPartitions }
+            : {}),
+          ...(eventPrimaryTraversalComplete
+            ? { eventPrimaryTraversalComplete: true as const }
+            : {}),
+        }
       : {}),
     ...(position
       ? {
@@ -752,6 +847,9 @@ const restartCheckpointAfterDrift = async (
             providerLandingPositionHash({
               stream: checkpoint.stream,
               position,
+              ...(checkpoint.stream === "events"
+                ? { eventPositionRevision: 0 }
+                : {}),
             }),
           ],
         }
@@ -767,6 +865,14 @@ const restartCheckpointAfterDrift = async (
       : {}),
     ...(checkpoint.lastCompletedCounts
       ? { lastCompletedCounts: checkpoint.lastCompletedCounts }
+      : {}),
+    ...(eventPrimaryTraversalComplete
+      ? {
+          resumeAfter: new Date(
+            now.getTime() + FILTER_RETRY_PAUSE_MS,
+          ).toISOString(),
+          pauseScope: "stream" as const,
+        }
       : {}),
   };
   await store.putCheckpoint(restarted, priorVersion);
@@ -854,9 +960,382 @@ const quarantineRecord = (
     ...(quarantine.sourceFieldsTruncated
       ? { sourceFieldsTruncated: true }
       : {}),
-    sourceSchemaHash: quarantine.sourceSchemaHash,
+    ...(quarantine.sourceSchemaHash
+      ? { sourceSchemaHash: quarantine.sourceSchemaHash }
+      : {}),
+    ...(quarantine.providerCode
+      ? { providerCode: quarantine.providerCode }
+      : {}),
+    ...(quarantine.httpStatus === undefined
+      ? {}
+      : { httpStatus: quarantine.httpStatus }),
+    ...(quarantine.requestId ? { requestId: quarantine.requestId } : {}),
   }),
 });
+
+const providerFailureRecord = (
+  checkpoint: ProviderLandingCheckpoint,
+  error: SharpApiError,
+  retrievedAt: string,
+): ProviderLandingRecord => {
+  const endpoint =
+    checkpoint.stream === "catalog"
+      ? error.stage?.startsWith("leagues:")
+        ? "leagues"
+        : "sports"
+      : checkpoint.stream;
+  const positionEvidence =
+    checkpoint.position === null
+      ? checkpoint.stream
+      : `${checkpoint.stream}:${positionHash(checkpoint)}`;
+  return {
+    schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+    providerId: "sharpapi",
+    recordType: "quarantine",
+    recordId: `${checkpoint.sweepId}:provider-failure:${digest({
+      positionEvidence,
+      code: error.providerCode ?? error.code,
+      status: error.httpStatus ?? null,
+      requestId: error.requestId ?? null,
+      retrievedAt,
+    }).slice(0, 32)}`,
+    endpoint,
+    pageNumber: checkpoint.counts.pages + 1,
+    sweepId: checkpoint.sweepId,
+    slot: checkpoint.slot,
+    retrievedAt,
+    value: asValue({
+      reason:
+        checkpoint.stream === "events" &&
+        error.providerCode === "invalid_filter" &&
+        error.httpStatus === 400
+          ? "provider-filter-rejected"
+          : "provider-request-rejected",
+      providerCode: error.providerCode ?? error.code,
+      ...(error.httpStatus === undefined
+        ? {}
+        : { httpStatus: error.httpStatus }),
+      ...(error.requestId ? { requestId: error.requestId } : {}),
+      positionHash: positionEvidence,
+    }),
+  };
+};
+
+const persistProviderFailureEvidence = async (
+  store: ProviderLandingStore,
+  checkpoint: ProviderLandingCheckpoint,
+  error: SharpApiError,
+  observedAt: Date,
+) => {
+  await store.putRecords([
+    providerFailureRecord(checkpoint, error, observedAt.toISOString()),
+  ]);
+};
+
+const persistEventCoverageGapEvidence = async (
+  store: ProviderLandingStore,
+  checkpoint: ProviderLandingCheckpoint,
+  providerTotal: number,
+  observedAt: Date,
+) => {
+  const retrievedAt = observedAt.toISOString();
+  const positionEvidence = `events:${positionHash(checkpoint)}`;
+  await store.putRecords([
+    {
+      schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+      providerId: "sharpapi",
+      recordType: "quarantine",
+      recordId: `${checkpoint.sweepId}:coverage-gap:${digest({
+        positionEvidence,
+        providerTotal,
+        retrievedAt,
+      }).slice(0, 32)}`,
+      endpoint: "events",
+      pageNumber: checkpoint.counts.pages + 1,
+      sweepId: checkpoint.sweepId,
+      slot: checkpoint.slot,
+      retrievedAt,
+      value: asValue({
+        reason: "provider-event-partition-too-large",
+        providerTotal,
+        positionHash: positionEvidence,
+      }),
+    },
+  ]);
+};
+
+const persistEventPlanCapacityEvidence = async (
+  store: ProviderLandingStore,
+  checkpoint: ProviderLandingCheckpoint,
+  eventPartitions: readonly ProviderLandingEventPartition[],
+  observedAt: Date,
+) => {
+  const retrievedAt = observedAt.toISOString();
+  const planHash = eventPlanDigest(eventPartitions);
+  await store.putRecords([
+    {
+      schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+      providerId: "sharpapi",
+      recordType: "quarantine",
+      recordId: `${checkpoint.sweepId}:event-plan-capacity:${planHash.slice(0, 32)}`,
+      endpoint: "events",
+      pageNumber: checkpoint.counts.pages + 1,
+      sweepId: checkpoint.sweepId,
+      slot: checkpoint.slot,
+      retrievedAt,
+      value: asValue({
+        reason: "provider-event-plan-capacity",
+        partitionCount: eventPartitions.length,
+        encodedPlanBytes: eventPartitions.reduce(
+          (total, partition) => total + encodedBytes(partition),
+          0,
+        ),
+        planHash,
+      }),
+    },
+  ]);
+};
+
+const refineOrDeferEventPartition = async (input: {
+  store: ProviderLandingStore;
+  checkpoint: ProviderLandingCheckpoint;
+  now: Date;
+  counts: ProviderLandingCheckpoint["counts"];
+  attemptOutcome: "rejected" | "coverage-gap";
+  splitReason:
+    | "provider-landing-event-partition-filter-split"
+    | "provider-landing-event-partition-split";
+  deferredReason:
+    | "provider-filter-rejected"
+    | "provider-landing-event-partition-too-large"
+    | "provider-landing-event-plan-capacity";
+  metrics?: ProviderLandingMetricSink;
+}) => {
+  const { checkpoint } = input;
+  if (
+    checkpoint.stream !== "events" ||
+    checkpoint.status !== "running" ||
+    !checkpoint.position ||
+    !("partition" in checkpoint.position) ||
+    checkpoint.position.offset !== 0 ||
+    !checkpoint.eventPartitions
+  )
+    return null;
+  const partitionIndex = checkpoint.position.partition;
+  const partition = checkpoint.eventPartitions[partitionIndex];
+  if (!partition) return null;
+  if (checkpoint.pendingPage)
+    return restartCheckpointAfterDrift(
+      input.store,
+      checkpoint,
+      input.now,
+      input.metrics,
+      "provider-landing-page-replay-drift",
+    );
+  const retrievedAt = input.now.toISOString();
+  const priorVersion = checkpoint.version;
+  let deferredReason = input.deferredReason;
+  if (partition.leagues && partition.leagues.length > 1) {
+    const midpoint = Math.ceil(partition.leagues.length / 2);
+    const replacements = [
+      { ...partition, leagues: partition.leagues.slice(0, midpoint) },
+      { ...partition, leagues: partition.leagues.slice(midpoint) },
+    ];
+    const eventPartitions = checkpoint.eventPartitions.flatMap(
+      (candidate, index) =>
+        index === partitionIndex ? replacements : [candidate],
+    );
+    const shiftedDeferred = (checkpoint.eventDeferredPartitions ?? []).flatMap(
+      (candidate) =>
+        candidate === partitionIndex
+          ? [partitionIndex, partitionIndex + 1]
+          : [candidate > partitionIndex ? candidate + 1 : candidate],
+    );
+    const eventPositionRevision = (checkpoint.eventPositionRevision ?? 0) + 1;
+    const position = { partition: partitionIndex, offset: 0 };
+    const refined = {
+      ...withoutTransientPageState(checkpoint),
+      version: priorVersion + 1,
+      updatedAt: retrievedAt,
+      counts: input.counts,
+      position,
+      eventPartitions,
+      eventPartitionSourceRows: 0,
+      eventPositionRevision,
+      ...(shiftedDeferred.length > 0
+        ? { eventDeferredPartitions: shiftedDeferred }
+        : {}),
+      visitedPositionHashes: advancePositionHistory(
+        checkpoint.visitedPositionHashes ?? [],
+        providerLandingPositionHash({
+          stream: "events",
+          position,
+          eventPositionRevision,
+        }),
+      ),
+    };
+    delete refined.providerTotal;
+    if (refinedEventCheckpointFits(eventPartitions, refined)) {
+      await input.store.putCheckpoint(refined, priorVersion);
+      input.metrics?.emit("ProviderLandingPage", 1, {
+        stream: "events",
+        outcome: input.attemptOutcome,
+      });
+      input.metrics?.emit("ProviderLandingFailure", 1, {
+        stream: "events",
+        reason: input.splitReason,
+      });
+      return refined;
+    }
+    deferredReason = "provider-landing-event-plan-capacity";
+  }
+  const deferred = [
+    ...(checkpoint.eventDeferredPartitions ?? []).filter(
+      (candidate) => candidate !== partitionIndex,
+    ),
+    partitionIndex,
+  ];
+  const committed = {
+    ...withoutTransientPageState(checkpoint),
+    version: priorVersion + 1,
+    updatedAt: retrievedAt,
+    counts: input.counts,
+    eventPartitionSourceRows: 0,
+    eventDeferredPartitions: deferred,
+  };
+  delete committed.providerTotal;
+  const retryingDeferred = checkpoint.eventPrimaryTraversalComplete === true;
+  const nextPartition = partitionIndex + 1;
+  let advanced: ProviderLandingCheckpoint;
+  if (!retryingDeferred && nextPartition < checkpoint.eventPartitions.length) {
+    const position = { partition: nextPartition, offset: 0 };
+    advanced = {
+      ...committed,
+      status: "running",
+      position,
+      visitedPositionHashes: advancePositionHistory(
+        checkpoint.visitedPositionHashes ?? [],
+        providerLandingPositionHash({
+          stream: "events",
+          position,
+          ...(checkpoint.eventPositionRevision === undefined
+            ? {}
+            : { eventPositionRevision: checkpoint.eventPositionRevision }),
+        }),
+      ),
+    };
+  } else {
+    const existingDeferred = deferred.filter(
+      (candidate) => candidate !== partitionIndex,
+    );
+    const retryQueue = [...existingDeferred, partitionIndex];
+    const position = { partition: retryQueue[0]!, offset: 0 };
+    const eventPositionRevision = (checkpoint.eventPositionRevision ?? 0) + 1;
+    advanced = {
+      ...committed,
+      status: "running",
+      position,
+      eventDeferredPartitions: retryQueue,
+      eventPrimaryTraversalComplete: true,
+      eventPositionRevision,
+      visitedPositionHashes: advancePositionHistory(
+        checkpoint.visitedPositionHashes ?? [],
+        providerLandingPositionHash({
+          stream: "events",
+          position,
+          eventPositionRevision,
+        }),
+      ),
+      ...(retryingDeferred || existingDeferred.length === 0
+        ? {
+            resumeAfter: new Date(
+              input.now.getTime() +
+                (deferredReason === "provider-landing-event-plan-capacity"
+                  ? NON_RETRYABLE_PAUSE_MS
+                  : FILTER_RETRY_PAUSE_MS),
+            ).toISOString(),
+            pauseScope: "stream" as const,
+          }
+        : {}),
+    };
+  }
+  await input.store.putCheckpoint(advanced, priorVersion);
+  input.metrics?.emit("ProviderLandingPage", 1, {
+    stream: "events",
+    outcome: input.attemptOutcome,
+  });
+  input.metrics?.emit("ProviderLandingFailure", 1, {
+    stream: "events",
+    reason: deferredReason,
+  });
+  return advanced;
+};
+
+const deferRejectedEventPartition = async (input: {
+  store: ProviderLandingStore;
+  checkpoint: ProviderLandingCheckpoint;
+  error: SharpApiError;
+  now: Date;
+  metrics?: ProviderLandingMetricSink;
+}) => {
+  const { checkpoint } = input;
+  if (
+    checkpoint.stream !== "events" ||
+    checkpoint.status !== "running" ||
+    !checkpoint.position ||
+    !("partition" in checkpoint.position) ||
+    checkpoint.position.offset !== 0 ||
+    !checkpoint.eventPartitions ||
+    input.error.code !== "provider-rejected" ||
+    input.error.httpStatus !== 400 ||
+    input.error.providerCode !== "invalid_filter" ||
+    !input.error.requestId
+  )
+    return null;
+  await persistProviderFailureEvidence(
+    input.store,
+    checkpoint,
+    input.error,
+    input.now,
+  );
+  if (checkpoint.pendingPage) {
+    const restarted = await restartCheckpointAfterDrift(
+      input.store,
+      checkpoint,
+      input.now,
+      input.metrics,
+      "provider-landing-page-replay-drift",
+    );
+    input.metrics?.emit("ProviderLandingPage", 1, {
+      stream: "events",
+      outcome: "rejected",
+    });
+    input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+      stream: "events",
+      outcome: "observed",
+    });
+    return restarted;
+  }
+  const refined = await refineOrDeferEventPartition({
+    store: input.store,
+    checkpoint,
+    now: input.now,
+    counts: {
+      ...checkpoint.counts,
+      pages: checkpoint.counts.pages + 1,
+    },
+    attemptOutcome: "rejected",
+    splitReason: "provider-landing-event-partition-filter-split",
+    deferredReason: "provider-filter-rejected",
+    ...(input.metrics ? { metrics: input.metrics } : {}),
+  });
+  if (refined)
+    input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+      stream: "events",
+      outcome: "observed",
+    });
+  return refined;
+};
 
 const catalogDue = (
   checkpoint: ProviderLandingCheckpoint | null,
@@ -864,7 +1343,6 @@ const catalogDue = (
   refreshMs: number,
 ) =>
   checkpoint?.status === "running" ||
-  !checkpoint?.eventPartitions ||
   !checkpoint?.lastCompletedAt ||
   now.getTime() - Date.parse(checkpoint.lastCompletedAt) >= refreshMs;
 
@@ -911,26 +1389,50 @@ const runCatalog = async (input: {
   try {
     snapshot = await input.source.fetchCatalog();
   } catch (error) {
-    if (error instanceof SharpApiError && terminalSharpApiCode(error.code))
+    if (error instanceof SharpApiError && terminalSharpApiCode(error.code)) {
+      await persistProviderFailureEvidence(
+        input.store,
+        checkpoint,
+        error,
+        input.now(),
+      );
       await input.accountRate?.terminal(error.code, input.now());
+    }
     if (
       error instanceof SharpApiError &&
       !error.retryable &&
       !["rate-limited", "provider-request-ambiguous"].includes(error.code) &&
       !terminalSharpApiCode(error.code)
     ) {
+      await persistProviderFailureEvidence(
+        input.store,
+        checkpoint,
+        error,
+        input.now(),
+      );
       checkpoint = await pauseCheckpointAfterNonRetryable(
         input.store,
         checkpoint,
         input.now(),
       );
-      throw error;
+      input.metrics?.emit("ProviderLandingFailure", 1, {
+        stream: "catalog",
+        reason: error.code,
+      });
+      return checkpoint;
     }
     if (
       error instanceof SharpApiError &&
       ["rate-limited", "provider-request-ambiguous"].includes(error.code)
     ) {
+      await persistProviderFailureEvidence(
+        input.store,
+        checkpoint,
+        error,
+        input.now(),
+      );
       const priorVersion = checkpoint.version;
+      const accountWidePause = error.code === "rate-limited";
       const resumeAfter =
         error.retryAt ??
         new Date(
@@ -939,15 +1441,16 @@ const runCatalog = async (input: {
               ? DEFAULT_RATE_PAUSE_MS
               : input.refreshMs),
         ).toISOString();
-      input.rateGate.deferUntil(resumeAfter);
-      if (error.code === "rate-limited")
+      if (accountWidePause) {
+        input.rateGate.deferUntil(resumeAfter);
         await input.accountRate?.rateLimited(resumeAfter, input.now());
+      }
       checkpoint = {
         ...checkpoint,
         version: priorVersion + 1,
         updatedAt: input.now().toISOString(),
         resumeAfter,
-        pauseScope: "account",
+        pauseScope: accountWidePause ? "account" : "stream",
       };
       await input.store.putCheckpoint(checkpoint, priorVersion);
       input.metrics?.emit("ProviderLandingFailure", 1, {
@@ -961,6 +1464,14 @@ const runCatalog = async (input: {
   await input.accountRate?.reconcile(2, snapshot.responseMetadata, input.now());
   input.rateGate.observe(snapshot.responseMetadata);
   const eventPartitions = buildSharpApiEventPartitions(snapshot);
+  const eventPlanAvailable = eventPlanFits(eventPartitions);
+  if (!eventPlanAvailable)
+    await persistEventPlanCapacityEvidence(
+      input.store,
+      checkpoint,
+      eventPartitions,
+      input.now(),
+    );
   const sealedPage = {
     positionHash: providerLandingPositionHash(
       { stream: "catalog", position: null },
@@ -972,7 +1483,9 @@ const runCatalog = async (input: {
       quarantines: snapshot.quarantines,
       sourceRows: snapshot.sourceRows,
       providerUpdatedAt: snapshot.providerUpdatedAt ?? null,
-      ...(eventPartitions.length > 0 ? { eventPartitions } : {}),
+      eventPlanHash: eventPlanDigest(eventPartitions),
+      eventPartitionCount: eventPartitions.length,
+      eventPlanAvailable,
     }),
   };
   if (checkpoint.pendingPage) {
@@ -997,7 +1510,7 @@ const runCatalog = async (input: {
       ...(snapshot.providerUpdatedAt
         ? { providerUpdatedAt: snapshot.providerUpdatedAt }
         : {}),
-      eventPartitions,
+      ...(eventPlanAvailable ? { eventPartitions } : {}),
     };
     await input.store.putCheckpoint(checkpoint, priorVersion);
   }
@@ -1111,12 +1624,22 @@ const runCatalog = async (input: {
     lastCompletedSweepId: checkpoint.sweepId,
     lastCompletedAt: completedAt,
     lastCompletedCounts: counts,
-    eventPartitions,
+    ...(eventPlanAvailable ? { eventPartitions } : {}),
     ...(catalogResumeAfter
       ? { resumeAfter: catalogResumeAfter, pauseScope: "account" as const }
       : {}),
   };
   await input.store.putCheckpoint(checkpoint, checkpoint.version - 1);
+  if (!eventPlanAvailable) {
+    input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+      stream: "catalog",
+      outcome: "observed",
+    });
+    input.metrics?.emit("ProviderLandingFailure", 1, {
+      stream: "catalog",
+      reason: "provider-landing-event-plan-capacity",
+    });
+  }
   input.metrics?.emit("ProviderLandingPage", counts.pages, {
     stream: "catalog",
     outcome: "persisted",
@@ -1178,6 +1701,7 @@ const runPagedStream = async (input: {
   rateGate: ReturnType<typeof createRateGate>;
   metrics?: ProviderLandingMetricSink;
   eventPartitions?: readonly ProviderLandingEventPartition[];
+  eventCatalogPlanHash?: string;
 }) => {
   if (!streamDue(input.prior, input.now(), input.refreshMs))
     return input.prior!;
@@ -1187,7 +1711,26 @@ const runPagedStream = async (input: {
     input.prior,
     input.now(),
     input.eventPartitions,
+    input.eventCatalogPlanHash,
   );
+  // Deployed partition-aware checkpoints predate the catalog-plan lineage
+  // field. Bind their already-frozen plan before comparing it with a newer
+  // catalog; otherwise an undefined lineage would look like a catalog change
+  // and replay paid pages from partition zero.
+  if (
+    input.stream === "events" &&
+    checkpoint.eventPartitions &&
+    !checkpoint.eventCatalogPlanHash
+  ) {
+    const priorVersion = checkpoint.version;
+    checkpoint = {
+      ...checkpoint,
+      version: priorVersion + 1,
+      updatedAt: input.now().toISOString(),
+      eventCatalogPlanHash: eventPlanDigest(checkpoint.eventPartitions),
+    };
+    await input.store.putCheckpoint(checkpoint, priorVersion);
+  }
   if (
     input.stream === "events" &&
     input.eventPartitions &&
@@ -1195,8 +1738,9 @@ const runPagedStream = async (input: {
       !checkpoint.position ||
       !("partition" in checkpoint.position) ||
       (checkpoint.pauseScope === "stream" &&
-        JSON.stringify(checkpoint.eventPartitions) !==
-          JSON.stringify(input.eventPartitions)))
+        checkpoint.eventCatalogPlanHash !==
+          (input.eventCatalogPlanHash ??
+            eventPlanDigest(input.eventPartitions))))
   )
     checkpoint = await restartCheckpointAfterDrift(
       input.store,
@@ -1205,21 +1749,7 @@ const runPagedStream = async (input: {
       input.metrics,
       "provider-landing-event-plan-migrated",
       input.eventPartitions,
-    );
-  if (
-    input.stream === "odds" &&
-    checkpoint.status === "running" &&
-    checkpoint.pauseScope === "stream" &&
-    checkpoint.position &&
-    "cursor" in checkpoint.position &&
-    checkpoint.position.cursor !== INITIAL_CURSOR
-  )
-    checkpoint = await restartCheckpointAfterDrift(
-      input.store,
-      checkpoint,
-      input.now(),
-      input.metrics,
-      "provider-landing-cursor-rejected",
+      input.eventCatalogPlanHash ?? eventPlanDigest(input.eventPartitions),
     );
   if (
     checkpoint.resumeAfter &&
@@ -1283,8 +1813,29 @@ const runPagedStream = async (input: {
                 : undefined,
             );
     } catch (error) {
-      if (error instanceof SharpApiError && terminalSharpApiCode(error.code))
+      if (error instanceof SharpApiError && terminalSharpApiCode(error.code)) {
+        await persistProviderFailureEvidence(
+          input.store,
+          checkpoint,
+          error,
+          input.now(),
+        );
         await input.accountRate?.terminal(error.code, input.now());
+      }
+      if (
+        input.stream === "odds" &&
+        error instanceof SharpApiError &&
+        error.code === "provider-rejected" &&
+        checkpoint.position &&
+        "cursor" in checkpoint.position &&
+        checkpoint.position.cursor !== INITIAL_CURSOR
+      )
+        await persistProviderFailureEvidence(
+          input.store,
+          checkpoint,
+          error,
+          input.now(),
+        );
       if (
         input.stream === "odds" &&
         error instanceof SharpApiError &&
@@ -1306,18 +1857,43 @@ const runPagedStream = async (input: {
         !["rate-limited", "provider-request-ambiguous"].includes(error.code) &&
         !terminalSharpApiCode(error.code)
       ) {
+        const deferred = await deferRejectedEventPartition({
+          store: input.store,
+          checkpoint,
+          error,
+          now: input.now(),
+          ...(input.metrics ? { metrics: input.metrics } : {}),
+        });
+        if (deferred) return deferred;
+        await persistProviderFailureEvidence(
+          input.store,
+          checkpoint,
+          error,
+          input.now(),
+        );
         checkpoint = await pauseCheckpointAfterNonRetryable(
           input.store,
           checkpoint,
           input.now(),
         );
-        throw error;
+        input.metrics?.emit("ProviderLandingFailure", 1, {
+          stream: input.stream,
+          reason: error.code,
+        });
+        return checkpoint;
       }
       if (
         error instanceof SharpApiError &&
         ["rate-limited", "provider-request-ambiguous"].includes(error.code)
       ) {
+        await persistProviderFailureEvidence(
+          input.store,
+          checkpoint,
+          error,
+          input.now(),
+        );
         const priorVersion = checkpoint.version;
+        const accountWidePause = error.code === "rate-limited";
         const resumeAfter =
           error.retryAt ??
           new Date(
@@ -1326,15 +1902,16 @@ const runPagedStream = async (input: {
                 ? DEFAULT_RATE_PAUSE_MS
                 : input.refreshMs),
           ).toISOString();
-        input.rateGate.deferUntil(resumeAfter);
-        if (error.code === "rate-limited")
+        if (accountWidePause) {
+          input.rateGate.deferUntil(resumeAfter);
           await input.accountRate?.rateLimited(resumeAfter, input.now());
+        }
         checkpoint = {
           ...checkpoint,
           version: priorVersion + 1,
           updatedAt: input.now().toISOString(),
           resumeAfter,
-          pauseScope: "account",
+          pauseScope: accountWidePause ? "account" : "stream",
         };
         await input.store.putCheckpoint(checkpoint, priorVersion);
         input.metrics?.emit("ProviderLandingFailure", 1, {
@@ -1359,30 +1936,95 @@ const runPagedStream = async (input: {
       input.stream === "events" &&
       page.providerTotal! > MAX_ACCESSIBLE_EVENT_PARTITION_ROWS
     ) {
+      await persistEventCoverageGapEvidence(
+        input.store,
+        checkpoint,
+        page.providerTotal!,
+        input.now(),
+      );
       const partitionIndex =
         checkpoint.position && "partition" in checkpoint.position
           ? checkpoint.position.partition
           : 0;
-      const partition = checkpoint.eventPartitions![partitionIndex]!;
-      const members = partition.leagues;
-      if (!members || members.length === 1)
-        throw new Error("provider-landing-event-partition-too-large");
-      const midpoint = Math.ceil(members.length / 2);
-      const replacement = [
-        { ...partition, leagues: members.slice(0, midpoint) },
-        { ...partition, leagues: members.slice(midpoint) },
-      ];
-      const eventPartitions = checkpoint.eventPartitions!.flatMap(
-        (filter, index) => (index === partitionIndex ? replacement : [filter]),
-      );
-      return restartCheckpointAfterDrift(
-        input.store,
+      const currentOffset =
+        checkpoint.position && "offset" in checkpoint.position
+          ? checkpoint.position.offset
+          : 0;
+      if (currentOffset > 0) {
+        const partition = checkpoint.eventPartitions![partitionIndex]!;
+        const members = partition.leagues;
+        if (members && members.length > 1) {
+          const midpoint = Math.ceil(members.length / 2);
+          const replacements = [
+            { ...partition, leagues: members.slice(0, midpoint) },
+            { ...partition, leagues: members.slice(midpoint) },
+          ];
+          const refinedPlan = checkpoint.eventPartitions!.flatMap(
+            (candidate, index) =>
+              index === partitionIndex ? replacements : [candidate],
+          );
+          if (eventPlanFits(refinedPlan)) {
+            const restarted = await restartCheckpointAfterDrift(
+              input.store,
+              checkpoint,
+              input.now(),
+              input.metrics,
+              "provider-landing-event-partition-split",
+              refinedPlan,
+              checkpoint.eventCatalogPlanHash,
+            );
+            input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+              stream: "events",
+              outcome: "observed",
+            });
+            return restarted;
+          }
+        }
+        const failureReason =
+          members && members.length > 1
+            ? "provider-landing-event-plan-capacity"
+            : "provider-landing-event-partition-too-large";
+        const restarted = await restartCheckpointAfterDrift(
+          input.store,
+          checkpoint,
+          input.now(),
+          input.metrics,
+          "provider-landing-event-partition-deferred",
+          checkpoint.eventPartitions,
+          checkpoint.eventCatalogPlanHash,
+          [partitionIndex],
+        );
+        input.metrics?.emit("ProviderLandingFailure", 1, {
+          stream: "events",
+          reason: failureReason,
+        });
+        input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+          stream: "events",
+          outcome: "observed",
+        });
+        return restarted;
+      }
+      const deferred = await refineOrDeferEventPartition({
+        store: input.store,
         checkpoint,
-        input.now(),
-        input.metrics,
-        "provider-landing-event-partition-split",
-        eventPartitions,
-      );
+        now: input.now(),
+        counts: {
+          ...checkpoint.counts,
+          pages: checkpoint.counts.pages + 1,
+        },
+        attemptOutcome: "coverage-gap",
+        splitReason: "provider-landing-event-partition-split",
+        deferredReason: "provider-landing-event-partition-too-large",
+        ...(input.metrics ? { metrics: input.metrics } : {}),
+      });
+      if (deferred) {
+        input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+          stream: "events",
+          outcome: "observed",
+        });
+        return deferred;
+      }
+      throw new Error("provider-landing-event-partition-too-large");
     }
     const currentPositionHash = positionHash(checkpoint);
     const sealedPage = {
@@ -1471,14 +2113,72 @@ const runPagedStream = async (input: {
         checkpoint.position && "partition" in checkpoint.position
           ? checkpoint.position.partition
           : 0;
+      const nextPrimaryPartition =
+        input.stream === "events"
+          ? checkpoint.eventPartitions!.findIndex(
+              (_, partition) =>
+                partition > currentPartition &&
+                !checkpoint.eventDeferredPartitions?.includes(partition),
+            )
+          : -1;
       if (
         input.stream === "events" &&
-        currentPartition + 1 < checkpoint.eventPartitions!.length
+        checkpoint.eventPrimaryTraversalComplete === true
       ) {
-        const position = { partition: currentPartition + 1, offset: 0 };
+        const remainingDeferred = (
+          checkpoint.eventDeferredPartitions ?? []
+        ).filter((partition) => partition !== currentPartition);
+        if (remainingDeferred.length > 0) {
+          const position = { partition: remainingDeferred[0]!, offset: 0 };
+          const eventPositionRevision =
+            (checkpoint.eventPositionRevision ?? 0) + 1;
+          const nextPositionHash = providerLandingPositionHash({
+            stream: input.stream,
+            position,
+            eventPositionRevision,
+          });
+          const nextCheckpoint = {
+            ...committed,
+            version: priorVersion + 1,
+            status: "running" as const,
+            position,
+            updatedAt,
+            counts,
+            eventPartitionSourceRows: 0,
+            eventDeferredPartitions: remainingDeferred,
+            eventPrimaryTraversalComplete: true as const,
+            eventPositionRevision,
+            visitedPositionHashes: advancePositionHistory(
+              checkpoint.visitedPositionHashes ?? [],
+              nextPositionHash,
+            ),
+          };
+          delete nextCheckpoint.providerTotal;
+          checkpoint = nextCheckpoint;
+        } else {
+          const completedCheckpoint = {
+            ...withoutEventPartitionProgress(committed),
+            version: priorVersion + 1,
+            status: "complete" as const,
+            position: null,
+            updatedAt,
+            counts,
+            lastCompletedSlot: checkpoint.slot,
+            lastCompletedSweepId: checkpoint.sweepId,
+            lastCompletedAt: updatedAt,
+            lastCompletedCounts: counts,
+          };
+          delete completedCheckpoint.providerTotal;
+          checkpoint = completedCheckpoint;
+        }
+      } else if (input.stream === "events" && nextPrimaryPartition >= 0) {
+        const position = { partition: nextPrimaryPartition, offset: 0 };
         const nextPositionHash = providerLandingPositionHash({
           stream: input.stream,
           position,
+          ...(checkpoint.eventPositionRevision === undefined
+            ? {}
+            : { eventPositionRevision: checkpoint.eventPositionRevision }),
         });
         const nextCheckpoint = {
           ...committed,
@@ -1495,9 +2195,46 @@ const runPagedStream = async (input: {
         };
         delete nextCheckpoint.providerTotal;
         checkpoint = nextCheckpoint;
+      } else if (
+        input.stream === "events" &&
+        (checkpoint.eventDeferredPartitions?.length ?? 0) > 0
+      ) {
+        const position = {
+          partition: checkpoint.eventDeferredPartitions![0]!,
+          offset: 0,
+        };
+        const eventPositionRevision =
+          (checkpoint.eventPositionRevision ?? 0) + 1;
+        const nextCheckpoint = {
+          ...committed,
+          version: priorVersion + 1,
+          status: "running" as const,
+          position,
+          updatedAt,
+          counts,
+          eventPartitionSourceRows: 0,
+          eventPrimaryTraversalComplete: true as const,
+          eventPositionRevision,
+          visitedPositionHashes: advancePositionHistory(
+            checkpoint.visitedPositionHashes ?? [],
+            providerLandingPositionHash({
+              stream: input.stream,
+              position,
+              eventPositionRevision,
+            }),
+          ),
+          resumeAfter: new Date(
+            input.now().getTime() + FILTER_RETRY_PAUSE_MS,
+          ).toISOString(),
+          pauseScope: "stream" as const,
+        };
+        delete nextCheckpoint.providerTotal;
+        checkpoint = nextCheckpoint;
       } else {
         const completedCheckpoint = {
-          ...committed,
+          ...(input.stream === "events"
+            ? withoutEventPartitionProgress(committed)
+            : committed),
           version: priorVersion + 1,
           status: "complete" as const,
           position: null,
@@ -1546,6 +2283,10 @@ const runPagedStream = async (input: {
       const nextPositionHash = providerLandingPositionHash({
         stream: input.stream,
         position,
+        ...(input.stream === "events" &&
+        checkpoint.eventPositionRevision !== undefined
+          ? { eventPositionRevision: checkpoint.eventPositionRevision }
+          : {}),
       });
       const visited = checkpoint.visitedPositionHashes ?? [];
       const resumeAfter = input.rateGate.canRequest()
@@ -1693,6 +2434,8 @@ export const runProviderLanding = async (
     });
   } catch (error) {
     failures.push({ stream: "catalog", error });
+    const durableCatalog = await input.store.getCheckpoint("catalog");
+    if (durableCatalog) summary.catalog = durableCatalog;
   }
   const catalogFailure = failures[0]?.error;
   if (accountGlobalProviderFailure(catalogFailure)) {
@@ -1719,11 +2462,23 @@ export const runProviderLanding = async (
       : catalogPrior?.status === "complete"
         ? catalogPrior
         : null;
+  const catalogEventPartitions = completedCatalog
+    ? completedCatalog.eventPartitions
+    : eventsPrior?.eventPartitions;
+  const eventCatalogPlanHash = completedCatalog?.eventPartitions
+    ? eventPlanDigest(completedCatalog.eventPartitions)
+    : completedCatalog
+      ? undefined
+      : (eventsPrior?.eventCatalogPlanHash ??
+        (catalogEventPartitions
+          ? eventPlanDigest(catalogEventPartitions)
+          : undefined));
   const eventPartitions =
-    completedCatalog?.eventPartitions ??
-    (eventsPrior?.status === "running"
+    catalogEventPartitions &&
+    eventsPrior?.eventPartitions &&
+    eventsPrior.eventCatalogPlanHash === eventCatalogPlanHash
       ? eventsPrior.eventPartitions
-      : undefined);
+      : catalogEventPartitions;
   const states: Record<
     Extract<ProviderLandingStream, "events" | "odds">,
     ProviderLandingCheckpoint | null
@@ -1763,7 +2518,10 @@ export const runProviderLanding = async (
           shouldContinue,
           rateGate,
           ...(stream === "events" && eventPartitions
-            ? { eventPartitions }
+            ? {
+                eventPartitions,
+                eventCatalogPlanHash: eventCatalogPlanHash!,
+              }
             : {}),
           ...(input.metrics ? { metrics: input.metrics } : {}),
         });
