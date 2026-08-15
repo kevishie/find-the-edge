@@ -126,10 +126,7 @@ const SAFE_FAILURE_REASONS = new Set([
   "provider-landing-pagination-invalid",
   "provider-landing-pagination-cycle",
   "provider-landing-total-mismatch",
-  "provider-landing-total-drift",
   "provider-landing-total-missing",
-  "provider-landing-generation-drift",
-  "provider-landing-generation-missing",
   "provider-landing-page-replay-drift",
   "provider-landing-catalog-empty",
   "provider-landing-write-exhausted",
@@ -340,6 +337,27 @@ const withoutTransientPageState = (checkpoint: ProviderLandingCheckpoint) => {
   return committed;
 };
 
+const withCurrentPageMetadata = (
+  checkpoint: ProviderLandingCheckpoint,
+  page: SharpApiUniversalPage<
+    SharpApiUniversalEvent | SharpApiUniversalOddsRecord
+  >,
+) => {
+  const current = { ...checkpoint };
+  // SharpAPI's updated_at describes the mutable provider view observed by the
+  // current request, not an immutable pagination snapshot. Likewise, some
+  // cursor feeds (notably /odds) legitimately omit total. Keep the latest
+  // bounded evidence when supplied without turning either optional field into
+  // a liveness prerequisite for a cursor/offset-complete sweep.
+  delete current.providerUpdatedAt;
+  delete current.providerTotal;
+  if (page.providerUpdatedAt)
+    current.providerUpdatedAt = page.providerUpdatedAt;
+  if (page.providerTotal !== undefined)
+    current.providerTotal = page.providerTotal;
+  return current;
+};
+
 const warningRows = (
   records: readonly (SharpApiUniversalEvent | SharpApiUniversalOddsRecord)[],
 ) =>
@@ -457,11 +475,8 @@ const restartCheckpointAfterDrift = async (
   now: Date,
   metrics: ProviderLandingMetricSink | undefined,
   reason:
-    | "provider-landing-generation-drift"
-    | "provider-landing-generation-missing"
     | "provider-landing-page-replay-drift"
     | "provider-landing-pagination-cycle"
-    | "provider-landing-total-drift"
     | "provider-landing-total-missing"
     | "provider-landing-total-mismatch",
 ) => {
@@ -1019,43 +1034,13 @@ const runPagedStream = async (input: {
     }
     await input.accountRate?.reconcile(1, page.responseMetadata, input.now());
     input.rateGate.observe(page.responseMetadata);
-    if (!page.providerUpdatedAt)
-      return restartCheckpointAfterDrift(
-        input.store,
-        checkpoint,
-        input.now(),
-        input.metrics,
-        "provider-landing-generation-missing",
-      );
-    if (page.providerTotal === undefined)
+    if (input.stream === "events" && page.providerTotal === undefined)
       return restartCheckpointAfterDrift(
         input.store,
         checkpoint,
         input.now(),
         input.metrics,
         "provider-landing-total-missing",
-      );
-    if (
-      checkpoint.providerUpdatedAt &&
-      checkpoint.providerUpdatedAt !== page.providerUpdatedAt
-    )
-      return restartCheckpointAfterDrift(
-        input.store,
-        checkpoint,
-        input.now(),
-        input.metrics,
-        "provider-landing-generation-drift",
-      );
-    if (
-      checkpoint.providerTotal !== undefined &&
-      checkpoint.providerTotal !== page.providerTotal
-    )
-      return restartCheckpointAfterDrift(
-        input.store,
-        checkpoint,
-        input.now(),
-        input.metrics,
-        "provider-landing-total-drift",
       );
     const currentPositionHash = positionHash(checkpoint);
     const sealedPage = {
@@ -1077,24 +1062,17 @@ const runPagedStream = async (input: {
     } else {
       const priorVersion = checkpoint.version;
       checkpoint = {
-        ...checkpoint,
+        ...withCurrentPageMetadata(checkpoint, page),
         version: priorVersion + 1,
         updatedAt: input.now().toISOString(),
         pendingPage: sealedPage,
-        ...(checkpoint.providerUpdatedAt || !page.providerUpdatedAt
-          ? {}
-          : { providerUpdatedAt: page.providerUpdatedAt }),
-        ...(checkpoint.providerTotal !== undefined ||
-        page.providerTotal === undefined
-          ? {}
-          : { providerTotal: page.providerTotal }),
       };
       await input.store.putCheckpoint(checkpoint, priorVersion);
     }
     const pageNumber = checkpoint.counts.pages + 1;
     if (
-      checkpoint.counts.sourceRows + page.sourceRows >
-      (checkpoint.providerTotal ?? page.providerTotal)
+      page.providerTotal !== undefined &&
+      checkpoint.counts.sourceRows + page.sourceRows > page.providerTotal
     )
       return restartCheckpointAfterDrift(
         input.store,
@@ -1124,8 +1102,11 @@ const runPagedStream = async (input: {
       throw new Error("provider-landing-reconciliation-failed");
     const updatedAt = input.now().toISOString();
     const priorVersion = checkpoint.version;
-    const effectiveTotal = checkpoint.providerTotal ?? page.providerTotal;
-    const committed = withoutTransientPageState(checkpoint);
+    const effectiveTotal = page.providerTotal;
+    const committed = withCurrentPageMetadata(
+      withoutTransientPageState(checkpoint),
+      page,
+    );
     if (!page.hasMore) {
       if (effectiveTotal !== undefined && counts.sourceRows !== effectiveTotal)
         return restartCheckpointAfterDrift(

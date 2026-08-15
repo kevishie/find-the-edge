@@ -705,7 +705,7 @@ describe("SharpAPI activation boundary", () => {
       "cursor",
       "limit",
     ]);
-    expect(urls[3]?.searchParams.get("limit")).toBe("25");
+    expect(urls[3]?.searchParams.get("limit")).toBe("200");
     expect(urls[3]?.searchParams.get("cursor")).toBe("cursor-1");
   });
 
@@ -951,6 +951,41 @@ describe("SharpAPI activation boundary", () => {
       expect(() =>
         parseSharpApiUniversalEventsPage({ data: [], pagination }, retrievedAt),
       ).toThrow("invalid-response");
+  });
+
+  it("accepts the provider's 200-row odds maximum and rejects an oversized page", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    const rows = Array.from({ length: 200 }, (_, index) =>
+      universalOddsRow({ id: `price-${index}` }),
+    );
+    expect(
+      parseSharpApiUniversalOddsPage(
+        {
+          data: rows,
+          pagination: {
+            limit: 200,
+            count: 200,
+            has_more: true,
+            next_cursor: "next",
+          },
+        },
+        retrievedAt,
+      ).records,
+    ).toHaveLength(200);
+    expect(() =>
+      parseSharpApiUniversalOddsPage(
+        {
+          data: [...rows, universalOddsRow({ id: "price-200" })],
+          pagination: {
+            limit: 200,
+            count: 201,
+            has_more: true,
+            next_cursor: "next",
+          },
+        },
+        retrievedAt,
+      ),
+    ).toThrow(expect.objectContaining({ stage: "universal-odds:page" }));
   });
 
   it("accepts only storage-safe bounded universal cursors", async () => {

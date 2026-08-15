@@ -724,7 +724,7 @@ describe("universal provider landing", () => {
       now: () => new Date("2026-08-14T20:00:05.000Z"),
     });
     expect(result.events?.sweepId).toContain("events:recovery-");
-    expect(store.checkpoints.get("events")).toMatchObject({
+    expect(result.events).toMatchObject({
       status: "running",
       position: { offset: 0 },
       counts: { pages: 0 },
@@ -732,7 +732,7 @@ describe("universal provider landing", () => {
     expect(store.checkpoints.get("events")?.pendingPage).toBeUndefined();
   });
 
-  it("abandons and restarts provider generation drift between event pages", async () => {
+  it("continues across mutable provider generations and records the terminal observation", async () => {
     const store = new MemoryLandingStore();
     const fetchEvents = vi
       .fn<ProviderLandingSource["fetchEvents"]>()
@@ -756,11 +756,12 @@ describe("universal provider landing", () => {
       now: () => new Date("2026-08-14T20:02:00.000Z"),
       eventPageBudget: 2,
     });
-    expect(result.events?.sweepId).toContain("events:recovery-");
-    expect(store.checkpoints.get("events")).toMatchObject({
-      status: "running",
-      counts: { pages: 0 },
-      position: { offset: 0 },
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+    expect(result.events).toMatchObject({
+      status: "complete",
+      counts: { pages: 2, sourceRows: 2, landedRows: 2 },
+      providerTotal: 2,
+      providerUpdatedAt: "2026-08-14T20:01:00.000Z",
     });
   });
 
@@ -1042,7 +1043,7 @@ describe("universal provider landing", () => {
     ).toBeUndefined();
   });
 
-  it("restarts events without publishing completion when generation metadata is missing", async () => {
+  it("completes events when optional generation metadata is absent", async () => {
     const store = new MemoryLandingStore();
     const missingGeneration = { ...eventPage([event("event-1")]) };
     delete missingGeneration.providerUpdatedAt;
@@ -1056,23 +1057,20 @@ describe("universal provider landing", () => {
       now: () => new Date("2026-08-14T20:00:05.000Z"),
     });
     expect(result.events).toMatchObject({
-      status: "running",
-      position: { offset: 0 },
-      counts: { pages: 0 },
+      status: "complete",
+      position: null,
+      counts: { pages: 1, sourceRows: 1, landedRows: 1 },
       startedAt: "2026-08-14T20:00:05.000Z",
     });
-    expect(result.events?.lastCompletedAt).toBeUndefined();
-    expect(emit).toHaveBeenCalledWith("ProviderLandingFailure", 1, {
-      stream: "events",
-      reason: "provider-landing-generation-missing",
-    });
-    expect(emit).toHaveBeenCalledWith("ProviderLandingRecovery", 1, {
-      stream: "events",
-      outcome: "restart",
-    });
+    expect(result.events?.lastCompletedAt).toBe("2026-08-14T20:00:05.000Z");
+    expect(emit).not.toHaveBeenCalledWith(
+      "ProviderLandingFailure",
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
-  it("restarts odds without publishing completion when provider total is missing", async () => {
+  it("completes cursor-paginated odds when provider total is absent", async () => {
     const store = new MemoryLandingStore();
     const missingTotal = { ...oddsPage([odds("price-1")]) };
     delete missingTotal.providerTotal;
@@ -1084,11 +1082,31 @@ describe("universal provider landing", () => {
       now: () => new Date("2026-08-14T20:00:05.000Z"),
     });
     expect(result.odds).toMatchObject({
-      status: "running",
-      position: { cursor: "__initial__" },
-      counts: { pages: 0 },
+      status: "complete",
+      position: null,
+      counts: { pages: 1, sourceRows: 1, landedRows: 1 },
     });
-    expect(result.odds?.lastCompletedAt).toBeUndefined();
+    expect(result.odds?.lastCompletedAt).toBe("2026-08-14T20:00:05.000Z");
+    expect(result.odds?.providerTotal).toBeUndefined();
+  });
+
+  it("refuses to publish an offset-paginated event sweep without its denominator", async () => {
+    const store = new MemoryLandingStore();
+    const missingTotal = { ...eventPage([event("event-1")]) };
+    delete missingTotal.providerTotal;
+    const result = await runProviderLanding({
+      source: source({
+        fetchEvents: vi.fn(() => Promise.resolve(missingTotal)),
+      }),
+      store,
+      now: () => new Date("2026-08-14T20:00:05.000Z"),
+    });
+    expect(result.events).toMatchObject({
+      status: "running",
+      position: { offset: 0 },
+      counts: { pages: 0, sourceRows: 0, landedRows: 0 },
+    });
+    expect(result.events?.lastCompletedAt).toBeUndefined();
   });
 
   it("seals a fetched page and self-heals a changed crash replay", async () => {

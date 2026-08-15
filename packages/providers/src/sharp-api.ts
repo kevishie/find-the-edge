@@ -1278,7 +1278,7 @@ const universalPageEnvelope = (
   assertProviderEnvelope(input, endpoint);
   if (
     !Array.isArray(input["data"]) ||
-    input["data"].length > (endpoint === "universal-events" ? 200 : 25) ||
+    input["data"].length > 200 ||
     !record(input["pagination"]) ||
     typeof input["pagination"]["has_more"] !== "boolean"
   )
@@ -1607,7 +1607,7 @@ const universalPagination = <T>(
   const nextOffset = pagination["next_offset"];
   const nextCursor = pagination["next_cursor"];
   const endpoint = mode === "offset" ? "universal-events" : "universal-odds";
-  const expectedLimit = mode === "offset" ? 200 : 25;
+  const expectedLimit = 200;
   const count = pagination["count"];
   const declaredLimit = pagination["limit"];
   const declaredOffset = pagination["offset"];
@@ -2802,7 +2802,7 @@ export async function fetchSharpApiUniversalOddsPage(
 ): Promise<SharpApiUniversalPage<SharpApiUniversalOddsRecord>> {
   if (cursor !== undefined && !storageKeyComponent(cursor, 4096))
     throw new SharpApiError("configuration");
-  const query = new URLSearchParams({ limit: "25" });
+  const query = new URLSearchParams({ limit: "200" });
   if (cursor) query.set("cursor", cursor);
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
   try {
