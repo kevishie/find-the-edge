@@ -662,12 +662,14 @@ describe("SharpAPI activation boundary", () => {
         JSON.stringify({
           data: [],
           pagination: { has_more: false, next_offset: null, total: 200 },
+          updated_at: "2026-08-14T20:00:00.123456789Z",
         }),
       ),
       new Response(
         JSON.stringify({
           data: [],
           pagination: { has_more: false, next_cursor: null, next_offset: null },
+          updated_at: "2026-08-14T20:00:00.123456789Z",
         }),
       ),
     ];
@@ -677,6 +679,7 @@ describe("SharpAPI activation boundary", () => {
     await fetchSharpApiCatalog("secret", fetcher);
     const events = await fetchSharpApiUniversalEventsPage(
       "secret",
+      { sport: "tennis", leagues: ["atp", "wta"] },
       200,
       fetcher,
     );
@@ -697,7 +700,12 @@ describe("SharpAPI activation boundary", () => {
         .map(({ pathname }) => pathname)
         .sort(),
     ).toEqual(["/api/v1/leagues", "/api/v1/sports"]);
+    expect(
+      urls.slice(0, 2).map((url) => url.searchParams.get("include_empty")),
+    ).toEqual(["true", "true"]);
     expect(urls[2]?.pathname).toBe("/api/v1/events");
+    expect(urls[2]?.searchParams.get("sport")).toBe("tennis");
+    expect(urls[2]?.searchParams.get("league")).toBe("atp,wta");
     expect(urls[2]?.searchParams.get("offset")).toBe("200");
     expect(events.requestedOffset).toBe(200);
     expect(urls[3]?.pathname).toBe("/api/v1/odds");
@@ -707,6 +715,99 @@ describe("SharpAPI activation boundary", () => {
     ]);
     expect(urls[3]?.searchParams.get("limit")).toBe("200");
     expect(urls[3]?.searchParams.get("cursor")).toBe("cursor-1");
+  });
+
+  it("uses compound catalog identity and quarantines league IDs the documented filter cannot represent", () => {
+    const parsed = parseSharpApiLeaguesCatalog(
+      {
+        data: [
+          {
+            id: "shared_slug",
+            display_name: "Shared Football",
+            sport: "football",
+            event_count: 2,
+            live_count: 0,
+          },
+          {
+            id: "shared_slug",
+            display_name: "Shared Soccer",
+            sport: "soccer",
+            event_count: 3,
+            live_count: 0,
+          },
+          {
+            id: "world_championships,_mens_singles",
+            display_name: "World Championships, Men's Singles",
+            sport: "olympics",
+            event_count: 1,
+            live_count: 0,
+          },
+          {
+            id: "openapi_name_shape",
+            name: "OpenAPI Name Shape",
+            sport: "tennis",
+            event_count: 0,
+            live_count: 0,
+          },
+        ],
+        updated_at: "2026-08-15T12:00:00.123456789Z",
+      },
+      "2026-08-15T12:00:01.000Z" as never,
+    );
+    expect(
+      parsed.leagues.map(({ providerSportId }) => providerSportId),
+    ).toEqual(["football", "soccer", "tennis"]);
+    expect(parsed.leagues[2]?.displayName).toBe("OpenAPI Name Shape");
+    expect(parsed.quarantines).toEqual([
+      expect.objectContaining({
+        providerRecordId: "world_championships,_mens_singles",
+        reason: "unrepresentable-filter-id",
+      }),
+    ]);
+  });
+
+  it("rejects event requests outside SharpAPI's documented league and offset contract before dispatch", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    for (const [filter, offset] of [
+      [{ sport: "" }, 0],
+      [{ sport: "tennis", leagues: ["atp", "atp"] }, 0],
+      [
+        {
+          sport: "tennis",
+          leagues: Array.from({ length: 51 }, (_, index) => `league-${index}`),
+        },
+        0,
+      ],
+      [{ sport: "tennis", leagues: ["atp"] }, 5_001],
+    ] as const)
+      await expect(
+        fetchSharpApiUniversalEventsPage("secret", filter, offset, fetcher),
+      ).rejects.toMatchObject({ code: "configuration" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("retains stable provider error codes without matching prose", async () => {
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "validation_error",
+              message: "wording may change",
+            },
+          }),
+          { status: 400 },
+        ),
+      ),
+    );
+    await expect(
+      fetchSharpApiUniversalOddsPage("secret", "opaque-cursor", fetcher),
+    ).rejects.toMatchObject({
+      code: "provider-rejected",
+      providerCode: "validation_error",
+      httpStatus: 400,
+      stage: "universal-odds:http-400",
+    });
   });
 
   it("uses longer bounded timeouts only for universal acquisition calls", async () => {
@@ -730,12 +831,14 @@ describe("SharpAPI activation boundary", () => {
         JSON.stringify({
           data: [],
           pagination: { has_more: false, next_offset: null, total: 0 },
+          updated_at: "2026-08-14T20:00:00.123456789Z",
         }),
       ),
       new Response(
         JSON.stringify({
           data: [],
           pagination: { has_more: false, next_cursor: null },
+          updated_at: "2026-08-14T20:00:00.123456789Z",
         }),
       ),
       new Response(
@@ -754,7 +857,12 @@ describe("SharpAPI activation boundary", () => {
     );
     try {
       await fetchSharpApiCatalog("secret", fetcher);
-      await fetchSharpApiUniversalEventsPage("secret", 0, fetcher);
+      await fetchSharpApiUniversalEventsPage(
+        "secret",
+        { sport: "tennis", leagues: ["atp"] },
+        0,
+        fetcher,
+      );
       await fetchSharpApiUniversalOddsPage("secret", undefined, fetcher);
       await fetchSharpApiAccount("secret", fetcher);
       expect(timeout.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([
@@ -836,6 +944,7 @@ describe("SharpAPI activation boundary", () => {
     const malformed = new Uint8Array([0xc3, 0x28]);
     const streamed = await fetchSharpApiUniversalEventsPage(
       "secret",
+      { sport: "tennis", leagues: ["atp"] },
       0,
       vi.fn<typeof fetch>(() => Promise.resolve(new Response(malformed))),
     ).catch((error: unknown) => error);
@@ -853,6 +962,7 @@ describe("SharpAPI activation boundary", () => {
     } as unknown as Response;
     const fallback = await fetchSharpApiUniversalEventsPage(
       "secret",
+      { sport: "tennis", leagues: ["atp"] },
       0,
       vi.fn<typeof fetch>(() => Promise.resolve(fallbackResponse)),
     ).catch((error: unknown) => error);
@@ -937,6 +1047,70 @@ describe("SharpAPI activation boundary", () => {
         200,
       ),
     ).toMatchObject({ requestedOffset: 200, nextOffset: 400 });
+  });
+
+  it("accepts SharpAPI's documented null empty Events page", () => {
+    expect(
+      parseSharpApiUniversalEventsPage(
+        {
+          data: null,
+          pagination: {
+            limit: 200,
+            offset: 0,
+            count: 0,
+            total: 0,
+            has_more: false,
+            next_offset: null,
+          },
+          updated_at: "2026-08-14T20:00:00.123456789Z",
+        },
+        "2026-08-14T20:00:01.000Z" as never,
+      ),
+    ).toMatchObject({
+      records: [],
+      quarantines: [],
+      sourceRows: 0,
+      providerTotal: 0,
+      providerUpdatedAt: "2026-08-14T20:00:00.123456789Z",
+      hasMore: false,
+    });
+  });
+
+  it("requires SharpAPI's documented updated_at on fetched universal successes", async () => {
+    const response = () =>
+      Promise.resolve(
+        Response.json({
+          data: null,
+          pagination: {
+            count: 0,
+            total: 0,
+            has_more: false,
+            next_offset: null,
+            next_cursor: null,
+          },
+        }),
+      );
+    await expect(
+      fetchSharpApiUniversalEventsPage(
+        "secret",
+        { sport: "tennis" },
+        0,
+        vi.fn<typeof fetch>(response),
+      ),
+    ).rejects.toMatchObject({
+      code: "invalid-response",
+      stage: "universal-events:updated-at-missing",
+    });
+    await expect(
+      fetchSharpApiUniversalOddsPage(
+        "secret",
+        undefined,
+        vi.fn<typeof fetch>(response),
+      ),
+    ).rejects.toMatchObject({
+      code: "invalid-response",
+      stage: "universal-odds:updated-at-missing",
+    });
   });
 
   it("rejects unsafe-integer universal pagination metadata", () => {
@@ -1046,9 +1220,10 @@ describe("SharpAPI activation boundary", () => {
       rowJson("precision-too-large", "123456789012345678901234567890123456789"),
     ].join(
       ",",
-    )}],"pagination":{"has_more":false,"next_offset":null,"total":5}}`;
+    )}],"pagination":{"has_more":false,"next_offset":null,"total":5},"updated_at":"2026-08-14T20:00:00.123456789Z"}`;
     const page = await fetchSharpApiUniversalEventsPage(
       "secret",
+      { sport: "tennis", leagues: ["atp"] },
       0,
       vi.fn<typeof fetch>(() => Promise.resolve(new Response(body))),
     );
@@ -1112,7 +1287,7 @@ describe("SharpAPI activation boundary", () => {
             )},${fetchedRowJson(
               "exact-source",
               "1.87000000000001",
-            )}],"pagination":{"has_more":false,"next_cursor":null,"total":2}}`,
+            )}],"pagination":{"has_more":false,"next_cursor":null,"total":2},"updated_at":"2026-08-14T20:00:00.123456789Z"}`,
           ),
         ),
       ),
@@ -1455,7 +1630,7 @@ describe("SharpAPI activation boundary", () => {
     ]);
   });
 
-  it("rejects cross-generation or incoherent timestamped catalog snapshots", async () => {
+  it("requires timestamped coherent catalogs without treating response emission times as a shared generation", async () => {
     const catalogFetcher = (
       sportUpdatedAt: string | undefined,
       leagueUpdatedAt: string | undefined,
@@ -1503,9 +1678,8 @@ describe("SharpAPI activation boundary", () => {
           ["atp"],
         ),
       ),
-    ).rejects.toMatchObject({
-      code: "invalid-response",
-      stage: "leagues:catalog-generation",
+    ).resolves.toMatchObject({
+      providerUpdatedAt: "2026-08-14T20:00:00.000999Z",
     });
     const nanosecondGeneration = "2026-08-14T20:00:00.000984217Z";
     await expect(
@@ -1536,13 +1710,18 @@ describe("SharpAPI activation boundary", () => {
         "secret",
         catalogFetcher(firstGeneration, "2026-08-14T20:00:01.000Z", ["atp"]),
       ),
-    ).rejects.toThrow("invalid-response");
+    ).resolves.toMatchObject({
+      providerUpdatedAt: "2026-08-14T20:00:01.000Z",
+    });
     await expect(
       fetchSharpApiCatalog(
         "secret",
         catalogFetcher(firstGeneration, firstGeneration, ["wta"]),
       ),
-    ).rejects.toThrow("invalid-response");
+    ).resolves.toMatchObject({
+      sports: [expect.objectContaining({ providerLeagueIds: ["wta"] })],
+      leagues: [expect.objectContaining({ providerLeagueId: "atp" })],
+    });
     await expect(
       fetchSharpApiCatalog(
         "secret",
@@ -1717,6 +1896,42 @@ describe("SharpAPI activation boundary", () => {
     });
     expect(calls).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["documented retryAfter seconds", { retryAfter: 3 }, 3_000],
+    ["OpenAPI retry_after epoch milliseconds", { retry_after: 0 }, 4_000],
+  ])(
+    "uses bounded %s from the 429 error envelope",
+    async (_label, fields, delay) => {
+      const before = Date.now();
+      const bodyFields =
+        "retry_after" in fields ? { retry_after: before + delay } : fields;
+      const error = await fetchSharpApiUniversalOddsPage(
+        "secret",
+        undefined,
+        vi.fn<typeof fetch>(() =>
+          Promise.resolve(
+            Response.json(
+              {
+                error: {
+                  code: "rate_limited",
+                  message: "prose is not parsed",
+                  ...bodyFields,
+                },
+              },
+              { status: 429 },
+            ),
+          ),
+        ),
+      ).catch((value: unknown) => value);
+      const after = Date.now();
+      expect(error).toMatchObject({ code: "rate-limited", retryable: true });
+      if (!(error instanceof SharpApiError) || !error.retryAt)
+        throw new Error("expected bounded retry timestamp");
+      expect(Date.parse(error.retryAt)).toBeGreaterThanOrEqual(before + delay);
+      expect(Date.parse(error.retryAt)).toBeLessThanOrEqual(after + delay);
+    },
+  );
 
   it("keeps valid siblings while failing closed on inactive ambiguity", () => {
     const page = parseSharpApiOddsPage(

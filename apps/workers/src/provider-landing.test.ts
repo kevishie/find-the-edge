@@ -16,6 +16,7 @@ import { SharpApiError } from "@find-the-edge/providers";
 import { createHash } from "node:crypto";
 
 import {
+  buildSharpApiEventPartitions,
   runProviderLanding,
   SharedSharpApiAccountRateCoordinator,
   type ProviderLandingSource,
@@ -201,6 +202,384 @@ const saturatedCompactOddsHistory = (
 ];
 
 describe("universal provider landing", () => {
+  it("derives bounded event filters from every catalog league without a sport allowlist", () => {
+    const leagues = [
+      ["mlb", "baseball", 900],
+      ["nfl", "football", 1_500],
+      ["usa_-_major_league_soccer", "soccer", 700],
+      ["atp", "tennis", 1_100],
+      ["zero_season", "rugby_union", 0],
+    ].map(([providerLeagueId, providerSportId, eventCount]) => ({
+      providerLeagueId: providerLeagueId as string,
+      displayName: providerLeagueId as string,
+      providerSportId: providerSportId as string,
+      eventCount: eventCount as number,
+      liveCount: 0,
+    }));
+    const sports = leagues.map(
+      ({ providerLeagueId, providerSportId, eventCount }) => ({
+        providerSportId,
+        displayName: providerSportId,
+        eventCount,
+        liveCount: 0,
+        providerLeagueIds: [providerLeagueId],
+      }),
+    );
+    sports.push({
+      providerSportId: "olympics",
+      displayName: "olympics",
+      eventCount: 1,
+      liveCount: 0,
+      providerLeagueIds: ["world_championships,_mens_singles"],
+    });
+    const partitions = buildSharpApiEventPartitions({ sports, leagues });
+    expect(partitions.map(({ sport }) => sport).sort()).toEqual(
+      sports.map(({ providerSportId }) => providerSportId).sort(),
+    );
+    expect(
+      partitions.every(({ sport, leagues: members }) => {
+        const query = new URLSearchParams({ sport });
+        if (members) query.set("league", members.join(","));
+        return (members?.length ?? 0) <= 50 && query.toString().length <= 3_800;
+      }),
+    ).toBe(true);
+    expect(partitions).toContainEqual({ sport: "olympics" });
+  });
+
+  it("unions sequential sport and league catalogs without dropping a newly listed league", () => {
+    expect(
+      buildSharpApiEventPartitions({
+        sports: [
+          {
+            providerSportId: "soccer",
+            displayName: "Soccer",
+            eventCount: 4_000,
+            liveCount: 0,
+            providerLeagueIds: ["league-a"],
+          },
+        ],
+        leagues: [
+          {
+            providerLeagueId: "league-a",
+            displayName: "League A",
+            providerSportId: "soccer",
+            eventCount: 2_000,
+            liveCount: 0,
+          },
+          {
+            providerLeagueId: "league-b",
+            displayName: "League B",
+            providerSportId: "soccer",
+            eventCount: 2_000,
+            liveCount: 0,
+          },
+        ],
+      }),
+    ).toEqual([
+      { sport: "soccer", leagues: ["league-a"] },
+      { sport: "soccer", leagues: ["league-b"] },
+    ]);
+  });
+
+  it("reconciles and completes catalog-derived event partitions independently", async () => {
+    const store = new MemoryLandingStore();
+    const snapshot = catalog({
+      sports: [
+        {
+          providerSportId: "tennis",
+          displayName: "Tennis",
+          eventCount: 3_001,
+          liveCount: 0,
+          providerLeagueIds: ["atp", "wta"],
+        },
+      ],
+      leagues: [
+        {
+          providerLeagueId: "atp",
+          displayName: "ATP",
+          providerSportId: "tennis",
+          eventCount: 3_000,
+          liveCount: 0,
+        },
+        {
+          providerLeagueId: "wta",
+          displayName: "WTA",
+          providerSportId: "tennis",
+          eventCount: 1,
+          liveCount: 0,
+        },
+      ],
+      sourceRows: 3,
+    });
+    const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>((filter) =>
+      Promise.resolve(
+        eventPage([event(`event-${filter.leagues?.[0]}`)], {
+          providerTotal: 1,
+        }),
+      ),
+    );
+    const result = await runProviderLanding({
+      source: source({
+        fetchCatalog: vi.fn(() => Promise.resolve(snapshot)),
+        fetchEvents,
+        fetchOdds: vi.fn(() => Promise.resolve(oddsPage([]))),
+      }),
+      store,
+      now: () => new Date("2026-08-15T12:00:00.000Z"),
+    });
+    expect(result.catalog?.eventPartitions).toEqual([
+      { sport: "tennis", leagues: ["atp"] },
+      { sport: "tennis", leagues: ["wta"] },
+    ]);
+    expect(fetchEvents.mock.calls).toEqual([
+      [{ sport: "tennis", leagues: ["atp"] }, 0],
+      [{ sport: "tennis", leagues: ["wta"] }, 0],
+    ]);
+    expect(result.events).toMatchObject({
+      status: "complete",
+      eventPartitions: [
+        { sport: "tennis", leagues: ["atp"] },
+        { sport: "tennis", leagues: ["wta"] },
+      ],
+      counts: {
+        pages: 2,
+        sourceRows: 2,
+        landedRows: 2,
+        quarantinedRows: 0,
+      },
+    });
+    expect(result.events?.providerTotal).toBeUndefined();
+  });
+
+  it("splits a live event partition that exceeds the documented offset reach", async () => {
+    const store = new MemoryLandingStore();
+    const snapshot = catalog({
+      sports: [
+        {
+          providerSportId: "tennis",
+          displayName: "Tennis",
+          eventCount: 4_000,
+          liveCount: 0,
+          providerLeagueIds: ["atp", "wta"],
+        },
+      ],
+      leagues: [
+        {
+          providerLeagueId: "atp",
+          displayName: "ATP",
+          providerSportId: "tennis",
+          eventCount: 1_500,
+          liveCount: 0,
+        },
+        {
+          providerLeagueId: "wta",
+          displayName: "WTA",
+          providerSportId: "tennis",
+          eventCount: 1_500,
+          liveCount: 0,
+        },
+      ],
+      sourceRows: 3,
+    });
+    const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>((filter) =>
+      Promise.resolve(
+        filter.leagues?.length === 2
+          ? eventPage([], {
+              hasMore: true,
+              nextOffset: 200,
+              providerTotal: 5_300,
+            })
+          : eventPage([event(`event-${filter.leagues?.[0]}`)], {
+              providerTotal: 1,
+            }),
+      ),
+    );
+    const input = {
+      source: source({
+        fetchCatalog: vi.fn(() => Promise.resolve(snapshot)),
+        fetchEvents,
+        fetchOdds: vi.fn(() => Promise.resolve(oddsPage([]))),
+      }),
+      store,
+      now: () => new Date("2026-08-15T12:00:00.000Z"),
+    };
+    const first = await runProviderLanding(input);
+    expect(first.events).toMatchObject({
+      status: "running",
+      eventPartitions: [
+        { sport: "tennis", leagues: ["atp"] },
+        { sport: "tennis", leagues: ["wta"] },
+      ],
+      counts: { pages: 0, sourceRows: 0 },
+    });
+    const second = await runProviderLanding(input);
+    expect(second.events).toMatchObject({
+      status: "complete",
+      counts: { pages: 2, sourceRows: 2 },
+    });
+    expect(fetchEvents.mock.calls).toEqual([
+      [{ sport: "tennis", leagues: ["atp", "wta"] }, 0],
+      [{ sport: "tennis", leagues: ["atp"] }, 0],
+      [{ sport: "tennis", leagues: ["wta"] }, 0],
+    ]);
+  });
+
+  it("restarts a rejected non-initial odds cursor without a 24-hour stream pause", async () => {
+    const store = new MemoryLandingStore();
+    const fetchOdds = vi
+      .fn<ProviderLandingSource["fetchOdds"]>()
+      .mockResolvedValueOnce(
+        oddsPage([odds("price-1")], {
+          hasMore: true,
+          nextCursor: "stale-cursor",
+        }),
+      )
+      .mockRejectedValueOnce(
+        new SharpApiError(
+          "provider-rejected",
+          false,
+          undefined,
+          "universal-odds:http-400",
+          "validation_error",
+          400,
+        ),
+      )
+      .mockResolvedValueOnce(oddsPage([odds("price-fresh")]));
+    const input = {
+      source: source({ fetchOdds }),
+      store,
+      now: () => new Date("2026-08-15T12:00:00.000Z"),
+      oddsPageBudget: 1,
+    };
+    await runProviderLanding(input);
+    const restarted = await runProviderLanding(input);
+    expect(restarted.odds).toMatchObject({
+      status: "running",
+      position: { cursor: "__initial__" },
+    });
+    expect(restarted.odds?.resumeAfter).toBeUndefined();
+    const completed = await runProviderLanding(input);
+    expect(completed.odds?.status).toBe("complete");
+    expect(fetchOdds.mock.calls).toEqual([
+      [undefined],
+      ["stale-cursor"],
+      [undefined],
+    ]);
+  });
+
+  it("self-heals a paused event filter only after the refreshed catalog changes its plan", async () => {
+    const store = new MemoryLandingStore();
+    let clock = "2026-08-15T12:00:00.000Z";
+    const catalogFor = (league: string) =>
+      catalog({
+        sports: [
+          {
+            providerSportId: "tennis",
+            displayName: "Tennis",
+            eventCount: 3_001,
+            liveCount: 0,
+            providerLeagueIds: [league],
+          },
+        ],
+        leagues: [
+          {
+            providerLeagueId: league,
+            displayName: league.toUpperCase(),
+            providerSportId: "tennis",
+            eventCount: 3_001,
+            liveCount: 0,
+          },
+        ],
+      });
+    const fetchCatalog = vi
+      .fn<ProviderLandingSource["fetchCatalog"]>()
+      .mockResolvedValueOnce(catalogFor("atp"))
+      .mockResolvedValueOnce(catalogFor("wta"));
+    const fetchEvents = vi
+      .fn<ProviderLandingSource["fetchEvents"]>()
+      .mockRejectedValueOnce(
+        new SharpApiError(
+          "provider-rejected",
+          false,
+          undefined,
+          "universal-events:http-400",
+          "invalid_filter",
+          400,
+        ),
+      )
+      .mockResolvedValueOnce(
+        eventPage([event("event-wta")], {
+          providerTotal: 1,
+        }),
+      );
+    const input = {
+      source: source({ fetchCatalog, fetchEvents }),
+      store,
+      now: () => new Date(clock),
+    };
+    await expect(runProviderLanding(input)).rejects.toMatchObject({
+      code: "provider-rejected",
+    });
+    expect(store.checkpoints.get("events")).toMatchObject({
+      eventPartitions: [{ sport: "tennis", leagues: ["atp"] }],
+      pauseScope: "stream",
+    });
+
+    clock = "2026-08-15T12:16:00.000Z";
+    const healed = await runProviderLanding(input);
+    expect(healed.events).toMatchObject({
+      status: "complete",
+      eventPartitions: [{ sport: "tennis", leagues: ["wta"] }],
+    });
+    expect(fetchEvents.mock.calls).toEqual([
+      [{ sport: "tennis", leagues: ["atp"] }, 0],
+      [{ sport: "tennis", leagues: ["wta"] }, 0],
+    ]);
+  });
+
+  it("migrates the deployed legacy offset checkpoint to the catalog plan and clears its stream pause", async () => {
+    const store = new MemoryLandingStore();
+    const initial = await runProviderLanding({
+      source: source(),
+      store,
+      now: () => new Date("2026-08-15T12:00:00.000Z"),
+    });
+    if (!initial.events) throw new Error("missing event checkpoint");
+    store.checkpoints.set("events", {
+      ...initial.events,
+      version: initial.events.version + 1,
+      status: "running",
+      position: { offset: 5_000 },
+      startedAt: "2026-08-15T12:01:00.000Z",
+      updatedAt: "2026-08-15T12:01:00.000Z",
+      counts: {
+        pages: 25,
+        sourceRows: 5_000,
+        landedRows: 5_000,
+        quarantinedRows: 0,
+        warningRows: 0,
+      },
+      visitedPositionHashes: [],
+      resumeAfter: "2026-08-16T12:01:00.000Z",
+      pauseScope: "stream",
+    });
+    const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>(() =>
+      Promise.resolve(eventPage([event("event-migrated")])),
+    );
+    const migrated = await runProviderLanding({
+      source: source({ fetchEvents }),
+      store,
+      now: () => new Date("2026-08-15T12:16:00.000Z"),
+    });
+    expect(fetchEvents).toHaveBeenCalledWith({ sport: "tennis" }, 0);
+    expect(migrated.events).toMatchObject({
+      status: "complete",
+      position: null,
+      eventPartitions: [{ sport: "tennis" }],
+    });
+    expect(migrated.events?.resumeAfter).toBeUndefined();
+  });
+
   it("reserves the shared account window for both catalog calls and every unfiltered page", async () => {
     const store = new MemoryLandingStore();
     const control = new MemoryOddsControlPlaneStore();
@@ -271,7 +650,7 @@ describe("universal provider landing", () => {
       [500, 1],
     ]);
     expect(fetchCatalog).toHaveBeenCalledOnce();
-    expect(fetchEvents).toHaveBeenCalledWith(0);
+    expect(fetchEvents).toHaveBeenCalledWith({ sport: "tennis" }, 0);
     expect(fetchOdds).toHaveBeenCalledWith(undefined);
     expect((await control.getHealth(healthKey))?.rateWindow).toMatchObject({
       limit: 1_000,
@@ -802,7 +1181,7 @@ describe("universal provider landing", () => {
       accountRate: new SharedSharpApiAccountRateCoordinator(control),
       now: () => new Date("2026-08-14T20:00:05.000Z"),
     });
-    expect(result.catalog?.resumeAfter).toBe("2026-08-15T02:00:05.000Z");
+    expect(result.catalog?.resumeAfter).toBe("2026-08-14T20:15:05.000Z");
     expect(fetchEvents).not.toHaveBeenCalled();
     expect(fetchOdds).not.toHaveBeenCalled();
     expect(blockAccountRateWindow).not.toHaveBeenCalled();
@@ -873,7 +1252,7 @@ describe("universal provider landing", () => {
     const first = await runProviderLanding(input);
     expect(first.events).toMatchObject({
       status: "running",
-      position: { offset: 200 },
+      position: { partition: 0, offset: 200 },
     });
     expect(first.odds).toMatchObject({
       status: "running",
@@ -881,7 +1260,7 @@ describe("universal provider landing", () => {
     });
 
     const second = await runProviderLanding(input);
-    expect(fetchEvents).toHaveBeenLastCalledWith(200);
+    expect(fetchEvents).toHaveBeenLastCalledWith({ sport: "tennis" }, 200);
     expect(fetchOdds).toHaveBeenLastCalledWith("cursor-2");
     expect(second.events?.status).toBe("complete");
     expect(second.odds?.status).toBe("complete");
@@ -1104,9 +1483,9 @@ describe("universal provider landing", () => {
     expect(result.events).toMatchObject({
       status: "complete",
       counts: { pages: 2, sourceRows: 2, landedRows: 2 },
-      providerTotal: 2,
       providerUpdatedAt: "2026-08-14T20:01:00.000Z",
     });
+    expect(result.events?.providerTotal).toBeUndefined();
   });
 
   it("abandons and restarts a non-immediate A-B-A cursor cycle", async () => {
@@ -1451,6 +1830,56 @@ describe("universal provider landing", () => {
       counts: { pages: 0, sourceRows: 0, landedRows: 0 },
     });
     expect(result.events?.lastCompletedAt).toBeUndefined();
+  });
+
+  it("replays a sealed page when only SharpAPI's response emission time changes", async () => {
+    const store = new MemoryLandingStore();
+    const originalPutCheckpoint = store.putCheckpoint.bind(store);
+    let failFinalCommit = true;
+    vi.spyOn(store, "putCheckpoint").mockImplementation(
+      (checkpoint, expectedVersion) => {
+        if (
+          failFinalCommit &&
+          checkpoint.stream === "events" &&
+          checkpoint.counts.pages === 1
+        ) {
+          failFinalCommit = false;
+          return Promise.reject(new Error("simulated-checkpoint-outage"));
+        }
+        return originalPutCheckpoint(checkpoint, expectedVersion);
+      },
+    );
+    const firstPage = eventPage([event("event-1")], {
+      providerUpdatedAt: "2026-08-15T12:00:00.000000001Z",
+    });
+    const replayedPage = {
+      ...firstPage,
+      providerUpdatedAt: "2026-08-15T12:00:01.000000001Z",
+    };
+    const fetchEvents = vi
+      .fn<ProviderLandingSource["fetchEvents"]>()
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce(replayedPage);
+
+    await expect(
+      runProviderLanding({
+        source: source({ fetchEvents }),
+        store,
+        now: () => new Date("2026-08-15T12:00:00.000Z"),
+      }),
+    ).rejects.toThrow("simulated-checkpoint-outage");
+
+    const replay = await runProviderLanding({
+      source: source({ fetchEvents }),
+      store,
+      now: () => new Date("2026-08-15T12:00:01.000Z"),
+    });
+    expect(replay.events).toMatchObject({
+      status: "complete",
+      counts: { pages: 1, sourceRows: 1, landedRows: 1 },
+      providerUpdatedAt: "2026-08-15T12:00:01.000000001Z",
+    });
+    expect(replay.events?.sweepId).not.toContain("recovery");
   });
 
   it("seals a fetched page and self-heals a changed crash replay", async () => {
@@ -1928,7 +2357,7 @@ describe("universal provider landing", () => {
     });
   });
 
-  it("durably pauses only catalog after a nonretryable catalog rejection", async () => {
+  it("pauses a rejected catalog while withholding unplanned events and preserving odds", async () => {
     const store = new MemoryLandingStore();
     const fetchCatalog = vi.fn(() =>
       Promise.reject(new SharpApiError("provider-rejected", false)),
@@ -1958,13 +2387,13 @@ describe("universal provider landing", () => {
     expect(store.checkpoints.get("catalog")?.resumeAfter).toBe(
       "2026-08-15T20:00:05.000Z",
     );
-    expect(fetchEvents).toHaveBeenCalledTimes(1);
+    expect(fetchEvents).not.toHaveBeenCalled();
     expect(fetchOdds).toHaveBeenCalledTimes(1);
     expect(terminal).not.toHaveBeenCalled();
 
     await runProviderLanding(input);
     expect(fetchCatalog).toHaveBeenCalledTimes(1);
-    expect(fetchEvents).toHaveBeenCalledTimes(1);
+    expect(fetchEvents).not.toHaveBeenCalled();
     expect(fetchOdds).toHaveBeenCalledTimes(1);
   });
 

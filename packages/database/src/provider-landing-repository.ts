@@ -44,6 +44,14 @@ export interface ProviderLandingCounts {
   readonly warningRows?: number;
 }
 
+/** A frozen SharpAPI Events request partition. Every request is scoped by the
+ * provider's canonical sport ID; large sports are additionally narrowed by
+ * exact league slugs from the reference catalog. */
+export interface ProviderLandingEventPartition {
+  readonly sport: string;
+  readonly leagues?: readonly string[];
+}
+
 export interface ProviderLandingCheckpoint {
   readonly schemaVersion: typeof PROVIDER_LANDING_CHECKPOINT_SCHEMA_VERSION;
   readonly providerId: "sharpapi";
@@ -53,12 +61,19 @@ export interface ProviderLandingCheckpoint {
   readonly sweepId: string;
   readonly slot: ProviderLandingSlot;
   readonly position:
-    { readonly offset: number } | { readonly cursor: string } | null;
+    | { readonly offset: number }
+    | { readonly partition: number; readonly offset: number }
+    | { readonly cursor: string }
+    | null;
   readonly startedAt: string;
   readonly updatedAt: string;
   readonly counts: ProviderLandingCounts;
   readonly providerTotal?: number;
   readonly providerUpdatedAt?: string;
+  /** Frozen, catalog-derived SharpAPI sport/league filters. */
+  readonly eventPartitions?: readonly ProviderLandingEventPartition[];
+  /** Rows committed inside the currently active event partition. */
+  readonly eventPartitionSourceRows?: number;
   readonly visitedPositionHashes?: readonly string[];
   readonly resumeAfter?: string;
   readonly pauseScope?: ProviderLandingPauseScope;
@@ -542,6 +557,10 @@ function validateCheckpoint(
       !nonNegativeInteger(checkpoint.providerTotal)) ||
     (checkpoint.providerUpdatedAt !== undefined &&
       !providerGenerationInstant(checkpoint.providerUpdatedAt)) ||
+    (checkpoint.eventPartitions !== undefined &&
+      !validEventPartitions(checkpoint.eventPartitions)) ||
+    (checkpoint.eventPartitionSourceRows !== undefined &&
+      !nonNegativeInteger(checkpoint.eventPartitionSourceRows)) ||
     (checkpoint.resumeAfter !== undefined &&
       !instant(checkpoint.resumeAfter)) ||
     (checkpoint.pauseScope !== undefined &&
@@ -611,14 +630,35 @@ function validateCheckpoint(
   if (
     checkpoint.status === "running" &&
     checkpoint.stream === "events" &&
-    (!offsetPosition(checkpoint.position) ||
-      checkpoint.position.offset % 200 !== 0)
+    !(
+      (offsetPosition(checkpoint.position) &&
+        checkpoint.position.offset % 200 === 0 &&
+        checkpoint.eventPartitions === undefined &&
+        checkpoint.eventPartitionSourceRows === undefined) ||
+      (eventPartitionPosition(checkpoint.position) &&
+        checkpoint.position.offset % 200 === 0 &&
+        checkpoint.eventPartitions !== undefined &&
+        checkpoint.position.partition < checkpoint.eventPartitions.length &&
+        checkpoint.eventPartitionSourceRows !== undefined)
+    )
   )
     throw new Error("provider-landing-checkpoint-invalid");
   if (
     checkpoint.status === "running" &&
     checkpoint.stream === "odds" &&
     !cursorPosition(checkpoint.position)
+  )
+    throw new Error("provider-landing-checkpoint-invalid");
+  if (
+    (checkpoint.stream === "odds" &&
+      checkpoint.eventPartitions !== undefined) ||
+    (checkpoint.stream !== "events" &&
+      checkpoint.eventPartitionSourceRows !== undefined)
+  )
+    throw new Error("provider-landing-checkpoint-invalid");
+  if (
+    checkpoint.status === "complete" &&
+    checkpoint.eventPartitionSourceRows !== undefined
   )
     throw new Error("provider-landing-checkpoint-invalid");
   if (
@@ -664,6 +704,83 @@ const offsetPosition = (
   Object.keys(value).length === 1 &&
   "offset" in value &&
   nonNegativeInteger(value.offset);
+
+const eventPartitionPosition = (
+  value: ProviderLandingCheckpoint["position"],
+): value is { readonly partition: number; readonly offset: number } =>
+  value !== null &&
+  typeof value === "object" &&
+  Object.keys(value).length === 2 &&
+  "partition" in value &&
+  "offset" in value &&
+  nonNegativeInteger(value.partition) &&
+  nonNegativeInteger(value.offset);
+
+const validEventPartitions = (
+  value: unknown,
+): value is readonly ProviderLandingEventPartition[] => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 2_048)
+    return false;
+  const completeSports = new Set<string>();
+  const partitionKeys = new Set<string>();
+  const sportLeagues = new Set<string>();
+  let encodedBytes = 0;
+  for (const candidate of value as unknown[]) {
+    if (!plainObject(candidate)) return false;
+    const partition = candidate;
+    const keys = Object.keys(partition).sort();
+    const sport = partition["sport"];
+    const rawMembers = partition["leagues"];
+    const hasLeagues = rawMembers !== undefined;
+    if (
+      (hasLeagues
+        ? keys.length !== 2 || keys[0] !== "leagues" || keys[1] !== "sport"
+        : keys.length !== 1 || keys[0] !== "sport") ||
+      !canonical(sport, 64) ||
+      sport.includes(",")
+    )
+      return false;
+    let members: string[] | undefined;
+    if (hasLeagues) {
+      if (
+        !Array.isArray(rawMembers) ||
+        rawMembers.length === 0 ||
+        rawMembers.length > 50
+      )
+        return false;
+      members = [];
+      for (const member of rawMembers as unknown[]) {
+        if (!canonical(member, 128) || member.includes(",")) return false;
+        members.push(member);
+      }
+      if (new Set(members).size !== members.length) return false;
+    }
+    const partitionKey = `${sport}\u0000${members?.join("\u0000") ?? "*"}`;
+    if (partitionKeys.has(partitionKey)) return false;
+    if (!members) {
+      if (
+        completeSports.has(sport) ||
+        [...sportLeagues].some((key) => key.startsWith(`${sport}\u0000`))
+      )
+        return false;
+      completeSports.add(sport);
+    } else if (completeSports.has(sport)) return false;
+    for (const member of members ?? []) {
+      const compound = `${sport}\u0000${member}`;
+      if (sportLeagues.has(compound)) return false;
+      sportLeagues.add(compound);
+    }
+    const query = new URLSearchParams({ sport });
+    if (members) query.set("league", members.join(","));
+    if (query.toString().length > 4_096) return false;
+    partitionKeys.add(partitionKey);
+    encodedBytes += new TextEncoder().encode(
+      JSON.stringify(partition),
+    ).byteLength;
+    if (encodedBytes > 300_000) return false;
+  }
+  return true;
+};
 
 const cursorPosition = (
   value: ProviderLandingCheckpoint["position"],
