@@ -72,8 +72,21 @@ export interface ProviderLandingCheckpoint {
   readonly providerUpdatedAt?: string;
   /** Frozen, catalog-derived SharpAPI sport/league filters. */
   readonly eventPartitions?: readonly ProviderLandingEventPartition[];
+  /** SHA-256 identity of the unrefined catalog plan from which the current
+   * event plan was derived. In-sweep bisection keeps this lineage stable. */
+  readonly eventCatalogPlanHash?: string;
   /** Rows committed inside the currently active event partition. */
   readonly eventPartitionSourceRows?: number;
+  /** Catalog partitions whose documented Events request returned a bounded
+   * provider rejection. They remain unresolved coverage gaps until a later
+   * successful 200 response or a catalog-plan replacement removes them. */
+  readonly eventDeferredPartitions?: readonly number[];
+  /** True after the primary catalog walk reaches its end and the worker is
+   * retrying only deferred partitions. */
+  readonly eventPrimaryTraversalComplete?: true;
+  /** Distinguishes intentional retries of the same exact partition/offset
+   * from crash replay under the durable position-claim contract. */
+  readonly eventPositionRevision?: number;
   readonly visitedPositionHashes?: readonly string[];
   readonly resumeAfter?: string;
   readonly pauseScope?: ProviderLandingPauseScope;
@@ -176,6 +189,8 @@ const BASE_BACKOFF_MS = 125;
 const MAX_BACKOFF_MS = 1_000;
 const MAX_RECORD_VALUE_NODES = 100_000;
 const MAX_DYNAMO_DOCUMENT_DEPTH = 32;
+const MAX_VISITED_POSITION_HASHES = 512;
+const MAX_CHECKPOINT_BYTES = 360_000;
 const HEX_32 = /^[a-f0-9]{32}$/;
 const HEX_64 = /^[a-f0-9]{64}$/;
 const CONTROL_CHARACTER = /\p{Cc}/u;
@@ -559,8 +574,24 @@ function validateCheckpoint(
       !providerGenerationInstant(checkpoint.providerUpdatedAt)) ||
     (checkpoint.eventPartitions !== undefined &&
       !validEventPartitions(checkpoint.eventPartitions)) ||
+    (checkpoint.eventCatalogPlanHash !== undefined &&
+      (typeof checkpoint.eventCatalogPlanHash !== "string" ||
+        !HEX_64.test(checkpoint.eventCatalogPlanHash))) ||
     (checkpoint.eventPartitionSourceRows !== undefined &&
       !nonNegativeInteger(checkpoint.eventPartitionSourceRows)) ||
+    (checkpoint.eventDeferredPartitions !== undefined &&
+      (!Array.isArray(checkpoint.eventDeferredPartitions) ||
+        checkpoint.eventDeferredPartitions.length === 0 ||
+        checkpoint.eventDeferredPartitions.length > 2_048 ||
+        checkpoint.eventDeferredPartitions.some(
+          (partition) => !nonNegativeInteger(partition),
+        ) ||
+        new Set(checkpoint.eventDeferredPartitions).size !==
+          checkpoint.eventDeferredPartitions.length)) ||
+    (checkpoint.eventPrimaryTraversalComplete !== undefined &&
+      checkpoint.eventPrimaryTraversalComplete !== true) ||
+    (checkpoint.eventPositionRevision !== undefined &&
+      !nonNegativeInteger(checkpoint.eventPositionRevision)) ||
     (checkpoint.resumeAfter !== undefined &&
       !instant(checkpoint.resumeAfter)) ||
     (checkpoint.pauseScope !== undefined &&
@@ -569,7 +600,7 @@ function validateCheckpoint(
       (checkpoint.pauseScope === undefined) ||
     (checkpoint.visitedPositionHashes !== undefined &&
       (!Array.isArray(checkpoint.visitedPositionHashes) ||
-        checkpoint.visitedPositionHashes.length > 4_096 ||
+        checkpoint.visitedPositionHashes.length > MAX_VISITED_POSITION_HASHES ||
         new Set(checkpoint.visitedPositionHashes).size !==
           checkpoint.visitedPositionHashes.length ||
         checkpoint.visitedPositionHashes.some(
@@ -644,6 +675,30 @@ function validateCheckpoint(
   )
     throw new Error("provider-landing-checkpoint-invalid");
   if (
+    (checkpoint.stream !== "events" &&
+      (checkpoint.eventDeferredPartitions !== undefined ||
+        checkpoint.eventPrimaryTraversalComplete !== undefined ||
+        checkpoint.eventPositionRevision !== undefined ||
+        checkpoint.eventCatalogPlanHash !== undefined)) ||
+    (checkpoint.status === "complete" &&
+      (checkpoint.eventDeferredPartitions !== undefined ||
+        checkpoint.eventPrimaryTraversalComplete !== undefined ||
+        checkpoint.eventPositionRevision !== undefined)) ||
+    (checkpoint.eventDeferredPartitions !== undefined &&
+      (!checkpoint.eventPartitions ||
+        checkpoint.eventDeferredPartitions.some(
+          (partition) => partition >= checkpoint.eventPartitions!.length,
+        ))) ||
+    (checkpoint.eventPrimaryTraversalComplete === true &&
+      (!checkpoint.eventDeferredPartitions ||
+        !checkpoint.position ||
+        !("partition" in checkpoint.position) ||
+        !checkpoint.eventDeferredPartitions.includes(
+          checkpoint.position.partition,
+        )))
+  )
+    throw new Error("provider-landing-checkpoint-invalid");
+  if (
     checkpoint.status === "running" &&
     checkpoint.stream === "odds" &&
     !cursorPosition(checkpoint.position)
@@ -675,6 +730,11 @@ function validateCheckpoint(
       providerLandingPositionHash(checkpoint, 64)
   )
     throw new Error("provider-landing-checkpoint-invalid");
+  if (
+    new TextEncoder().encode(JSON.stringify(checkpoint)).byteLength >
+    MAX_CHECKPOINT_BYTES
+  )
+    throw new Error("provider-landing-checkpoint-too-large");
 }
 
 const validatePositionClaim = (
@@ -794,7 +854,10 @@ const cursorPosition = (
 /** Hash by position meaning rather than map insertion order. DynamoDB may read
  * `{ partition, offset }` back as `{ offset, partition }`. */
 export const providerLandingPositionHash = (
-  checkpoint: Pick<ProviderLandingCheckpoint, "stream" | "position">,
+  checkpoint: Pick<
+    ProviderLandingCheckpoint,
+    "stream" | "position" | "eventPositionRevision"
+  >,
   length: 32 | 64 = 32,
 ) => {
   const position = checkpoint.position;
@@ -811,6 +874,10 @@ export const providerLandingPositionHash = (
       JSON.stringify({
         stream: checkpoint.stream,
         position: canonicalPosition,
+        ...(checkpoint.stream === "events" &&
+        checkpoint.eventPositionRevision !== undefined
+          ? { revision: checkpoint.eventPositionRevision }
+          : {}),
       }),
     )
     .digest("hex")

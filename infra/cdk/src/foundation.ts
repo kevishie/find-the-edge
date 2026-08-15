@@ -2098,6 +2098,32 @@ export class FoundationStack extends Stack {
             ),
         ),
       ),
+      ...(["catalog", "events", "odds"] as const).map(
+        (stream) =>
+          new Alarm(
+            this,
+            `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}DiagnosticAlarm`,
+            {
+              metric: new Metric({
+                namespace: "FindTheEdge/ProviderLanding",
+                metricName: "ProviderLandingDiagnostic",
+                dimensionsMap: {
+                  Stage: props.stageName,
+                  Stream: stream,
+                  Outcome: "observed",
+                },
+                statistic: "Sum",
+                period: Duration.minutes(5),
+              }),
+              threshold: 1,
+              evaluationPeriods: 1,
+              datapointsToAlarm: 1,
+              comparisonOperator:
+                ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+              treatMissingData: TreatMissingData.NOT_BREACHING,
+            },
+          ),
+      ),
       new Alarm(this, "FixtureOddsProjectionErrorsAlarm", {
         metric: oddsProjection.metricErrors(),
         threshold: 1,

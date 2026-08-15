@@ -89,8 +89,7 @@ export const createProviderLandingMetricSink = (
 export const providerLandingTerminalReason = (error: unknown) => {
   if (
     error instanceof SharpApiError &&
-    (["configuration", "not-entitled", "unauthorized"].includes(error.code) ||
-      (error.code === "provider-rejected" && !error.retryable))
+    ["configuration", "not-entitled", "unauthorized"].includes(error.code)
   )
     return error.code;
   if (
@@ -220,6 +219,12 @@ export const recoverProviderLandingAccountWindow = async (input: {
               new Date(failedAt.getTime() + 60_000).toISOString(),
             failedAt.toISOString(),
           );
+        if (
+          error instanceof SharpApiError &&
+          error.code === "provider-rejected" &&
+          !error.retryable
+        )
+          throw new Error("provider-landing-account-terminal");
         throw error;
       }
     const winner = await input.control.getHealth(SHARP_API_ACCOUNT_HEALTH_KEY);
@@ -242,25 +247,27 @@ export const handler = async (event: unknown, context: Context) => {
   const stage = process.env["FTE_AWS_STAGE"];
   const metrics = createProviderLandingMetricSink(inferredMetricStage());
   let accountRate: SharedSharpApiAccountRateCoordinator | undefined;
+  let apiKey: string | undefined;
   try {
-    if (!tableName || !secretId || !stage)
-      throw new Error("provider-landing-configuration-invalid");
+    // The table binding is the only prerequisite for persisting terminal
+    // account health. Construct that circuit breaker before reading/parsing
+    // the provider secret so a broken secret cannot leave the shared account
+    // state recoverable and trigger repeated paid attempts elsewhere.
+    if (!tableName) throw new Error("provider-landing-configuration-invalid");
     const client = instrumentDynamoCapacity(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       emitDynamoCapacityMetrics,
     );
     const store = new DynamoProviderLandingRepository(client, tableName);
     const control = new DynamoOddsControlPlaneStore(client, tableName);
-    const secrets = new SecretsManagerClient({});
-    const secret = await secrets.send(
-      new GetSecretValueCommand({ SecretId: secretId }),
-    );
-    const apiKey = parseProviderLandingSecret(secret.SecretString);
     accountRate = new SharedSharpApiAccountRateCoordinator(control, {
       recoverWindow: async () => {
+        const recoveredApiKey = apiKey;
+        if (!recoveredApiKey)
+          throw new Error("provider-landing-configuration-invalid");
         const outcome = await recoverProviderLandingAccountWindow({
           control,
-          fetchAccount: () => fetchSharpApiAccount(apiKey),
+          fetchAccount: () => fetchSharpApiAccount(recoveredApiKey),
           shouldContinue: () => context.getRemainingTimeInMillis() > 60_000,
         });
         metrics.emit("ProviderLandingRecovery", 1, {
@@ -272,12 +279,21 @@ export const handler = async (event: unknown, context: Context) => {
       canRecoverWindow: () => context.getRemainingTimeInMillis() > 90_000,
       canDispatch: () => context.getRemainingTimeInMillis() > 60_000,
     });
+    if (!secretId || !stage)
+      throw new Error("provider-landing-configuration-invalid");
+    const secrets = new SecretsManagerClient({});
+    const secret = await secrets.send(
+      new GetSecretValueCommand({ SecretId: secretId }),
+    );
+    const readyApiKey = parseProviderLandingSecret(secret.SecretString);
+    apiKey = readyApiKey;
     const summary = await runProviderLanding({
       source: {
-        fetchCatalog: () => fetchSharpApiCatalog(apiKey),
+        fetchCatalog: () => fetchSharpApiCatalog(readyApiKey),
         fetchEvents: (filter, offset) =>
-          fetchSharpApiUniversalEventsPage(apiKey, filter, offset),
-        fetchOdds: (cursor) => fetchSharpApiUniversalOddsPage(apiKey, cursor),
+          fetchSharpApiUniversalEventsPage(readyApiKey, filter, offset),
+        fetchOdds: (cursor) =>
+          fetchSharpApiUniversalOddsPage(readyApiKey, cursor),
       },
       store,
       accountRate,

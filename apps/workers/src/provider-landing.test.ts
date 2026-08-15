@@ -5,7 +5,10 @@ import type {
   ProviderLandingRecord,
   ProviderLandingStream,
 } from "@find-the-edge/database";
-import { MemoryOddsControlPlaneStore } from "@find-the-edge/database";
+import {
+  MemoryOddsControlPlaneStore,
+  providerLandingPositionHash,
+} from "@find-the-edge/database";
 import type {
   SharpApiCatalogSnapshot,
   SharpApiUniversalEvent,
@@ -281,6 +284,94 @@ describe("universal provider landing", () => {
     ]);
   });
 
+  it("lands an oversized catalog and raises a bounded diagnostic instead of failing its checkpoint", async () => {
+    const store = new MemoryLandingStore();
+    await runProviderLanding({
+      source: source(),
+      store,
+      now: () => new Date("2026-08-15T11:00:00.000Z"),
+    });
+    const sports = Array.from({ length: 2_049 }, (_, index) => ({
+      providerSportId: `sport-${index.toString().padStart(4, "0")}`,
+      displayName: `Sport ${index}`,
+      eventCount: 1,
+      liveCount: 0,
+      providerLeagueIds: index === 0 ? ["league-0"] : [],
+    }));
+    const leagues = [
+      {
+        providerLeagueId: "league-0",
+        displayName: "League 0",
+        providerSportId: "sport-0000",
+        eventCount: 1,
+        liveCount: 0,
+      },
+    ];
+    const fetchCatalog = vi.fn(() =>
+      Promise.resolve(
+        catalog({
+          sports,
+          leagues,
+          sourceRows: sports.length + leagues.length,
+        }),
+      ),
+    );
+    const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>();
+    const emit = vi.fn((metric: string) => {
+      if (metric === "ProviderLandingDiagnostic")
+        throw new Error("simulated-capacity-metric-crash");
+    });
+    const input = {
+      source: source({
+        fetchCatalog,
+        fetchEvents,
+      }),
+      store,
+    };
+    await expect(
+      runProviderLanding({
+        ...input,
+        metrics: { emit },
+        now: () => new Date("2026-08-15T12:00:00.000Z"),
+      }),
+    ).rejects.toThrow("simulated-capacity-metric-crash");
+
+    const result = await runProviderLanding({
+      ...input,
+      now: () => new Date("2026-08-15T12:01:00.000Z"),
+    });
+
+    expect(result.catalog).toMatchObject({
+      status: "complete",
+      counts: {
+        sourceRows: 2_050,
+        landedRows: 2_050,
+        quarantinedRows: 0,
+      },
+    });
+    expect(result.catalog?.eventPartitions).toBeUndefined();
+    expect(result.events).toBeUndefined();
+    const capacity = store.records.find(
+      ({ recordType, value }) =>
+        recordType === "quarantine" &&
+        value["reason"] === "provider-event-plan-capacity",
+    );
+    expect(capacity).toMatchObject({
+      recordType: "quarantine",
+      endpoint: "events",
+    });
+    expect(capacity?.value).toMatchObject({
+      reason: "provider-event-plan-capacity",
+      partitionCount: 2_049,
+    });
+    expect(emit).toHaveBeenCalledWith("ProviderLandingDiagnostic", 1, {
+      stream: "catalog",
+      outcome: "observed",
+    });
+    expect(fetchCatalog).toHaveBeenCalledTimes(1);
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
   it("reconciles and completes catalog-derived event partitions independently", async () => {
     const store = new MemoryLandingStore();
     const snapshot = catalog({
@@ -403,24 +494,307 @@ describe("universal provider landing", () => {
       store,
       now: () => new Date("2026-08-15T12:00:00.000Z"),
     };
-    const first = await runProviderLanding(input);
-    expect(first.events).toMatchObject({
-      status: "running",
+    const completed = await runProviderLanding(input);
+    expect(completed.events).toMatchObject({
+      status: "complete",
       eventPartitions: [
         { sport: "tennis", leagues: ["atp"] },
         { sport: "tennis", leagues: ["wta"] },
       ],
-      counts: { pages: 0, sourceRows: 0 },
+      counts: { pages: 3, sourceRows: 2, landedRows: 2 },
     });
-    const second = await runProviderLanding(input);
-    expect(second.events).toMatchObject({
-      status: "complete",
-      counts: { pages: 2, sourceRows: 2 },
+    const gap = store.records.find(
+      ({ recordType, value }) =>
+        recordType === "quarantine" &&
+        value["reason"] === "provider-event-partition-too-large",
+    );
+    expect(gap).toMatchObject({
+      recordType: "quarantine",
+      endpoint: "events",
+    });
+    expect(gap?.value).toMatchObject({
+      reason: "provider-event-partition-too-large",
+      providerTotal: 5_300,
     });
     expect(fetchEvents.mock.calls).toEqual([
       [{ sport: "tennis", leagues: ["atp", "wta"] }, 0],
       [{ sport: "tennis", leagues: ["atp"] }, 0],
       [{ sport: "tennis", leagues: ["wta"] }, 0],
+    ]);
+  });
+
+  it("keeps an indivisible oversized event partition unpublished while later sports land", async () => {
+    const store = new MemoryLandingStore();
+    const catalogFor = (includeBaseball: boolean) =>
+      catalog({
+        sports: [
+          ...(includeBaseball
+            ? [
+                {
+                  providerSportId: "baseball",
+                  displayName: "Baseball",
+                  eventCount: 5_300,
+                  liveCount: 0,
+                  providerLeagueIds: [],
+                },
+              ]
+            : []),
+          {
+            providerSportId: "golf",
+            displayName: "Golf",
+            eventCount: 1,
+            liveCount: 0,
+            providerLeagueIds: ["pga"],
+          },
+        ],
+        leagues: [
+          {
+            providerLeagueId: "pga",
+            displayName: "PGA",
+            providerSportId: "golf",
+            eventCount: 1,
+            liveCount: 0,
+          },
+        ],
+        sourceRows: includeBaseball ? 3 : 2,
+      });
+    const fetchCatalog = vi
+      .fn<ProviderLandingSource["fetchCatalog"]>()
+      .mockResolvedValueOnce(catalogFor(true))
+      .mockResolvedValueOnce(catalogFor(false));
+    const fetchEvents = vi
+      .fn<ProviderLandingSource["fetchEvents"]>()
+      .mockImplementation((partition) =>
+        Promise.resolve(
+          partition.sport === "baseball"
+            ? eventPage([], {
+                hasMore: true,
+                nextOffset: 200,
+                providerTotal: 5_300,
+              })
+            : eventPage([
+                {
+                  ...event("event-golf"),
+                  sport: "golf",
+                },
+              ]),
+        ),
+      );
+    let clock = "2026-08-15T12:00:00.000Z";
+    const input = {
+      source: source({ fetchCatalog, fetchEvents }),
+      store,
+      now: () => new Date(clock),
+    };
+
+    const incomplete = await runProviderLanding(input);
+    expect(incomplete.events).toMatchObject({
+      status: "running",
+      pauseScope: "stream",
+      eventDeferredPartitions: [0],
+      eventPrimaryTraversalComplete: true,
+      counts: {
+        pages: 2,
+        sourceRows: 1,
+        landedRows: 1,
+        quarantinedRows: 0,
+      },
+    });
+    expect(
+      store.records.some(
+        ({ recordType, value }) =>
+          recordType === "quarantine" &&
+          value["reason"] === "provider-event-partition-too-large",
+      ),
+    ).toBe(true);
+
+    clock = "2026-08-15T12:16:00.000Z";
+    const healed = await runProviderLanding(input);
+    expect(healed.events).toMatchObject({
+      status: "complete",
+      eventPartitions: [{ sport: "golf" }],
+      counts: { pages: 1, sourceRows: 1, landedRows: 1 },
+    });
+  });
+
+  it("abandons late oversized partition pages once and resumes unrelated sports", async () => {
+    const store = new MemoryLandingStore();
+    const snapshot = catalog({
+      sports: ["baseball", "golf"].map((providerSportId) => ({
+        providerSportId,
+        displayName: providerSportId,
+        eventCount: providerSportId === "baseball" ? 5_000 : 1,
+        liveCount: 0,
+        providerLeagueIds: [],
+      })),
+      leagues: [
+        {
+          providerLeagueId: "pga",
+          displayName: "PGA",
+          providerSportId: "golf",
+          eventCount: 1,
+          liveCount: 0,
+        },
+      ],
+      sourceRows: 3,
+    });
+    const fetchEvents = vi
+      .fn<ProviderLandingSource["fetchEvents"]>()
+      .mockImplementation((partition, offset) => {
+        if (partition.sport === "baseball" && offset === 0)
+          return Promise.resolve(
+            eventPage([event("event-baseball")], {
+              hasMore: true,
+              nextOffset: 200,
+              providerTotal: 5_000,
+            }),
+          );
+        if (partition.sport === "baseball")
+          return Promise.resolve(
+            eventPage([], {
+              hasMore: true,
+              nextOffset: 400,
+              providerTotal: 5_300,
+            }),
+          );
+        return Promise.resolve(
+          eventPage([
+            {
+              ...event("event-golf"),
+              sport: "golf",
+            },
+          ]),
+        );
+      });
+    let clock = "2026-08-15T12:00:00.000Z";
+    const input = {
+      source: source({
+        fetchCatalog: vi.fn(() => Promise.resolve(snapshot)),
+        fetchEvents,
+      }),
+      store,
+      now: () => new Date(clock),
+    };
+
+    const restarted = await runProviderLanding(input);
+    expect(restarted.events).toMatchObject({
+      status: "running",
+      position: { partition: 1, offset: 0 },
+      eventDeferredPartitions: [0],
+      counts: { pages: 0, sourceRows: 0 },
+    });
+    clock = "2026-08-15T12:01:00.000Z";
+    const isolated = await runProviderLanding(input);
+    expect(isolated.events).toMatchObject({
+      status: "running",
+      pauseScope: "stream",
+      eventDeferredPartitions: [0],
+      eventPrimaryTraversalComplete: true,
+      counts: { pages: 1, sourceRows: 1, landedRows: 1 },
+    });
+    expect(fetchEvents.mock.calls).toEqual([
+      [{ sport: "baseball" }, 0],
+      [{ sport: "baseball" }, 200],
+      [{ sport: "golf" }, 0],
+    ]);
+  });
+
+  it("skips a middle deferred partition during recovery and lands it once after siblings", async () => {
+    const store = new MemoryLandingStore();
+    const sports = ["alpha", "middle", "zulu"];
+    const snapshot = catalog({
+      sports: sports.map((providerSportId) => ({
+        providerSportId,
+        displayName: providerSportId,
+        eventCount: providerSportId === "middle" ? 5_000 : 1,
+        liveCount: 0,
+        providerLeagueIds: [`${providerSportId}-league`],
+      })),
+      leagues: sports.map((providerSportId) => ({
+        providerLeagueId: `${providerSportId}-league`,
+        displayName: `${providerSportId} league`,
+        providerSportId,
+        eventCount: providerSportId === "middle" ? 5_000 : 1,
+        liveCount: 0,
+      })),
+      sourceRows: 6,
+    });
+    let middleInitialPages = true;
+    const fetchEvents = vi
+      .fn<ProviderLandingSource["fetchEvents"]>()
+      .mockImplementation((partition, offset) => {
+        if (partition.sport === "middle" && middleInitialPages) {
+          if (offset === 0)
+            return Promise.resolve(
+              eventPage([event("event-middle-initial")], {
+                hasMore: true,
+                nextOffset: 200,
+                providerTotal: 5_000,
+              }),
+            );
+          middleInitialPages = false;
+          return Promise.resolve(
+            eventPage([], {
+              hasMore: true,
+              nextOffset: 400,
+              providerTotal: 5_300,
+            }),
+          );
+        }
+        return Promise.resolve(
+          eventPage([
+            {
+              ...event(`event-${partition.sport}`),
+              sport: partition.sport,
+            },
+          ]),
+        );
+      });
+    let clock = "2026-08-15T12:00:00.000Z";
+    const input = {
+      source: source({
+        fetchCatalog: vi.fn(() => Promise.resolve(snapshot)),
+        fetchEvents,
+      }),
+      store,
+      now: () => new Date(clock),
+    };
+
+    const restarted = await runProviderLanding(input);
+    expect(restarted.events).toMatchObject({
+      status: "running",
+      position: { partition: 0, offset: 0 },
+      eventDeferredPartitions: [1],
+      counts: { pages: 0, sourceRows: 0 },
+    });
+
+    clock = "2026-08-15T12:01:00.000Z";
+    const deferred = await runProviderLanding(input);
+    expect(deferred.events).toMatchObject({
+      status: "running",
+      eventPrimaryTraversalComplete: true,
+      eventDeferredPartitions: [1],
+      counts: { pages: 2, sourceRows: 2, landedRows: 2 },
+    });
+
+    clock = "2026-08-15T12:17:00.000Z";
+    const completed = await runProviderLanding(input);
+    expect(completed.events).toMatchObject({
+      status: "complete",
+      counts: { pages: 3, sourceRows: 3, landedRows: 3 },
+    });
+    expect(
+      fetchEvents.mock.calls.map(([partition, offset]) => [
+        partition.sport,
+        offset,
+      ]),
+    ).toEqual([
+      ["alpha", 0],
+      ["middle", 0],
+      ["middle", 200],
+      ["alpha", 0],
+      ["zulu", 0],
+      ["middle", 0],
     ]);
   });
 
@@ -467,6 +841,46 @@ describe("universal provider landing", () => {
     ]);
   });
 
+  it("preserves a generic non-initial odds pause instead of misclassifying it as cursor rejection", async () => {
+    const store = new MemoryLandingStore();
+    let clock = "2026-08-15T12:00:00.000Z";
+    const fetchOdds = vi
+      .fn<ProviderLandingSource["fetchOdds"]>()
+      .mockResolvedValueOnce(
+        oddsPage([odds("price-1")], {
+          hasMore: true,
+          nextCursor: "cursor-1",
+        }),
+      )
+      .mockRejectedValueOnce(new SharpApiError("invalid-response", false));
+    const input = {
+      source: source({ fetchOdds }),
+      store,
+      now: () => new Date(clock),
+      oddsPageBudget: 1,
+    };
+
+    await runProviderLanding(input);
+    clock = "2026-08-15T12:01:00.000Z";
+    const paused = await runProviderLanding(input);
+    expect(paused.odds).toMatchObject({
+      status: "running",
+      position: { cursor: "cursor-1" },
+      pauseScope: "stream",
+      resumeAfter: "2026-08-16T12:01:00.000Z",
+    });
+
+    clock = "2026-08-15T12:02:00.000Z";
+    const preserved = await runProviderLanding(input);
+    expect(preserved.odds).toMatchObject({
+      sweepId: paused.odds?.sweepId,
+      position: { cursor: "cursor-1" },
+      pauseScope: "stream",
+      resumeAfter: "2026-08-16T12:01:00.000Z",
+    });
+    expect(fetchOdds).toHaveBeenCalledTimes(2);
+  });
+
   it("self-heals a paused event filter only after the refreshed catalog changes its plan", async () => {
     const store = new MemoryLandingStore();
     let clock = "2026-08-15T12:00:00.000Z";
@@ -505,6 +919,7 @@ describe("universal provider landing", () => {
           "universal-events:http-400",
           "invalid_filter",
           400,
+          "request-atp-stale",
         ),
       )
       .mockResolvedValueOnce(
@@ -517,12 +932,18 @@ describe("universal provider landing", () => {
       store,
       now: () => new Date(clock),
     };
-    await expect(runProviderLanding(input)).rejects.toMatchObject({
-      code: "provider-rejected",
+    await expect(runProviderLanding(input)).resolves.toMatchObject({
+      catalog: { status: "complete" },
+      events: {
+        status: "running",
+        pauseScope: "stream",
+        counts: { pages: 1, sourceRows: 0, landedRows: 0, quarantinedRows: 0 },
+        eventDeferredPartitions: [0],
+      },
     });
     expect(store.checkpoints.get("events")).toMatchObject({
       eventPartitions: [{ sport: "tennis", leagues: ["atp"] }],
-      pauseScope: "stream",
+      status: "running",
     });
 
     clock = "2026-08-15T12:16:00.000Z";
@@ -578,6 +999,153 @@ describe("universal provider landing", () => {
       eventPartitions: [{ sport: "tennis" }],
     });
     expect(migrated.events?.resumeAfter).toBeUndefined();
+  });
+
+  it("backfills lineage on a paused partition checkpoint without replaying its paid progress", async () => {
+    const store = new MemoryLandingStore();
+    const initial = await runProviderLanding({
+      source: source(),
+      store,
+      now: () => new Date("2026-08-15T12:00:00.000Z"),
+    });
+    if (!initial.events?.eventPartitions)
+      throw new Error("missing event checkpoint");
+    const position = { partition: 0, offset: 200 } as const;
+    const paused = {
+      ...initial.events,
+      version: initial.events.version + 1,
+      status: "running" as const,
+      position,
+      startedAt: "2026-08-15T12:01:00.000Z",
+      updatedAt: "2026-08-15T12:01:00.000Z",
+      counts: {
+        pages: 1,
+        sourceRows: 200,
+        landedRows: 200,
+        quarantinedRows: 0,
+        warningRows: 0,
+      },
+      eventPartitionSourceRows: 200,
+      visitedPositionHashes: [
+        providerLandingPositionHash({ stream: "events", position }),
+      ],
+      resumeAfter: "2026-08-16T12:01:00.000Z",
+      pauseScope: "stream" as const,
+    };
+    delete paused.eventCatalogPlanHash;
+    store.checkpoints.set("events", paused);
+    const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>();
+
+    const preserved = await runProviderLanding({
+      source: source({ fetchEvents }),
+      store,
+      now: () => new Date("2026-08-15T12:16:00.000Z"),
+    });
+
+    expect(fetchEvents).not.toHaveBeenCalled();
+    expect(preserved.events).toMatchObject({
+      sweepId: paused.sweepId,
+      position,
+      counts: paused.counts,
+      pauseScope: "stream",
+      resumeAfter: paused.resumeAfter,
+    });
+    expect(preserved.events?.eventCatalogPlanHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("keeps catalog lineage stable when DynamoDB reorders event partition map fields", async () => {
+    const store = new MemoryLandingStore();
+    const snapshot = catalog({
+      sports: [
+        {
+          providerSportId: "tennis",
+          displayName: "Tennis",
+          eventCount: 4_000,
+          liveCount: 0,
+          providerLeagueIds: ["atp", "wta"],
+        },
+      ],
+      leagues: ["atp", "wta"].map((providerLeagueId) => ({
+        providerLeagueId,
+        displayName: providerLeagueId.toUpperCase(),
+        providerSportId: "tennis",
+        eventCount: 1_500,
+        liveCount: 0,
+      })),
+      sourceRows: 3,
+    });
+    const initial = await runProviderLanding({
+      source: source({
+        fetchCatalog: vi.fn(() => Promise.resolve(snapshot)),
+        fetchEvents: vi.fn<ProviderLandingSource["fetchEvents"]>((partition) =>
+          Promise.resolve(
+            eventPage([event(`event-${partition.leagues?.[0]}`)]),
+          ),
+        ),
+      }),
+      store,
+      now: () => new Date("2026-08-15T12:00:00.000Z"),
+    });
+    if (
+      !initial.events?.eventPartitions ||
+      !initial.events.eventCatalogPlanHash
+    )
+      throw new Error("missing event plan lineage");
+    const position = { partition: 0, offset: 200 } as const;
+    const eventPositionRevision = 0;
+    const reordered = initial.events.eventPartitions.map((partition) =>
+      partition.leagues
+        ? { leagues: [...partition.leagues], sport: partition.sport }
+        : { sport: partition.sport },
+    );
+    const paused = {
+      ...initial.events,
+      version: initial.events.version + 1,
+      sweepId: "events:2026-08-15T12:01:00.000Z",
+      slot: initial.events.slot === 0 ? (1 as const) : (0 as const),
+      status: "running" as const,
+      position,
+      startedAt: "2026-08-15T12:01:00.000Z",
+      updatedAt: "2026-08-15T12:01:00.000Z",
+      counts: {
+        pages: 1,
+        sourceRows: 200,
+        landedRows: 200,
+        quarantinedRows: 0,
+        warningRows: 0,
+      },
+      eventPartitions: reordered,
+      eventPartitionSourceRows: 200,
+      eventPositionRevision,
+      visitedPositionHashes: [
+        providerLandingPositionHash({
+          stream: "events",
+          position,
+          eventPositionRevision,
+        }),
+      ],
+      resumeAfter: "2026-08-15T12:16:00.000Z",
+      pauseScope: "stream" as const,
+    };
+    store.checkpoints.set("events", paused);
+    const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>();
+
+    const preserved = await runProviderLanding({
+      source: source({
+        fetchCatalog: vi.fn(() => Promise.resolve(snapshot)),
+        fetchEvents,
+      }),
+      store,
+      now: () => new Date("2026-08-15T12:02:00.000Z"),
+    });
+
+    expect(fetchEvents).not.toHaveBeenCalled();
+    expect(preserved.events).toMatchObject({
+      sweepId: paused.sweepId,
+      position,
+      counts: paused.counts,
+      eventCatalogPlanHash: initial.events.eventCatalogPlanHash,
+    });
   });
 
   it("reserves the shared account window for both catalog calls and every unfiltered page", async () => {
@@ -1985,6 +2553,97 @@ describe("universal provider landing", () => {
     );
   });
 
+  it("abandons a sealed page before treating its offset-zero replay as a rejected filter", async () => {
+    const store = new MemoryLandingStore();
+    const originalPutCheckpoint = store.putCheckpoint.bind(store);
+    let failFinalCommit = true;
+    vi.spyOn(store, "putCheckpoint").mockImplementation(
+      (checkpoint, expectedVersion) => {
+        if (
+          failFinalCommit &&
+          checkpoint.stream === "events" &&
+          checkpoint.counts.pages === 1
+        ) {
+          failFinalCommit = false;
+          return Promise.reject(new Error("simulated-checkpoint-outage"));
+        }
+        return originalPutCheckpoint(checkpoint, expectedVersion);
+      },
+    );
+    const fetchEvents = vi
+      .fn<ProviderLandingSource["fetchEvents"]>()
+      .mockResolvedValueOnce(eventPage([event("event-before-crash")]))
+      .mockRejectedValueOnce(
+        new SharpApiError(
+          "provider-rejected",
+          false,
+          undefined,
+          "universal-events:http-400",
+          "invalid_filter",
+          400,
+          "request-pending-replay",
+        ),
+      )
+      .mockResolvedValueOnce(eventPage([event("event-after-restart")]));
+    const emit = vi.fn((metric: string) => {
+      if (metric === "ProviderLandingDiagnostic")
+        throw new Error("simulated-diagnostic-metric-crash");
+    });
+
+    await expect(
+      runProviderLanding({
+        source: source({ fetchEvents }),
+        store,
+        now: () => new Date("2026-08-15T16:00:00.000Z"),
+      }),
+    ).rejects.toThrow("simulated-checkpoint-outage");
+
+    await expect(
+      runProviderLanding({
+        source: source({ fetchEvents }),
+        store,
+        now: () => new Date("2026-08-15T16:00:01.000Z"),
+        metrics: { emit },
+      }),
+    ).rejects.toThrow("simulated-diagnostic-metric-crash");
+    const restarted = store.checkpoints.get("events");
+    expect(restarted).toMatchObject({
+      status: "running",
+      counts: { pages: 0, sourceRows: 0, quarantinedRows: 0 },
+    });
+    expect(restarted?.pendingPage).toBeUndefined();
+    const rejection = store.records.find(
+      ({ recordType, value }) =>
+        recordType === "quarantine" &&
+        value["requestId"] === "request-pending-replay",
+    );
+    expect(rejection).toMatchObject({ endpoint: "events" });
+    expect(rejection?.value).toMatchObject({
+      reason: "provider-filter-rejected",
+      providerCode: "invalid_filter",
+      httpStatus: 400,
+      requestId: "request-pending-replay",
+    });
+    expect(emit).toHaveBeenCalledWith("ProviderLandingDiagnostic", 1, {
+      stream: "events",
+      outcome: "observed",
+    });
+    expect(emit).toHaveBeenCalledWith("ProviderLandingPage", 1, {
+      stream: "events",
+      outcome: "rejected",
+    });
+
+    const completed = await runProviderLanding({
+      source: source({ fetchEvents }),
+      store,
+      now: () => new Date("2026-08-15T16:00:02.000Z"),
+    });
+    expect(completed.events).toMatchObject({
+      status: "complete",
+      counts: { pages: 1, sourceRows: 1, landedRows: 1 },
+    });
+  });
+
   it("persists provider rate-window pauses and does not redispatch before reset", async () => {
     const store = new MemoryLandingStore();
     const fetchEvents = vi
@@ -2421,8 +3080,12 @@ describe("universal provider landing", () => {
       accountRate,
       now: () => new Date("2026-08-14T20:00:05.000Z"),
     };
-    await expect(runProviderLanding(input)).rejects.toMatchObject({
-      code: "provider-rejected",
+    await expect(runProviderLanding(input)).resolves.toMatchObject({
+      catalog: {
+        status: "running",
+        pauseScope: "stream",
+        resumeAfter: "2026-08-15T20:00:05.000Z",
+      },
     });
     expect(store.checkpoints.get("catalog")?.resumeAfter).toBe(
       "2026-08-15T20:00:05.000Z",
@@ -2450,8 +3113,12 @@ describe("universal provider landing", () => {
       store,
       now: () => new Date("2026-08-14T20:00:05.000Z"),
     };
-    await expect(runProviderLanding(input)).rejects.toMatchObject({
-      code: "provider-rejected",
+    await expect(runProviderLanding(input)).resolves.toMatchObject({
+      events: {
+        status: "running",
+        pauseScope: "stream",
+        resumeAfter: "2026-08-15T20:00:05.000Z",
+      },
     });
     expect(store.checkpoints.get("events")?.resumeAfter).toBe(
       "2026-08-15T20:00:05.000Z",
@@ -2461,6 +3128,244 @@ describe("universal provider landing", () => {
     await runProviderLanding(input);
     expect(fetchEvents).toHaveBeenCalledTimes(1);
     expect(fetchOdds).toHaveBeenCalledTimes(1);
+  });
+
+  it("defers a rejected catalog sport without fabricating coverage and later self-heals", async () => {
+    const store = new MemoryLandingStore();
+    const snapshot = catalog({
+      sports: ["baseball", "futsal", "golf"].map((providerSportId) => ({
+        providerSportId,
+        displayName: providerSportId,
+        eventCount: 1,
+        liveCount: 0,
+        providerLeagueIds: [],
+      })),
+      leagues: [
+        {
+          providerLeagueId: "mlb",
+          displayName: "MLB",
+          providerSportId: "baseball",
+          eventCount: 1,
+          liveCount: 0,
+        },
+      ],
+      sourceRows: 4,
+    });
+    let rejectFutsal = true;
+    const fetchEvents = vi
+      .fn<ProviderLandingSource["fetchEvents"]>()
+      .mockImplementation((partition) => {
+        if (partition.sport === "futsal" && rejectFutsal)
+          return Promise.reject(
+            new SharpApiError(
+              "provider-rejected",
+              false,
+              undefined,
+              "universal-events:http-400",
+              "invalid_filter",
+              400,
+              "request-1786811503722601-3299637",
+            ),
+          );
+        return Promise.resolve(
+          eventPage([
+            {
+              ...event(`event-${partition.sport}`),
+              sport: partition.sport,
+              league: `${partition.sport}-league`,
+            },
+          ]),
+        );
+      });
+    const emit = vi.fn();
+
+    let clock = "2026-08-15T16:30:00.000Z";
+    const input = {
+      source: source({
+        fetchCatalog: vi.fn(() => Promise.resolve(snapshot)),
+        fetchEvents,
+      }),
+      store,
+      now: () => new Date(clock),
+      metrics: { emit },
+    };
+    const result = await runProviderLanding(input);
+
+    expect(
+      fetchEvents.mock.calls.map(([partition]) => partition.sport),
+    ).toEqual(["baseball", "futsal", "golf"]);
+    expect(result.events).toMatchObject({
+      status: "running",
+      pauseScope: "stream",
+      eventDeferredPartitions: [1],
+      eventPrimaryTraversalComplete: true,
+      counts: {
+        pages: 3,
+        sourceRows: 2,
+        landedRows: 2,
+        quarantinedRows: 0,
+        warningRows: 0,
+      },
+    });
+    const quarantine = store.records.find(
+      ({ recordType, endpoint }) =>
+        recordType === "quarantine" && endpoint === "events",
+    );
+    expect(quarantine).toMatchObject({
+      recordType: "quarantine",
+      endpoint: "events",
+      value: {
+        reason: "provider-filter-rejected",
+        providerCode: "invalid_filter",
+        httpStatus: 400,
+        requestId: "request-1786811503722601-3299637",
+      },
+    });
+    expect(quarantine?.value).not.toHaveProperty("sourceSchemaHash");
+    expect(emit).toHaveBeenCalledWith("ProviderLandingFailure", 1, {
+      stream: "events",
+      reason: "provider-filter-rejected",
+    });
+    expect(emit).toHaveBeenCalledWith("ProviderLandingPage", 1, {
+      stream: "events",
+      outcome: "rejected",
+    });
+
+    rejectFutsal = false;
+    clock = "2026-08-15T16:46:00.000Z";
+    const healed = await runProviderLanding(input);
+    expect(healed.events).toMatchObject({
+      status: "complete",
+      counts: {
+        pages: 4,
+        sourceRows: 3,
+        landedRows: 3,
+        quarantinedRows: 0,
+      },
+    });
+  });
+
+  it("bisects a rejected multi-league filter in one invocation and defers only the bad leaf", async () => {
+    const store = new MemoryLandingStore();
+    const snapshot = catalog({
+      sports: [
+        {
+          providerSportId: "baseball",
+          displayName: "Baseball",
+          eventCount: 1,
+          liveCount: 0,
+          providerLeagueIds: ["mlb"],
+        },
+        {
+          providerSportId: "tennis",
+          displayName: "Tennis",
+          eventCount: 4_000,
+          liveCount: 0,
+          providerLeagueIds: ["bad-league", "good-league"],
+        },
+      ],
+      leagues: [
+        {
+          providerLeagueId: "mlb",
+          displayName: "MLB",
+          providerSportId: "baseball",
+          eventCount: 1,
+          liveCount: 0,
+        },
+        ...["bad-league", "good-league"].map((providerLeagueId) => ({
+          providerLeagueId,
+          displayName: providerLeagueId,
+          providerSportId: "tennis",
+          eventCount: 1_500,
+          liveCount: 0,
+        })),
+      ],
+      sourceRows: 5,
+    });
+    let rejectBadLeague = true;
+    const fetchEvents = vi
+      .fn<ProviderLandingSource["fetchEvents"]>()
+      .mockImplementation((partition) => {
+        if (partition.leagues?.includes("bad-league") && rejectBadLeague)
+          return Promise.reject(
+            new SharpApiError(
+              "provider-rejected",
+              false,
+              undefined,
+              "universal-events:http-400",
+              "invalid_filter",
+              400,
+              "request-filter-split",
+            ),
+          );
+        return Promise.resolve(
+          eventPage([
+            {
+              ...event(`event-${partition.sport}`),
+              sport: partition.sport,
+            },
+          ]),
+        );
+      });
+    let clock = "2026-08-15T16:45:00.000Z";
+    const input = {
+      source: source({
+        fetchCatalog: vi.fn(() => Promise.resolve(snapshot)),
+        fetchEvents,
+      }),
+      store,
+      now: () => new Date(clock),
+    };
+
+    const deferred = await runProviderLanding(input);
+    expect(deferred.events).toMatchObject({
+      status: "running",
+      pauseScope: "stream",
+      counts: { pages: 4, sourceRows: 2, landedRows: 2 },
+      position: { partition: 1, offset: 0 },
+      eventDeferredPartitions: [1],
+      eventPrimaryTraversalComplete: true,
+      eventPartitions: [
+        { sport: "baseball" },
+        { sport: "tennis", leagues: ["bad-league"] },
+        { sport: "tennis", leagues: ["good-league"] },
+      ],
+    });
+    expect(deferred.events?.sweepId).not.toContain("recovery");
+    expect(
+      fetchEvents.mock.calls.map(([partition]) => [
+        partition.sport,
+        partition.leagues,
+      ]),
+    ).toEqual([
+      ["baseball", undefined],
+      ["tennis", ["bad-league", "good-league"]],
+      ["tennis", ["bad-league"]],
+      ["tennis", ["good-league"]],
+    ]);
+
+    rejectBadLeague = false;
+    clock = "2026-08-15T17:01:00.000Z";
+    const completed = await runProviderLanding(input);
+    expect(completed.events).toMatchObject({
+      status: "complete",
+      counts: {
+        pages: 5,
+        sourceRows: 3,
+        landedRows: 3,
+        quarantinedRows: 0,
+      },
+    });
+    const quarantine = store.records.find(
+      ({ recordType, endpoint }) =>
+        recordType === "quarantine" && endpoint === "events",
+    );
+    expect(quarantine).toMatchObject({
+      value: {
+        reason: "provider-filter-rejected",
+        providerCode: "invalid_filter",
+      },
+    });
   });
 
   it.each(["configuration", "unauthorized", "not-entitled"] as const)(

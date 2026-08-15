@@ -2,7 +2,7 @@
 title: 'FTE-DQ-001 Universal SharpAPI Catalog and Landing'
 type: 'feature'
 created: '2026-08-14'
-status: 'in-progress'
+status: 'in-review'
 baseline_commit: '269478994a644b7245484fc23f643dd45777de56'
 review_loop_iteration: 3
 context:
@@ -74,6 +74,7 @@ context:
 - 2026-08-15: A documentation-led live audit found the remaining acquisition blocker. SharpAPI documents `/events` with `limit <= 200`, `offset <= 5000`, and comma-separated sport/league filters; the staging account currently exposes more than 18,000 events, so the unfiltered offset walk cannot complete. The include-empty `/sports` and `/leagues` catalogs remain the dynamic source of truth and no sport or league allowlist is introduced. The event sweep freezes deterministic sport-scoped partitions, adding exact league groups only for large sports, while `/odds` keeps the documented opaque cursor flow with identical filters. A league slug that cannot be represented in the documented comma-separated grammar is quarantined as provider inconsistency while its sport falls back to sport-wide acquisition. Stable non-2xx `error.code` values, nanosecond provider timestamps, and catalog/filter inconsistencies remain bounded evidence rather than prose-matched or silently discarded data.
 - 2026-08-15: The first deployed docs-led sweep completed the 1,762-row catalog and advanced Events, but the unfiltered Odds request at the documented 200-row maximum exceeded the bounded 25-second request timeout. The opaque cursor filter is now fixed at a provider-supported 25 rows, which live staging had already proven completes reliably and with better observed throughput. KEEP: same unfiltered Odds dataset, same cursor on every continuation, no timeout increase, no blind retry of an ambiguous request, and no fabricated completion.
 - 2026-08-15: The next live invocation exposed a persistence-only resume defect: DynamoDB returned the event-partition map as `{offset, partition}` after the worker hashed `{partition, offset}`, so a valid checkpoint failed closed before any provider call. Position hashes now canonicalize each position variant by named fields in one shared database/worker function. The exact deployed checkpoint validates without mutation, and a regression reorders the DynamoDB map keys. KEEP: the existing hash values, crash replay and cycle claims, strong checkpoint validation, and no destructive checkpoint reset.
+- 2026-08-15: SharpAPI's official Events reference says `400 invalid_filter` is limited to malformed numeric pagination and that unmatched filters return `200` with an empty page. Live staging instead returned `400 invalid_filter` for the valid catalog-derived first-page filter `sport=futsal`, including a reproducible bounded request ID; a subsequent include-empty catalog no longer listed that sport or any futsal league. The worker now retains code/status/request ID and the revisioned request position as `provider-filter-rejected` diagnostic evidence, but never counts the rejected request as a provider source row. Multi-league filters bisect deterministically inside the same inactive sweep so valid siblings continue. A rejected singleton enters a bounded deferred queue; later sports continue, the sweep remains running and unpublished, the last completed slot stays current, and retry or a refreshed catalog must close the gap before publication. Other nonretryable rejections remain stream-local pauses, account health is not poisoned, and error prose/body is never retained. KEEP: HTTP status plus stable `error.code` as authority, dynamic catalog planning without allowlists, exact page-attempt and source-row accounting, and fail-closed handling for every non-matching rejection shape.
 
 ## Design Notes
 
@@ -86,12 +87,50 @@ Collection coverage and product support are separate state machines. The landing
 - `pnpm --filter @find-the-edge/infra-cdk test && pnpm phase1:preflight` -- worker resources, permissions, schedules, alarms, and retained-table safety synthesize.
 - `pnpm check && git diff --check` -- repository quality gate passes without unrelated changes.
 
-**Completed after review repairs:** provider 129 passed / 1 skipped; database 563 passed; workers 390 passed / 4 skipped; infrastructure 28 passed. Provider/database/workers/infrastructure typechecks, lints, and builds passed. Root `pnpm check` passed end to end after the docs-led pagination repair: formatting, lint, boundaries, all typechecks, 46 game-state tool tests, all 26 monorepo test tasks, all 15 build tasks, and 34 Playwright desktop/mobile journeys. Protected credential-free staging Phase 1 preflight and `git diff --check` passed. Live read-only documentation probes proved the catalogs are dynamic (separate captures ranged from 29–31 sports and 1,594–1,731 leagues), `include_empty=true` is accepted, ten current league IDs contain the provider's comma delimiter, and one sequential sports/leagues capture briefly disagreed before the next capture converged. The unfiltered Events response reported more than 18,000 rows—beyond SharpAPI's documented 5,000 offset ceiling—while a fresh unfiltered Odds cursor advanced successfully for three pages. These observations are now explicit parser, planner, and recovery contracts rather than operational assumptions. The first protected deployment completed a 1,762-row catalog sweep and persisted a 30-sport event plan; the subsequent live resume found and reproduced a DynamoDB map-order checkpoint defect before provider dispatch, and the canonical hash repair validates that exact stored checkpoint locally without altering it. A redeployed successful Event/Odds resume, completed-sweep reconciliation, and repeated live freshness gate remain required before FTE-DQ-001 may move from `in-progress` to `done` or FTE-DQ-002 may begin.
+**Completed after review repairs:** provider 133 passed / 1 skipped; database 568 passed; workers 400 passed / 4 skipped; infrastructure 28 passed. The current root `pnpm check` passed end to end: formatting, lint, boundaries, all typechecks, 46 game-state tool tests, all 26 monorepo test tasks, all 15 build tasks, and 34 Playwright desktop/mobile journeys. Protected credential-free staging Phase 1 preflight with product-access enforcement explicitly `false` and `git diff --check` passed. Blind Hunter concluded CLEAN and Edge Case Hunter returned `[]` on the final code. Live read-only documentation probes proved the catalogs are dynamic (separate captures ranged from 29–31 sports and 1,594–1,731 leagues), `include_empty=true` is accepted, ten current league IDs contain the provider's comma delimiter, and one sequential sports/leagues capture briefly disagreed before the next capture converged. The unfiltered Events response reported more than 18,000 rows—beyond SharpAPI's documented 5,000 offset ceiling—while a fresh unfiltered Odds cursor advanced successfully for three pages. These observations are now explicit parser, planner, and recovery contracts rather than operational assumptions. The first protected deployment completed a 1,762-row catalog sweep and persisted a 30-sport event plan; the subsequent live resume found and reproduced a DynamoDB map-order checkpoint defect before provider dispatch, and the canonical hash repair validates that exact stored checkpoint locally without altering it. After that repair, staging completed a 1,685-row catalog refresh and advanced Events through 6,095 source rows and Odds through 700 source rows before two additional provider-boundary findings: an ambiguous Odds timeout incorrectly paused both streams, and a now-stale `futsal` catalog partition returned the docs-contradicting `400 invalid_filter`. Stream-scoped pause isolation, deterministic filter refinement, exact request evidence, and unpublished deferred gaps are implemented locally. Redeployed successful Event/Odds resume, completed-sweep reconciliation, and repeated live freshness remain required before FTE-DQ-001 may move from `in-review` to `done` or FTE-DQ-002 may begin.
 
 ## Suggested Review Order
 
-1. `packages/providers/src/sharp-api.ts` and `sharp-api.test.ts`
-2. `packages/database/src/provider-landing-repository.ts` and its tests
-3. `apps/workers/src/provider-landing.ts`, `provider-landing-lambda.ts`, and tests
-4. `infra/cdk/src/foundation.ts` and `foundation.test.ts`
-5. `docs/runbooks/sharpapi.md` and this spec
+**Acquisition and recovery control plane**
+
+- Start with the bounded orchestrator that keeps partial generations unpublished and independently resumable.
+  [`provider-landing.ts:2399`](../../../apps/workers/src/provider-landing.ts#L2399)
+
+- Invalid filters and oversized partitions refine or defer without dropping valid sibling leagues.
+  [`provider-landing.ts:1099`](../../../apps/workers/src/provider-landing.ts#L1099)
+
+- The Lambda entry point coordinates account quota recovery before any paid catalog or page request.
+  [`provider-landing-lambda.ts:159`](../../../apps/workers/src/provider-landing-lambda.ts#L159)
+
+**Provider boundary**
+
+- Strict Events normalization preserves safe rows and quarantines malformed siblings under documented pagination.
+  [`sharp-api.ts:1423`](../../../packages/providers/src/sharp-api.ts#L1423)
+
+- Strict Odds normalization follows opaque cursors and treats absent documented `is_active` as active.
+  [`sharp-api.ts:1537`](../../../packages/providers/src/sharp-api.ts#L1537)
+
+- Catalog discovery remains dynamic while enforcing exact sports/leagues generation and membership evidence.
+  [`sharp-api.ts:2827`](../../../packages/providers/src/sharp-api.ts#L2827)
+
+**Durable publication**
+
+- Checkpoint validation couples plan, cursor history, pause, lineage, and item-size safety invariants.
+  [`provider-landing-repository.ts:553`](../../../packages/database/src/provider-landing-repository.ts#L553)
+
+- Two-slot current-view binding keeps the last completed generation readable during recovery.
+  [`provider-landing-repository.ts:130`](../../../packages/database/src/provider-landing-repository.ts#L130)
+
+- Durable position claims distinguish replay from confirmed cycles before a paid continuation advances.
+  [`provider-landing-repository.ts:1195`](../../../packages/database/src/provider-landing-repository.ts#L1195)
+
+**Operations and proof**
+
+- Staging-only scheduling, async failure delivery, and targeted freshness/diagnostic alarms close the loop.
+  [`foundation.ts:685`](../../../infra/cdk/src/foundation.ts#L685)
+
+- Operator guidance defines dynamic capture, safe evidence, recovery, and the staging reconciliation gate.
+  [`sharpapi.md:1`](../../../docs/runbooks/sharpapi.md#L1)
+
+- The frozen acceptance contract keeps capture separate from serving and forbids partial completion.
+  [`spec-fte-dq-001-universal-sharpapi-catalog-and-landing.md:11`](#L11)

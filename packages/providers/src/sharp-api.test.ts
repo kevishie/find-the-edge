@@ -771,6 +771,57 @@ describe("SharpAPI activation boundary", () => {
     ]);
   });
 
+  it("quarantines comma-bearing sport IDs before event-plan construction", () => {
+    const retrievedAt = "2026-08-15T12:00:01.000Z" as never;
+    const sports = parseSharpApiSportsCatalog(
+      {
+        data: [
+          {
+            id: "motor,sport",
+            name: "Unrepresentable",
+            event_count: 1,
+            live_count: 0,
+            leagues: [],
+          },
+          {
+            id: "tennis",
+            name: "Tennis",
+            event_count: 1,
+            live_count: 0,
+            leagues: [],
+          },
+        ],
+        updated_at: "2026-08-15T12:00:00.123456789Z",
+      },
+      retrievedAt,
+    );
+    const leagues = parseSharpApiLeaguesCatalog(
+      {
+        data: [
+          {
+            id: "unsafe-league",
+            display_name: "Unsafe League",
+            sport: "motor,sport",
+            event_count: 1,
+            live_count: 0,
+          },
+        ],
+        updated_at: "2026-08-15T12:00:00.123456789Z",
+      },
+      retrievedAt,
+    );
+    expect(sports.sports.map(({ providerSportId }) => providerSportId)).toEqual(
+      ["tennis"],
+    );
+    expect(sports.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: "motor,sport" }),
+    ]);
+    expect(leagues.leagues).toEqual([]);
+    expect(leagues.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: "unsafe-league" }),
+    ]);
+  });
+
   it("rejects event requests outside SharpAPI's documented league and offset contract before dispatch", async () => {
     const fetcher = vi.fn<typeof fetch>();
     for (const [filter, offset] of [
@@ -791,29 +842,111 @@ describe("SharpAPI activation boundary", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("retains stable provider error codes without matching prose", async () => {
+  it("retains bounded provider rejection diagnostics without body or logging", async () => {
+    const requestId = "r".repeat(128);
+    const sensitiveProse = "commercial provider body must never escape";
     const fetcher = vi.fn<typeof fetch>(() =>
       Promise.resolve(
         new Response(
           JSON.stringify({
             error: {
               code: "validation_error",
-              message: "wording may change",
+              message: sensitiveProse,
+              details: { paid: sensitiveProse },
             },
           }),
-          { status: 400 },
+          { status: 400, headers: { "x-request-id": requestId } },
         ),
       ),
     );
-    await expect(
-      fetchSharpApiUniversalOddsPage("secret", "opaque-cursor", fetcher),
-    ).rejects.toMatchObject({
-      code: "provider-rejected",
-      providerCode: "validation_error",
-      httpStatus: 400,
-      stage: "universal-odds:http-400",
-    });
+    const consoleSpies = [
+      vi.spyOn(console, "error").mockImplementation(() => undefined),
+      vi.spyOn(console, "warn").mockImplementation(() => undefined),
+      vi.spyOn(console, "log").mockImplementation(() => undefined),
+    ];
+    try {
+      const error = await fetchSharpApiUniversalOddsPage(
+        "secret",
+        "opaque-cursor",
+        fetcher,
+      ).catch((value: unknown) => value);
+      expect(error).toMatchObject({
+        code: "provider-rejected",
+        providerCode: "validation_error",
+        httpStatus: 400,
+        requestId,
+        stage: "universal-odds:http-400",
+      });
+      expect(error).not.toHaveProperty("body");
+      expect(error).not.toHaveProperty("response");
+      expect(JSON.stringify(error)).not.toContain(sensitiveProse);
+      for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled();
+
+      const oversizedRequestId = "x".repeat(129);
+      const oversized = await fetchSharpApiUniversalOddsPage(
+        "secret",
+        "opaque-cursor",
+        () =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({ error: { code: "validation_error" } }),
+              {
+                status: 400,
+                headers: { "x-request-id": oversizedRequestId },
+              },
+            ),
+          ),
+      ).catch((value: unknown) => value);
+      expect(oversized).toMatchObject({
+        code: "provider-rejected",
+        providerCode: "validation_error",
+        httpStatus: 400,
+        requestId: undefined,
+      });
+      for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of consoleSpies) spy.mockRestore();
+    }
   });
+
+  it.each([
+    [401, "invalid_api_key", "unauthorized"],
+    [403, "tier_restricted", "not-entitled"],
+    [429, "rate_limited", "rate-limited"],
+  ] as const)(
+    "retains bounded support diagnostics for HTTP %s",
+    async (status, providerCode, code) => {
+      const requestId = `request-${status}`;
+      const error = await fetchSharpApiUniversalOddsPage(
+        "secret",
+        undefined,
+        vi.fn<typeof fetch>(() =>
+          Promise.resolve(
+            Response.json(
+              {
+                error: {
+                  code: providerCode,
+                  message: "human prose is never retained",
+                  ...(status === 429 ? { retryAfter: 3 } : {}),
+                },
+              },
+              {
+                status,
+                headers: { "x-request-id": requestId },
+              },
+            ),
+          ),
+        ),
+      ).catch((value: unknown) => value);
+      expect(error).toMatchObject({
+        code,
+        providerCode,
+        httpStatus: status,
+        requestId,
+      });
+      expect(JSON.stringify(error)).not.toContain("human prose");
+    },
+  );
 
   it("uses longer bounded timeouts only for universal acquisition calls", async () => {
     const timeout = vi
@@ -993,6 +1126,25 @@ describe("SharpAPI activation boundary", () => {
         retrievedAt,
       ),
     ).toThrow("invalid-response");
+    expect(
+      parseSharpApiUniversalEventsPage(
+        {
+          data: [universalEventRow()],
+          pagination: {
+            count: 1,
+            total: 5_300,
+            has_more: true,
+            next_offset: 5_200,
+          },
+        },
+        retrievedAt,
+        5_000,
+      ),
+    ).toMatchObject({
+      requestedOffset: 5_000,
+      nextOffset: 5_200,
+      providerTotal: 5_300,
+    });
     expect(() =>
       parseSharpApiUniversalEventsPage(
         {
@@ -1033,6 +1185,21 @@ describe("SharpAPI activation boundary", () => {
         },
         retrievedAt,
         0,
+      ),
+    ).toThrow("invalid-response");
+    expect(() =>
+      parseSharpApiUniversalEventsPage(
+        {
+          data: [universalEventRow()],
+          pagination: {
+            count: 1,
+            total: 5_200,
+            has_more: true,
+            next_offset: 5_200,
+          },
+        },
+        retrievedAt,
+        5_000,
       ),
     ).toThrow("invalid-response");
     expect(
@@ -1347,18 +1514,28 @@ describe("SharpAPI activation boundary", () => {
             odds_probability: undefined,
           }),
           universalOddsRow({ id: "invalid-lifecycle", is_active: "yes" }),
+          universalOddsRow({
+            id: "documented-default-active",
+            is_active: undefined,
+          }),
           universalOddsRow({ id: "valid-sibling" }),
         ],
         pagination: {
-          count: 3,
+          count: 4,
           has_more: false,
           next_cursor: null,
         },
       },
       "2026-08-14T20:00:00.000Z" as never,
     );
-    expect(page.records.map(({ providerPriceId }) => providerPriceId)).toEqual([
-      "valid-sibling",
+    expect(
+      page.records.map(({ providerPriceId, isActive }) => ({
+        providerPriceId,
+        isActive,
+      })),
+    ).toEqual([
+      { providerPriceId: "documented-default-active", isActive: true },
+      { providerPriceId: "valid-sibling", isActive: true },
     ]);
     expect(
       page.quarantines.map(({ providerRecordId }) => providerRecordId),

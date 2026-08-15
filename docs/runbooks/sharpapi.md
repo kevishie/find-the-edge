@@ -57,16 +57,54 @@ the provider may return `has_more=false` and `next_offset=null` at the ceiling
 while `total` remains larger. The catalog-derived event plan groups every valid
 league slug under conservative row, count, and encoded-query bounds, freezes
 the exact sport/league filters in both the catalog and event checkpoints, and
-reconciles `total` separately inside each partition. A live league partition
-above the reachable bound splits deterministically and restarts the inactive
-sweep; an indivisible sport or league above the provider's reachable offset
-range fails visibly without publishing a partial generation.
+reconciles `total` separately inside each partition. A live multi-league
+partition above the reachable bound splits deterministically inside the inactive
+sweep. If the denominator grows only after later offset pages, the worker
+abandons that inactive generation, preserves the last complete slot, and
+restarts from a refined plan without publishing rows it can no longer reconcile.
+An indivisible oversized sport or league becomes a durable deferred coverage
+gap: later catalog partitions continue, but the event sweep cannot publish until
+the leaf becomes reachable or a fresh catalog removes it. If the complete
+catalog would require an event plan beyond the checkpoint's bounded capacity,
+the catalog snapshot still lands while event acquisition stays inactive and an
+immediate capacity diagnostic alerts; no truncated plan is treated as complete.
 SharpAPI documents `league` as a comma-separated filter and its catalog IDs as
 filter inputs. A catalog ID containing a comma cannot be represented atomically
 under that contract. Such a provider inconsistency is retained as
 `unrepresentable-filter-id` quarantine evidence, while that sport falls back to
 a sport-wide Events partition so its events are still acquired. It is never
 silently discarded or misinterpreted as two leagues.
+
+SharpAPI's Events reference documents `400 invalid_filter` only for malformed
+numeric `limit` or `offset` values; a filter that matches nothing is documented
+to return `200` with `data: null`, `count: 0`, and `total: 0`. On 2026-08-15, a
+staging sweep whose frozen catalog plan still contained `futsal` received
+`400 invalid_filter` for the valid request
+`/events?sport=futsal&limit=200&offset=0`. A bounded one-row follow-up reproduced
+the same status and code, while the next include-empty catalog no longer
+contained `futsal` or any futsal league. This is treated as a provider catalog /
+filter inconsistency, not as an empty successful page and not as an account
+failure. The worker retains the stable error code, HTTP status, bounded
+`X-Request-Id`, and exact request-position hash in one diagnostic quarantine
+record. That diagnostic is a paid-request outcome, not a provider source row:
+it increments the exact page-attempt count but never the source, landed, or
+quarantined-row reconciliation counts. A rejected multi-league partition is
+bisected deterministically inside the same inactive sweep and invocation until
+the bad catalog member is isolated, so valid siblings continue without replaying
+earlier pages. Every refinement has a revisioned durable position claim and
+retains the original completed-catalog plan identity.
+
+A rejected singleton is moved to a bounded deferred queue while every later
+catalog partition continues. The inactive sweep remains `running` and cannot
+publish a partial generation; readers stay bound to the last completed slot.
+After the primary pass, each deferred leaf is retried no faster than every
+fifteen minutes. A successful documented `200` page reconciles the leaf and may
+complete the sweep. A fresh completed catalog that removes or changes the leaf
+migrates the inactive plan and resolves the stale filter without inventing an
+empty result. It never stores the error body or prose message. Any different
+status/code, any non-initial offset, or an Odds rejection remains on the normal
+fail-closed recovery path. The request ID is the evidence supplied to SharpAPI
+support, as required by its response conventions.
 
 The worker stores bounded, two-slot source snapshots in the retained ingestion
 table. Every non-quarantine sort key starts with `SLOT#0` or `SLOT#1`. A new
@@ -155,9 +193,14 @@ invocation. DynamoDB unprocessed batches retry with capped jitter.
 Terminal provider authorization/configuration failures stop all paid streams
 for that invocation, while independent event or odds failures do not erase the
 other stream's durable progress. Clients branch on the stable SharpAPI
-`error.code`, never its prose `message`. A nonretryable first-page endpoint
-rejection pauses only that landing stream for 24 hours, emits one terminal
-outcome, and does not poison the shared account health used by live odds. A
+`error.code`, never its prose `message`. A nonretryable endpoint rejection pauses
+only that landing stream for 24 hours, persists a bounded support tuple, and does
+not poison the shared account health used by live odds. The one narrow exception
+is the documented contradiction above: exact first-page Events
+`400 invalid_filter` for a catalog-derived filter becomes diagnostic evidence,
+deterministic refinement or a deferred unresolved gap, and later catalog
+partitions continue. The incomplete sweep cannot publish until every deferred
+leaf returns a reconcilable `200` response or a new catalog removes it. A
 rejected non-initial `/odds` cursor is different: the cursor is opaque and tied
 to the exact filter set, so the inactive odds sweep restarts from a new
 provider-issued cursor chain without a 24-hour pause.
@@ -186,7 +229,13 @@ events, or twelve hours for odds. Recovery preserves the original run-age
 boundary, and two consecutive recovery periods alert instead of presenting a
 perpetually young run. Lambda errors require sustained failures; EventBridge
 delivery failures and exhausted asynchronous Lambda-handler failures both reach
-the retained DLQ, whose messages alert immediately. Quarantine rows alert immediately. Warning rows remain exact
+the retained DLQ, whose messages alert immediately. Provider source-row
+quarantines alert immediately and remain exactly reconciled with checkpoint row
+counts. Coverage contradictions and event-plan-capacity failures are support
+diagnostics rather than source rows; they have a separate immediate per-stream
+alarm and retain only bounded code/status/request-position evidence. Expected
+rate limits and ambiguous transport outcomes remain durable but use the sustained
+failure policy instead of the immediate diagnostic alarm. Warning rows remain exact
 metrics and alert only after two consecutive thirty-minute windows. Missing
 completion metrics breach only where this worker is scheduled,
 so inert development and production stacks do not page. Universal acquisition
