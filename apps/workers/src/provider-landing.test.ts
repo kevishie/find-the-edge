@@ -99,7 +99,7 @@ const catalog = (
   ],
   quarantines: [],
   sourceRows: 2,
-  providerUpdatedAt: "2026-08-14T20:00:00.000Z" as never,
+  providerUpdatedAt: "2026-08-14T20:00:00.000Z",
   retrievedAt: "2026-08-14T20:00:01.000Z" as never,
   ...overrides,
 });
@@ -141,7 +141,7 @@ const eventPage = (
   sourceRows: records.length,
   hasMore: false,
   providerTotal: records.length,
-  providerUpdatedAt: "2026-08-14T20:00:00.000Z" as never,
+  providerUpdatedAt: "2026-08-14T20:00:00.000Z",
   retrievedAt: "2026-08-14T20:00:02.000Z" as never,
   ...overrides,
 });
@@ -155,7 +155,7 @@ const oddsPage = (
   sourceRows: records.length,
   hasMore: false,
   providerTotal: records.length,
-  providerUpdatedAt: "2026-08-14T20:00:00.000Z" as never,
+  providerUpdatedAt: "2026-08-14T20:00:00.000Z",
   retrievedAt: "2026-08-14T20:00:03.000Z" as never,
   ...overrides,
 });
@@ -741,13 +741,13 @@ describe("universal provider landing", () => {
           hasMore: true,
           nextOffset: 200,
           providerTotal: 2,
-          providerUpdatedAt: "2026-08-14T20:00:00.000Z" as never,
+          providerUpdatedAt: "2026-08-14T20:00:00.000Z",
         }),
       )
       .mockResolvedValueOnce(
         eventPage([event("event-2")], {
           providerTotal: 2,
-          providerUpdatedAt: "2026-08-14T20:01:00.000Z" as never,
+          providerUpdatedAt: "2026-08-14T20:01:00.000Z",
         }),
       );
     const result = await runProviderLanding({

@@ -200,6 +200,52 @@ const instant = (value: unknown): value is string => {
     new Date(milliseconds).toISOString() === value
   );
 };
+/** SharpAPI's snapshot generation uses up to nanosecond precision. It is a
+ * comparison token, not a JavaScript clock value, so retain the exact token
+ * while applying the same calendar and offset bounds as provider parsing. */
+const providerGenerationInstant = (value: unknown): value is string => {
+  if (!canonical(value, 48)) return false;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+      value,
+    );
+  if (!match) return false;
+  const [, year, month, day, hour, minute, second, zoneHour, zoneMinute] =
+    match;
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  const leapYear = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  const offsetHour = zoneHour === undefined ? 0 : Number(zoneHour);
+  const offsetMinute = zoneMinute === undefined ? 0 : Number(zoneMinute);
+  return (
+    m >= 1 &&
+    m <= 12 &&
+    d >= 1 &&
+    d <= daysInMonth[m - 1]! &&
+    Number(hour) <= 23 &&
+    Number(minute) <= 59 &&
+    Number(second) <= 59 &&
+    offsetHour <= 14 &&
+    offsetMinute <= 59 &&
+    (offsetHour < 14 || offsetMinute === 0) &&
+    Number.isFinite(Date.parse(value))
+  );
+};
 const nonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const positiveInteger = (value: unknown): value is number =>
@@ -495,7 +541,7 @@ function validateCheckpoint(
     (checkpoint.providerTotal !== undefined &&
       !nonNegativeInteger(checkpoint.providerTotal)) ||
     (checkpoint.providerUpdatedAt !== undefined &&
-      !instant(checkpoint.providerUpdatedAt)) ||
+      !providerGenerationInstant(checkpoint.providerUpdatedAt)) ||
     (checkpoint.resumeAfter !== undefined &&
       !instant(checkpoint.resumeAfter)) ||
     (checkpoint.pauseScope !== undefined &&

@@ -371,18 +371,15 @@ describe("SharpAPI activation boundary", () => {
     ]);
   });
 
-  it("rejects sub-millisecond provider generations and row timestamps", () => {
+  it("preserves nanosecond provider generations and accepts valid high-precision row timestamps", () => {
     const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
-    for (const updatedAt of [
-      "2026-08-14T20:00:00.000001Z",
-      "2026-08-14T20:00:00.000999Z",
-    ])
-      expect(() =>
-        parseSharpApiSportsCatalog(
-          { data: [], updated_at: updatedAt },
-          retrievedAt,
-        ),
-      ).toThrow(expect.objectContaining({ stage: "sports:updated-at" }));
+    const providerGeneration = "2026-08-14T20:00:00.000984217Z";
+    expect(
+      parseSharpApiSportsCatalog(
+        { data: [], updated_at: providerGeneration },
+        retrievedAt,
+      ),
+    ).toMatchObject({ providerUpdatedAt: providerGeneration });
 
     const events = parseSharpApiUniversalEventsPage(
       {
@@ -406,10 +403,12 @@ describe("SharpAPI activation boundary", () => {
     );
     expect(
       events.records.map(({ providerEventId }) => providerEventId),
-    ).toEqual(["millisecond-event"]);
-    expect(
-      events.quarantines.map(({ providerRecordId }) => providerRecordId),
-    ).toEqual(["submillisecond-event-1", "submillisecond-event-2"]);
+    ).toEqual([
+      "submillisecond-event-1",
+      "submillisecond-event-2",
+      "millisecond-event",
+    ]);
+    expect(events.quarantines).toEqual([]);
 
     const odds = parseSharpApiUniversalOddsPage(
       {
@@ -422,17 +421,28 @@ describe("SharpAPI activation boundary", () => {
             id: "millisecond-price",
             timestamp: "2026-08-14T20:00:00.001Z",
           }),
+          universalOddsRow({
+            id: "minute-precision-event-start",
+            timestamp: "2026-08-14T20:00:00.123456789Z",
+            event_start_time: "2026-08-15T04:00Z",
+            away_team: "",
+          }),
         ],
-        pagination: { count: 2, has_more: false, next_cursor: null, total: 2 },
+        pagination: { count: 3, has_more: false, next_cursor: null, total: 3 },
       },
       retrievedAt,
     );
     expect(odds.records.map(({ providerPriceId }) => providerPriceId)).toEqual([
+      "submillisecond-price",
       "millisecond-price",
+      "minute-precision-event-start",
     ]);
-    expect(odds.quarantines).toEqual([
-      expect.objectContaining({ providerRecordId: "submillisecond-price" }),
-    ]);
+    expect(odds.quarantines).toEqual([]);
+    expect(odds.records[2]).toMatchObject({
+      eventStartsAt: "2026-08-15T04:00:00.000Z",
+      providerTimestamp: "2026-08-14T20:00:00.123Z",
+    });
+    expect(odds.records[2]).not.toHaveProperty("sourceWarnings");
   });
 
   it("quarantines catalog counts outside the JavaScript safe-integer range", () => {
@@ -1460,7 +1470,17 @@ describe("SharpAPI activation boundary", () => {
       ),
     ).rejects.toMatchObject({
       code: "invalid-response",
-      stage: "sports:updated-at",
+      stage: "leagues:catalog-generation",
+    });
+    const nanosecondGeneration = "2026-08-14T20:00:00.000984217Z";
+    await expect(
+      fetchSharpApiCatalog(
+        "secret",
+        catalogFetcher(nanosecondGeneration, nanosecondGeneration, ["atp"]),
+      ),
+    ).resolves.toMatchObject({
+      sourceRows: 2,
+      providerUpdatedAt: nanosecondGeneration,
     });
     for (const [sportUpdatedAt, leagueUpdatedAt] of [
       [undefined, undefined],
@@ -1497,6 +1517,15 @@ describe("SharpAPI activation boundary", () => {
       sourceRows: 2,
       providerUpdatedAt: firstGeneration,
     });
+    await expect(
+      fetchSharpApiCatalog(
+        "secret",
+        catalogFetcher(firstGeneration, firstGeneration, [
+          "atp",
+          "slug-colliding-in-another-sport",
+        ]),
+      ),
+    ).resolves.toMatchObject({ sourceRows: 2 });
   });
 
   it("resolves only exact catalog-backed runtime leagues", () => {
