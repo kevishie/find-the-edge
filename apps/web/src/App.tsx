@@ -1040,7 +1040,8 @@ function SessionBadge({ collapsed }: { readonly collapsed: boolean }) {
         </span>
       </span>
       <button type="button" className="shell-session-out" onClick={signOut}>
-        Sign out
+        <span aria-hidden="true">⇥</span>
+        <span className={collapsed ? "sr-only" : undefined}>Sign out</span>
       </button>
     </div>
   );
@@ -1105,7 +1106,7 @@ function AppShell() {
         </div>
         {/* Only screens that are built out are advertised. The remaining
             routes still resolve for anyone holding a direct link. */}
-        <nav aria-label="Primary navigation">
+        <nav id="primary-navigation" aria-label="Primary navigation">
           {navCollapsed ? (
             <div className="nav-divider" aria-hidden="true" />
           ) : (
@@ -1158,7 +1159,7 @@ function AppShell() {
             title="Scanner"
           >
             <span className="nav-icon" aria-hidden="true">
-              ⚡
+              ✦
             </span>
             <span className={navCollapsed ? "sr-only" : "nav-label"}>
               Scanner
@@ -1166,24 +1167,31 @@ function AppShell() {
           </Link>
         </nav>
         <SessionBadge collapsed={navCollapsed} />
-        <div className="nav-footer">
-          <button
-            type="button"
-            className="nav-toggle"
-            onClick={toggleNav}
-            aria-pressed={navCollapsed}
-            title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
-            aria-label={
-              navCollapsed ? "Expand navigation" : "Collapse navigation"
-            }
-          >
-            <span className="nav-toggle-glyph" aria-hidden="true">
-              {navCollapsed ? "»" : "«"}
-            </span>
-            {!navCollapsed && <span>Collapse</span>}
-          </button>
-        </div>
       </aside>
+      <button
+        type="button"
+        className="nav-toggle"
+        onClick={toggleNav}
+        aria-controls="primary-navigation"
+        aria-pressed={navCollapsed}
+        title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+        aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+      >
+        <svg
+          className="nav-toggle-glyph"
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          aria-hidden="true"
+        >
+          {navCollapsed ? (
+            <path d="M2 2L6 6L2 10M5 2L9 6L5 10" />
+          ) : (
+            <path d="M10 2L6 6L10 10M7 2L3 6L7 10" />
+          )}
+        </svg>
+      </button>
       <GlassNav eventsSearch={eventsSearch} />
       <main>
         <Outlet />

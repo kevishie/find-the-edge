@@ -461,6 +461,7 @@ beforeEach(() => {
   clearSplitsCache();
   window.localStorage.removeItem("fte.splitsView");
   window.localStorage.removeItem("fte.splits.viz");
+  window.localStorage.removeItem("fte.navCollapsed");
 });
 
 const hex = (value: string) => value.repeat(64);
@@ -1917,6 +1918,87 @@ const providerPage = (
 });
 
 describe("Shell navigation", () => {
+  it("uses a top-edge icon control and restores the accessible collapsed rail", async () => {
+    const renderShell = () =>
+      render(
+        <App
+          sessionStore={activeSession()}
+          initialPath="/splits"
+          gamesClient={{
+            ok: true,
+            value: {
+              list: vi.fn(),
+              listSplits: vi.fn(() => Promise.resolve(splitsPage())),
+            },
+          }}
+        />,
+      );
+
+    renderShell();
+
+    expect(await screen.findByText("Betting splits")).toBeInTheDocument();
+    const collapse = screen.getByRole("button", {
+      name: "Collapse navigation",
+    });
+    expect(collapse.parentElement).toHaveClass("shell");
+    expect(collapse.previousElementSibling?.tagName).toBe("ASIDE");
+    expect(collapse).toHaveAttribute("aria-controls", "primary-navigation");
+    expect(collapse).toHaveAttribute("aria-pressed", "false");
+    expect(document.querySelector(".nav-footer")).toBeNull();
+
+    fireEvent.click(collapse);
+
+    const expand = screen.getByRole("button", { name: "Expand navigation" });
+    expect(expand).toHaveAttribute("aria-pressed", "true");
+    expect(document.querySelector(".shell")).toHaveClass("nav-collapsed");
+    expect(window.localStorage.getItem("fte.navCollapsed")).toBe("1");
+    const nav = screen.getByRole("navigation", { name: "Primary navigation" });
+    for (const label of ["Events", "Splits", "Watchlist", "Scanner"])
+      expect(within(nav).getByRole("link", { name: label })).toBeVisible();
+    for (const label of within(nav).getAllByText(
+      /^(Events|Splits|Watchlist|Scanner)$/,
+    ))
+      expect(label).toHaveClass("sr-only");
+    expect(within(nav).getByRole("link", { name: "Splits" })).toHaveClass(
+      "active",
+    );
+
+    cleanup();
+    renderShell();
+
+    expect(
+      await screen.findByRole("button", { name: "Expand navigation" }),
+    ).toBeInTheDocument();
+    expect(document.querySelector(".shell")).toHaveClass("nav-collapsed");
+    expect(await screen.findByText("Betting splits")).toBeInTheDocument();
+  });
+
+  it("still collapses when the saved preference cannot be written", async () => {
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation((key) => {
+        if (key === "fte.navCollapsed")
+          throw new DOMException("Storage denied", "SecurityError");
+      });
+    render(
+      <App
+        sessionStore={activeSession()}
+        initialPath="/events"
+        gamesClient={{ ok: true, value: { list: vi.fn() } }}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Collapse navigation" }),
+    );
+
+    expect(document.querySelector(".shell")).toHaveClass("nav-collapsed");
+    expect(
+      screen.getByRole("button", { name: "Expand navigation" }),
+    ).toBeVisible();
+    setItem.mockRestore();
+  });
+
   it("renders the public landing page at the root without terminal chrome", async () => {
     // A signed-out reader is the only one who sees the pitch.
     render(<App sessionStore={signedIn()} initialPath="/" />);
