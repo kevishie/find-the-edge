@@ -1153,7 +1153,7 @@ describe("universal provider landing", () => {
     },
   );
 
-  it("keeps an ambiguous request charged and stops locally without poisoning live account health", async () => {
+  it("keeps an ambiguous request charged and pauses only its stream without poisoning live account health", async () => {
     const store = new MemoryLandingStore();
     const control = new MemoryOddsControlPlaneStore();
     const healthKey = "sharpapi:account:account";
@@ -1174,7 +1174,9 @@ describe("universal provider landing", () => {
       Promise.reject(new SharpApiError("provider-request-ambiguous")),
     );
     const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>();
-    const fetchOdds = vi.fn<ProviderLandingSource["fetchOdds"]>();
+    const fetchOdds = vi.fn<ProviderLandingSource["fetchOdds"]>(() =>
+      Promise.resolve(oddsPage([odds("price-1")])),
+    );
     const result = await runProviderLanding({
       source: source({ fetchCatalog, fetchEvents, fetchOdds }),
       store,
@@ -1182,12 +1184,50 @@ describe("universal provider landing", () => {
       now: () => new Date("2026-08-14T20:00:05.000Z"),
     });
     expect(result.catalog?.resumeAfter).toBe("2026-08-14T20:15:05.000Z");
+    expect(result.catalog?.pauseScope).toBe("stream");
     expect(fetchEvents).not.toHaveBeenCalled();
-    expect(fetchOdds).not.toHaveBeenCalled();
+    expect(fetchOdds).toHaveBeenCalledOnce();
+    expect(result.odds?.status).toBe("complete");
     expect(blockAccountRateWindow).not.toHaveBeenCalled();
     expect(await control.getHealth(healthKey)).toMatchObject({
       healthy: true,
-      rateWindow: { remaining: 698 },
+      rateWindow: { remaining: 697 },
+    });
+  });
+
+  it("continues event pagination after an ambiguous odds request", async () => {
+    const store = new MemoryLandingStore();
+    const fetchEvents = vi
+      .fn<ProviderLandingSource["fetchEvents"]>()
+      .mockResolvedValueOnce(
+        eventPage([event("event-1")], {
+          hasMore: true,
+          nextOffset: 200,
+          providerTotal: 2,
+        }),
+      )
+      .mockResolvedValueOnce(
+        eventPage([event("event-2")], { providerTotal: 2 }),
+      );
+    const fetchOdds = vi.fn<ProviderLandingSource["fetchOdds"]>(() =>
+      Promise.reject(new SharpApiError("provider-request-ambiguous")),
+    );
+    const result = await runProviderLanding({
+      source: source({ fetchEvents, fetchOdds }),
+      store,
+      now: () => new Date("2026-08-14T20:00:05.000Z"),
+      eventPageBudget: 2,
+      oddsPageBudget: 1,
+    });
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+    expect(result.events).toMatchObject({
+      status: "complete",
+      counts: { pages: 2, landedRows: 2 },
+    });
+    expect(result.odds).toMatchObject({
+      status: "running",
+      pauseScope: "stream",
+      resumeAfter: "2026-08-14T20:10:05.000Z",
     });
   });
 

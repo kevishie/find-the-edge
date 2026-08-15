@@ -931,6 +931,7 @@ const runCatalog = async (input: {
       ["rate-limited", "provider-request-ambiguous"].includes(error.code)
     ) {
       const priorVersion = checkpoint.version;
+      const accountWidePause = error.code === "rate-limited";
       const resumeAfter =
         error.retryAt ??
         new Date(
@@ -939,15 +940,16 @@ const runCatalog = async (input: {
               ? DEFAULT_RATE_PAUSE_MS
               : input.refreshMs),
         ).toISOString();
-      input.rateGate.deferUntil(resumeAfter);
-      if (error.code === "rate-limited")
+      if (accountWidePause) {
+        input.rateGate.deferUntil(resumeAfter);
         await input.accountRate?.rateLimited(resumeAfter, input.now());
+      }
       checkpoint = {
         ...checkpoint,
         version: priorVersion + 1,
         updatedAt: input.now().toISOString(),
         resumeAfter,
-        pauseScope: "account",
+        pauseScope: accountWidePause ? "account" : "stream",
       };
       await input.store.putCheckpoint(checkpoint, priorVersion);
       input.metrics?.emit("ProviderLandingFailure", 1, {
@@ -1318,6 +1320,7 @@ const runPagedStream = async (input: {
         ["rate-limited", "provider-request-ambiguous"].includes(error.code)
       ) {
         const priorVersion = checkpoint.version;
+        const accountWidePause = error.code === "rate-limited";
         const resumeAfter =
           error.retryAt ??
           new Date(
@@ -1326,15 +1329,16 @@ const runPagedStream = async (input: {
                 ? DEFAULT_RATE_PAUSE_MS
                 : input.refreshMs),
           ).toISOString();
-        input.rateGate.deferUntil(resumeAfter);
-        if (error.code === "rate-limited")
+        if (accountWidePause) {
+          input.rateGate.deferUntil(resumeAfter);
           await input.accountRate?.rateLimited(resumeAfter, input.now());
+        }
         checkpoint = {
           ...checkpoint,
           version: priorVersion + 1,
           updatedAt: input.now().toISOString(),
           resumeAfter,
-          pauseScope: "account",
+          pauseScope: accountWidePause ? "account" : "stream",
         };
         await input.store.putCheckpoint(checkpoint, priorVersion);
         input.metrics?.emit("ProviderLandingFailure", 1, {
