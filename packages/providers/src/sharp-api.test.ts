@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { marshall } from "@aws-sdk/util-dynamodb";
 import type { SportKey } from "@find-the-edge/domain";
 import {
   isSharpDerivativeMatchup,
@@ -9,8 +10,15 @@ import {
   parseSharpApiSplitHistoryPage,
   latestSharpApiSplitHistoryByBook,
   parseSharpApiResponseMetadata,
+  parseSharpApiSportsCatalog,
+  parseSharpApiLeaguesCatalog,
+  parseSharpApiUniversalEventsPage,
+  parseSharpApiUniversalOddsPage,
   fetchSharpApiEventOdds,
   fetchSharpApiAccount,
+  fetchSharpApiCatalog,
+  fetchSharpApiUniversalEventsPage,
+  fetchSharpApiUniversalOddsPage,
   fetchSharpApiFeaturedOdds,
   fetchSharpApiOddsPage,
   fetchSharpApiSchedulePage,
@@ -81,6 +89,40 @@ describe("SharpAPI activation boundary", () => {
     ...overrides,
   });
 
+  const universalEventRow = (overrides: Record<string, unknown> = {}) => ({
+    id: "event-universal-1",
+    sport: "tennis",
+    league: "atp",
+    start_time: "2026-08-15T12:00:00.000Z",
+    status: "upcoming",
+    is_live: false,
+    markets: ["moneyline"],
+    books: ["hardrock"],
+    ...overrides,
+  });
+
+  const universalOddsRow = (overrides: Record<string, unknown> = {}) => ({
+    id: "price-universal-1",
+    event_id: "event-universal-1",
+    sport: "tennis",
+    league: "atp",
+    sportsbook: "hardrock",
+    market_type: "moneyline",
+    selection: "Player A",
+    selection_type: "away",
+    odds_american: -115,
+    odds_decimal: 1.87,
+    odds_probability: 0.535,
+    timestamp: "2026-08-14T20:00:00.000Z",
+    is_live: false,
+    is_active: true,
+    is_main_line: true,
+    is_alternate_line: false,
+    is_player_prop: false,
+    is_stale_pregame_price: false,
+    ...overrides,
+  });
+
   it("captures authoritative rate-window metadata without inventing plan quota", () => {
     expect(
       parseSharpApiResponseMetadata(
@@ -106,8 +148,1355 @@ describe("SharpAPI activation boundary", () => {
     expect(
       parseSharpApiResponseMetadata(
         new Headers({ "x-ratelimit-reset": "1785862830000" }),
+        new Date("2026-08-04T17:00:00.000Z"),
       ).rateWindow.resetsAt,
     ).toBe("2026-08-04T17:00:30.000Z");
+  });
+
+  it("bounds untrusted rate timestamps without throwing RangeError", () => {
+    expect(() =>
+      parseSharpApiResponseMetadata(
+        new Headers({
+          "x-ratelimit-reset": "9007199254740991",
+          "retry-after": "9007199254740991",
+        }),
+        new Date("2026-08-04T12:00:00.000Z"),
+      ),
+    ).not.toThrow();
+    expect(
+      parseSharpApiResponseMetadata(
+        new Headers({
+          "x-ratelimit-reset": "9007199254740991",
+          "retry-after": "9007199254740991",
+        }),
+        new Date("2026-08-04T12:00:00.000Z"),
+      ),
+    ).toEqual({ rateWindow: {} });
+  });
+
+  it("bounds rate instants to the documented operational horizon", () => {
+    const now = new Date("2026-08-04T17:00:00.000Z");
+    expect(
+      parseSharpApiResponseMetadata(
+        new Headers({
+          "x-ratelimit-reset": "1785862830",
+          "retry-after": "Tue, 04 Aug 2026 17:00:45 GMT",
+        }),
+        now,
+      ),
+    ).toEqual({
+      rateWindow: { resetsAt: "2026-08-04T17:00:30.000Z" },
+      retryAt: "2026-08-04T17:00:45.000Z",
+    });
+    expect(
+      parseSharpApiResponseMetadata(
+        new Headers({
+          "x-ratelimit-reset": "Fri, 31 Dec 9999 23:59:59 GMT",
+          "retry-after": "Fri, 31 Dec 9999 23:59:59 GMT",
+        }),
+        now,
+      ),
+    ).toEqual({ rateWindow: {} });
+    expect(
+      parseSharpApiResponseMetadata(
+        new Headers({
+          "x-ratelimit-reset": "86401",
+          "retry-after": "86401",
+        }),
+        now,
+      ),
+    ).toEqual({ rateWindow: {} });
+  });
+
+  it("discovers arbitrary provider sports and leagues without a product allowlist", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    expect(
+      parseSharpApiSportsCatalog(
+        {
+          updated_at: retrievedAt,
+          data: [
+            {
+              id: "tennis",
+              name: "Tennis",
+              numerical_id: 7,
+              event_count: 895,
+              live_count: 12,
+              leagues: ["atp", "wta"],
+            },
+            {
+              id: "future_provider_sport",
+              name: "Future Provider Sport",
+              event_count: 1,
+              live_count: 0,
+              leagues: ["future_league"],
+            },
+          ],
+        },
+        retrievedAt,
+      ).sports,
+    ).toMatchObject([
+      {
+        providerSportId: "tennis",
+        displayName: "Tennis",
+        numericalId: 7,
+        eventCount: 895,
+        liveCount: 12,
+        providerLeagueIds: ["atp", "wta"],
+      },
+      {
+        providerSportId: "future_provider_sport",
+        displayName: "Future Provider Sport",
+        eventCount: 1,
+        liveCount: 0,
+        providerLeagueIds: ["future_league"],
+      },
+    ]);
+    expect(
+      parseSharpApiLeaguesCatalog(
+        {
+          updated_at: retrievedAt,
+          data: [
+            {
+              id: "atp",
+              display_name: "ATP",
+              sport: "tennis",
+              event_count: 649,
+              live_count: 4,
+            },
+          ],
+        },
+        retrievedAt,
+      ).leagues,
+    ).toMatchObject([
+      {
+        providerLeagueId: "atp",
+        displayName: "ATP",
+        providerSportId: "tennis",
+        eventCount: 649,
+        liveCount: 4,
+      },
+    ]);
+  });
+
+  it("accepts catalogues beyond the former 5,000-row ceiling within the hard cap", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    const data = Array.from({ length: 5_001 }, (_, index) => ({
+      id: `league-${index}`,
+      display_name: `League ${index}`,
+      sport: "provider-sport",
+      event_count: 0,
+      live_count: 0,
+    }));
+    const parsed = parseSharpApiLeaguesCatalog({ data }, retrievedAt);
+    expect(parsed.sourceRows).toBe(5_001);
+    expect(parsed.leagues).toHaveLength(5_001);
+    expect(parsed.quarantines).toEqual([]);
+
+    expect(() =>
+      parseSharpApiLeaguesCatalog(
+        { data: Array.from({ length: 50_001 }, () => null) },
+        retrievedAt,
+      ),
+    ).toThrow(expect.objectContaining({ stage: "leagues:data" }));
+  });
+
+  it("keeps provider generation and total optional but rejects malformed present values", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    expect(
+      parseSharpApiSportsCatalog({ data: [] }, retrievedAt),
+    ).not.toHaveProperty("providerUpdatedAt");
+    expect(
+      parseSharpApiUniversalEventsPage(
+        {
+          data: [],
+          pagination: { has_more: false, next_offset: null },
+        },
+        retrievedAt,
+      ),
+    ).not.toHaveProperty("providerTotal");
+    expect(() =>
+      parseSharpApiSportsCatalog({ data: [], updated_at: null }, retrievedAt),
+    ).toThrow(expect.objectContaining({ stage: "sports:updated-at" }));
+    for (const total of [null, "1", -1, 1.5])
+      expect(() =>
+        parseSharpApiUniversalEventsPage(
+          {
+            data: [],
+            pagination: { has_more: false, next_offset: null, total },
+          },
+          retrievedAt,
+        ),
+      ).toThrow(
+        expect.objectContaining({ stage: "universal-events:pagination-total" }),
+      );
+  });
+
+  it("rejects impossible provider calendar dates and UTC offsets before normalization", () => {
+    const page = parseSharpApiUniversalEventsPage(
+      {
+        data: [
+          universalEventRow({
+            id: "february-thirtieth",
+            start_time: "2026-02-30T12:00:00.000Z",
+          }),
+          universalEventRow({
+            id: "offset-hour-too-large",
+            start_time: "2026-02-28T12:00:00.000+15:00",
+          }),
+          universalEventRow({
+            id: "offset-minute-too-large",
+            start_time: "2026-02-28T12:00:00.000+14:01",
+          }),
+          universalEventRow({
+            id: "valid-leap-day",
+            start_time: "2028-02-29T12:00:00.000+14:00",
+          }),
+        ],
+        pagination: { count: 4, has_more: false, next_offset: null, total: 4 },
+      },
+      "2026-08-14T20:00:00.000Z" as never,
+    );
+    expect(page.records).toEqual([
+      expect.objectContaining({
+        providerEventId: "valid-leap-day",
+        startsAt: "2028-02-28T22:00:00.000Z",
+      }),
+    ]);
+    expect(
+      page.quarantines.map(({ providerRecordId }) => providerRecordId),
+    ).toEqual([
+      "february-thirtieth",
+      "offset-hour-too-large",
+      "offset-minute-too-large",
+    ]);
+  });
+
+  it("rejects sub-millisecond provider generations and row timestamps", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    for (const updatedAt of [
+      "2026-08-14T20:00:00.000001Z",
+      "2026-08-14T20:00:00.000999Z",
+    ])
+      expect(() =>
+        parseSharpApiSportsCatalog(
+          { data: [], updated_at: updatedAt },
+          retrievedAt,
+        ),
+      ).toThrow(expect.objectContaining({ stage: "sports:updated-at" }));
+
+    const events = parseSharpApiUniversalEventsPage(
+      {
+        data: [
+          universalEventRow({
+            id: "submillisecond-event-1",
+            start_time: "2026-08-15T12:00:00.000001Z",
+          }),
+          universalEventRow({
+            id: "submillisecond-event-2",
+            start_time: "2026-08-15T12:00:00.000999Z",
+          }),
+          universalEventRow({
+            id: "millisecond-event",
+            start_time: "2026-08-15T12:00:00.001Z",
+          }),
+        ],
+        pagination: { count: 3, has_more: false, next_offset: null, total: 3 },
+      },
+      retrievedAt,
+    );
+    expect(
+      events.records.map(({ providerEventId }) => providerEventId),
+    ).toEqual(["millisecond-event"]);
+    expect(
+      events.quarantines.map(({ providerRecordId }) => providerRecordId),
+    ).toEqual(["submillisecond-event-1", "submillisecond-event-2"]);
+
+    const odds = parseSharpApiUniversalOddsPage(
+      {
+        data: [
+          universalOddsRow({
+            id: "submillisecond-price",
+            timestamp: "2026-08-14T20:00:00.000001Z",
+          }),
+          universalOddsRow({
+            id: "millisecond-price",
+            timestamp: "2026-08-14T20:00:00.001Z",
+          }),
+        ],
+        pagination: { count: 2, has_more: false, next_cursor: null, total: 2 },
+      },
+      retrievedAt,
+    );
+    expect(odds.records.map(({ providerPriceId }) => providerPriceId)).toEqual([
+      "millisecond-price",
+    ]);
+    expect(odds.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: "submillisecond-price" }),
+    ]);
+  });
+
+  it("quarantines catalog counts outside the JavaScript safe-integer range", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    for (const unsafeField of ["event_count", "live_count"] as const) {
+      const parsed = parseSharpApiSportsCatalog(
+        {
+          data: [
+            {
+              id: `unsafe-${unsafeField}`,
+              name: "Unsafe Count",
+              event_count: 0,
+              live_count: 0,
+              leagues: [],
+              [unsafeField]: Number.MAX_SAFE_INTEGER + 1,
+            },
+            {
+              id: `safe-${unsafeField}`,
+              name: "Safe Count",
+              event_count: 0,
+              live_count: 0,
+              leagues: [],
+            },
+          ],
+        },
+        retrievedAt,
+      );
+      expect(
+        parsed.sports.map(({ providerSportId }) => providerSportId),
+      ).toEqual([`safe-${unsafeField}`]);
+      expect(parsed.quarantines).toEqual([
+        expect.objectContaining({ providerRecordId: `unsafe-${unsafeField}` }),
+      ]);
+    }
+  });
+
+  it("lands supported universal rows and quarantines invalid siblings", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    const events = parseSharpApiUniversalEventsPage(
+      {
+        updated_at: retrievedAt,
+        data: [
+          {
+            id: "atp-player-a-player-b",
+            uuid: "event-uuid",
+            external_ids: { provider_b: "other-id" },
+            sport: "tennis",
+            league: "atp",
+            home_team: "Player B",
+            away_team: "Player A",
+            start_time: "2026-08-15T12:00:00.000Z",
+            status: "upcoming",
+            is_live: false,
+            markets: ["moneyline"],
+            books: ["hardrock"],
+          },
+          { id: "broken", sport: "tennis" },
+        ],
+        pagination: {
+          has_more: true,
+          next_offset: 200,
+          total: 400,
+        },
+      },
+      retrievedAt,
+    );
+    expect(events).toMatchObject({
+      sourceRows: 2,
+      hasMore: true,
+      nextOffset: 200,
+      providerTotal: 400,
+      records: [{ providerEventId: "atp-player-a-player-b", sport: "tennis" }],
+      quarantines: [
+        {
+          rowIndex: 1,
+          providerRecordId: "broken",
+          reason: "invalid-row",
+        },
+      ],
+    });
+
+    const odds = parseSharpApiUniversalOddsPage(
+      {
+        data: [
+          {
+            id: "price-1",
+            event_id: "atp-player-a-player-b",
+            event_uuid: "event-uuid",
+            sport: "tennis",
+            league: "atp",
+            sportsbook: "hardrock",
+            home_team: "Player B",
+            away_team: "Player A",
+            market_type: "moneyline",
+            market_id: "market-1",
+            selection: "Player A",
+            selection_type: "away",
+            selection_id: "selection-1",
+            odds_american: -115,
+            odds_decimal: 1.87,
+            odds_probability: 0.535,
+            line: null,
+            event_start_time: "2026-08-15T12:00:00.000Z",
+            timestamp: "2026-08-14T19:59:00.000Z",
+            is_live: false,
+            is_active: true,
+            is_main_line: true,
+          },
+          "unexpected-row",
+        ],
+        pagination: {
+          has_more: true,
+          next_cursor: "next-cursor",
+          next_offset: 200,
+        },
+      },
+      retrievedAt,
+    );
+    expect(odds).toMatchObject({
+      sourceRows: 2,
+      hasMore: true,
+      nextCursor: "next-cursor",
+      records: [
+        {
+          providerPriceId: "price-1",
+          sport: "tennis",
+          marketType: "moneyline",
+          americanOdds: -115,
+        },
+      ],
+      quarantines: [{ rowIndex: 1, reason: "invalid-row" }],
+    });
+  });
+
+  it("lands optional event warnings and quarantines capture-critical odds drift", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    const events = parseSharpApiUniversalEventsPage(
+      {
+        data: [
+          {
+            id: "future-sport-event",
+            uuid: 17,
+            external_ids: { good: "alias", bad: 99 },
+            sport: "future_provider_sport",
+            league: "future_league",
+            home_team: "Home",
+            away_team: { display: "Away" },
+            start_time: "2026-08-15T12:00:00.000Z",
+            status: "upcoming",
+            is_live: false,
+            markets: ["moneyline", null],
+            books: "new-book",
+          },
+        ],
+        pagination: { has_more: false, next_offset: null, total: 1 },
+      },
+      retrievedAt,
+    );
+    expect(events.quarantines).toEqual([]);
+    expect(events.records[0]).toMatchObject({
+      providerEventId: "future-sport-event",
+      externalIds: { good: "alias" },
+      marketKeys: ["moneyline"],
+      sportsbookIds: [],
+      sourceWarnings: [
+        "uuid-invalid",
+        "away-participant-invalid",
+        "external-ids-entry-invalid",
+        "markets-entry-invalid",
+        "books-invalid",
+      ],
+    });
+
+    const odds = parseSharpApiUniversalOddsPage(
+      {
+        data: [
+          {
+            id: "future-price",
+            event_id: "future-sport-event",
+            sport: "future_provider_sport",
+            league: "future_league",
+            sportsbook: "new-book",
+            market_type: "new-market",
+            selection: "Selection",
+            selection_type: "side",
+            odds_american: "-110",
+            event_start_time: "not-an-instant",
+            timestamp: "2026-08-14T20:00:00.000Z",
+            is_live: false,
+            is_active: "yes",
+          },
+        ],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      retrievedAt,
+    );
+    expect(odds.records).toEqual([]);
+    expect(odds.quarantines).toHaveLength(1);
+    expect(odds.quarantines[0]).toMatchObject({
+      providerRecordId: "future-price",
+      reason: "invalid-row",
+    });
+    expect(odds.quarantines[0]?.sourceFields).toContain("is_active");
+    expect(odds.quarantines[0]?.sourceFields).toContain("odds_american");
+    expect(odds.quarantines[0]?.sourceSchemaHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("calls the provider-wide catalog, event, and unfiltered odds endpoints", async () => {
+    const responses = [
+      new Response(
+        JSON.stringify({ data: [], updated_at: "2026-08-14T20:00:00.000Z" }),
+      ),
+      new Response(
+        JSON.stringify({ data: [], updated_at: "2026-08-14T20:00:00.000Z" }),
+      ),
+      new Response(
+        JSON.stringify({
+          data: [],
+          pagination: { has_more: false, next_offset: null, total: 200 },
+        }),
+      ),
+      new Response(
+        JSON.stringify({
+          data: [],
+          pagination: { has_more: false, next_cursor: null, next_offset: null },
+        }),
+      ),
+    ];
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(() => Promise.resolve(responses.shift()!));
+    await fetchSharpApiCatalog("secret", fetcher);
+    const events = await fetchSharpApiUniversalEventsPage(
+      "secret",
+      200,
+      fetcher,
+    );
+    await fetchSharpApiUniversalOddsPage("secret", "cursor-1", fetcher);
+    const urls = fetcher.mock.calls.map(
+      ([input]) =>
+        new URL(
+          input instanceof Request
+            ? input.url
+            : input instanceof URL
+              ? input.href
+              : input,
+        ),
+    );
+    expect(
+      urls
+        .slice(0, 2)
+        .map(({ pathname }) => pathname)
+        .sort(),
+    ).toEqual(["/api/v1/leagues", "/api/v1/sports"]);
+    expect(urls[2]?.pathname).toBe("/api/v1/events");
+    expect(urls[2]?.searchParams.get("offset")).toBe("200");
+    expect(events.requestedOffset).toBe(200);
+    expect(urls[3]?.pathname).toBe("/api/v1/odds");
+    expect([...urls[3]!.searchParams.keys()].sort()).toEqual([
+      "cursor",
+      "limit",
+    ]);
+    expect(urls[3]?.searchParams.get("limit")).toBe("25");
+    expect(urls[3]?.searchParams.get("cursor")).toBe("cursor-1");
+  });
+
+  it("uses longer bounded timeouts only for universal acquisition calls", async () => {
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(new AbortController().signal);
+    const responses = [
+      new Response(
+        JSON.stringify({
+          data: [],
+          updated_at: "2026-08-14T20:00:00.000Z",
+        }),
+      ),
+      new Response(
+        JSON.stringify({
+          data: [],
+          updated_at: "2026-08-14T20:00:00.000Z",
+        }),
+      ),
+      new Response(
+        JSON.stringify({
+          data: [],
+          pagination: { has_more: false, next_offset: null, total: 0 },
+        }),
+      ),
+      new Response(
+        JSON.stringify({
+          data: [],
+          pagination: { has_more: false, next_cursor: null },
+        }),
+      ),
+      new Response(
+        JSON.stringify({
+          data: {
+            tier: "pro",
+            features: [],
+            rate_limit: { requests_per_minute: 60, max_books: 25 },
+            streaming: { enabled: false },
+          },
+        }),
+      ),
+    ];
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(responses.shift()!),
+    );
+    try {
+      await fetchSharpApiCatalog("secret", fetcher);
+      await fetchSharpApiUniversalEventsPage("secret", 0, fetcher);
+      await fetchSharpApiUniversalOddsPage("secret", undefined, fetcher);
+      await fetchSharpApiAccount("secret", fetcher);
+      expect(timeout.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([
+        20_000, 20_000, 20_000, 25_000, 10_000,
+      ]);
+      expect(
+        fetcher.mock.calls.every(
+          ([, init]) => init?.signal instanceof AbortSignal,
+        ),
+      ).toBe(true);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it("serializes the two catalog requests against the shared rate window", async () => {
+    let resolveSports: ((response: Response) => void) | undefined;
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveSports = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            updated_at: "2026-08-14T20:00:00.000Z",
+            data: [],
+          }),
+          {
+            headers: {
+              "x-ratelimit-limit": "100",
+              "x-ratelimit-remaining": "20",
+            },
+          },
+        ),
+      );
+    const pending = fetchSharpApiCatalog("secret", fetcher);
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    resolveSports?.(
+      new Response(
+        JSON.stringify({
+          updated_at: "2026-08-14T20:00:00.000Z",
+          data: [],
+        }),
+      ),
+    );
+    await expect(pending).resolves.toMatchObject({
+      responseMetadata: { rateWindow: { limit: 100, remaining: 20 } },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels a chunked response as soon as the bounded body cap is exceeded", async () => {
+    let cancelled = false;
+    const chunk = new Uint8Array(5_100_000).fill(32);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk);
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    await expect(
+      fetchSharpApiUniversalOddsPage(
+        "secret",
+        undefined,
+        vi.fn<typeof fetch>(() => Promise.resolve(new Response(body))),
+      ),
+    ).rejects.toMatchObject({ code: "invalid-response" });
+    expect(cancelled).toBe(true);
+  });
+
+  it("rejects malformed UTF-8 in streamed and fallback response bodies", async () => {
+    const malformed = new Uint8Array([0xc3, 0x28]);
+    const streamed = await fetchSharpApiUniversalEventsPage(
+      "secret",
+      0,
+      vi.fn<typeof fetch>(() => Promise.resolve(new Response(malformed))),
+    ).catch((error: unknown) => error);
+    expect(streamed).toMatchObject({
+      code: "invalid-response",
+      stage: "universal-events:utf8",
+    });
+
+    const fallbackResponse = {
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: null,
+      arrayBuffer: () => Promise.resolve(malformed.buffer),
+    } as unknown as Response;
+    const fallback = await fetchSharpApiUniversalEventsPage(
+      "secret",
+      0,
+      vi.fn<typeof fetch>(() => Promise.resolve(fallbackResponse)),
+    ).catch((error: unknown) => error);
+    expect(fallback).toMatchObject({
+      code: "invalid-response",
+      stage: "universal-events:utf8",
+    });
+  });
+
+  it("rejects incoherent universal counts, terminal tokens, and event offset jumps", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    expect(() =>
+      parseSharpApiUniversalEventsPage(
+        {
+          data: [universalEventRow()],
+          pagination: {
+            count: 0,
+            total: 1,
+            has_more: false,
+            next_offset: null,
+          },
+        },
+        retrievedAt,
+      ),
+    ).toThrow("invalid-response");
+    expect(() =>
+      parseSharpApiUniversalEventsPage(
+        {
+          data: [universalEventRow()],
+          pagination: {
+            count: null,
+            total: 1,
+            has_more: false,
+            next_offset: null,
+          },
+        },
+        retrievedAt,
+      ),
+    ).toThrow("invalid-response");
+    expect(() =>
+      parseSharpApiUniversalOddsPage(
+        {
+          data: [universalOddsRow()],
+          pagination: {
+            count: 1,
+            has_more: false,
+            next_cursor: "stale-terminal-cursor",
+          },
+        },
+        retrievedAt,
+      ),
+    ).toThrow("invalid-response");
+    expect(() =>
+      parseSharpApiUniversalEventsPage(
+        {
+          data: [universalEventRow()],
+          pagination: {
+            count: 1,
+            total: 500,
+            has_more: true,
+            next_offset: 400,
+          },
+        },
+        retrievedAt,
+        0,
+      ),
+    ).toThrow("invalid-response");
+    expect(
+      parseSharpApiUniversalEventsPage(
+        {
+          data: [universalEventRow()],
+          pagination: {
+            limit: 200,
+            offset: 200,
+            count: 1,
+            total: 500,
+            has_more: true,
+            next_offset: 400,
+          },
+        },
+        retrievedAt,
+        200,
+      ),
+    ).toMatchObject({ requestedOffset: 200, nextOffset: 400 });
+  });
+
+  it("rejects unsafe-integer universal pagination metadata", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    const unsafe = Number.MAX_SAFE_INTEGER + 1;
+    for (const pagination of [
+      { has_more: false, next_offset: null, count: unsafe },
+      { has_more: false, next_offset: null, limit: unsafe },
+      { has_more: false, next_offset: null, offset: unsafe },
+      { has_more: false, next_offset: null, total: unsafe },
+    ])
+      expect(() =>
+        parseSharpApiUniversalEventsPage({ data: [], pagination }, retrievedAt),
+      ).toThrow("invalid-response");
+  });
+
+  it("accepts only storage-safe bounded universal cursors", async () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    const validUtf8Cursor = "😀".repeat(2_048);
+    expect(
+      parseSharpApiUniversalOddsPage(
+        {
+          data: [universalOddsRow()],
+          pagination: {
+            has_more: true,
+            next_cursor: validUtf8Cursor,
+          },
+        },
+        retrievedAt,
+      ).nextCursor,
+    ).toBe(validUtf8Cursor);
+
+    for (const nextCursor of [
+      "",
+      " padded ",
+      "control\u0001cursor",
+      "control\u0085cursor",
+      "lone-surrogate-\ud800",
+      "x".repeat(4_097),
+    ])
+      expect(() =>
+        parseSharpApiUniversalOddsPage(
+          {
+            data: [universalOddsRow()],
+            pagination: { has_more: true, next_cursor: nextCursor },
+          },
+          retrievedAt,
+        ),
+      ).toThrow(
+        expect.objectContaining({ stage: "universal-odds:pagination" }),
+      );
+
+    await expect(
+      fetchSharpApiUniversalOddsPage(
+        "secret",
+        "lone-surrogate-\ud800",
+        vi.fn<typeof fetch>(),
+      ),
+    ).rejects.toMatchObject({ code: "configuration" });
+  });
+
+  it("quarantines nested DynamoDB-unsafe numbers without losing valid siblings", async () => {
+    const rowJson = (id: string, numberSource: string) => {
+      const base = JSON.stringify(universalEventRow({ id }));
+      return `${base.slice(0, -1)},"provider_extension":{"nested":{"value":${numberSource}}}}`;
+    };
+    const body = `{"data":[${[
+      rowJson("valid-number", "1.5e-100"),
+      rowJson("integer-too-large", "9007199254740992"),
+      rowJson("exponent-too-large", "1e126"),
+      rowJson("exponent-too-small", "1e-131"),
+      rowJson("precision-too-large", "123456789012345678901234567890123456789"),
+    ].join(
+      ",",
+    )}],"pagination":{"has_more":false,"next_offset":null,"total":5}}`;
+    const page = await fetchSharpApiUniversalEventsPage(
+      "secret",
+      0,
+      vi.fn<typeof fetch>(() => Promise.resolve(new Response(body))),
+    );
+    expect(page.records.map(({ providerEventId }) => providerEventId)).toEqual([
+      "valid-number",
+    ]);
+    expect(
+      page.quarantines.map(({ providerRecordId }) => providerRecordId),
+    ).toEqual([
+      "integer-too-large",
+      "exponent-too-large",
+      "exponent-too-small",
+      "precision-too-large",
+    ]);
+    expect(page.sourceRows).toBe(5);
+    expect(() =>
+      marshall(page.records[0] as unknown as Record<string, unknown>),
+    ).not.toThrow();
+  });
+
+  it("never returns an odds number rejected by the default DynamoDB marshaller", () => {
+    const page = parseSharpApiUniversalOddsPage(
+      {
+        data: [
+          universalOddsRow({
+            id: "unsafe-integer",
+            max_bet: Number.MAX_SAFE_INTEGER + 1,
+          }),
+          universalOddsRow({ id: "safe-sibling", max_bet: 2_500.5 }),
+        ],
+        pagination: { has_more: false, next_cursor: null, total: 2 },
+      },
+      "2026-08-14T20:00:00.000Z" as never,
+    );
+    expect(page.records.map(({ providerPriceId }) => providerPriceId)).toEqual([
+      "safe-sibling",
+    ]);
+    expect(page.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: "unsafe-integer" }),
+    ]);
+    expect(() =>
+      marshall(page.records[0] as unknown as Record<string, unknown>),
+    ).not.toThrow();
+  });
+
+  it("rejects lossy known decimal sources in fetched and direct parser rows", async () => {
+    const fetchedRowJson = (id: string, decimalSource: string) =>
+      JSON.stringify(universalOddsRow({ id })).replace(
+        '"odds_decimal":1.87',
+        `"odds_decimal":${decimalSource}`,
+      );
+    const fetched = await fetchSharpApiUniversalOddsPage(
+      "secret",
+      undefined,
+      vi.fn<typeof fetch>(() =>
+        Promise.resolve(
+          new Response(
+            `{"data":[${fetchedRowJson(
+              "lossy-source",
+              "1.87000000000000001",
+            )},${fetchedRowJson(
+              "exact-source",
+              "1.87000000000001",
+            )}],"pagination":{"has_more":false,"next_cursor":null,"total":2}}`,
+          ),
+        ),
+      ),
+    );
+    expect(
+      fetched.records.map(({ providerPriceId }) => providerPriceId),
+    ).toEqual(["exact-source"]);
+    expect(fetched.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: "lossy-source" }),
+    ]);
+    expect(() =>
+      marshall(fetched.records[0] as unknown as Record<string, unknown>),
+    ).not.toThrow();
+
+    const direct = parseSharpApiUniversalOddsPage(
+      {
+        data: [
+          universalOddsRow({
+            id: "ambiguous-direct-decimal",
+            odds_decimal: 1.2345678901234567,
+          }),
+          universalOddsRow({
+            id: "bounded-direct-decimal",
+            odds_decimal: 1.23456789012345,
+          }),
+        ],
+        pagination: { has_more: false, next_cursor: null, total: 2 },
+      },
+      "2026-08-14T20:00:00.000Z" as never,
+    );
+    expect(
+      direct.records.map(({ providerPriceId }) => providerPriceId),
+    ).toEqual(["bounded-direct-decimal"]);
+    expect(direct.quarantines).toEqual([
+      expect.objectContaining({
+        providerRecordId: "ambiguous-direct-decimal",
+      }),
+    ]);
+    expect(() =>
+      marshall(direct.records[0] as unknown as Record<string, unknown>),
+    ).not.toThrow();
+  });
+
+  it("quarantines odds without a reconstructable price or valid active lifecycle", () => {
+    const page = parseSharpApiUniversalOddsPage(
+      {
+        data: [
+          universalOddsRow({
+            id: "missing-price",
+            odds_american: undefined,
+            odds_decimal: undefined,
+            odds_probability: undefined,
+          }),
+          universalOddsRow({ id: "invalid-lifecycle", is_active: "yes" }),
+          universalOddsRow({ id: "valid-sibling" }),
+        ],
+        pagination: {
+          count: 3,
+          has_more: false,
+          next_cursor: null,
+        },
+      },
+      "2026-08-14T20:00:00.000Z" as never,
+    );
+    expect(page.records.map(({ providerPriceId }) => providerPriceId)).toEqual([
+      "valid-sibling",
+    ]);
+    expect(
+      page.quarantines.map(({ providerRecordId }) => providerRecordId),
+    ).toEqual(["missing-price", "invalid-lifecycle"]);
+  });
+
+  it("retains bounded complete shape evidence for novel landed fields", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    const base = parseSharpApiUniversalOddsPage(
+      {
+        data: [universalOddsRow()],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      retrievedAt,
+    ).records[0]!;
+    const novel = parseSharpApiUniversalOddsPage(
+      {
+        data: [universalOddsRow({ provider_period: "first-half" })],
+        pagination: { has_more: false, next_cursor: null },
+      },
+      retrievedAt,
+    ).records[0]!;
+    expect(novel.sourceFields).toContain("provider_period");
+    expect(novel.sourceFieldCount).toBe(base.sourceFieldCount! + 1);
+    expect(novel.sourceSchemaHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(novel.sourceSchemaHash).not.toBe(base.sourceSchemaHash);
+
+    const manyFields = Object.fromEntries(
+      Array.from({ length: 70 }, (_, index) => [
+        `novel_${String(index).padStart(2, "0")}`,
+        index,
+      ]),
+    );
+    const bounded = parseSharpApiUniversalEventsPage(
+      {
+        data: [universalEventRow(manyFields)],
+        pagination: { has_more: false, next_offset: null, total: 1 },
+      },
+      retrievedAt,
+    ).records[0]!;
+    expect(bounded.sourceFields).toHaveLength(64);
+    expect(bounded.sourceFieldsTruncated).toBe(true);
+    expect(bounded.sourceFieldCount).toBeGreaterThan(64);
+    expect(bounded.sourceSchemaHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("quarantines storage-unsafe keys without suppressing valid siblings", () => {
+    const page = parseSharpApiUniversalEventsPage(
+      {
+        data: [
+          universalEventRow({ id: "valid-event" }),
+          universalEventRow({ id: "bad\u0001event" }),
+          universalEventRow({ id: "bad\u0085event" }),
+          universalEventRow({ id: "😀".repeat(128) }),
+        ],
+        pagination: { count: 4, has_more: false, next_offset: null, total: 4 },
+      },
+      "2026-08-14T20:00:00.000Z" as never,
+    );
+    expect(page.records.map(({ providerEventId }) => providerEventId)).toEqual([
+      "valid-event",
+    ]);
+    expect(page.quarantines).toHaveLength(3);
+  });
+
+  it("never lands lone-surrogate provider display or participant strings", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    const catalog = parseSharpApiSportsCatalog(
+      {
+        data: [
+          {
+            id: "invalid-display",
+            name: "Broken \ud800 Display",
+            event_count: 0,
+            live_count: 0,
+            leagues: [],
+          },
+          {
+            id: "valid-display",
+            name: "Valid Display 😀",
+            event_count: 0,
+            live_count: 0,
+            leagues: [],
+          },
+        ],
+      },
+      retrievedAt,
+    );
+    expect(
+      catalog.sports.map(({ providerSportId }) => providerSportId),
+    ).toEqual(["valid-display"]);
+    expect(catalog.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: "invalid-display" }),
+    ]);
+
+    const events = parseSharpApiUniversalEventsPage(
+      {
+        data: [
+          universalEventRow({
+            id: "invalid-participant",
+            home_team: "Broken \udfff Participant",
+          }),
+          universalEventRow({
+            id: "valid-participant",
+            home_team: "Valid Participant 😀",
+          }),
+        ],
+        pagination: { count: 2, has_more: false, next_offset: null, total: 2 },
+      },
+      retrievedAt,
+    );
+    expect(events.records).toEqual([
+      expect.objectContaining({
+        providerEventId: "invalid-participant",
+        sourceWarnings: ["home-participant-invalid", "external-ids-invalid"],
+      }),
+      expect.objectContaining({
+        providerEventId: "valid-participant",
+        homeParticipant: "Valid Participant 😀",
+      }),
+    ]);
+    expect(events.records[0]).not.toHaveProperty("homeParticipant");
+
+    const odds = parseSharpApiUniversalOddsPage(
+      {
+        data: [
+          universalOddsRow({
+            id: "invalid-selection",
+            selection: "Broken \ud800 Selection",
+          }),
+          universalOddsRow({
+            id: "valid-selection",
+            selection: "Valid Selection 😀",
+          }),
+        ],
+        pagination: { count: 2, has_more: false, next_cursor: null, total: 2 },
+      },
+      retrievedAt,
+    );
+    expect(odds.records.map(({ providerPriceId }) => providerPriceId)).toEqual([
+      "valid-selection",
+    ]);
+    expect(odds.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: "invalid-selection" }),
+    ]);
+  });
+
+  it("bounds generic nested row traversal without suppressing valid siblings", () => {
+    const page = parseSharpApiUniversalEventsPage(
+      {
+        data: [
+          universalEventRow({
+            id: "oversized-source-tree",
+            provider_extension: Array.from({ length: 100_001 }, () => 1),
+          }),
+          universalEventRow({ id: "valid-event" }),
+        ],
+        pagination: { count: 2, has_more: false, next_offset: null, total: 2 },
+      },
+      "2026-08-14T20:00:00.000Z" as never,
+    );
+    expect(page.records.map(({ providerEventId }) => providerEventId)).toEqual([
+      "valid-event",
+    ]);
+    expect(page.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: "oversized-source-tree" }),
+    ]);
+  });
+
+  it("pre-bounds oversized catalog membership as a row quarantine", () => {
+    const leagues = Array.from(
+      { length: 2_600 },
+      (_, index) =>
+        `league-${String(index).padStart(4, "0")}-${"x".repeat(110)}`,
+    );
+    const page = parseSharpApiSportsCatalog(
+      {
+        data: [
+          {
+            id: "oversized-sport",
+            name: "Oversized Sport",
+            event_count: 1,
+            live_count: 0,
+            leagues,
+          },
+          {
+            id: "valid-sport",
+            name: "Valid Sport",
+            event_count: 0,
+            live_count: 0,
+            leagues: [],
+          },
+        ],
+      },
+      "2026-08-14T20:00:00.000Z" as never,
+    );
+    expect(page.sports.map(({ providerSportId }) => providerSportId)).toEqual([
+      "valid-sport",
+    ]);
+    expect(page.quarantines).toEqual([
+      expect.objectContaining({
+        providerRecordId: "oversized-sport",
+        reason: "invalid-row",
+      }),
+    ]);
+  });
+
+  it("quarantines rows whose encoded snapshot sort key exceeds DynamoDB bounds", () => {
+    const retrievedAt = "2026-08-14T20:00:00.000Z" as never;
+    const boundaryRecordId = `${"😀".repeat(84)}xxxx`;
+    const boundarySport = "😀".repeat(32);
+    const boundaryLeague = `${"😀".repeat(52)}xx`;
+
+    const events = parseSharpApiUniversalEventsPage(
+      {
+        data: [
+          universalEventRow({ id: boundaryRecordId }),
+          universalEventRow({ id: "valid-event" }),
+        ],
+        pagination: { count: 2, has_more: false, next_offset: null, total: 2 },
+      },
+      retrievedAt,
+    );
+    expect(
+      events.records.map(({ providerEventId }) => providerEventId),
+    ).toEqual(["valid-event"]);
+    expect(events.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: boundaryRecordId }),
+    ]);
+
+    const odds = parseSharpApiUniversalOddsPage(
+      {
+        data: [
+          universalOddsRow({ id: boundaryRecordId }),
+          universalOddsRow({ id: "valid-price" }),
+        ],
+        pagination: { count: 2, has_more: false, next_cursor: null, total: 2 },
+      },
+      retrievedAt,
+    );
+    expect(odds.records.map(({ providerPriceId }) => providerPriceId)).toEqual([
+      "valid-price",
+    ]);
+    expect(odds.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: boundaryRecordId }),
+    ]);
+
+    const leagues = parseSharpApiLeaguesCatalog(
+      {
+        data: [
+          {
+            id: boundaryLeague,
+            display_name: "Boundary League",
+            sport: boundarySport,
+            event_count: 1,
+            live_count: 0,
+          },
+          {
+            id: "valid-league",
+            display_name: "Valid League",
+            sport: "baseball",
+            event_count: 1,
+            live_count: 0,
+          },
+        ],
+      },
+      retrievedAt,
+    );
+    expect(
+      leagues.leagues.map(({ providerLeagueId }) => providerLeagueId),
+    ).toEqual(["valid-league"]);
+    expect(leagues.quarantines).toEqual([
+      expect.objectContaining({ providerRecordId: boundaryLeague }),
+    ]);
+  });
+
+  it("rejects cross-generation or incoherent timestamped catalog snapshots", async () => {
+    const catalogFetcher = (
+      sportUpdatedAt: string | undefined,
+      leagueUpdatedAt: string | undefined,
+      sportLeagues: readonly string[],
+    ) => {
+      const responses = [
+        new Response(
+          JSON.stringify({
+            ...(sportUpdatedAt ? { updated_at: sportUpdatedAt } : {}),
+            data: [
+              {
+                id: "tennis",
+                name: "Tennis",
+                event_count: 1,
+                live_count: 0,
+                leagues: sportLeagues,
+              },
+            ],
+          }),
+        ),
+        new Response(
+          JSON.stringify({
+            ...(leagueUpdatedAt ? { updated_at: leagueUpdatedAt } : {}),
+            data: [
+              {
+                id: "atp",
+                display_name: "ATP",
+                sport: "tennis",
+                event_count: 1,
+                live_count: 0,
+              },
+            ],
+          }),
+        ),
+      ];
+      return vi.fn<typeof fetch>(() => Promise.resolve(responses.shift()!));
+    };
+    const firstGeneration = "2026-08-14T20:00:00.000Z";
+    await expect(
+      fetchSharpApiCatalog(
+        "secret",
+        catalogFetcher(
+          "2026-08-14T20:00:00.000001Z",
+          "2026-08-14T20:00:00.000999Z",
+          ["atp"],
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: "invalid-response",
+      stage: "sports:updated-at",
+    });
+    for (const [sportUpdatedAt, leagueUpdatedAt] of [
+      [undefined, undefined],
+      [firstGeneration, undefined],
+      [undefined, firstGeneration],
+    ] as const)
+      await expect(
+        fetchSharpApiCatalog(
+          "secret",
+          catalogFetcher(sportUpdatedAt, leagueUpdatedAt, ["atp"]),
+        ),
+      ).rejects.toMatchObject({
+        code: "invalid-response",
+        stage: "leagues:catalog-generation",
+      });
+    await expect(
+      fetchSharpApiCatalog(
+        "secret",
+        catalogFetcher(firstGeneration, "2026-08-14T20:00:01.000Z", ["atp"]),
+      ),
+    ).rejects.toThrow("invalid-response");
+    await expect(
+      fetchSharpApiCatalog(
+        "secret",
+        catalogFetcher(firstGeneration, firstGeneration, ["wta"]),
+      ),
+    ).rejects.toThrow("invalid-response");
+    await expect(
+      fetchSharpApiCatalog(
+        "secret",
+        catalogFetcher(firstGeneration, firstGeneration, ["atp"]),
+      ),
+    ).resolves.toMatchObject({
+      sourceRows: 2,
+      providerUpdatedAt: firstGeneration,
+    });
   });
 
   it("resolves only exact catalog-backed runtime leagues", () => {
@@ -238,6 +1627,30 @@ describe("SharpAPI activation boundary", () => {
     );
     if (!(error instanceof SharpApiError)) throw new Error("expected-error");
     expect(error.retryAt).toMatch(/^\d{4}-/);
+    expect(calls).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a valid provider reset for 429 when Retry-After is absent", async () => {
+    const resetAt = Date.now() + 30_000;
+    const calls = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: "limited" }), {
+          status: 429,
+          headers: { "x-ratelimit-reset": String(resetAt) },
+        }),
+      ),
+    );
+    const error = await fetchSharpApiFeaturedOdds(
+      sharpApiLeagueByKey("mls"),
+      "secret-key",
+      undefined,
+      calls,
+    ).catch((value: unknown) => value);
+    expect(error).toMatchObject({
+      code: "rate-limited",
+      retryable: true,
+      retryAt: new Date(resetAt).toISOString(),
+    });
     expect(calls).toHaveBeenCalledTimes(1);
   });
 

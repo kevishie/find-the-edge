@@ -21,6 +21,48 @@ sources:
 
 # Epics and Stories: FIND THE EDGE
 
+## 0D. Data-Quality Recovery Rebaseline (2026-08-14)
+
+This rebaseline is authoritative over the roadmap order below. FTE-DQ-001 through FTE-DQ-005 execute before unrelated feature stories. SharpAPI's live catalog defines acquisition coverage; configured leagues and sport-module maturity apply only downstream.
+
+### Epic 15: Universal Provider Acquisition and Data-Quality Recovery
+
+#### FTE-DQ-001: Universal SharpAPI Catalog and Landing
+
+- Outcome: Every discoverable SharpAPI sport, league, event, and entitled unfiltered odds row enters a resumable generic landing layer without a sport, league, market, live-state, or product-support allowlist.
+- In scope: `/sports`, `/leagues`, provider-wide `/events` and `/odds`; current generic records; bounded quarantine evidence; cursor/offset checkpoints; reconciliation metrics; isolated scheduled worker.
+- Out: canonical promotion, sport UI, recommendation strategy, verbatim paid-response archival.
+- Acceptance: every source row is landed or quarantined; incomplete sweeps never report complete; newly discovered catalog entries require no deploy.
+- Status: in-progress pending repeated staging sweep reconciliation.
+
+#### FTE-DQ-002: Restore Served-Sport Schedule and Core-Market Completeness
+
+- Outcome: MLB, NFL, and MLS schedules and offered moneyline/spread/total markets are complete and fresh.
+- Dependencies: FTE-DQ-001.
+- Acceptance: independent schedule denominators reconcile; stale continuations cannot strand a sport; each offered source market is served or has an explicit bounded reason.
+- Status: backlog.
+
+#### FTE-DQ-003: Generic Normalization and Promotion Quarantine
+
+- Outcome: Supported source shapes promote into canonical sport/market records without narrowing acquisition; unsupported shapes remain visible and actionable.
+- Dependencies: FTE-DQ-001.
+- Acceptance: promotion is registry-driven; quarantine reasons/counts are queryable; a new sport requires no acquisition edit.
+- Status: backlog.
+
+#### FTE-DQ-004: Completeness Reconciliation and Release Gate
+
+- Outcome: Missing games, lines, sports, stale sweeps, and unexplained quarantines fail deployment/operations visibly.
+- Dependencies: FTE-DQ-001, FTE-DQ-002, FTE-DQ-003.
+- Acceptance: exact catalog/page/row reconciliation; flagship independent schedule checks; core-market coverage checks; alarms reject partial success.
+- Status: backlog.
+
+#### FTE-DQ-005: Staging Soak and Production Cutover
+
+- Outcome: Universal ingestion becomes the proven production acquisition spine and roadmap work may resume.
+- Dependencies: FTE-DQ-004.
+- Acceptance: approved 24-hour staging gate passes; production deploy/readback succeeds; rollback and redrive are demonstrated.
+- Status: backlog.
+
 ## 0. Multi-Sport Rebaseline (2026-07-26)
 
 This rebaseline is authoritative over soccer-first scope guardrails below. Existing stories remain useful but must consume generic domain, sport registry, strategy, provider-capability, and prompt-composition foundations.

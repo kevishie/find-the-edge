@@ -864,6 +864,382 @@ describe("atomic paid-call guards", () => {
     expect((await store.getHealth(key))?.quotaRemaining).toBe(98);
   });
 
+  it("merges an authoritative account window without refunding concurrent reservations", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 3,
+      lastSuccessfulAt: "2026-08-03T00:00:00.000Z",
+      rateWindow: {
+        limit: 1_000,
+        remaining: 600,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    });
+    expect(
+      await store.reserveQuota(key, 500, 1, "2026-08-03T00:00:01.000Z"),
+    ).toBe(true);
+    expect(
+      await store.reserveQuota(key, 100, 1, "2026-08-03T00:00:02.000Z"),
+    ).toBe(true);
+    await store.reconcileAccountRateWindow(
+      key,
+      1,
+      1,
+      {
+        limit: 1_000,
+        remaining: 599,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+      "2026-08-03T00:00:03.000Z",
+    );
+    expect(await store.getHealth(key)).toMatchObject({
+      healthy: true,
+      consecutiveSuccesses: 3,
+      lastSuccessfulAt: "2026-08-03T00:00:00.000Z",
+      rateWindow: {
+        limit: 1_000,
+        remaining: 598,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+    });
+  });
+
+  it("initializes a reset account window from provider truth and rejects a missing health anchor", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await expect(
+      store.reconcileAccountRateWindow(
+        key,
+        1,
+        1,
+        { limit: 1_000, remaining: 999 },
+        "2026-08-03T00:00:00.000Z",
+      ),
+    ).rejects.toThrow("account-rate-health-missing");
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+      updatedAt: "2026-08-03T00:01:00.000Z",
+    });
+    await store.reconcileAccountRateWindow(
+      key,
+      1,
+      1,
+      {
+        limit: 1_000,
+        remaining: 999,
+        resetsAt: "2026-08-03T00:02:00.000Z",
+      },
+      "2026-08-03T00:01:01.000Z",
+    );
+    expect((await store.getHealth(key))?.rateWindow).toEqual({
+      limit: 1_000,
+      remaining: 999,
+      resetsAt: "2026-08-03T00:02:00.000Z",
+    });
+  });
+
+  it("never refunds a concurrent reservation when response metadata advances the reset", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 600,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    });
+    expect(
+      await store.reserveQuota(key, 100, 1, "2026-08-03T00:00:01.000Z"),
+    ).toBe(true);
+    expect(
+      await store.reserveQuota(key, 100, 1, "2026-08-03T00:00:02.000Z"),
+    ).toBe(true);
+    await store.reconcileAccountRateWindow(
+      key,
+      1,
+      1,
+      {
+        limit: 1_000,
+        remaining: 999,
+        resetsAt: "2026-08-03T00:02:00.000Z",
+      },
+      "2026-08-03T00:00:03.000Z",
+    );
+    expect((await store.getHealth(key))?.rateWindow).toEqual({
+      limit: 1_000,
+      remaining: 598,
+      resetsAt: "2026-08-03T00:02:00.000Z",
+    });
+  });
+
+  it("ignores remaining from a stale response window", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 700,
+        resetsAt: "2026-08-03T00:02:00.000Z",
+      },
+      updatedAt: "2026-08-03T00:01:00.000Z",
+    });
+    await store.reconcileAccountRateWindow(
+      key,
+      1,
+      1,
+      {
+        limit: 1_000,
+        remaining: 3,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+      "2026-08-03T00:01:01.000Z",
+    );
+    expect((await store.getHealth(key))?.rateWindow).toEqual({
+      limit: 1_000,
+      remaining: 700,
+      resetsAt: "2026-08-03T00:02:00.000Z",
+    });
+  });
+
+  it("strictly reserves only a current healthy authoritative account window", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    expect(
+      await store.reserveAccountRate(key, 500, 1, "2026-08-03T00:00:00.000Z"),
+    ).toBe(false);
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: { limit: 1_000 },
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    });
+    expect(
+      await store.reserveAccountRate(key, 500, 1, "2026-08-03T00:00:01.000Z"),
+    ).toBe(false);
+    const current = await store.getHealth(key);
+    if (!current) throw new Error("missing-test-health");
+    await store.putHealth({
+      ...current,
+      healthy: false,
+      status: "unhealthy",
+      failureClass: "terminal",
+      failureReason: "unauthorized",
+      rateWindow: { limit: 1_000, remaining: 900 },
+      updatedAt: "2026-08-03T00:00:02.000Z",
+    });
+    expect(
+      await store.reserveAccountRate(key, 500, 1, "2026-08-03T00:00:03.000Z"),
+    ).toBe(false);
+    expect((await store.getHealth(key))?.rateWindow?.remaining).toBe(900);
+  });
+
+  it("Dynamo account reservation fences health, version, balance, and reset atomically", async () => {
+    let update: Record<string, unknown> | undefined;
+    const client = {
+      async send(command: { input: Record<string, unknown> }) {
+        if (command.constructor.name === "GetCommand")
+          return {
+            Item: {
+              value: {
+                version: 7,
+                providerId: "sharpapi",
+                healthKey: "sharpapi:account:account",
+                healthy: true,
+                status: "healthy",
+                consecutiveSuccesses: 1,
+                rateWindow: {
+                  limit: 1_000,
+                  remaining: 700,
+                  resetsAt: "2026-08-03T00:02:00.000Z",
+                },
+                updatedAt: "2026-08-03T00:01:00.000Z",
+              },
+            },
+          };
+        update = command.input;
+        const error = new Error("health changed before reservation");
+        error.name = "ConditionalCheckFailedException";
+        throw error;
+      },
+    };
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    expect(
+      await store.reserveAccountRate(
+        "sharpapi:account:account",
+        500,
+        2,
+        "2026-08-03T00:01:01.000Z",
+      ),
+    ).toBe(false);
+    expect(update?.["ConditionExpression"]).toContain("attribute_exists(pk)");
+    expect(update?.["ConditionExpression"]).toContain("#v.#healthy = :healthy");
+    expect(update?.["ConditionExpression"]).toContain(
+      "#v.#failure <> :terminal",
+    );
+    expect(update?.["ConditionExpression"]).toContain(
+      "#v.#window.#q = :expectedRemaining",
+    );
+    expect(update?.["ConditionExpression"]).toContain(
+      "#v.#version = :expectedVersion",
+    );
+    expect(update?.["ConditionExpression"]).toContain(
+      "#v.#window.#reset = :expectedReset",
+    );
+  });
+
+  it("shares an authoritative rate-limit block with every account consumer", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 2,
+      lastSuccessfulAt: "2026-08-03T00:00:00.000Z",
+      rateWindow: {
+        limit: 1_000,
+        remaining: 700,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    });
+    await store.blockAccountRateWindow(
+      key,
+      "2026-08-03T00:02:00.000Z",
+      "2026-08-03T00:00:05.000Z",
+    );
+    expect(await store.getHealth(key)).toMatchObject({
+      healthy: false,
+      status: "unhealthy",
+      failureClass: "transient",
+      failureReason: "rate-limited",
+      retryAt: "2026-08-03T00:02:00.000Z",
+      cooldownUntil: "2026-08-03T00:02:00.000Z",
+      lastSuccessfulAt: "2026-08-03T00:00:00.000Z",
+      rateWindow: {
+        limit: 1_000,
+        remaining: 0,
+        resetsAt: "2026-08-03T00:02:00.000Z",
+      },
+    });
+    expect(
+      await store.reserveQuota(key, 0, 1, "2026-08-03T00:01:30.000Z"),
+    ).toBe(false);
+  });
+
+  it("does not let a concurrent 429 overwrite terminal account health", async () => {
+    const healthy = {
+      version: 1,
+      providerId: "sharpapi",
+      healthKey: "sharpapi:account:account",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: { limit: 1_000, remaining: 700 },
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    } as const;
+    const terminal = {
+      ...healthy,
+      version: 2,
+      healthy: false,
+      status: "unhealthy" as const,
+      failureClass: "terminal" as const,
+      failureReason: "unauthorized",
+      updatedAt: "2026-08-03T00:00:01.000Z",
+    };
+    let reads = 0;
+    let writes = 0;
+    const client = {
+      async send(command: { input: Record<string, unknown> }) {
+        if (command.constructor.name === "GetCommand") {
+          reads += 1;
+          return { Item: { value: reads === 1 ? healthy : terminal } };
+        }
+        writes += 1;
+        return {};
+      },
+    };
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    await store.blockAccountRateWindow(
+      "sharpapi:account:account",
+      "2026-08-03T00:05:00.000Z",
+      "2026-08-03T00:00:02.000Z",
+    );
+    expect(reads).toBe(3);
+    expect(writes).toBe(0);
+    expect(await store.getHealth("sharpapi:account:account")).toMatchObject({
+      failureClass: "terminal",
+      failureReason: "unauthorized",
+    });
+  });
+
+  it("creates missing terminal account health and preserves the first terminal reason", async () => {
+    const key = "sharpapi:account:account";
+    for (const store of [
+      new MemoryOddsControlPlaneStore(),
+      new DynamoOddsControlPlaneStore(
+        new FakeDocumentClient() as unknown as DynamoDBDocumentClient,
+        "table",
+      ),
+    ]) {
+      await store.blockAccountTerminal(
+        key,
+        "configuration",
+        "2026-08-03T00:00:00.000Z",
+      );
+      expect(await store.getHealth(key)).toMatchObject({
+        version: 1,
+        providerId: "sharpapi",
+        healthKey: key,
+        healthy: false,
+        status: "unhealthy",
+        consecutiveSuccesses: 0,
+        failureClass: "terminal",
+        failureReason: "configuration",
+        updatedAt: "2026-08-03T00:00:00.000Z",
+      });
+      await store.blockAccountTerminal(
+        key,
+        "unauthorized",
+        "2026-08-03T00:00:01.000Z",
+      );
+      expect(await store.getHealth(key)).toMatchObject({
+        version: 1,
+        failureClass: "terminal",
+        failureReason: "configuration",
+        updatedAt: "2026-08-03T00:00:00.000Z",
+      });
+    }
+  });
+
   it("commits page and durable run evidence as one operation", async () => {
     const store = new MemoryOddsControlPlaneStore();
     const at = "2026-08-03T00:00:00.000Z";

@@ -37,6 +37,7 @@ import {
   Runtime,
   StartingPosition,
 } from "aws-cdk-lib/aws-lambda";
+import { SqsDestination } from "aws-cdk-lib/aws-lambda-destinations";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
 import {
   AccountRecovery,
@@ -681,6 +682,89 @@ export class FoundationStack extends Stack {
     liveOddsScheduler.addTarget(
       new SqsQueue(liveOddsQueue, { messageGroupId: "odds-cadence" }),
     );
+    const providerLandingDlq = new Queue(this, "ProviderLandingDlq", {
+      queueName: `find-the-edge-${props.stageName}-provider-landing-dlq`,
+      encryption: QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+    });
+    const providerLanding = new NodejsFunction(this, "ProviderLanding", {
+      entry: path.resolve(
+        directory,
+        "../../../apps/workers/src/provider-landing-lambda.ts",
+      ),
+      handler: "handler",
+      runtime: Runtime.NODEJS_24_X,
+      timeout: Duration.minutes(14),
+      memorySize: 1024,
+      reservedConcurrentExecutions: 1,
+      environment: {
+        FTE_AWS_STAGE: props.stageName,
+        FTE_EVENT_TABLE: table.tableName,
+        FTE_SHARP_API_SECRET_ID: sharpApiSecret.secretName,
+      },
+      bundling: { minify: true, sourceMap: true },
+    });
+    providerLanding.configureAsyncInvoke({
+      // EventBridge target retries cover delivery into Lambda. This separate
+      // async invoke policy covers handler failures after Lambda accepted the
+      // event, preserving exhausted work for redrive instead of discarding it.
+      maxEventAge: Duration.hours(1),
+      retryAttempts: 2,
+      onFailure: new SqsDestination(providerLandingDlq),
+    });
+    sharpApiSecret.grantRead(providerLanding);
+    providerLanding.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+        ],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["PROVIDER_LANDING#SHARPAPI#*"],
+          },
+        },
+      }),
+    );
+    providerLanding.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+        ],
+        resources: [table.tableArn],
+        conditions: {
+          // Universal acquisition is a lower-priority consumer of the exact
+          // account window already owned by the live odds control plane. It
+          // cannot read or mutate league health, attempts, or continuations.
+          "ForAllValues:StringEquals": {
+            "dynamodb:LeadingKeys": [
+              "ODDS_CONTROL#HEALTH#sharpapi:account:account",
+            ],
+          },
+        },
+      }),
+    );
+    const providerLandingScheduled =
+      props.schedulerEnabled && props.stageName === "staging";
+    const providerLandingSchedule = new Rule(this, "ProviderLandingSchedule", {
+      // FTE-DQ-001 is staging-gated. Production receives the inert worker and
+      // rollback-safe schema, but cannot begin paid universal acquisition
+      // until FTE-DQ-005 records the staging reconciliation/soak decision.
+      enabled: providerLandingScheduled,
+      schedule: Schedule.rate(Duration.minutes(15)),
+    });
+    providerLandingSchedule.addTarget(
+      new LambdaFunction(providerLanding, {
+        deadLetterQueue: providerLandingDlq,
+        retryAttempts: 2,
+        maxEventAge: Duration.hours(1),
+      }),
+    );
     const oddsProjectionDlq = new Queue(this, "FixtureOddsProjectionDlq", {
       queueName: `find-the-edge-${props.stageName}-odds-projection-dlq`,
       encryption: QueueEncryption.SQS_MANAGED,
@@ -739,6 +823,12 @@ export class FoundationStack extends Stack {
     });
     new CfnOutput(this, "LiveOddsIngestionFunctionName", {
       value: liveOdds.functionName,
+    });
+    new CfnOutput(this, "ProviderLandingFunctionName", {
+      value: providerLanding.functionName,
+    });
+    new CfnOutput(this, "ProviderLandingDlqUrl", {
+      value: providerLandingDlq.queueUrl,
     });
     new CfnOutput(this, "SharpApiSecretName", {
       value: sharpApiSecret.secretName,
@@ -1850,6 +1940,164 @@ export class FoundationStack extends Stack {
         comparisonOperator:
           ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       }),
+      new Alarm(this, "ProviderLandingErrorsAlarm", {
+        // One transient provider/storage failure is recovered by the async
+        // retry or the next durable checkpoint tick. Page only when failures
+        // persist across independent CloudWatch periods.
+        metric: providerLanding.metricErrors({
+          period: Duration.minutes(5),
+          statistic: "Sum",
+        }),
+        threshold: 2,
+        evaluationPeriods: 2,
+        datapointsToAlarm: 2,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      new Alarm(this, "ProviderLandingTerminalFailureAlarm", {
+        metric: new Metric({
+          namespace: "FindTheEdge/ProviderLanding",
+          metricName: "ProviderLandingTerminalFailure",
+          dimensionsMap: {
+            Stage: props.stageName,
+            Stream: "account",
+            Outcome: "terminal",
+          },
+          statistic: "Sum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        datapointsToAlarm: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      }),
+      new Alarm(this, "ProviderLandingDlqAlarm", {
+        metric: providerLandingDlq.metricApproximateNumberOfMessagesVisible(),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      }),
+      ...(["catalog", "events", "odds"] as const).map(
+        (stream) =>
+          new Alarm(
+            this,
+            `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}RecoveryAlarm`,
+            {
+              metric: new Metric({
+                namespace: "FindTheEdge/ProviderLanding",
+                metricName: "ProviderLandingRecovery",
+                dimensionsMap: {
+                  Stage: props.stageName,
+                  Stream: stream,
+                  Outcome: "restart",
+                },
+                statistic: "Sum",
+                period: Duration.minutes(15),
+              }),
+              // One self-heal is expected resilience. Repeated recovery in two
+              // independent periods means the stream cannot publish a snapshot.
+              threshold: 1,
+              evaluationPeriods: 2,
+              datapointsToAlarm: 2,
+              comparisonOperator:
+                ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+              treatMissingData: TreatMissingData.NOT_BREACHING,
+            },
+          ),
+      ),
+      ...(
+        [
+          ["catalog", 8 * 60 * 60, 30 * 60],
+          ["events", 60 * 60, 2 * 60 * 60],
+          ["odds", 60 * 60, 12 * 60 * 60],
+        ] as const
+      ).flatMap(([stream, completionThreshold, runThreshold]) => [
+        new Alarm(
+          this,
+          `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}FreshnessAlarm`,
+          {
+            metric: new Metric({
+              namespace: "FindTheEdge/ProviderLanding",
+              metricName: "ProviderLandingCompletionAgeSeconds",
+              dimensionsMap: {
+                Stage: props.stageName,
+                Stream: stream,
+                Outcome: "observed",
+              },
+              statistic: "Maximum",
+              period: Duration.minutes(15),
+            }),
+            threshold: completionThreshold,
+            evaluationPeriods: 2,
+            datapointsToAlarm: 2,
+            comparisonOperator:
+              ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            // Inert development/production stacks intentionally emit no
+            // landing metrics. Missing data becomes actionable only in a
+            // stage where the universal collector is actually scheduled.
+            treatMissingData: providerLandingScheduled
+              ? TreatMissingData.BREACHING
+              : TreatMissingData.NOT_BREACHING,
+          },
+        ),
+        new Alarm(
+          this,
+          `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}RunAgeAlarm`,
+          {
+            metric: new Metric({
+              namespace: "FindTheEdge/ProviderLanding",
+              metricName: "ProviderLandingRunAgeSeconds",
+              dimensionsMap: {
+                Stage: props.stageName,
+                Stream: stream,
+                Outcome: "running",
+              },
+              statistic: "Maximum",
+              period: Duration.minutes(15),
+            }),
+            threshold: runThreshold,
+            evaluationPeriods: 2,
+            datapointsToAlarm: 2,
+            comparisonOperator:
+              ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treatMissingData: TreatMissingData.NOT_BREACHING,
+          },
+        ),
+      ]),
+      ...(["catalog", "events", "odds"] as const).flatMap((stream) =>
+        (["quarantined", "warning"] as const).map(
+          (outcome) =>
+            new Alarm(
+              this,
+              `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}${outcome === "quarantined" ? "Quarantine" : "Warning"}Alarm`,
+              {
+                metric: new Metric({
+                  namespace: "FindTheEdge/ProviderLanding",
+                  metricName: "ProviderLandingRows",
+                  dimensionsMap: {
+                    Stage: props.stageName,
+                    Stream: stream,
+                    Outcome: outcome,
+                  },
+                  statistic: "Sum",
+                  period: Duration.minutes(30),
+                }),
+                threshold: 1,
+                // Quarantine is confirmed row loss and alerts immediately.
+                // A bounded warning remains visible as a metric but pages only
+                // when schema degradation persists across two full windows.
+                evaluationPeriods: outcome === "quarantined" ? 1 : 2,
+                datapointsToAlarm: outcome === "quarantined" ? 1 : 2,
+                comparisonOperator:
+                  ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+                treatMissingData: TreatMissingData.NOT_BREACHING,
+              },
+            ),
+        ),
+      ),
       new Alarm(this, "FixtureOddsProjectionErrorsAlarm", {
         metric: oddsProjection.metricErrors(),
         threshold: 1,

@@ -9,7 +9,7 @@ statusValues:
   - review
   - blocked
   - done
-nextReadyStory: FTE-082
+nextReadyStory: FTE-DQ-001
 stories:
   - id: FTE-SPORT-001
     title: Sport-Agnostic Domain and Registry
@@ -931,17 +931,17 @@ stories:
     status: review
     dependencies: [FTE-070, FTE-073]
     validationCommands: [pnpm check]
-    blockerReason:
+    blockerReason: paused-behind-universal-ingestion-data-quality-gate
     risk: High
     approvalRequiredBeforeMerge: true
   - id: FTE-075
     title: Cost Attribution Baseline for the Ingestion Table
     epic: Ingestion cost, measurement, and streaming
     priority: P0
-    status: in-progress
+    status: backlog
     dependencies: []
     validationCommands: [pnpm check]
-    blockerReason: awaiting-first-closed-instrumented-window-and-settled-cost-explorer
+    blockerReason: paused-behind-universal-ingestion-data-quality-gate; awaiting-first-closed-instrumented-window-and-settled-cost-explorer
     risk: Low
     approvalRequiredBeforeMerge: false
   - id: FTE-076
@@ -1008,10 +1008,10 @@ stories:
     title: Spike - Game State Feed Shape and Trustworthiness
     epic: Live game state
     priority: P0
-    status: in-progress
+    status: backlog
     dependencies: []
     validationCommands: [pnpm check]
-    blockerReason:
+    blockerReason: paused-behind-universal-ingestion-data-quality-gate
     risk: Low
     approvalRequiredBeforeMerge: true
   - id: FTE-083
@@ -1101,6 +1101,71 @@ stories:
     status: done
     dependencies: []
     validationCommands: [pnpm check]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-DQ-001
+    title: Universal SharpAPI Catalog and Landing
+    epic: Universal provider acquisition and data-quality recovery
+    sport: core
+    league: all
+    module: provider-landing
+    priority: P0
+    status: in-progress
+    dependencies: []
+    validationCommands: [pnpm check, "pnpm phase1:preflight"]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-DQ-002
+    title: Restore Served-Sport Schedule and Core-Market Completeness
+    epic: Universal provider acquisition and data-quality recovery
+    sport: mlb,football,soccer
+    league: mlb,nfl,mls
+    module: canonical-promotion
+    priority: P0
+    status: backlog
+    dependencies: [FTE-DQ-001]
+    validationCommands: [pnpm check, browser-smoke]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-DQ-003
+    title: Generic Normalization and Promotion Quarantine
+    epic: Universal provider acquisition and data-quality recovery
+    sport: all
+    league: all
+    module: provider-promotion
+    priority: P0
+    status: backlog
+    dependencies: [FTE-DQ-001]
+    validationCommands: [pnpm check]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-DQ-004
+    title: Completeness Reconciliation and Release Gate
+    epic: Universal provider acquisition and data-quality recovery
+    sport: all
+    league: all
+    module: data-quality-gate
+    priority: P0
+    status: backlog
+    dependencies: [FTE-DQ-001, FTE-DQ-002, FTE-DQ-003]
+    validationCommands: [pnpm check, "pnpm phase1:preflight", browser-smoke]
+    blockerReason:
+    risk: High
+    approvalRequiredBeforeMerge: true
+  - id: FTE-DQ-005
+    title: Staging Soak and Production Cutover
+    epic: Universal provider acquisition and data-quality recovery
+    sport: all
+    league: all
+    module: data-quality-cutover
+    priority: P0
+    status: backlog
+    dependencies: [FTE-DQ-004]
+    validationCommands: [pnpm check, staging-reconciliation, production-readback]
     blockerReason:
     risk: High
     approvalRequiredBeforeMerge: true
