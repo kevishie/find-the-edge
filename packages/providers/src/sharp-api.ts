@@ -682,6 +682,11 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const iso = (value: string) => new Date(value).toISOString() as IsoTimestamp;
 const MAX_RESPONSE_BYTES = 10_000_000;
 const MAX_CATALOG_ROWS = 50_000;
+const UNIVERSAL_EVENTS_PAGE_LIMIT = 200;
+// SharpAPI permits up to 200 Odds rows, but the unfiltered staging response at
+// that maximum exceeded the bounded request timeout. A 25-row opaque-cursor
+// page is provider-supported and completed with materially better throughput.
+const UNIVERSAL_ODDS_PAGE_LIMIT = 25;
 const MAX_LANDING_VALUE_BYTES = 300_000;
 const MAX_SOURCE_FIELDS = 64;
 const MAX_SOURCE_VALUE_NODES = 100_000;
@@ -1477,6 +1482,7 @@ export function parseSharpApiUniversalEventsPage(
 export function parseSharpApiUniversalOddsPage(
   input: unknown,
   retrievedAt: IsoTimestamp,
+  requestedLimit = 200,
 ): SharpApiUniversalPage<SharpApiUniversalOddsRecord> {
   const payload = universalPageEnvelope(input, "universal-odds");
   const records: SharpApiUniversalOddsRecord[] = [];
@@ -1662,6 +1668,8 @@ export function parseSharpApiUniversalOddsPage(
     quarantines,
     retrievedAt,
     "cursor",
+    undefined,
+    requestedLimit,
   );
 }
 
@@ -1672,6 +1680,7 @@ const universalPagination = <T>(
   retrievedAt: IsoTimestamp,
   mode: "offset" | "cursor",
   requestedOffset?: number,
+  expectedLimit = UNIVERSAL_EVENTS_PAGE_LIMIT,
 ): SharpApiUniversalPage<T> => {
   const pagination = payload["pagination"] as Record<string, unknown>;
   const data = payload["data"] as unknown[];
@@ -1679,7 +1688,8 @@ const universalPagination = <T>(
   const nextOffset = pagination["next_offset"];
   const nextCursor = pagination["next_cursor"];
   const endpoint = mode === "offset" ? "universal-events" : "universal-odds";
-  const expectedLimit = 200;
+  if (!safeInteger(expectedLimit) || expectedLimit < 1 || expectedLimit > 200)
+    throw invalidResponse(endpoint, "requested-limit");
   const count = pagination["count"];
   const declaredLimit = pagination["limit"];
   const declaredOffset = pagination["offset"];
@@ -2842,7 +2852,7 @@ export async function fetchSharpApiUniversalEventsPage(
     throw new SharpApiError("configuration");
   const query = new URLSearchParams({
     sport: filter.sport,
-    limit: "200",
+    limit: String(UNIVERSAL_EVENTS_PAGE_LIMIT),
     offset: String(offset),
   });
   if (leagues) query.set("league", leagues.join(","));
@@ -2875,7 +2885,9 @@ export async function fetchSharpApiUniversalOddsPage(
 ): Promise<SharpApiUniversalPage<SharpApiUniversalOddsRecord>> {
   if (cursor !== undefined && !storageKeyComponent(cursor, 4096))
     throw new SharpApiError("configuration");
-  const query = new URLSearchParams({ limit: "200" });
+  const query = new URLSearchParams({
+    limit: String(UNIVERSAL_ODDS_PAGE_LIMIT),
+  });
   if (cursor) query.set("cursor", cursor);
   const retrievedAt = new Date().toISOString() as IsoTimestamp;
   try {
@@ -2886,7 +2898,11 @@ export async function fetchSharpApiUniversalOddsPage(
       fetcher,
       25_000,
     );
-    const page = parseSharpApiUniversalOddsPage(payload, retrievedAt);
+    const page = parseSharpApiUniversalOddsPage(
+      payload,
+      retrievedAt,
+      UNIVERSAL_ODDS_PAGE_LIMIT,
+    );
     if (!page.providerUpdatedAt)
       throw invalidResponse("universal-odds", "updated-at-missing");
     return {

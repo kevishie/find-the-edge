@@ -205,7 +205,9 @@ the three `CHECKPOINT#catalog|events|odds` records. A healthy completed sweep ha
 `sourceRows = landedRows + quarantinedRows`; catalog source rows equal the live
 include-empty `/sports` plus `/leagues` counts; the event plan covers every
 catalog sport exactly once, either sport-wide or through non-overlapping
-sport-scoped league groups; and an odds/event checkpoint is never called
+sport-scoped league groups; unfiltered Odds uses 25-row opaque-cursor pages
+because live staging proved the documented 200-row maximum exceeds the bounded
+response timeout while 25-row pages complete reliably; and an odds/event checkpoint is never called
 complete while it retains a cursor, offset, or pending page. Any `resumeAfter`
 must match a bounded provider reset/retry time and prevent every paid stream
 before that instant. Provider totals and generations remain coherent, and every
