@@ -87,8 +87,8 @@ const catalog = (
     {
       providerSportId: "tennis",
       displayName: "Tennis",
-      eventCount: 895,
-      liveCount: 4,
+      eventCount: 649,
+      liveCount: 2,
       providerLeagueIds: ["atp"],
     },
   ],
@@ -205,7 +205,7 @@ const saturatedCompactOddsHistory = (
 ];
 
 describe("universal provider landing", () => {
-  it("derives bounded event filters from every catalog league without a sport allowlist", () => {
+  it("derives bounded league-scoped event filters for every nonempty catalog sport without an allowlist", () => {
     const leagues = [
       ["mlb", "baseball", 900],
       ["nfl", "football", 1_500],
@@ -236,8 +236,11 @@ describe("universal provider landing", () => {
       providerLeagueIds: ["world_championships,_mens_singles"],
     });
     const partitions = buildSharpApiEventPartitions({ sports, leagues });
-    expect(partitions.map(({ sport }) => sport).sort()).toEqual(
-      sports.map(({ providerSportId }) => providerSportId).sort(),
+    expect([...new Set(partitions.map(({ sport }) => sport))].sort()).toEqual(
+      sports
+        .filter(({ eventCount }) => eventCount > 0)
+        .map(({ providerSportId }) => providerSportId)
+        .sort(),
     );
     expect(
       partitions.every(({ sport, leagues: members }) => {
@@ -246,7 +249,126 @@ describe("universal provider landing", () => {
         return (members?.length ?? 0) <= 50 && query.toString().length <= 3_800;
       }),
     ).toBe(true);
+    expect(partitions).not.toContainEqual({ sport: "rugby_union" });
     expect(partitions).toContainEqual({ sport: "olympics" });
+    expect(partitions).toContainEqual({
+      sport: "baseball",
+      leagues: ["mlb"],
+    });
+  });
+
+  it("falls back to sport-wide acquisition when a quarantined league prevents exact coverage", () => {
+    expect(
+      buildSharpApiEventPartitions({
+        sports: [
+          {
+            providerSportId: "olympics",
+            displayName: "Olympics",
+            eventCount: 171,
+            liveCount: 0,
+            providerLeagueIds: [
+              "bwf_world_championships",
+              "world_championships,_mens_singles",
+            ],
+          },
+        ],
+        leagues: [
+          {
+            providerLeagueId: "bwf_world_championships",
+            displayName: "BWF World Championships",
+            providerSportId: "olympics",
+            eventCount: 120,
+            liveCount: 0,
+          },
+        ],
+      }),
+    ).toEqual([{ sport: "olympics" }]);
+  });
+
+  it("forces sport-wide acquisition when the later league response quarantines a sibling", () => {
+    expect(
+      buildSharpApiEventPartitions({
+        sports: [
+          {
+            providerSportId: "olympics",
+            displayName: "Olympics",
+            eventCount: 120,
+            liveCount: 0,
+            providerLeagueIds: ["bwf_world_championships"],
+          },
+        ],
+        leagues: [
+          {
+            providerLeagueId: "bwf_world_championships",
+            displayName: "BWF World Championships",
+            providerSportId: "olympics",
+            eventCount: 120,
+            liveCount: 0,
+          },
+        ],
+        quarantines: [
+          {
+            rowIndex: 1,
+            reason: "unrepresentable-filter-id",
+            endpoint: "leagues",
+            providerRecordId: "world_championships,_mens_singles",
+            providerSportId: "olympics",
+            sourceFields: ["id", "sport"],
+            sourceSchemaHash: "a".repeat(64),
+          },
+        ],
+      }),
+    ).toEqual([{ sport: "olympics" }]);
+  });
+
+  it("does not publish a partial league plan when catalog denominators disagree", () => {
+    expect(
+      buildSharpApiEventPartitions({
+        sports: [
+          {
+            providerSportId: "soccer",
+            displayName: "Soccer",
+            eventCount: 101,
+            liveCount: 2,
+            providerLeagueIds: ["mls"],
+          },
+        ],
+        leagues: [
+          {
+            providerLeagueId: "mls",
+            displayName: "MLS",
+            providerSportId: "soccer",
+            eventCount: 100,
+            liveCount: 1,
+          },
+        ],
+      }),
+    ).toEqual([{ sport: "soccer" }]);
+  });
+
+  it("retains live catalog sports even when their event counters are zero", () => {
+    expect(
+      buildSharpApiEventPartitions({
+        sports: [
+          {
+            providerSportId: "tennis",
+            displayName: "Tennis",
+            eventCount: 0,
+            liveCount: 1,
+            providerLeagueIds: ["atp"],
+          },
+        ],
+        leagues: [
+          {
+            providerLeagueId: "atp",
+            displayName: "ATP",
+            providerSportId: "tennis",
+            eventCount: 0,
+            liveCount: 1,
+          },
+        ],
+      }),
+    ).toEqual([{ sport: "tennis", leagues: ["atp"] }]);
   });
 
   it("unions sequential sport and league catalogs without dropping a newly listed league", () => {
@@ -282,6 +404,119 @@ describe("universal provider landing", () => {
       { sport: "soccer", leagues: ["league-a"] },
       { sport: "soccer", leagues: ["league-b"] },
     ]);
+  });
+
+  it("completes an all-zero Events generation without dispatching a paid page", async () => {
+    const store = new MemoryLandingStore();
+    const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>();
+    const result = await runProviderLanding({
+      source: source({
+        fetchCatalog: vi.fn(() =>
+          Promise.resolve(
+            catalog({
+              sports: [
+                {
+                  providerSportId: "rugby_union",
+                  displayName: "Rugby Union",
+                  eventCount: 0,
+                  liveCount: 0,
+                  providerLeagueIds: ["zero_season"],
+                },
+              ],
+              leagues: [
+                {
+                  providerLeagueId: "zero_season",
+                  displayName: "Zero Season",
+                  providerSportId: "rugby_union",
+                  eventCount: 0,
+                  liveCount: 0,
+                },
+              ],
+            }),
+          ),
+        ),
+        fetchEvents,
+      }),
+      store,
+      now: () => new Date("2026-08-15T12:00:00.000Z"),
+    });
+
+    expect(result.events).toMatchObject({
+      status: "complete",
+      position: null,
+      eventPartitions: [],
+      counts: {
+        pages: 0,
+        sourceRows: 0,
+        landedRows: 0,
+        quarantinedRows: 0,
+      },
+    });
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("keeps quarantined league ownership durable and forces its sport fail-closed", async () => {
+    const store = new MemoryLandingStore();
+    const quarantine = {
+      rowIndex: 1,
+      reason: "unrepresentable-filter-id" as const,
+      endpoint: "leagues" as const,
+      providerRecordId: "world_championships,_mens_singles",
+      providerSportId: "olympics",
+      sourceFields: ["id", "sport"],
+      sourceSchemaHash: "a".repeat(64),
+    };
+    const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>(() =>
+      Promise.resolve(eventPage([])),
+    );
+    await runProviderLanding({
+      source: source({
+        fetchCatalog: vi.fn(() =>
+          Promise.resolve(
+            catalog({
+              sports: [
+                {
+                  providerSportId: "olympics",
+                  displayName: "Olympics",
+                  eventCount: 1,
+                  liveCount: 0,
+                  providerLeagueIds: [
+                    "bwf_world_championships",
+                    "world_championships,_mens_singles",
+                  ],
+                },
+              ],
+              leagues: [
+                {
+                  providerLeagueId: "bwf_world_championships",
+                  displayName: "BWF World Championships",
+                  providerSportId: "olympics",
+                  eventCount: 1,
+                  liveCount: 0,
+                },
+              ],
+              quarantines: [quarantine],
+              sourceRows: 3,
+            }),
+          ),
+        ),
+        fetchEvents,
+      }),
+      store,
+      now: () => new Date("2026-08-15T12:00:00.000Z"),
+    });
+
+    expect(fetchEvents).toHaveBeenCalledWith({ sport: "olympics" }, 0);
+    expect(
+      store.records.find(
+        ({ recordType, value }) =>
+          recordType === "quarantine" &&
+          value["providerRecordId"] === "world_championships,_mens_singles",
+      ),
+    ).toMatchObject({
+      sport: "olympics",
+      value: { providerSportId: "olympics" },
+    });
   });
 
   it("lands an oversized catalog and raises a bounded diagnostic instead of failing its checkpoint", async () => {
@@ -449,7 +684,7 @@ describe("universal provider landing", () => {
         {
           providerSportId: "tennis",
           displayName: "Tennis",
-          eventCount: 4_000,
+          eventCount: 3_000,
           liveCount: 0,
           providerLeagueIds: ["atp", "wta"],
         },
@@ -695,7 +930,7 @@ describe("universal provider landing", () => {
     expect(fetchEvents.mock.calls).toEqual([
       [{ sport: "baseball" }, 0],
       [{ sport: "baseball" }, 200],
-      [{ sport: "golf" }, 0],
+      [{ sport: "golf", leagues: ["pga"] }, 0],
     ]);
   });
 
@@ -992,13 +1227,65 @@ describe("universal provider landing", () => {
       store,
       now: () => new Date("2026-08-15T12:16:00.000Z"),
     });
-    expect(fetchEvents).toHaveBeenCalledWith({ sport: "tennis" }, 0);
+    expect(fetchEvents).toHaveBeenCalledWith(
+      { sport: "tennis", leagues: ["atp"] },
+      0,
+    );
     expect(migrated.events).toMatchObject({
       status: "complete",
       position: null,
-      eventPartitions: [{ sport: "tennis" }],
+      eventPartitions: [{ sport: "tennis", leagues: ["atp"] }],
     });
     expect(migrated.events?.resumeAfter).toBeUndefined();
+  });
+
+  it("migrates an active broad-filter sweep when the completed catalog plan changes", async () => {
+    const store = new MemoryLandingStore();
+    const initial = await runProviderLanding({
+      source: source(),
+      store,
+      now: () => new Date("2026-08-15T12:00:00.000Z"),
+    });
+    if (!initial.events) throw new Error("missing event checkpoint");
+    store.checkpoints.set("events", {
+      ...initial.events,
+      version: initial.events.version + 1,
+      status: "running",
+      position: { partition: 0, offset: 200 },
+      startedAt: "2026-08-15T12:01:00.000Z",
+      updatedAt: "2026-08-15T12:01:00.000Z",
+      counts: {
+        pages: 1,
+        sourceRows: 200,
+        landedRows: 200,
+        quarantinedRows: 0,
+        warningRows: 0,
+      },
+      eventPartitions: [{ sport: "tennis" }],
+      eventCatalogPlanHash: "f".repeat(64),
+      eventPartitionSourceRows: 200,
+      eventPositionRevision: 0,
+      visitedPositionHashes: [],
+    });
+    const fetchEvents = vi.fn<ProviderLandingSource["fetchEvents"]>(() =>
+      Promise.resolve(eventPage([event("event-migrated-active")])),
+    );
+
+    const migrated = await runProviderLanding({
+      source: source({ fetchEvents }),
+      store,
+      now: () => new Date("2026-08-15T12:16:00.000Z"),
+    });
+
+    expect(fetchEvents).toHaveBeenCalledWith(
+      { sport: "tennis", leagues: ["atp"] },
+      0,
+    );
+    expect(migrated.events).toMatchObject({
+      status: "complete",
+      counts: { pages: 1, sourceRows: 1, landedRows: 1 },
+      eventPartitions: [{ sport: "tennis", leagues: ["atp"] }],
+    });
   });
 
   it("backfills lineage on a paused partition checkpoint without replaying its paid progress", async () => {
@@ -1060,7 +1347,7 @@ describe("universal provider landing", () => {
         {
           providerSportId: "tennis",
           displayName: "Tennis",
-          eventCount: 4_000,
+          eventCount: 3_000,
           liveCount: 0,
           providerLeagueIds: ["atp", "wta"],
         },
@@ -1148,7 +1435,7 @@ describe("universal provider landing", () => {
     });
   });
 
-  it("reserves the shared account window for both catalog calls and every unfiltered page", async () => {
+  it("reserves the shared account window for both catalog calls and every provider page", async () => {
     const store = new MemoryLandingStore();
     const control = new MemoryOddsControlPlaneStore();
     const healthKey = "sharpapi:account:account";
@@ -1218,7 +1505,10 @@ describe("universal provider landing", () => {
       [500, 1],
     ]);
     expect(fetchCatalog).toHaveBeenCalledOnce();
-    expect(fetchEvents).toHaveBeenCalledWith({ sport: "tennis" }, 0);
+    expect(fetchEvents).toHaveBeenCalledWith(
+      { sport: "tennis", leagues: ["atp"] },
+      0,
+    );
     expect(fetchOdds).toHaveBeenCalledWith(undefined);
     expect((await control.getHealth(healthKey))?.rateWindow).toMatchObject({
       limit: 1_000,
@@ -1868,7 +2158,10 @@ describe("universal provider landing", () => {
     });
 
     const second = await runProviderLanding(input);
-    expect(fetchEvents).toHaveBeenLastCalledWith({ sport: "tennis" }, 200);
+    expect(fetchEvents).toHaveBeenLastCalledWith(
+      { sport: "tennis", leagues: ["atp"] },
+      200,
+    );
     expect(fetchOdds).toHaveBeenLastCalledWith("cursor-2");
     expect(second.events?.status).toBe("complete");
     expect(second.odds?.status).toBe("complete");
@@ -3259,7 +3552,7 @@ describe("universal provider landing", () => {
         {
           providerSportId: "tennis",
           displayName: "Tennis",
-          eventCount: 4_000,
+          eventCount: 3_000,
           liveCount: 0,
           providerLeagueIds: ["bad-league", "good-league"],
         },
@@ -3326,7 +3619,7 @@ describe("universal provider landing", () => {
       eventDeferredPartitions: [1],
       eventPrimaryTraversalComplete: true,
       eventPartitions: [
-        { sport: "baseball" },
+        { sport: "baseball", leagues: ["mlb"] },
         { sport: "tennis", leagues: ["bad-league"] },
         { sport: "tennis", leagues: ["good-league"] },
       ],
@@ -3338,7 +3631,7 @@ describe("universal provider landing", () => {
         partition.leagues,
       ]),
     ).toEqual([
-      ["baseball", undefined],
+      ["baseball", ["mlb"]],
       ["tennis", ["bad-league", "good-league"]],
       ["tennis", ["bad-league"]],
       ["tennis", ["good-league"]],

@@ -160,6 +160,7 @@ export interface SharpApiLandingQuarantine {
     | "provider-filter-rejected";
   readonly endpoint: "sports" | "leagues" | "events" | "odds";
   readonly providerRecordId?: string;
+  readonly providerSportId?: string;
   readonly sourceFields: readonly string[];
   readonly sourceFieldCount?: number;
   readonly sourceFieldsTruncated?: true;
@@ -1164,6 +1165,11 @@ const quarantineRow = (
   endpoint,
   ...(record(value) && canonical(value["id"], 256)
     ? { providerRecordId: value["id"] }
+    : {}),
+  ...(record(value) &&
+  storageKeyComponent(value["sport"], 64) &&
+  !value["sport"].includes(",")
+    ? { providerSportId: value["sport"] }
     : {}),
   ...sourceShapeEvidence(value),
 });

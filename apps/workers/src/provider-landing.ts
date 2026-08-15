@@ -166,13 +166,18 @@ const SAFE_FAILURE_REASONS = new Set([
 ]);
 
 /** Build a deterministic request plan from SharpAPI's complete reference
- * catalog. Every partition is sport-scoped; large sports are additionally
- * narrowed by exact league slugs. This prevents same-slug leagues in different
- * sports from colliding and lets a sport-level request safely cover any
- * provider league ID that cannot be represented in a comma-separated filter.
- * No sport or league allowlist participates in this plan. */
+ * catalog. A sport is narrowed by exact league slugs only when those league
+ * rows account for the complete sport denominator. Otherwise it deliberately
+ * falls back to the sport-wide request so a partial league catalog can never
+ * produce a falsely complete Events generation. This
+ * prevents provider-rejected broad sport filters, keeps each offset walk below
+ * the documented ceiling, and prevents same-slug leagues in different sports
+ * from colliding. Catalog rows that cannot be represented in the documented
+ * comma-separated grammar are already quarantined at the provider boundary;
+ * no sport or league allowlist participates in this plan. */
 export const buildSharpApiEventPartitions = (
-  snapshot: Pick<SharpApiCatalogSnapshot, "sports" | "leagues">,
+  snapshot: Pick<SharpApiCatalogSnapshot, "sports" | "leagues"> &
+    Partial<Pick<SharpApiCatalogSnapshot, "quarantines">>,
 ) => {
   const leagues = new Map(
     snapshot.leagues.map((league) => [
@@ -189,7 +194,18 @@ export const buildSharpApiEventPartitions = (
     ids.add(league.providerLeagueId);
     leagueIdsBySport.set(league.providerSportId, ids);
   }
-  const sportIds = new Set([...sports.keys(), ...leagueIdsBySport.keys()]);
+  const forcedSportWide = new Set(
+    (snapshot.quarantines ?? []).flatMap((quarantine) => {
+      if (quarantine.endpoint === "leagues" && quarantine.providerSportId)
+        return [quarantine.providerSportId];
+      return [];
+    }),
+  );
+  const sportIds = new Set([
+    ...sports.keys(),
+    ...leagueIdsBySport.keys(),
+    ...forcedSportWide,
+  ]);
   const partitions: ProviderLandingEventPartition[] = [];
   const queryLength = (sport: string, members: readonly string[]) => {
     const query = new URLSearchParams({ sport });
@@ -207,27 +223,43 @@ export const buildSharpApiEventPartitions = (
     const sportLeagues = [...catalogLeagueIds].map((leagueId) =>
       leagues.get(`${sportId}\u0000${leagueId}`),
     );
-    const missingLeague = sportLeagues.some((league) => !league);
     const available = sportLeagues.filter(
       (league): league is NonNullable<typeof league> => !!league,
     );
-    if (
-      (sport?.eventCount ??
-        available.reduce((total, league) => total + league.eventCount, 0)) <=
-        MAX_EVENT_PARTITION_EXPECTED_ROWS ||
-      missingLeague ||
-      available.length === 0
-    ) {
+    const leagueEventCount = available.reduce(
+      (total, league) => total + league.eventCount,
+      0,
+    );
+    const leagueLiveCount = available.reduce(
+      (total, league) => total + league.liveCount,
+      0,
+    );
+    const hasCatalogActivity =
+      forcedSportWide.has(sportId) ||
+      (sport?.eventCount ?? 0) > 0 ||
+      (sport?.liveCount ?? 0) > 0 ||
+      leagueEventCount > 0 ||
+      leagueLiveCount > 0;
+    if (!hasCatalogActivity) continue;
+    const hasMissingLeague = sportLeagues.some((league) => !league);
+    const exactLeagueCoverage =
+      available.length > 0 &&
+      !forcedSportWide.has(sportId) &&
+      !hasMissingLeague &&
+      (!sport ||
+        (leagueEventCount === sport.eventCount &&
+          leagueLiveCount === sport.liveCount));
+    if (!exactLeagueCoverage) {
       partitions.push({ sport: sportId });
       continue;
     }
     let current: string[] = [];
-    let expectedRows = 0;
+    let currentExpectedRows = 0;
     const flush = () => {
       if (current.length > 0)
         partitions.push({ sport: sportId, leagues: current });
       current = [];
-      expectedRows = 0;
+      currentExpectedRows = 0;
     };
     for (const league of available.sort((left, right) =>
       left.providerLeagueId.localeCompare(right.providerLeagueId),
@@ -236,18 +268,26 @@ export const buildSharpApiEventPartitions = (
       if (
         current.length > 0 &&
         (candidate.length > MAX_EVENT_PARTITION_LEAGUES ||
-          expectedRows + league.eventCount >
+          currentExpectedRows + league.eventCount >
             MAX_EVENT_PARTITION_EXPECTED_ROWS ||
           queryLength(sportId, candidate) > MAX_EVENT_PARTITION_QUERY_LENGTH)
       )
         flush();
       current.push(league.providerLeagueId);
-      expectedRows += league.eventCount;
+      currentExpectedRows += league.eventCount;
     }
     flush();
   }
   return partitions;
 };
+
+const catalogEventCoverageIdentifiable = (snapshot: SharpApiCatalogSnapshot) =>
+  snapshot.quarantines.every((quarantine) => {
+    if (quarantine.endpoint === "sports") return false;
+    if (quarantine.endpoint === "leagues")
+      return quarantine.providerSportId !== undefined;
+    return true;
+  });
 
 type TerminalSharpApiCode = "configuration" | "not-entitled" | "unauthorized";
 const TERMINAL_SHARP_API_CODES = new Set<TerminalSharpApiCode>([
@@ -945,6 +985,7 @@ const quarantineRecord = (
   recordType: "quarantine",
   recordId: `${checkpoint.sweepId}:${quarantine.endpoint}:${pageNumber}:${quarantine.rowIndex}`,
   endpoint: quarantine.endpoint,
+  ...(quarantine.providerSportId ? { sport: quarantine.providerSportId } : {}),
   pageNumber,
   sweepId: checkpoint.sweepId,
   slot: checkpoint.slot,
@@ -954,6 +995,9 @@ const quarantineRecord = (
     rowIndex: quarantine.rowIndex,
     ...(quarantine.providerRecordId
       ? { providerRecordId: quarantine.providerRecordId }
+      : {}),
+    ...(quarantine.providerSportId
+      ? { providerSportId: quarantine.providerSportId }
       : {}),
     sourceFields: quarantine.sourceFields,
     sourceFieldCount: quarantine.sourceFieldCount,
@@ -1464,7 +1508,9 @@ const runCatalog = async (input: {
   await input.accountRate?.reconcile(2, snapshot.responseMetadata, input.now());
   input.rateGate.observe(snapshot.responseMetadata);
   const eventPartitions = buildSharpApiEventPartitions(snapshot);
-  const eventPlanAvailable = eventPlanFits(eventPartitions);
+  const eventPlanAvailable =
+    eventPlanFits(eventPartitions) &&
+    catalogEventCoverageIdentifiable(snapshot);
   if (!eventPlanAvailable)
     await persistEventPlanCapacityEvidence(
       input.store,
@@ -1737,10 +1783,8 @@ const runPagedStream = async (input: {
     (checkpoint.eventPartitions === undefined ||
       !checkpoint.position ||
       !("partition" in checkpoint.position) ||
-      (checkpoint.pauseScope === "stream" &&
-        checkpoint.eventCatalogPlanHash !==
-          (input.eventCatalogPlanHash ??
-            eventPlanDigest(input.eventPartitions))))
+      checkpoint.eventCatalogPlanHash !==
+        (input.eventCatalogPlanHash ?? eventPlanDigest(input.eventPartitions)))
   )
     checkpoint = await restartCheckpointAfterDrift(
       input.store,
@@ -1751,6 +1795,33 @@ const runPagedStream = async (input: {
       input.eventPartitions,
       input.eventCatalogPlanHash ?? eventPlanDigest(input.eventPartitions),
     );
+  if (
+    input.stream === "events" &&
+    input.eventPartitions?.length === 0 &&
+    checkpoint.status === "running"
+  ) {
+    const priorVersion = checkpoint.version;
+    const completedAt = input.now().toISOString();
+    const completed = {
+      ...withoutEventPartitionProgress(withoutTransientPageState(checkpoint)),
+      version: priorVersion + 1,
+      status: "complete" as const,
+      position: null,
+      updatedAt: completedAt,
+      counts: zeroCounts(),
+      lastCompletedSlot: checkpoint.slot,
+      lastCompletedSweepId: checkpoint.sweepId,
+      lastCompletedAt: completedAt,
+      lastCompletedCounts: zeroCounts(),
+    };
+    delete completed.providerTotal;
+    await input.store.putCheckpoint(completed, priorVersion);
+    input.metrics?.emit("ProviderLandingSweep", 1, {
+      stream: "events",
+      outcome: "complete",
+    });
+    return completed;
+  }
   if (
     checkpoint.resumeAfter &&
     input.now().getTime() < Date.parse(checkpoint.resumeAfter)
