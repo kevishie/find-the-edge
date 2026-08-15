@@ -167,7 +167,9 @@ export interface SharpApiCatalogSnapshot {
   readonly leagues: readonly SharpApiCatalogLeague[];
   readonly quarantines: readonly SharpApiLandingQuarantine[];
   readonly sourceRows: number;
-  readonly providerUpdatedAt?: IsoTimestamp;
+  /** Exact provider generation token. SharpAPI emits nanosecond ISO instants;
+   * do not round this before comparing pages from a mutable snapshot. */
+  readonly providerUpdatedAt?: string;
   readonly retrievedAt: IsoTimestamp;
   readonly responseMetadata?: SharpApiResponseMetadata;
 }
@@ -231,7 +233,8 @@ export interface SharpApiUniversalPage<T> {
   readonly nextOffset?: number;
   readonly nextCursor?: string;
   readonly providerTotal?: number;
-  readonly providerUpdatedAt?: IsoTimestamp;
+  /** Exact provider generation token. See SharpApiCatalogSnapshot. */
+  readonly providerUpdatedAt?: string;
   readonly retrievedAt: IsoTimestamp;
   readonly responseMetadata?: SharpApiResponseMetadata;
 }
@@ -624,7 +627,7 @@ const safeInteger = (value: unknown): value is number =>
 const providerInstant = (value: unknown): value is IsoTimestamp => {
   if (!canonical(value, 40)) return false;
   const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
       value,
     );
   if (!match) return false;
@@ -657,7 +660,7 @@ const providerInstant = (value: unknown): value is IsoTimestamp => {
     d <= daysInMonth[m - 1]! &&
     Number(hour) <= 23 &&
     Number(minute) <= 59 &&
-    Number(second) <= 59 &&
+    (second === undefined || Number(second) <= 59) &&
     offsetHour <= 14 &&
     offsetMinute <= 59 &&
     (offsetHour < 14 || offsetMinute === 0) &&
@@ -1109,7 +1112,10 @@ const optionalStringWarning = (
   maximumLength: number,
   warning: string,
 ) =>
-  value !== undefined && value !== null && !canonical(value, maximumLength)
+  value !== undefined &&
+  value !== null &&
+  value !== "" &&
+  !canonical(value, maximumLength)
     ? warning
     : null;
 
@@ -1193,7 +1199,7 @@ export function parseSharpApiSportsCatalog(
     quarantines,
     sourceRows: (payload["data"] as unknown[]).length,
     ...(instant(payload["updated_at"])
-      ? { providerUpdatedAt: iso(payload["updated_at"]) }
+      ? { providerUpdatedAt: payload["updated_at"] }
       : {}),
     retrievedAt,
   };
@@ -1258,7 +1264,7 @@ export function parseSharpApiLeaguesCatalog(
     quarantines,
     sourceRows: (payload["data"] as unknown[]).length,
     ...(instant(payload["updated_at"])
-      ? { providerUpdatedAt: iso(payload["updated_at"]) }
+      ? { providerUpdatedAt: payload["updated_at"] }
       : {}),
     retrievedAt,
   };
@@ -1515,6 +1521,7 @@ export function parseSharpApiUniversalOddsPage(
       ),
       value["event_start_time"] !== undefined &&
       value["event_start_time"] !== null &&
+      value["event_start_time"] !== "" &&
       !instant(value["event_start_time"])
         ? "event-start-time-invalid"
         : null,
@@ -1654,7 +1661,7 @@ const universalPagination = <T>(
       : {}),
     ...(nonNegativeInteger(providerTotal) ? { providerTotal } : {}),
     ...(instant(payload["updated_at"])
-      ? { providerUpdatedAt: iso(payload["updated_at"]) }
+      ? { providerUpdatedAt: payload["updated_at"] }
       : {}),
     retrievedAt,
   };
@@ -2682,21 +2689,15 @@ const catalogMembershipCoherent = (
   const sportsById = new Map(
     sports.map((sport) => [sport.providerSportId, sport] as const),
   );
-  const leaguesById = new Map(
-    leagues.map((league) => [league.providerLeagueId, league] as const),
-  );
-  return (
-    sports.every((sport) =>
-      sport.providerLeagueIds.every(
-        (leagueId) =>
-          leaguesById.get(leagueId)?.providerSportId === sport.providerSportId,
-      ),
-    ) &&
-    leagues.every((league) =>
-      sportsById
-        .get(league.providerSportId)
-        ?.providerLeagueIds.includes(league.providerLeagueId),
-    )
+  // League slugs are not globally unique: the same `club_friendlies`-style
+  // slug can appear in several sport membership lists while /leagues returns
+  // the authoritative compound (sport, league) rows. Require every league row
+  // to have its matching sport membership, but do not flatten the inverse
+  // sport list into a globally keyed map and call legitimate collisions drift.
+  return leagues.every((league) =>
+    sportsById
+      .get(league.providerSportId)
+      ?.providerLeagueIds.includes(league.providerLeagueId),
   );
 };
 

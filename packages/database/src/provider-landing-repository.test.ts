@@ -763,7 +763,7 @@ describe("provider landing repository", () => {
             quarantinedRows: 1,
             warningRows: 2,
           },
-          providerUpdatedAt: "2026-08-14T20:00:01.000Z",
+          providerUpdatedAt: "2026-08-14T20:00:01.123456789Z",
           visitedPositionHashes: [
             testPositionHash("events", { offset: 200 }),
             "b".repeat(32),
@@ -822,6 +822,10 @@ describe("provider landing repository", () => {
     ],
     ["uppercase position hash", { visitedPositionHashes: ["A".repeat(32)] }],
     ["invalid provider timestamp", { providerUpdatedAt: "not-an-instant" }],
+    [
+      "invalid provider calendar timestamp",
+      { providerUpdatedAt: "2026-02-30T20:00:00.123456789Z" },
+    ],
     [
       "invalid resume time",
       { resumeAfter: "not-an-instant", pauseScope: "stream" },
