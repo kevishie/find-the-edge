@@ -45,26 +45,6 @@ const putContinuationCas = async (
   throw new Error("continuation-transition-conflict");
 };
 
-/**
- * Whether any page of this run carries an evidence-intent marker, read from
- * the durable page ledger rather than from the run row's self-reported flag.
- * The ambiguous write sets that flag from a local variable, so trusting it
- * would tell us evidence was committed when nothing was.
- */
-const sealedEvidenceIntent = async (
-  store: OddsControlPlaneStore,
-  runId: string,
-): Promise<boolean> => {
-  let token: string | undefined = "start";
-  for (let guard = 0; token && guard < 100; guard += 1) {
-    const page = await store.getPage(runId, token);
-    if (!page) return false;
-    if (page.evidenceIntentAt !== undefined) return true;
-    token = page.nextPageToken;
-  }
-  return false;
-};
-
 const clearOwnedContinuation = async (
   store: OddsControlPlaneStore,
   leagueKey: string,
@@ -682,21 +662,19 @@ export async function runOddsLeague(input: {
   //
   // The ceiling is that exit, and it deliberately does the same thing the
   // operator did rather than anything cleverer. Below it, nothing changes.
+  // A prior committed page does not make an ambiguous *later* dispatch
+  // resumable: no sealed page exists for the unknown response. Keeping the
+  // continuation in that case permanently fenced MLB in staging for two
+  // days. The old run and its immutable evidence remain auditable; after the
+  // bounded uncertainty window, a new run starts at page one and the storage
+  // layer's deterministic identities make already-committed evidence replay
+  // safe.
   if (continuation?.ambiguousUntil) {
     const ambiguousFor =
       clock().getTime() - Date.parse(continuation.ambiguousUntil);
-    // Evidence beyond recall is checked against the PAGE ledger, not against
-    // the continuation's own flag: the ambiguous write sets that flag from a
-    // local variable, which is exactly what put MLS out of reach of the age
-    // ceiling that already existed.
-    const ledgerEvidence = await sealedEvidenceIntent(
-      store,
-      continuation.runId,
-    );
     if (
       Number.isFinite(ambiguousFor) &&
-      ambiguousFor > ODDS_AMBIGUITY_MAX_AGE_MS &&
-      !ledgerEvidence
+      ambiguousFor > ODDS_AMBIGUITY_MAX_AGE_MS
     ) {
       // The lease was renewed strictly before the ambiguity was written and
       // both are five-minute windows, so a lapsed ambiguity implies a lapsed

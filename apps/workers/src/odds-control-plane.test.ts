@@ -541,15 +541,16 @@ describe("odds collection control plane", () => {
       fenced: true,
     },
     {
-      name: "keeps fencing when the ledger shows evidence beyond recall",
+      name: "unwedges after a later ambiguous dispatch even when an earlier page committed",
       minutesAgo: 90,
       intent: true,
-      fenced: true,
+      fenced: false,
     },
   ])("ambiguity ceiling: $name", async ({ minutesAgo, intent, fenced }) => {
-    // MLS answered provider-request-ambiguous on every pass for eleven hours
-    // because the fence had no exit; an operator deleting the row was the
-    // only way out. The ceiling automates exactly that, and only that.
+    // A later ambiguous request has no sealed response to replay. Earlier
+    // committed pages remain immutable audit evidence, but they must not keep
+    // the league fenced forever; a fresh run safely reconciles deterministic
+    // identities after the bounded uncertainty window.
     const store = new MemoryOddsControlPlaneStore();
     const runId = "mlb:sharpapi:ambiguous-run";
     const stamped = new Date(now.getTime() - minutesAgo * 60_000).toISOString();
