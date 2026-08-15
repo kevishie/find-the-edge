@@ -766,6 +766,7 @@ describe("SharpAPI activation boundary", () => {
     expect(parsed.quarantines).toEqual([
       expect.objectContaining({
         providerRecordId: "world_championships,_mens_singles",
+        providerSportId: "olympics",
         reason: "unrepresentable-filter-id",
       }),
     ]);

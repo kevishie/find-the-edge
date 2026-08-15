@@ -41,12 +41,21 @@ decision and is never performed by deployment automation.
 
 FTE-DQ-001 separates source acquisition from product normalization. SharpAPI's
 live `/sports?include_empty=true` and `/leagues?include_empty=true` responses are
-the acquisition roster. `include_empty=true` is required by the provider's
-OpenAPI contract so off-season entries remain discoverable before their first
-event returns. The worker fetches every catalog sport through deterministic
-`/events?sport=...` partitions; large sports are additionally narrowed by exact
-comma-separated `league` values from that sport's catalog membership. Odds use
-the provider-wide `/odds` cursor chain. The worker never accepts a configured
+the acquisition roster. `include_empty=true` keeps off-season entries
+discoverable before their first event returns. The worker uses deterministic
+`/events?sport=...&league=...` partitions only when every catalog membership
+row is representable and the league event/live counters exactly reconcile to
+the sport counters. Missing, quarantined, or mismatched league coverage uses a
+sport-only request so a partial plan can never publish as complete. A catalog
+sport requires no Events request only when both the sport and all of its valid
+league rows report zero event and live counters; any positive counter remains
+active. Odds use the provider-wide `/odds`
+cursor chain. The one-minute worker cadence is a continuation-liveness control:
+reserved concurrency remains one, completed streams return without paid calls,
+and incomplete opaque cursors receive another scheduling opportunity without
+waiting for the fifteen-minute catalog refresh. Cursor age must still be
+verified from checkpoint timestamps during staging reconciliation. The
+worker never accepts a configured
 sport or league allowlist, live-state filter, or market filter. A new provider
 sport, league, market, or book must land without a code or configuration change
 even when no sport module, strategy, API route, or UI exists for it yet.
@@ -71,9 +80,10 @@ immediate capacity diagnostic alerts; no truncated plan is treated as complete.
 SharpAPI documents `league` as a comma-separated filter and its catalog IDs as
 filter inputs. A catalog ID containing a comma cannot be represented atomically
 under that contract. Such a provider inconsistency is retained as
-`unrepresentable-filter-id` quarantine evidence, while that sport falls back to
-a sport-wide Events partition so its events are still acquired. It is never
-silently discarded or misinterpreted as two leagues.
+`unrepresentable-filter-id` quarantine evidence and forces that sport through
+the fail-closed sport-only request. The invalid ID is never silently discarded,
+misinterpreted as two leagues, or excluded while representable siblings make a
+partial generation appear complete.
 
 SharpAPI's Events reference documents `400 invalid_filter` only for malformed
 numeric `limit` or `offset` values; a filter that matches nothing is documented
@@ -131,11 +141,12 @@ Catalog envelopes accept as many as 50,000 rows under the independently enforced
 budget, and numeric source tokens must fit DynamoDB's exact 38-digit,
 `1E-130` through `9.999E+125` range and round-trip exactly through the runtime
 number representation. Provider timestamps are calendar-valid RFC 3339/ISO
-8601 instants and retain SharpAPI's documented nanosecond precision as exact
-comparison evidence. An unsafe number or timestamp quarantines
+8601 instants with at most millisecond precision, preventing distinct source
+generations from collapsing through the runtime `Date` representation. An unsafe number or timestamp quarantines
 only its row; it never rejects a batch containing valid siblings.
 
-Catalog refresh is due every scheduled fifteen-minute pass. If a stream-local
+The worker is invoked every minute, while catalog refresh remains internally due
+every fifteen minutes. Completed streams make no paid call. If a stream-local
 filter rejection is paused and the newly completed catalog changes its frozen
 event plan, the inactive event sweep restarts immediately with that plan;
 unchanged bad filters remain paused and alert instead of hot-looping. Event offsets and odds cursors are
@@ -168,7 +179,11 @@ authority. Catalog records write in checkpointed chunks and stop at the Lambda
 safety deadline; replay validates the durable prefix count and cannot skip rows
 or publish a partial catalog.
 
-The isolated worker runs every fifteen minutes with reserved concurrency one.
+The isolated worker is triggered every minute with reserved concurrency one;
+the Lambda retains its fourteen-minute execution budget and sixty-second
+checkpoint/write safety reserve. The one-minute trigger is an operational
+continuation opportunity, not proof of a provider cursor lifetime: responders
+must compare actual invocation starts and checkpoint updates for backlog.
 Events and odds take one page each in a fair, serialized round robin. Before a
 paid request, the landing worker atomically reserves against the same
 account-level SharpAPI health row used by live odds. Landing is lower priority:
@@ -222,8 +237,9 @@ start. Health alarms fire long before a current snapshot can expire.
 Low-cardinality EMF records exact persisted pages and landed, quarantined, and
 warning rows. Durable cumulative quarantine/warning counts are replayed at the
 next invocation, so a crash after checkpoint commit but before EMF publication
-cannot permanently hide bad data. Completion-age alarms require two consecutive fifteen-minute
-periods beyond eight hours for catalog or one hour for events/odds. Run-age
+cannot permanently hide bad data. Completion-age alarms use their configured
+CloudWatch evaluation periods rather than the invocation cadence and breach
+beyond eight hours for catalog or one hour for events/odds. Run-age
 alarms require two periods beyond thirty minutes for catalog, two hours for
 events, or twelve hours for odds. Recovery preserves the original run-age
 boundary, and two consecutive recovery periods alert instead of presenting a
@@ -253,8 +269,8 @@ invokes it only with the deployed SharpAPI secret binding, then strongly reads
 the three `CHECKPOINT#catalog|events|odds` records. A healthy completed sweep has
 `sourceRows = landedRows + quarantinedRows`; catalog source rows equal the live
 include-empty `/sports` plus `/leagues` counts; the event plan covers every
-catalog sport exactly once, either sport-wide or through non-overlapping
-sport-scoped league groups; unfiltered Odds uses 25-row opaque-cursor pages
+catalog sport exactly once, either sport-wide or through fully reconciled,
+non-overlapping sport-scoped league groups; unfiltered Odds uses 25-row opaque-cursor pages
 because live staging proved the documented 200-row maximum exceeds the bounded
 response timeout while 25-row pages complete reliably; and an odds/event checkpoint is never called
 complete while it retains a cursor, offset, or pending page. Any `resumeAfter`

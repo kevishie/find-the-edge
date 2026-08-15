@@ -12,6 +12,29 @@ const eventConfig = {
   productAccessEnforced: false,
 };
 
+const expectProviderLandingSchedule = (
+  template: Template,
+  state: "ENABLED" | "DISABLED",
+) => {
+  const schedules = template.findResources("AWS::Events::Rule");
+  const providerLanding = Object.entries(schedules).find(([logicalId]) =>
+    logicalId.includes("ProviderLandingSchedule"),
+  );
+  expect(providerLanding?.[1]).toMatchObject({
+    Properties: {
+      State: state,
+      ScheduleExpression: "rate(1 minute)",
+      Targets: [
+        {
+          RetryPolicy: {
+            MaximumEventAgeInSeconds: 3_600,
+          },
+        },
+      ],
+    },
+  });
+};
+
 describe("foundation CDK app", () => {
   it.each(["staging", "prod"])(
     "scopes %s secrets and release provenance",
@@ -130,10 +153,7 @@ describe("foundation CDK app", () => {
         }),
       },
     });
-    template.hasResourceProperties("AWS::Events::Rule", {
-      State: "DISABLED",
-      ScheduleExpression: "rate(15 minutes)",
-    });
+    expectProviderLandingSchedule(template, "DISABLED");
     template.hasOutput("ProviderLandingFunctionName", {});
     template.hasOutput("ProviderLandingDlqUrl", {});
     template.hasResourceProperties("AWS::Lambda::Function", {
@@ -364,18 +384,12 @@ describe("foundation CDK app", () => {
     template.resourceCountIs("AWS::Events::Rule", 8);
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 2);
     // Live odds tick every minute; opportunity expiration keeps five.
-    template.hasResourceProperties("AWS::Events::Rule", {
-      State: "DISABLED",
-      ScheduleExpression: "rate(1 minute)",
-    });
+    expectProviderLandingSchedule(template, "DISABLED");
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
       ScheduleExpression: "rate(5 minutes)",
     });
-    template.hasResourceProperties("AWS::Events::Rule", {
-      State: "DISABLED",
-      ScheduleExpression: "rate(15 minutes)",
-    });
+    expectProviderLandingSchedule(template, "DISABLED");
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
       ScheduleExpression: "cron(0/15 * * * ? *)",
@@ -1382,7 +1396,7 @@ describe("foundation CDK app", () => {
     const template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
-      ScheduleExpression: "rate(15 minutes)",
+      ScheduleExpression: "rate(1 minute)",
     });
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       MetricName: "ProviderLandingCompletionAgeSeconds",

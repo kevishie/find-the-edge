@@ -756,7 +756,7 @@ export class FoundationStack extends Stack {
       // rollback-safe schema, but cannot begin paid universal acquisition
       // until FTE-DQ-005 records the staging reconciliation/soak decision.
       enabled: providerLandingScheduled,
-      schedule: Schedule.rate(Duration.minutes(15)),
+      schedule: Schedule.rate(Duration.minutes(1)),
     });
     providerLandingSchedule.addTarget(
       new LambdaFunction(providerLanding, {
