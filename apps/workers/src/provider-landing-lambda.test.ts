@@ -6,6 +6,7 @@ import {
   createProviderLandingMetricSink,
   parseProviderLandingSecret,
   providerLandingTerminalReason,
+  recoverProviderLandingAccountWindow,
   settleProviderLandingTerminalFailure,
 } from "./provider-landing-lambda";
 import { SharedSharpApiAccountRateCoordinator } from "./provider-landing";
@@ -126,6 +127,230 @@ describe("provider landing Lambda boundary", () => {
     expect(emit).toHaveBeenCalledWith("ProviderLandingTerminalFailure", 1, {
       stream: "account",
       outcome: "terminal",
+    });
+  });
+
+  it("elects and publishes an authoritative account window for landing", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-15T00:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T23:59:30.000Z",
+    });
+    const fetchAccount = vi.fn(() =>
+      Promise.resolve({
+        responseMetadata: {
+          rateWindow: {
+            limit: 1_000,
+            remaining: 999,
+            resetsAt: "2026-08-15T00:01:00.000Z",
+          },
+        },
+      } as never),
+    );
+    await expect(
+      recoverProviderLandingAccountWindow({
+        control: store,
+        fetchAccount,
+        now: () => new Date("2026-08-15T00:00:05.000Z"),
+      }),
+    ).resolves.toBe("recovered");
+    expect(fetchAccount).toHaveBeenCalledOnce();
+    expect((await store.getHealth(key))?.rateWindow).toMatchObject({
+      limit: 1_000,
+      remaining: 999,
+      resetsAt: "2026-08-15T00:01:00.000Z",
+    });
+  });
+
+  it("does not dispatch after the elected probe crosses the checkpoint deadline", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-15T00:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T23:59:30.000Z",
+    });
+    const fetchAccount = vi.fn();
+    const shouldContinue = vi
+      .fn<() => boolean>()
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
+    await expect(
+      recoverProviderLandingAccountWindow({
+        control: store,
+        fetchAccount,
+        shouldContinue,
+        now: () => new Date("2026-08-15T00:00:05.000Z"),
+      }),
+    ).resolves.toBe("unavailable");
+    expect(fetchAccount).not.toHaveBeenCalled();
+    expect((await store.getHealth(key))?.rateWindow?.probeUntil).toBe(
+      "2026-08-15T00:01:05.000Z",
+    );
+  });
+
+  it("keeps a missing-metadata probe lease from duplicating the paid check", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-15T00:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T23:59:30.000Z",
+    });
+    const firstFetch = vi.fn(() => Promise.resolve({} as never));
+    await expect(
+      recoverProviderLandingAccountWindow({
+        control: store,
+        fetchAccount: firstFetch,
+        now: () => new Date("2026-08-15T00:00:05.000Z"),
+      }),
+    ).resolves.toBe("unavailable");
+    const duplicateFetch = vi.fn();
+    await expect(
+      recoverProviderLandingAccountWindow({
+        control: store,
+        fetchAccount: duplicateFetch,
+        pause: () => Promise.resolve(),
+        now: () => new Date("2026-08-15T00:00:06.000Z"),
+      }),
+    ).resolves.toBe("unavailable");
+    expect(firstFetch).toHaveBeenCalledOnce();
+    expect(duplicateFetch).not.toHaveBeenCalled();
+  });
+
+  it("durably terminalizes a nonretryable account probe rejection", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-15T00:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T23:59:30.000Z",
+    });
+    await expect(
+      recoverProviderLandingAccountWindow({
+        control: store,
+        fetchAccount: () =>
+          Promise.reject(new SharpApiError("provider-rejected", false)),
+        now: () => new Date("2026-08-15T00:00:05.000Z"),
+      }),
+    ).rejects.toThrow("provider-rejected");
+    expect(await store.getHealth(key)).toMatchObject({
+      healthy: false,
+      status: "unhealthy",
+      failureClass: "terminal",
+      failureReason: "provider-rejected",
+    });
+  });
+
+  it("observes another probe winner without sending a duplicate paid request", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        probeUntil: "2026-08-15T00:01:00.000Z",
+      },
+      updatedAt: "2026-08-15T00:00:00.000Z",
+    });
+    const fetchAccount = vi.fn();
+    const pause = vi.fn(async () => {
+      await store.reconcileAccountRateWindow(
+        key,
+        1,
+        1,
+        {
+          limit: 1_000,
+          remaining: 998,
+          resetsAt: "2026-08-15T00:01:00.000Z",
+        },
+        "2026-08-15T00:00:05.000Z",
+      );
+    });
+    await expect(
+      recoverProviderLandingAccountWindow({
+        control: store,
+        fetchAccount,
+        pause,
+        now: () => new Date("2026-08-15T00:00:05.000Z"),
+      }),
+    ).resolves.toBe("observed");
+    expect(pause).toHaveBeenCalledOnce();
+    expect(fetchAccount).not.toHaveBeenCalled();
+  });
+
+  it("shares an elected recovery probe rate limit with every account consumer", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-15T00:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T23:59:30.000Z",
+    });
+    await expect(
+      recoverProviderLandingAccountWindow({
+        control: store,
+        fetchAccount: () =>
+          Promise.reject(
+            new SharpApiError(
+              "rate-limited",
+              true,
+              "2026-08-15T00:01:00.000Z" as never,
+            ),
+          ),
+        now: () => new Date("2026-08-15T00:00:05.000Z"),
+      }),
+    ).rejects.toThrow("rate-limited");
+    expect(await store.getHealth(key)).toMatchObject({
+      healthy: false,
+      status: "unhealthy",
+      failureClass: "transient",
+      failureReason: "rate-limited",
+      retryAt: "2026-08-15T00:01:00.000Z",
+      rateWindow: {
+        remaining: 0,
+        resetsAt: "2026-08-15T00:01:00.000Z",
+      },
     });
   });
 });

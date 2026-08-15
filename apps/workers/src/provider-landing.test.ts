@@ -313,6 +313,350 @@ describe("universal provider landing", () => {
     expect(fetchOdds).not.toHaveBeenCalled();
   });
 
+  it("waits once for the live owner to publish a new minute window before dispatch", async () => {
+    const store = new MemoryLandingStore();
+    const control = new MemoryOddsControlPlaneStore();
+    const healthKey = "sharpapi:account:account";
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-14T20:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T19:59:30.000Z",
+    });
+    let currentNow = new Date("2026-08-14T20:00:00.000Z");
+    const order: string[] = [];
+    const waitForRefresh = vi.fn(async () => {
+      order.push("wait");
+      currentNow = new Date("2026-08-14T20:00:05.000Z");
+      await control.reserveAccountRate(
+        healthKey,
+        500,
+        1,
+        currentNow.toISOString(),
+        {
+          version: 1,
+          limit: 1_000,
+          resetsAt: "2026-08-14T20:00:00.000Z",
+        },
+      );
+      await control.reconcileAccountRateWindow(
+        healthKey,
+        0,
+        0,
+        {
+          limit: 1_000,
+          remaining: 999,
+          resetsAt: "2026-08-14T20:01:00.000Z",
+        },
+        currentNow.toISOString(),
+      );
+    });
+    const fetchCatalog = vi.fn(() => {
+      order.push("catalog");
+      return Promise.resolve(catalog());
+    });
+    const result = await runProviderLanding({
+      source: source({ fetchCatalog }),
+      store,
+      accountRate: new SharedSharpApiAccountRateCoordinator(control, {
+        recoverWindow: waitForRefresh,
+        now: () => currentNow,
+      }),
+      now: () => currentNow,
+    });
+    expect(waitForRefresh).toHaveBeenCalledOnce();
+    expect(order).toEqual(["wait", "catalog"]);
+    expect(result).toMatchObject({
+      catalog: { status: "complete" },
+      events: { status: "complete" },
+      odds: { status: "complete" },
+    });
+    expect((await control.getHealth(healthKey))?.rateWindow).toMatchObject({
+      limit: 1_000,
+      remaining: 995,
+      resetsAt: "2026-08-14T20:01:00.000Z",
+    });
+  });
+
+  it("does not reserve against an authoritative window that is about to reset", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const healthKey = "sharpapi:account:account";
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-14T20:00:08.000Z",
+      },
+      updatedAt: "2026-08-14T19:59:30.000Z",
+    });
+    let currentNow = new Date("2026-08-14T20:00:00.000Z");
+    const resetExpiredWindow = control.reserveAccountRate.bind(control);
+    const reserveAccountRate = vi.spyOn(control, "reserveAccountRate");
+    const waitForRefresh = vi.fn(async () => {
+      currentNow = new Date("2026-08-14T20:00:10.000Z");
+      await resetExpiredWindow(healthKey, 500, 1, currentNow.toISOString(), {
+        version: 1,
+        limit: 1_000,
+        resetsAt: "2026-08-14T20:00:08.000Z",
+      });
+      await control.reconcileAccountRateWindow(
+        healthKey,
+        0,
+        0,
+        {
+          limit: 1_000,
+          remaining: 999,
+          resetsAt: "2026-08-14T20:01:00.000Z",
+        },
+        currentNow.toISOString(),
+      );
+    });
+    const admission = await new SharedSharpApiAccountRateCoordinator(control, {
+      recoverWindow: waitForRefresh,
+      now: () => currentNow,
+    }).reserve(1, currentNow);
+    expect(admission).toEqual({ admitted: true });
+    expect(waitForRefresh).toHaveBeenCalledOnce();
+    expect(reserveAccountRate).toHaveBeenCalledOnce();
+    expect((await control.getHealth(healthKey))?.rateWindow?.remaining).toBe(
+      998,
+    );
+  });
+
+  it("recovers each distinct minute window during one long landing invocation", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const healthKey = "sharpapi:account:account";
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-14T20:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T19:59:30.000Z",
+    });
+    let currentNow = new Date("2026-08-14T20:00:05.000Z");
+    const recoverWindow = vi.fn(async () => {
+      const requestedAt = currentNow.toISOString();
+      const probeUntil = new Date(currentNow.getTime() + 60_000).toISOString();
+      const claimVersion = await control.claimAccountRateProbe(
+        healthKey,
+        requestedAt,
+        probeUntil,
+      );
+      expect(claimVersion).toEqual(expect.any(Number));
+      if (claimVersion === null)
+        throw new Error("expected account probe claim");
+      expect(
+        await control.completeAccountRateProbe(
+          healthKey,
+          probeUntil,
+          claimVersion,
+          {
+            limit: 1_000,
+            remaining: 999,
+            resetsAt: new Date(currentNow.getTime() + 55_000).toISOString(),
+          },
+          requestedAt,
+        ),
+      ).toBe(true);
+    });
+    const coordinator = new SharedSharpApiAccountRateCoordinator(control, {
+      recoverWindow,
+      now: () => currentNow,
+    });
+    await expect(coordinator.reserve(1, currentNow)).resolves.toEqual({
+      admitted: true,
+    });
+    currentNow = new Date("2026-08-14T20:01:05.000Z");
+    await expect(coordinator.reserve(1, currentNow)).resolves.toEqual({
+      admitted: true,
+    });
+    expect(recoverWindow).toHaveBeenCalledTimes(2);
+    expect((await control.getHealth(healthKey))?.rateWindow).toMatchObject({
+      remaining: 998,
+      resetsAt: "2026-08-14T20:02:00.000Z",
+    });
+  });
+
+  it("recomputes the reserve after a concurrent authoritative window refresh", async () => {
+    const control = new MemoryOddsControlPlaneStore();
+    const healthKey = "sharpapi:account:account";
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 500,
+        remaining: 400,
+        resetsAt: "2026-08-14T20:05:00.000Z",
+      },
+      updatedAt: "2026-08-14T20:00:00.000Z",
+    });
+    const originalReserve = control.reserveAccountRate.bind(control);
+    const reserveAccountRate = vi
+      .spyOn(control, "reserveAccountRate")
+      .mockImplementationOnce(async () => {
+        const current = await control.getHealth(healthKey);
+        if (!current) throw new Error("missing-test-health");
+        await control.putHealth({
+          ...current,
+          rateWindow: {
+            limit: 1_000,
+            remaining: 700,
+            resetsAt: "2026-08-14T20:06:00.000Z",
+          },
+          updatedAt: "2026-08-14T20:00:01.000Z",
+        });
+        return false;
+      })
+      .mockImplementation(originalReserve);
+    const admission = await new SharedSharpApiAccountRateCoordinator(
+      control,
+    ).reserve(1, new Date("2026-08-14T20:00:02.000Z"));
+    expect(admission).toEqual({ admitted: true });
+    expect(reserveAccountRate.mock.calls.map(([, reserve]) => reserve)).toEqual(
+      [250, 500],
+    );
+    expect((await control.getHealth(healthKey))?.rateWindow?.remaining).toBe(
+      699,
+    );
+  });
+
+  it("waits at most once and still fails closed when no owner refresh arrives", async () => {
+    const store = new MemoryLandingStore();
+    const control = new MemoryOddsControlPlaneStore();
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:account:account",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-14T20:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T19:59:30.000Z",
+    });
+    const waitForRefresh = vi.fn(() => Promise.resolve());
+    const fetchCatalog = vi.fn<ProviderLandingSource["fetchCatalog"]>();
+    const result = await runProviderLanding({
+      source: source({ fetchCatalog }),
+      store,
+      accountRate: new SharedSharpApiAccountRateCoordinator(control, {
+        recoverWindow: waitForRefresh,
+        now: () => new Date("2026-08-14T20:00:10.000Z"),
+      }),
+      now: () => new Date("2026-08-14T20:00:00.000Z"),
+    });
+    expect(waitForRefresh).toHaveBeenCalledOnce();
+    expect(fetchCatalog).not.toHaveBeenCalled();
+    expect(result.catalog).toMatchObject({
+      status: "running",
+      pauseScope: "account",
+    });
+  });
+
+  it("does not wait or dispatch when the refresh would consume the checkpoint safety budget", async () => {
+    const store = new MemoryLandingStore();
+    const control = new MemoryOddsControlPlaneStore();
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey: "sharpapi:account:account",
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-14T20:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T19:59:30.000Z",
+    });
+    const waitForRefresh = vi.fn(() => Promise.resolve());
+    const fetchCatalog = vi.fn<ProviderLandingSource["fetchCatalog"]>();
+    const result = await runProviderLanding({
+      source: source({ fetchCatalog }),
+      store,
+      accountRate: new SharedSharpApiAccountRateCoordinator(control, {
+        recoverWindow: waitForRefresh,
+        now: () => new Date("2026-08-14T20:00:00.000Z"),
+        canRecoverWindow: () => false,
+      }),
+      now: () => new Date("2026-08-14T20:00:00.000Z"),
+    });
+    expect(waitForRefresh).not.toHaveBeenCalled();
+    expect(fetchCatalog).not.toHaveBeenCalled();
+    expect(result.catalog).toMatchObject({
+      status: "running",
+      pauseScope: "account",
+    });
+  });
+
+  it("does not reserve or dispatch when the checkpoint safety budget expires during the wait", async () => {
+    const store = new MemoryLandingStore();
+    const control = new MemoryOddsControlPlaneStore();
+    const healthKey = "sharpapi:account:account";
+    await control.putHealth({
+      providerId: "sharpapi",
+      healthKey,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 900,
+        resetsAt: "2026-08-14T20:00:00.000Z",
+      },
+      updatedAt: "2026-08-14T19:59:30.000Z",
+    });
+    const reserveAccountRate = vi.spyOn(control, "reserveAccountRate");
+    const waitForRefresh = vi.fn(async () => {
+      await control.reconcileAccountRateWindow(
+        healthKey,
+        0,
+        0,
+        {
+          limit: 1_000,
+          remaining: 999,
+          resetsAt: "2026-08-14T20:01:00.000Z",
+        },
+        "2026-08-14T20:00:10.000Z",
+      );
+    });
+    const fetchCatalog = vi.fn<ProviderLandingSource["fetchCatalog"]>();
+    const result = await runProviderLanding({
+      source: source({ fetchCatalog }),
+      store,
+      accountRate: new SharedSharpApiAccountRateCoordinator(control, {
+        recoverWindow: waitForRefresh,
+        now: () => new Date("2026-08-14T20:00:10.000Z"),
+        canRecoverWindow: () => true,
+        canDispatch: () => false,
+      }),
+      now: () => new Date("2026-08-14T20:00:00.000Z"),
+    });
+    expect(waitForRefresh).toHaveBeenCalledOnce();
+    expect(reserveAccountRate).not.toHaveBeenCalled();
+    expect(fetchCatalog).not.toHaveBeenCalled();
+    expect(result.catalog).toMatchObject({
+      status: "running",
+      pauseScope: "account",
+    });
+  });
+
   it("circuit-breaks every paid stream on terminal shared account health", async () => {
     const store = new MemoryLandingStore();
     const control = new MemoryOddsControlPlaneStore();

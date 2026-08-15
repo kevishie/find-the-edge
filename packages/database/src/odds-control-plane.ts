@@ -200,10 +200,9 @@ export interface OddsControlPlaneStore {
 /**
  * Narrow account-window seam for lower-priority provider collectors.
  *
- * The live odds control plane owns recovery probes. Background collectors use
- * this contract only after an authoritative account window exists, reserve
- * against that same row, and merge response headers without overwriting a
- * concurrent live-control-plane health transition.
+ * Live odds and background collectors elect one recovery probe through this
+ * row. Collectors reserve only after an authoritative window exists and merge
+ * response headers without overwriting a concurrent health transition.
  */
 export interface AccountRateCoordinationStore {
   getHealth(providerId: string): Promise<OddsProviderHealth | null>;
@@ -211,6 +210,23 @@ export interface AccountRateCoordinationStore {
     healthKey: string,
     reserve: number,
     cost: number,
+    updatedAt: string,
+    expected: {
+      readonly version?: number;
+      readonly limit?: number;
+      readonly resetsAt?: string;
+    },
+  ): Promise<boolean>;
+  claimAccountRateProbe(
+    healthKey: string,
+    requestedAt: string,
+    probeUntil: string,
+  ): Promise<number | null>;
+  completeAccountRateProbe(
+    healthKey: string,
+    expectedProbeUntil: string,
+    expectedClaimVersion: number,
+    observedWindow: NonNullable<OddsProviderHealth["rateWindow"]>,
     updatedAt: string,
   ): Promise<boolean>;
   reconcileAccountRateWindow(
@@ -227,10 +243,13 @@ export interface AccountRateCoordinationStore {
   ): Promise<void>;
   blockAccountTerminal(
     healthKey: string,
-    reason: "configuration" | "not-entitled" | "unauthorized",
+    reason: AccountRateTerminalReason,
     updatedAt: string,
   ): Promise<void>;
 }
+
+export type AccountRateTerminalReason =
+  "configuration" | "not-entitled" | "provider-rejected" | "unauthorized";
 
 const reconciledAccountRateHealth = (
   old: OddsProviderHealth,
@@ -312,9 +331,41 @@ const blockedAccountRateHealth = (
   };
 };
 
+const recoveredAccountRateHealth = (
+  old: OddsProviderHealth,
+  observedWindow: NonNullable<OddsProviderHealth["rateWindow"]>,
+  updatedAt: string,
+): OddsProviderHealth => {
+  const {
+    cooldownUntil,
+    expiresAt,
+    failureClass,
+    failureReason,
+    failureStage,
+    retryAt,
+    ...durable
+  } = old;
+  void cooldownUntil;
+  void expiresAt;
+  void failureClass;
+  void failureReason;
+  void failureStage;
+  void retryAt;
+  const rateWindow = { ...observedWindow };
+  delete rateWindow.probeUntil;
+  return {
+    ...durable,
+    healthy: true,
+    status: "healthy",
+    consecutiveSuccesses: old.consecutiveSuccesses + 1,
+    rateWindow,
+    updatedAt,
+  };
+};
+
 const blockedAccountTerminalHealth = (
   old: OddsProviderHealth,
-  reason: "configuration" | "not-entitled" | "unauthorized",
+  reason: AccountRateTerminalReason,
   updatedAt: string,
 ): OddsProviderHealth => {
   const { cooldownUntil, expiresAt, retryAt, ...durable } = old;
@@ -601,6 +652,11 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
     reserve: number,
     cost: number,
     updatedAt: string,
+    expected: {
+      readonly version?: number;
+      readonly limit?: number;
+      readonly resetsAt?: string;
+    },
   ) {
     let old = this.health.get(k);
     if (
@@ -616,6 +672,12 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
       old = resetHealth;
       this.health.set(k, resetHealth);
     }
+    if (
+      old?.version !== expected.version ||
+      old?.rateWindow?.limit !== expected.limit ||
+      old?.rateWindow?.resetsAt !== expected.resetsAt
+    )
+      return false;
     const remaining = old?.rateWindow?.remaining;
     if (
       !old ||
@@ -631,6 +693,70 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
       version: (old.version ?? 0) + 1,
       rateWindow: { ...old.rateWindow, remaining: remaining - cost },
       updatedAt,
+    });
+    return true;
+  }
+  async claimAccountRateProbe(
+    k: string,
+    requestedAt: string,
+    probeUntil: string,
+  ) {
+    let old = this.health.get(k);
+    if (
+      old?.rateWindow?.resetsAt &&
+      Date.parse(old.rateWindow.resetsAt) <= Date.parse(requestedAt)
+    ) {
+      const resetHealth: OddsProviderHealth = {
+        ...old,
+        version: (old.version ?? 0) + 1,
+        rateWindow: resetProviderRateWindow(old.rateWindow),
+        updatedAt: requestedAt,
+      };
+      old = resetHealth;
+      this.health.set(k, resetHealth);
+    }
+    if (
+      !old ||
+      old.failureClass === "terminal" ||
+      old.rateWindow?.remaining !== undefined ||
+      [old.cooldownUntil, old.retryAt].some(
+        (candidate) =>
+          candidate && Date.parse(candidate) > Date.parse(requestedAt),
+      ) ||
+      (old.rateWindow?.probeUntil !== undefined &&
+        Date.parse(old.rateWindow.probeUntil) > Date.parse(requestedAt))
+    )
+      return null;
+    const claimedVersion = (old.version ?? 0) + 1;
+    this.health.set(k, {
+      ...old,
+      version: claimedVersion,
+      rateWindow: { ...old.rateWindow, probeUntil },
+      updatedAt: requestedAt,
+    });
+    return claimedVersion;
+  }
+  async completeAccountRateProbe(
+    k: string,
+    expectedProbeUntil: string,
+    expectedClaimVersion: number,
+    observedWindow: NonNullable<OddsProviderHealth["rateWindow"]>,
+    updatedAt: string,
+  ) {
+    const old = this.health.get(k);
+    if (
+      !old ||
+      old.failureClass === "terminal" ||
+      old.version !== expectedClaimVersion ||
+      old.rateWindow?.probeUntil !== expectedProbeUntil ||
+      observedWindow.limit === undefined ||
+      observedWindow.remaining === undefined ||
+      observedWindow.resetsAt === undefined
+    )
+      return false;
+    this.health.set(k, {
+      ...recoveredAccountRateHealth(old, observedWindow, updatedAt),
+      version: (old.version ?? 0) + 1,
     });
     return true;
   }
@@ -693,7 +819,7 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
   }
   async blockAccountTerminal(
     k: string,
-    reason: "configuration" | "not-entitled" | "unauthorized",
+    reason: AccountRateTerminalReason,
     updatedAt: string,
   ) {
     const old = this.health.get(k);
@@ -1369,6 +1495,11 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
     reserve: number,
     cost: number,
     updatedAt: string,
+    expected: {
+      readonly version?: number;
+      readonly limit?: number;
+      readonly resetsAt?: string;
+    },
   ) {
     const old = await this.currentRateHealth(healthKey, updatedAt);
     const rateWindow = old?.rateWindow;
@@ -1376,6 +1507,9 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
     if (
       !old ||
       !rateWindow ||
+      old.version !== expected.version ||
+      rateWindow.limit !== expected.limit ||
+      rateWindow.resetsAt !== expected.resetsAt ||
       !old.healthy ||
       old.status === "unhealthy" ||
       old.failureClass === "terminal" ||
@@ -1390,6 +1524,10 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       rateWindow.resetsAt === undefined
         ? "attribute_not_exists(#v.#window.#reset)"
         : "#v.#window.#reset = :expectedReset";
+    const limitCondition =
+      rateWindow.limit === undefined
+        ? "attribute_not_exists(#v.#window.#limit)"
+        : "#v.#window.#limit = :expectedLimit";
     try {
       await this.client.send(
         new UpdateCommand({
@@ -1406,12 +1544,14 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
             "#v.#window.#q >= :minimum",
             versionCondition,
             resetCondition,
+            limitCondition,
           ].join(" AND "),
           ExpressionAttributeNames: {
             "#v": "value",
             "#window": "rateWindow",
             "#q": "remaining",
             "#reset": "resetsAt",
+            "#limit": "limit",
             "#healthy": "healthy",
             "#status": "status",
             "#failure": "failureClass",
@@ -1434,6 +1574,9 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
             ...(rateWindow.resetsAt === undefined
               ? {}
               : { ":expectedReset": rateWindow.resetsAt }),
+            ...(rateWindow.limit === undefined
+              ? {}
+              : { ":expectedLimit": rateWindow.limit }),
           },
         }),
       );
@@ -1442,6 +1585,107 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       if (
         error instanceof Error &&
         error.name === "ConditionalCheckFailedException"
+      )
+        return false;
+      throw error;
+    }
+  }
+  async claimAccountRateProbe(
+    healthKey: string,
+    requestedAt: string,
+    probeUntil: string,
+  ) {
+    const old = await this.currentRateHealth(healthKey, requestedAt);
+    if (
+      !old ||
+      old.failureClass === "terminal" ||
+      old.rateWindow?.remaining !== undefined ||
+      [old.cooldownUntil, old.retryAt].some(
+        (candidate) =>
+          candidate && Date.parse(candidate) > Date.parse(requestedAt),
+      )
+    )
+      return null;
+    const versionCondition =
+      old.version === undefined
+        ? "attribute_not_exists(#v.#version)"
+        : "#v.#version = :expectedVersion";
+    try {
+      await this.client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: key("HEALTH", healthKey),
+          UpdateExpression:
+            "SET #v.#window.#probe = :probe, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one",
+          ConditionExpression: [
+            "attribute_exists(pk)",
+            "(attribute_not_exists(#v.#failure) OR #v.#failure <> :terminal)",
+            "attribute_not_exists(#v.#window.#remaining)",
+            "(attribute_not_exists(#v.#window.#probe) OR #v.#window.#probe <= :updated)",
+            versionCondition,
+          ].join(" AND "),
+          ExpressionAttributeNames: {
+            "#v": "value",
+            "#window": "rateWindow",
+            "#probe": "probeUntil",
+            "#remaining": "remaining",
+            "#failure": "failureClass",
+            "#u": "updatedAt",
+            "#version": "version",
+          },
+          ExpressionAttributeValues: {
+            ":probe": probeUntil,
+            ":updated": requestedAt,
+            ":terminal": "terminal",
+            ":one": 1,
+            ":zero": 0,
+            ...(old.version === undefined
+              ? {}
+              : { ":expectedVersion": old.version }),
+          },
+        }),
+      );
+      return (old.version ?? 0) + 1;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.name === "ConditionalCheckFailedException"
+      )
+        return null;
+      throw error;
+    }
+  }
+  async completeAccountRateProbe(
+    healthKey: string,
+    expectedProbeUntil: string,
+    expectedClaimVersion: number,
+    observedWindow: NonNullable<OddsProviderHealth["rateWindow"]>,
+    updatedAt: string,
+  ) {
+    if (
+      observedWindow.limit === undefined ||
+      observedWindow.remaining === undefined ||
+      observedWindow.resetsAt === undefined
+    )
+      return false;
+    const old = await this.getHealth(healthKey);
+    if (
+      !old ||
+      old.failureClass === "terminal" ||
+      old.version !== expectedClaimVersion ||
+      old.rateWindow?.probeUntil !== expectedProbeUntil
+    )
+      return false;
+    try {
+      await this.putHealth({
+        ...recoveredAccountRateHealth(old, observedWindow, updatedAt),
+        version: expectedClaimVersion,
+      });
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "health-transition-conflict"
       )
         return false;
       throw error;
@@ -1558,7 +1802,7 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
   }
   async blockAccountTerminal(
     healthKey: string,
-    reason: "configuration" | "not-entitled" | "unauthorized",
+    reason: AccountRateTerminalReason,
     updatedAt: string,
   ) {
     for (let retry = 0; retry < 8; retry += 1) {

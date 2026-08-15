@@ -86,9 +86,11 @@ inactive slot under a new sweep ID. Old partial rows cannot join the replacement
 sweep because readers require both the selected slot and exact sweep ID.
 Provider identifiers repeated on another page in the same sweep become bounded
 quarantine evidence and cannot overwrite the first row.
-Events and odds must expose a provider generation timestamp and total on every
-page. Neither stream can publish without a stable generation and exact total
-denominator. Before each request, the worker conditionally claims the exact
+`updated_at` is retained as bounded observation evidence, not treated as an
+immutable pagination generation. Offset-paginated events must expose and
+reconcile a provider total on every page. Cursor-paginated odds may omit total;
+their exact cursor progression, durable position claims, and terminal page are
+the completion authority. Before each request, the worker conditionally claims the exact
 `{stream, sweepId, slot, positionHash, pageNumber}` in DynamoDB. Reclaiming the
 same position for the same page is a valid crash replay; seeing it under a later
 page is a proven cursor cycle and restarts before another paid request. The
@@ -106,7 +108,14 @@ the authoritative limit (minimum 250 requests) for the live path. Response
 headers are conservatively reconciled without refunding concurrent reservations;
 an older delayed response cannot alter a newer account window, and the atomic
 reservation itself requires the same present, healthy, nonterminal authoritative
-window observed by the caller. An observed 429 cannot downgrade terminal health
+window observed by the caller. At each minute reset, live odds and landing
+compete for one durable account-probe lease on that shared row. The winner sends
+one bounded `/account` recovery request and publishes the returned authoritative
+window; the loser polls the same row and sends no duplicate probe. Landing then
+recomputes its reserve against the exact version, limit, and reset identifier
+before every page. It will not reserve or dispatch inside the ten-second reset
+guard or the Lambda's sixty-second checkpoint safety budget. An observed 429
+cannot downgrade terminal health
 and blocks every account consumer until the bounded retry/reset time. Untrusted
 rate/reset headers retain a five-minute past grace and may schedule at most 24
 hours ahead; farther values are ignored rather than becoming a permanent pause. A
@@ -120,7 +129,8 @@ the shared account health used by live odds.
 
 A terminal page records exact page, source-row, landed-row, quarantined-row, and
 warning-row counts. `sourceRows = landedRows + quarantinedRows` must hold, and a
-provider total must equal terminal `sourceRows`. A complete checkpoint selects
+provider total must equal terminal event `sourceRows`; odds without a provider
+total must reach a valid terminal cursor page. A complete checkpoint selects
 records whose `slot` and `sweepId` equal its own. While the next checkpoint is
 `running`, readers remain bound to `lastCompletedSlot` plus
 `lastCompletedSweepId`; the switch is one conditional checkpoint write, and

@@ -1026,7 +1026,13 @@ describe("atomic paid-call guards", () => {
     const store = new MemoryOddsControlPlaneStore();
     const key = "sharpapi:account:account";
     expect(
-      await store.reserveAccountRate(key, 500, 1, "2026-08-03T00:00:00.000Z"),
+      await store.reserveAccountRate(
+        key,
+        500,
+        1,
+        "2026-08-03T00:00:00.000Z",
+        {},
+      ),
     ).toBe(false);
     await store.putHealth({
       providerId: "sharpapi",
@@ -1037,7 +1043,10 @@ describe("atomic paid-call guards", () => {
       updatedAt: "2026-08-03T00:00:00.000Z",
     });
     expect(
-      await store.reserveAccountRate(key, 500, 1, "2026-08-03T00:00:01.000Z"),
+      await store.reserveAccountRate(key, 500, 1, "2026-08-03T00:00:01.000Z", {
+        version: 1,
+        limit: 1_000,
+      }),
     ).toBe(false);
     const current = await store.getHealth(key);
     if (!current) throw new Error("missing-test-health");
@@ -1051,9 +1060,307 @@ describe("atomic paid-call guards", () => {
       updatedAt: "2026-08-03T00:00:02.000Z",
     });
     expect(
-      await store.reserveAccountRate(key, 500, 1, "2026-08-03T00:00:03.000Z"),
+      await store.reserveAccountRate(key, 500, 1, "2026-08-03T00:00:03.000Z", {
+        version: 2,
+        limit: 1_000,
+      }),
     ).toBe(false);
     expect((await store.getHealth(key))?.rateWindow?.remaining).toBe(900);
+  });
+
+  it("rejects an account reservation calculated from a stale window", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 700,
+        resetsAt: "2026-08-03T00:02:00.000Z",
+      },
+      updatedAt: "2026-08-03T00:01:00.000Z",
+    });
+    expect(
+      await store.reserveAccountRate(key, 250, 1, "2026-08-03T00:01:01.000Z", {
+        version: 1,
+        limit: 500,
+        resetsAt: "2026-08-03T00:01:30.000Z",
+      }),
+    ).toBe(false);
+    expect((await store.getHealth(key))?.rateWindow?.remaining).toBe(700);
+  });
+
+  it("elects only one account-window recovery probe after a reset", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: {
+        limit: 1_000,
+        remaining: 700,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+      updatedAt: "2026-08-03T00:00:30.000Z",
+    });
+    expect(
+      await store.claimAccountRateProbe(
+        key,
+        "2026-08-03T00:00:59.000Z",
+        "2026-08-03T00:01:59.000Z",
+      ),
+    ).toBeNull();
+    const claimVersion = await store.claimAccountRateProbe(
+      key,
+      "2026-08-03T00:01:01.000Z",
+      "2026-08-03T00:02:01.000Z",
+    );
+    expect(claimVersion).toEqual(expect.any(Number));
+    if (claimVersion === null) throw new Error("expected account probe claim");
+    expect(
+      await store.claimAccountRateProbe(
+        key,
+        "2026-08-03T00:01:02.000Z",
+        "2026-08-03T00:02:02.000Z",
+      ),
+    ).toBeNull();
+    expect((await store.getHealth(key))?.rateWindow).toEqual({
+      limit: 1_000,
+      probeUntil: "2026-08-03T00:02:01.000Z",
+    });
+    expect(
+      await store.completeAccountRateProbe(
+        key,
+        "2026-08-03T00:02:02.000Z",
+        claimVersion,
+        {
+          limit: 1_000,
+          remaining: 999,
+          resetsAt: "2026-08-03T00:02:00.000Z",
+        },
+        "2026-08-03T00:01:03.000Z",
+      ),
+    ).toBe(false);
+    expect(
+      await store.completeAccountRateProbe(
+        key,
+        "2026-08-03T00:02:01.000Z",
+        claimVersion,
+        {
+          limit: 1_000,
+          remaining: 999,
+          resetsAt: "2026-08-03T00:02:00.000Z",
+        },
+        "2026-08-03T00:01:03.000Z",
+      ),
+    ).toBe(true);
+    expect(await store.getHealth(key)).toMatchObject({
+      healthy: true,
+      status: "healthy",
+      rateWindow: {
+        limit: 1_000,
+        remaining: 999,
+        resetsAt: "2026-08-03T00:02:00.000Z",
+      },
+    });
+    expect(
+      (await store.getHealth(key))?.rateWindow?.probeUntil,
+    ).toBeUndefined();
+  });
+
+  it("a successful elected probe heals an expired transient account block", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: false,
+      status: "unhealthy",
+      consecutiveSuccesses: 0,
+      failureClass: "transient",
+      failureReason: "rate-limited",
+      retryAt: "2026-08-03T00:01:00.000Z",
+      cooldownUntil: "2026-08-03T00:01:00.000Z",
+      rateWindow: {
+        limit: 1_000,
+        remaining: 0,
+        resetsAt: "2026-08-03T00:01:00.000Z",
+      },
+      updatedAt: "2026-08-03T00:00:30.000Z",
+    });
+    const probeUntil = "2026-08-03T00:02:01.000Z";
+    const claimVersion = await store.claimAccountRateProbe(
+      key,
+      "2026-08-03T00:01:01.000Z",
+      probeUntil,
+    );
+    expect(claimVersion).toEqual(expect.any(Number));
+    if (claimVersion === null) throw new Error("expected account probe claim");
+    expect(
+      await store.completeAccountRateProbe(
+        key,
+        probeUntil,
+        claimVersion,
+        {
+          limit: 1_000,
+          remaining: 999,
+          resetsAt: "2026-08-03T00:02:00.000Z",
+        },
+        "2026-08-03T00:01:02.000Z",
+      ),
+    ).toBe(true);
+    const recovered = await store.getHealth(key);
+    expect(recovered).toMatchObject({
+      healthy: true,
+      status: "healthy",
+      consecutiveSuccesses: 1,
+    });
+    expect(recovered?.failureClass).toBeUndefined();
+    expect(recovered?.failureReason).toBeUndefined();
+    expect(recovered?.retryAt).toBeUndefined();
+    expect(recovered?.cooldownUntil).toBeUndefined();
+  });
+
+  it("never lets a stale probe completion clear a newer account rate limit", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: { limit: 1_000 },
+      updatedAt: "2026-08-03T00:01:00.000Z",
+    });
+    const probeUntil = "2026-08-03T00:02:01.000Z";
+    const claimVersion = await store.claimAccountRateProbe(
+      key,
+      "2026-08-03T00:01:01.000Z",
+      probeUntil,
+    );
+    if (claimVersion === null) throw new Error("expected account probe claim");
+    await store.blockAccountRateWindow(
+      key,
+      "2026-08-03T00:02:00.000Z",
+      "2026-08-03T00:01:02.000Z",
+    );
+    await expect(
+      store.completeAccountRateProbe(
+        key,
+        probeUntil,
+        claimVersion,
+        {
+          limit: 1_000,
+          remaining: 999,
+          resetsAt: "2026-08-03T00:02:00.000Z",
+        },
+        "2026-08-03T00:01:03.000Z",
+      ),
+    ).resolves.toBe(false);
+    expect(await store.getHealth(key)).toMatchObject({
+      healthy: false,
+      failureClass: "transient",
+      failureReason: "rate-limited",
+      retryAt: "2026-08-03T00:02:00.000Z",
+      rateWindow: { remaining: 0 },
+    });
+  });
+
+  it("never lets a stale probe refund a newer successful account request", async () => {
+    const store = new MemoryOddsControlPlaneStore();
+    const key = "sharpapi:account:account";
+    await store.putHealth({
+      providerId: "sharpapi",
+      healthKey: key,
+      healthy: true,
+      consecutiveSuccesses: 1,
+      rateWindow: { limit: 1_000 },
+      updatedAt: "2026-08-03T00:01:00.000Z",
+    });
+    const probeUntil = "2026-08-03T00:02:01.000Z";
+    const claimVersion = await store.claimAccountRateProbe(
+      key,
+      "2026-08-03T00:01:01.000Z",
+      probeUntil,
+    );
+    if (claimVersion === null) throw new Error("expected account probe claim");
+    await store.reconcileAccountRateWindow(
+      key,
+      1,
+      1,
+      {
+        limit: 1_000,
+        remaining: 998,
+        resetsAt: "2026-08-03T00:02:00.000Z",
+      },
+      "2026-08-03T00:01:02.000Z",
+    );
+    await expect(
+      store.completeAccountRateProbe(
+        key,
+        probeUntil,
+        claimVersion,
+        {
+          limit: 1_000,
+          remaining: 999,
+          resetsAt: "2026-08-03T00:02:00.000Z",
+        },
+        "2026-08-03T00:01:03.000Z",
+      ),
+    ).resolves.toBe(false);
+    expect((await store.getHealth(key))?.rateWindow).toMatchObject({
+      remaining: 998,
+      resetsAt: "2026-08-03T00:02:00.000Z",
+    });
+  });
+
+  it("Dynamo account probe election fences unknown state, lease, and version", async () => {
+    let update: Record<string, unknown> | undefined;
+    const client = {
+      async send(command: { input: Record<string, unknown> }) {
+        if (command.constructor.name === "GetCommand")
+          return {
+            Item: {
+              value: {
+                version: 7,
+                providerId: "sharpapi",
+                healthKey: "sharpapi:account:account",
+                healthy: true,
+                consecutiveSuccesses: 1,
+                rateWindow: { limit: 1_000 },
+                updatedAt: "2026-08-03T00:01:00.000Z",
+              },
+            },
+          };
+        update = command.input;
+        return {};
+      },
+    };
+    const store = new DynamoOddsControlPlaneStore(
+      client as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    expect(
+      await store.claimAccountRateProbe(
+        "sharpapi:account:account",
+        "2026-08-03T00:01:01.000Z",
+        "2026-08-03T00:02:01.000Z",
+      ),
+    ).toBe(8);
+    expect(update?.["ConditionExpression"]).toContain(
+      "attribute_not_exists(#v.#window.#remaining)",
+    );
+    expect(update?.["ConditionExpression"]).toContain(
+      "#v.#window.#probe <= :updated",
+    );
+    expect(update?.["ConditionExpression"]).toContain(
+      "#v.#version = :expectedVersion",
+    );
   });
 
   it("Dynamo account reservation fences health, version, balance, and reset atomically", async () => {
@@ -1095,6 +1402,11 @@ describe("atomic paid-call guards", () => {
         500,
         2,
         "2026-08-03T00:01:01.000Z",
+        {
+          version: 7,
+          limit: 1_000,
+          resetsAt: "2026-08-03T00:02:00.000Z",
+        },
       ),
     ).toBe(false);
     expect(update?.["ConditionExpression"]).toContain("attribute_exists(pk)");
@@ -1110,6 +1422,9 @@ describe("atomic paid-call guards", () => {
     );
     expect(update?.["ConditionExpression"]).toContain(
       "#v.#window.#reset = :expectedReset",
+    );
+    expect(update?.["ConditionExpression"]).toContain(
+      "#v.#window.#limit = :expectedLimit",
     );
   });
 
