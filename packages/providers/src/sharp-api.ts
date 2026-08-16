@@ -774,6 +774,12 @@ const providerNumber = (value: unknown): value is number => {
   return significantDigits !== undefined && significantDigits <= 15;
 };
 
+// Closing-line probability fields are documented as full precision and the
+// live endpoint commonly emits 16-17 significant digits. The HTTP decoder has
+// already rejected lossy source lexemes; direct callers still must supply a
+// finite DynamoDB-marshallable Number.
+const closingNumber = dynamoNumber;
+
 /** Provider rows are untrusted generic JSON. Walk them iteratively so novel
  * nested values cannot smuggle a DynamoDB-invalid number into landing and so
  * direct parser callers remain memory-bounded even without the HTTP body cap. */
@@ -3146,45 +3152,111 @@ const closingSelection = (
 
 const coherentClosingMarket = (
   prices: readonly SharpApiClosingPrice[],
-): "coherent" | "incomplete" | "ambiguous" => {
-  if (prices.length === 0) return "incomplete";
+): readonly SharpApiClosingPrice[] | null => {
+  if (prices.length === 0) return null;
   const marketKey = prices[0]!.marketKey;
-  if (prices.some((price) => price.marketKey !== marketKey))
-    return "incomplete";
-  const counts = new Map<string, number>();
-  for (const price of prices)
-    counts.set(price.selectionKey, (counts.get(price.selectionKey) ?? 0) + 1);
-  if ([...counts.values()].some((count) => count > 1)) return "ambiguous";
-  if (
-    new Set(prices.map(({ providerMarketId }) => providerMarketId)).size !==
-      1 ||
-    new Set(prices.map(({ providerSelectionId }) => providerSelectionId))
-      .size !== prices.length ||
-    new Set(prices.map(({ canonicalKey }) => canonicalKey)).size !==
-      prices.length
-  )
-    return "incomplete";
+  if (prices.some((price) => price.marketKey !== marketKey)) return null;
+  const imbalance = (left: SharpApiClosingPrice, right: SharpApiClosingPrice) =>
+    Math.abs(left.impliedProbability - right.impliedProbability);
+  const overround = (left: SharpApiClosingPrice, right: SharpApiClosingPrice) =>
+    Math.abs(left.impliedProbability + right.impliedProbability - 1);
+  const choosePair = (
+    left: readonly SharpApiClosingPrice[],
+    right: readonly SharpApiClosingPrice[],
+    compatible: (a: SharpApiClosingPrice, b: SharpApiClosingPrice) => boolean,
+  ) =>
+    left
+      .flatMap((a) => right.map((b) => [a, b] as const))
+      .filter(
+        ([a, b]) =>
+          compatible(a, b) &&
+          a.providerMarketId === b.providerMarketId &&
+          a.providerSelectionId !== b.providerSelectionId &&
+          a.canonicalKey !== b.canonicalKey,
+      )
+      .sort(
+        ([aLeft, aRight], [bLeft, bRight]) =>
+          imbalance(aLeft, aRight) - imbalance(bLeft, bRight) ||
+          overround(aLeft, aRight) - overround(bLeft, bRight) ||
+          `${aLeft.providerMarketId}\u0000${aLeft.providerSelectionId}\u0000${aRight.providerSelectionId}\u0000${aLeft.canonicalKey}\u0000${aRight.canonicalKey}`.localeCompare(
+            `${bLeft.providerMarketId}\u0000${bLeft.providerSelectionId}\u0000${bRight.providerSelectionId}\u0000${bLeft.canonicalKey}\u0000${bRight.canonicalKey}`,
+          ),
+      )[0] ?? null;
   if (marketKey === "moneyline") {
-    if (prices.some((price) => price.point !== undefined)) return "incomplete";
-    const keys = [...counts.keys()].sort().join(",");
-    return keys === "away,home" || keys === "away,draw,home"
-      ? "coherent"
-      : "incomplete";
+    const byNativeMarket = new Map<string, SharpApiClosingPrice[]>();
+    for (const price of prices) {
+      if (price.point !== undefined) continue;
+      const group = byNativeMarket.get(price.providerMarketId) ?? [];
+      group.push(price);
+      byNativeMarket.set(price.providerMarketId, group);
+    }
+    return (
+      [...byNativeMarket.values()]
+        .filter((group) => {
+          const keys = group.map(({ selectionKey }) => selectionKey).sort();
+          return (
+            new Set(keys).size === keys.length &&
+            new Set(group.map(({ providerSelectionId }) => providerSelectionId))
+              .size === group.length &&
+            new Set(group.map(({ canonicalKey }) => canonicalKey)).size ===
+              group.length &&
+            (keys.join(",") === "away,home" ||
+              keys.join(",") === "away,draw,home")
+          );
+        })
+        .sort((left, right) => {
+          const sides = (group: readonly SharpApiClosingPrice[]) =>
+            [
+              group.find(({ selectionKey }) => selectionKey === "away")!,
+              group.find(({ selectionKey }) => selectionKey === "home")!,
+            ] as const;
+          const [leftAway, leftHome] = sides(left);
+          const [rightAway, rightHome] = sides(right);
+          const identity = (group: readonly SharpApiClosingPrice[]) =>
+            group
+              .map(
+                ({ providerMarketId, canonicalKey }) =>
+                  `${providerMarketId}\u0000${canonicalKey}`,
+              )
+              .sort()
+              .join("\u0001");
+          return (
+            imbalance(leftAway, leftHome) - imbalance(rightAway, rightHome) ||
+            Math.abs(
+              left.reduce(
+                (sum, { impliedProbability }) => sum + impliedProbability,
+                0,
+              ) - 1,
+            ) -
+              Math.abs(
+                right.reduce(
+                  (sum, { impliedProbability }) => sum + impliedProbability,
+                  0,
+                ) - 1,
+              ) ||
+            identity(left).localeCompare(identity(right))
+          );
+        })[0] ?? null
+    );
   }
-  if (prices.length !== 2)
-    return prices.length > 2 ? "ambiguous" : "incomplete";
-  const [left, right] = prices;
-  if (left?.point === undefined || right?.point === undefined)
-    return "incomplete";
   if (marketKey === "spread") {
-    if ([...counts.keys()].sort().join(",") !== "away,home")
-      return "incomplete";
-    return Math.abs(left.point + right.point) <= 1e-9
-      ? "coherent"
-      : "incomplete";
+    return choosePair(
+      prices.filter(({ selectionKey }) => selectionKey === "away"),
+      prices.filter(({ selectionKey }) => selectionKey === "home"),
+      (away, home) =>
+        away.point !== undefined &&
+        home.point !== undefined &&
+        Math.abs(away.point + home.point) <= 1e-9,
+    );
   }
-  if ([...counts.keys()].sort().join(",") !== "over,under") return "incomplete";
-  return Math.abs(left.point - right.point) <= 1e-9 ? "coherent" : "incomplete";
+  return choosePair(
+    prices.filter(({ selectionKey }) => selectionKey === "over"),
+    prices.filter(({ selectionKey }) => selectionKey === "under"),
+    (over, under) =>
+      over.point !== undefined &&
+      under.point !== undefined &&
+      Math.abs(over.point - under.point) <= 1e-9,
+  );
 };
 
 /** Parse the documented `/odds/closing` response without retaining its raw body.
@@ -3275,7 +3347,6 @@ export function parseSharpApiClosingLines(
     }
     const capturedAt = iso(rawBook["captured_at"]);
     const byMarket = new Map<string, SharpApiClosingPrice[]>();
-    const invalidSupportedMarkets = new Set<string>();
     for (const rawOdd of rawBook["odds"]) {
       if (!record(rawOdd)) {
         reject("incomplete-market", providerSportsbookId, "non-record-row");
@@ -3303,7 +3374,6 @@ export function parseSharpApiClosingLines(
         (marketIdentity.marketKey === "total" &&
           (selectionKey === "over" || selectionKey === "under"));
       if (!compatible || !selectionKey) {
-        invalidSupportedMarkets.add(marketIdentity.providerMarketType);
         reject(
           "unsupported-selection",
           providerSportsbookId,
@@ -3315,15 +3385,16 @@ export function parseSharpApiClosingLines(
       const lineValid =
         marketIdentity.marketKey === "moneyline"
           ? line === null || line === undefined
-          : providerNumber(line);
+          : closingNumber(line);
       const noVig = rawOdd["no_vig_probability"];
-      const expectedCanonicalKey = `${expectedProviderEventId}:${marketIdentity.providerMarketType}:${selectionKey}${providerNumber(line) ? `:${String(line)}` : ""}`;
-      const sideLabelValid =
-        marketIdentity.marketKey === "total" ||
-        selectionKey === "draw" ||
-        (selectionKey === "away" &&
-          rawOdd["selection"] === data["away_team"]) ||
-        (selectionKey === "home" && rawOdd["selection"] === data["home_team"]);
+      const closingProbability = rawOdd["closing_probability"];
+      const providerFairClose = rawOdd["fair_close_decimal"];
+      const fairCloseDecimal = closingNumber(providerFairClose)
+        ? providerFairClose
+        : closingNumber(closingProbability) && closingProbability > 0
+          ? 1 / closingProbability
+          : undefined;
+      const expectedCanonicalKey = `${expectedProviderEventId}:${marketIdentity.providerMarketType}:${selectionKey}${closingNumber(line) ? `:${String(line)}` : ""}`;
       if (
         normalizedRowBook?.kind !== "normalized" ||
         normalizedRowBook.sportsbook.id !== normalizedBook.sportsbook.id ||
@@ -3335,24 +3406,25 @@ export function parseSharpApiClosingLines(
         !lineValid ||
         !safeInteger(rawOdd["odds_american"]) ||
         Math.abs(rawOdd["odds_american"]) < 100 ||
-        !providerNumber(rawOdd["odds_decimal"]) ||
+        !closingNumber(rawOdd["odds_decimal"]) ||
         rawOdd["odds_decimal"] <= 1 ||
-        !providerNumber(rawOdd["implied_probability"]) ||
+        !closingNumber(rawOdd["implied_probability"]) ||
         rawOdd["implied_probability"] < 0 ||
         rawOdd["implied_probability"] > 1 ||
         (noVig !== null &&
           noVig !== undefined &&
-          (!providerNumber(noVig) || noVig < 0 || noVig > 1)) ||
-        !providerNumber(rawOdd["fair_close_decimal"]) ||
-        rawOdd["fair_close_decimal"] <= 1 ||
-        !providerNumber(rawOdd["closing_probability"]) ||
-        rawOdd["closing_probability"] < 0 ||
-        rawOdd["closing_probability"] > 1 ||
+          (!closingNumber(noVig) || noVig < 0 || noVig > 1)) ||
+        (providerFairClose !== null &&
+          providerFairClose !== undefined &&
+          !closingNumber(providerFairClose)) ||
+        !closingNumber(fairCloseDecimal) ||
+        fairCloseDecimal <= 1 ||
+        !closingNumber(closingProbability) ||
+        closingProbability <= 0 ||
+        closingProbability > 1 ||
         !instant(rawOdd["source_updated_at"]) ||
-        Date.parse(rawOdd["source_updated_at"]) > Date.parse(capturedAt) ||
-        !sideLabelValid
+        Date.parse(rawOdd["source_updated_at"]) > Date.parse(capturedAt)
       ) {
-        invalidSupportedMarkets.add(marketIdentity.providerMarketType);
         reject(
           "incomplete-market",
           providerSportsbookId,
@@ -3367,13 +3439,13 @@ export function parseSharpApiClosingLines(
         selectionLabel: rawOdd["selection"],
         providerSelectionId: rawOdd["selection_id"],
         canonicalKey: rawOdd["canonical_key"],
-        ...(providerNumber(line) ? { point: line } : {}),
+        ...(closingNumber(line) ? { point: line } : {}),
         americanOdds: rawOdd["odds_american"],
         decimalOdds: rawOdd["odds_decimal"],
         impliedProbability: rawOdd["implied_probability"],
-        ...(providerNumber(noVig) ? { noVigProbability: noVig } : {}),
-        fairCloseDecimal: rawOdd["fair_close_decimal"],
-        closingProbability: rawOdd["closing_probability"],
+        ...(closingNumber(noVig) ? { noVigProbability: noVig } : {}),
+        fairCloseDecimal,
+        closingProbability,
         sourceUpdatedAt: iso(rawOdd["source_updated_at"]),
       };
       const group = byMarket.get(marketIdentity.providerMarketType) ?? [];
@@ -3382,16 +3454,10 @@ export function parseSharpApiClosingLines(
     }
     const prices: SharpApiClosingPrice[] = [];
     for (const [providerMarketType, candidates] of byMarket) {
-      const coherence = invalidSupportedMarkets.has(providerMarketType)
-        ? "incomplete"
-        : coherentClosingMarket(candidates);
-      if (coherence === "coherent") prices.push(...candidates);
+      const coherent = coherentClosingMarket(candidates);
+      if (coherent) prices.push(...coherent);
       else
-        reject(
-          coherence === "ambiguous" ? "ambiguous-market" : "incomplete-market",
-          providerSportsbookId,
-          providerMarketType,
-        );
+        reject("incomplete-market", providerSportsbookId, providerMarketType);
     }
     books.push({
       id: normalizedBook.sportsbook.id,

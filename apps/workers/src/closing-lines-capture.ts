@@ -104,7 +104,16 @@ const bookRecord = (
           : price.selectionKey === "home"
             ? participantSelectionKey(home.id as EntityId)
             : price.selectionKey,
-      selectionLabel: price.selectionLabel,
+      selectionLabel:
+        price.selectionKey === "away"
+          ? away.label
+          : price.selectionKey === "home"
+            ? home.label
+            : price.selectionKey === "draw"
+              ? "Draw"
+              : price.selectionKey === "over"
+                ? "Over"
+                : "Under",
       sportsbookId: book.id,
       ...(price.point === undefined ? {} : { point: price.point }),
       americanOdds: price.americanOdds,

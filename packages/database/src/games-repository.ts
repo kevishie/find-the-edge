@@ -758,8 +758,9 @@ export class JoinedGamesRepository implements GamesRepository {
             this.sportsbookIds,
           );
           if (projection) {
+            const specifications = marketSpecifications(event);
             const expected = new Map<string, ReadonlySet<string>>(
-              marketSpecifications(event).map((specification) => [
+              specifications.map((specification) => [
                 specification.marketKey,
                 new Set<string>(specification.selectionKeys),
               ]),
@@ -769,7 +770,28 @@ export class JoinedGamesRepository implements GamesRepository {
                 expected.get(selection.marketKey)?.has(selection.selectionKey),
               )
             )
-              closingByEvent.set(event.id, projection);
+              closingByEvent.set(
+                event.id,
+                [...projection].sort((left, right) => {
+                  const rank = (selection: (typeof projection)[number]) => {
+                    const marketIndex = specifications.findIndex(
+                      ({ marketKey }) => marketKey === selection.marketKey,
+                    );
+                    const selectionIndex = (
+                      specifications[marketIndex]?.selectionKeys as
+                        readonly string[] | undefined
+                    )?.indexOf(selection.selectionKey);
+                    return (
+                      (marketIndex < 0 ? specifications.length : marketIndex) *
+                        100 +
+                      (selectionIndex === undefined || selectionIndex < 0
+                        ? 99
+                        : selectionIndex)
+                    );
+                  };
+                  return rank(left) - rank(right);
+                }),
+              );
           }
         }),
       );
