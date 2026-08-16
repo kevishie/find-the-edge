@@ -2888,7 +2888,7 @@ describe("Games", () => {
         gamesClient={{ ok: true, value: { list } }}
       />,
     );
-    expect(await screen.findByText(/pregame snapshot/i)).toBeVisible();
+    expect(await screen.findByText(/closing data unavailable/i)).toBeVisible();
     expect(screen.queryByText(/closing lines/i)).toBeNull();
     rendered.unmount();
 
@@ -2918,7 +2918,7 @@ describe("Games", () => {
       />,
     );
     expect(await screen.findByText(/closing lines/i)).toBeVisible();
-    expect(screen.queryByText(/pregame snapshot/i)).toBeNull();
+    expect(screen.queryByText(/closing data unavailable/i)).toBeNull();
   });
 
   it("derives the displayed Eastern start instead of trusting API display text", async () => {

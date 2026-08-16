@@ -2223,9 +2223,10 @@ function EventGameBlock({
               <span className="evb-flag">· {game.status}</span>
             )}
             {(() => {
-              // Pre-game collection freezes at first pitch: past kickoff the
-              // numbers are closing lines, not stale quotes. Age (and the
-              // stale alarm) only mean something before the start.
+              // Past kickoff, only provider-authored canonical evidence may
+              // be called a close. A missing close stays visibly unavailable;
+              // the final pregame poll must never impersonate settlement-time
+              // evidence merely because the scheduled start has passed.
               const started =
                 snapshotAt !== null &&
                 snapshotAt !== undefined &&
@@ -2237,7 +2238,9 @@ function EventGameBlock({
               )
                 return <span className="evb-age">· closing lines</span>;
               if (started)
-                return <span className="evb-age">· pregame snapshot</span>;
+                return (
+                  <span className="evb-age">· closing data unavailable</span>
+                );
               // Staleness follows the same evidence the label shows: the
               // odds rows themselves. The metadata freshness flag tracks
               // schedule evidence, which legitimately idles for hours on an

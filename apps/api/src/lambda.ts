@@ -8,6 +8,7 @@ import {
   DynamoIdentityRepository,
   DynamoEntitlementRepository,
   DynamoGamesRepository,
+  DynamoClosingLinesRepository,
   DynamoBettingSplitRepository,
   DynamoEventRepository,
   DynamoCohortRepository,
@@ -191,6 +192,7 @@ const handleEvent = async (event: LambdaEvent) => {
     repository,
     gateway,
     detailSportsbooks,
+    new DynamoClosingLinesRepository(sharedDocumentClient, tableName),
   );
   const documentClient = sharedDocumentClient;
   const scoutingJobs = new DynamoScoutingJobRepository(

@@ -987,15 +987,14 @@ export class JoinedGamesRepository implements GamesRepository {
               selections: closingByEvent.get(event.id)!,
               source: "canonical-closing" as const,
             }
-          : anchored
-            ? {
-                state: "available" as const,
-                selections: anchored,
-                ...(event.status === "scheduled"
-                  ? {}
-                  : { source: "pregame-snapshot" as const }),
-              }
-            : { state: "unavailable" as const },
+          : Date.parse(event.startsAt) <= readAt
+            ? { state: "unavailable" as const }
+            : anchored
+              ? {
+                  state: "available" as const,
+                  selections: anchored,
+                }
+              : { state: "unavailable" as const },
       };
     });
     // The provider occasionally publishes a spurious listing and withdraws it
