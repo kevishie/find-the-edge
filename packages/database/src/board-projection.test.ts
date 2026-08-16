@@ -4,6 +4,7 @@ import {
   boardPartition,
   materializationTargets,
   materializeBoards,
+  inspectBoardBody,
   usableScheduleListings,
   validateStoredBoard,
   withoutWithdrawnListings,
@@ -53,6 +54,104 @@ describe("stored board validation", () => {
     expect(
       validateStoredBoard({ ...fresh, body: "é".repeat(200_000) }, NOW),
     ).toBeNull();
+  });
+
+  it("expires noncanonical games and splits at their earliest kickoff", () => {
+    const kickoff = NOW.toISOString();
+    const item = {
+      id: "event:mlb:one",
+      startsAt: kickoff,
+      odds: {
+        state: "available",
+        selections: [],
+        source: "pregame-snapshot",
+      },
+    };
+    for (const extra of [{}, { splits: [] }]) {
+      const board = {
+        ...storedBoard(new Date(NOW.getTime() - 60_000).toISOString()),
+        body: JSON.stringify({ items: [{ ...item, ...extra }] }),
+      };
+      expect(validateStoredBoard(board, new Date(NOW.getTime() - 1))).toEqual(
+        board,
+      );
+      expect(validateStoredBoard(board, NOW)).toBeNull();
+    }
+  });
+
+  it("keeps canonical closing boards eligible after kickoff", () => {
+    const board = {
+      ...storedBoard(new Date(NOW.getTime() - 60_000).toISOString()),
+      body: JSON.stringify({
+        items: [
+          {
+            id: "event:mlb:closed",
+            startsAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
+            odds: {
+              state: "available",
+              selections: [],
+              source: "canonical-closing",
+            },
+          },
+        ],
+      }),
+    };
+    expect(validateStoredBoard(board, NOW)).toEqual(board);
+    expect(inspectBoardBody(board.body)).toEqual({
+      earliestUnsafeKickoff: null,
+      earliestPregamePriceKickoff: null,
+    });
+  });
+
+  it("rejects bodies that cannot prove item identity and provenance", () => {
+    const fresh = storedBoard(new Date(NOW.getTime() - 60_000).toISOString());
+    for (const body of [
+      "not-json",
+      JSON.stringify({}),
+      JSON.stringify({ items: {} }),
+      JSON.stringify({ items: [null] }),
+      JSON.stringify({
+        items: [{ startsAt: NOW.toISOString(), odds: { state: "available" } }],
+      }),
+      JSON.stringify({
+        items: [{ id: "event", startsAt: "bad", odds: { state: "available" } }],
+      }),
+      JSON.stringify({
+        items: [
+          { id: "event", startsAt: "2026-08-08", odds: { state: "available" } },
+        ],
+      }),
+      JSON.stringify({
+        items: [
+          {
+            id: "event",
+            startsAt: NOW.toISOString(),
+            odds: { state: "available", source: "inferred-closing" },
+          },
+        ],
+      }),
+    ])
+      expect(validateStoredBoard({ ...fresh, body }, NOW)).toBeNull();
+  });
+
+  it("treats legacy available odds without source as pregame evidence", () => {
+    const kickoff = NOW.toISOString();
+    const board = {
+      ...storedBoard(new Date(NOW.getTime() - 60_000).toISOString()),
+      body: JSON.stringify({
+        items: [
+          {
+            id: "event:mlb:legacy",
+            startsAt: kickoff,
+            odds: { state: "available", selections: [] },
+          },
+        ],
+      }),
+    };
+    expect(validateStoredBoard(board, new Date(NOW.getTime() - 1))).toEqual(
+      board,
+    );
+    expect(validateStoredBoard(board, NOW)).toBeNull();
   });
 });
 

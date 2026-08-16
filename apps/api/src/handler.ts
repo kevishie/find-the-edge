@@ -23,6 +23,7 @@ import {
   type EntitlementRepository,
   attachSplits,
   boardCounts,
+  inspectBoardBody,
   type BoardKey,
   type GamesPage,
   type StoredBoard,
@@ -225,7 +226,23 @@ const splitLookupCache = createSplitLookupCache<
 const boardResponseCache = createSplitLookupCache<{
   readonly body: ApiResponse;
   readonly counts: { stale: number; partial: number; unavailable: number };
-}>({ ttlMs: 15_000, maxEntries: 64 });
+  readonly enforceKickoffExpiry: boolean;
+}>({
+  ttlMs: 15_000,
+  maxEntries: 64,
+  expiresAt: ({ body, enforceKickoffExpiry }) => {
+    if (!enforceKickoffExpiry) return null;
+    const inspection = inspectBoardBody(body.body);
+    return inspection ? inspection.earliestUnsafeKickoff : 0;
+  },
+  safeAfterExpiry: ({ body, enforceKickoffExpiry }) => {
+    if (!enforceKickoffExpiry) return true;
+    const inspection = inspectBoardBody(body.body);
+    return (
+      inspection !== null && inspection.earliestPregamePriceKickoff === null
+    );
+  },
+});
 
 /** Test hook: module-scope caches otherwise bleed between handler instances. */
 export const clearHandlerCaches = () => {
@@ -1526,6 +1543,7 @@ export const createEventHandler =
                 body: stored.body,
               },
               counts: stored.counts,
+              enforceKickoffExpiry: true,
             };
         }
         const page = await target.list(
@@ -1542,7 +1560,11 @@ export const createEventHandler =
         );
         const counts = boardCounts(page);
         if (request.route !== "splits")
-          return { body: response(200, page), counts };
+          return {
+            body: response(200, page),
+            counts,
+            enforceKickoffExpiry: request.route === "games",
+          };
         if (!splitsRepository)
           throw new Error("splits-repository-not-configured");
         const withSplits = await attachSplits(
@@ -1550,7 +1572,11 @@ export const createEventHandler =
           splitsRepository,
           (id) => splitLookupCache(id, () => splitsRepository.listCurrent(id)),
         );
-        return { body: response(200, withSplits), counts };
+        return {
+          body: response(200, withSplits),
+          counts,
+          enforceKickoffExpiry: true,
+        };
       });
       metadataCounts = board.counts;
       return board.body;

@@ -84,3 +84,113 @@ it("bounds the cache to its configured working set", async () => {
   await cache("game-3", () => load("game-3"));
   expect(load).toHaveBeenCalledTimes(4);
 });
+
+it("clamps a value to its derived absolute expiry", async () => {
+  const time = clock(5_000);
+  const cache = createSplitLookupCache<{ value: string; unsafeAt: number }>({
+    ttlMs: 10_000,
+    maxEntries: 8,
+    now: time.now,
+    expiresAt: ({ unsafeAt }) => unsafeAt,
+    safeAfterExpiry: () => true,
+  });
+  const load = vi.fn(() =>
+    Promise.resolve({ value: "pregame", unsafeAt: 6_000 }),
+  );
+
+  await cache("board", load);
+  time.advance(999);
+  await cache("board", load);
+  expect(load).toHaveBeenCalledTimes(1);
+
+  time.advance(1);
+  await cache("board", load);
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it("keeps the ordinary TTL when a value has no absolute boundary", async () => {
+  const time = clock();
+  const cache = createSplitLookupCache<string>({
+    ttlMs: 1_000,
+    maxEntries: 8,
+    now: time.now,
+    expiresAt: () => null,
+  });
+  const load = vi.fn(() => Promise.resolve("canonical-close"));
+
+  await cache("board", load);
+  time.advance(999);
+  await cache("board", load);
+  expect(load).toHaveBeenCalledTimes(1);
+  time.advance(1);
+  await cache("board", load);
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it("reloads one slow pregame value for every waiter when kickoff passes", async () => {
+  const time = clock(5_000);
+  let finishPregame!: (value: {
+    readonly state: "pregame";
+    readonly unsafeAt: number;
+  }) => void;
+  const pending = new Promise<{
+    readonly state: "pregame";
+    readonly unsafeAt: number;
+  }>((resolve) => {
+    finishPregame = resolve;
+  });
+  const load = vi
+    .fn<() => Promise<{ state: "pregame" | "unavailable"; unsafeAt: number }>>()
+    .mockImplementationOnce(() => pending)
+    .mockResolvedValue({ state: "unavailable", unsafeAt: 6_000 });
+  const cache = createSplitLookupCache<{
+    state: "pregame" | "unavailable";
+    unsafeAt: number;
+  }>({
+    ttlMs: 10_000,
+    maxEntries: 8,
+    now: time.now,
+    expiresAt: ({ unsafeAt }) => unsafeAt,
+    safeAfterExpiry: ({ state }) => state === "unavailable",
+  });
+
+  const first = cache("board", load);
+  const concurrent = cache("board", load);
+  time.advance(1_000);
+  finishPregame({ state: "pregame", unsafeAt: 6_000 });
+
+  await expect(Promise.all([first, concurrent])).resolves.toEqual([
+    { state: "unavailable", unsafeAt: 6_000 },
+    { state: "unavailable", unsafeAt: 6_000 },
+  ]);
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it("rechecks a settled cache hit before delivering it across its boundary", async () => {
+  const time = clock(5_000);
+  const load = vi
+    .fn<() => Promise<{ state: "pregame" | "unavailable"; unsafeAt: number }>>()
+    .mockResolvedValueOnce({ state: "pregame", unsafeAt: 6_000 })
+    .mockResolvedValue({ state: "unavailable", unsafeAt: 6_000 });
+  const cache = createSplitLookupCache<{
+    state: "pregame" | "unavailable";
+    unsafeAt: number;
+  }>({
+    ttlMs: 10_000,
+    maxEntries: 8,
+    now: time.now,
+    expiresAt: ({ unsafeAt }) => unsafeAt,
+    safeAfterExpiry: ({ state }) => state === "unavailable",
+  });
+
+  await cache("board", load);
+  time.advance(999);
+  const crossing = cache("board", load);
+  time.advance(1);
+
+  await expect(crossing).resolves.toEqual({
+    state: "unavailable",
+    unsafeAt: 6_000,
+  });
+  expect(load).toHaveBeenCalledTimes(2);
+});

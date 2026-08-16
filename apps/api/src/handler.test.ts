@@ -1757,6 +1757,149 @@ describe("event API", () => {
     });
     expect(reads).toBe(2);
   });
+
+  it.each(["games", "splits"] as const)(
+    "expires cached %s responses exactly at kickoff",
+    async (route) => {
+      vi.useFakeTimers();
+      const kickoff = Date.parse("2026-08-08T12:00:00.000Z");
+      vi.setSystemTime(kickoff - 1);
+      try {
+        const list = vi.fn(() => {
+          const pregame = list.mock.calls.length === 1;
+          return Promise.resolve({
+            items: [
+              {
+                id: "event:mlb:one",
+                version: 1,
+                sportKey: "mlb",
+                leagueKey: "mlb",
+                status: "scheduled",
+                startsAt: new Date(kickoff).toISOString(),
+                participants: [
+                  { id: "away", label: "Away" },
+                  { id: "home", label: "Home" },
+                ],
+                freshness: new Date(kickoff - 60_000).toISOString(),
+                odds: pregame
+                  ? {
+                      state: "available" as const,
+                      source: "pregame-snapshot" as const,
+                      selections: [],
+                    }
+                  : { state: "unavailable" as const },
+                metadata: {
+                  freshness: { state: "current", evidenceAt: null },
+                  availability: "unavailable",
+                  evaluatedAt: new Date(kickoff - 1).toISOString(),
+                },
+              },
+            ],
+            nextCursor: null,
+            projectionState: "ready" as const,
+            evaluationState: "complete" as const,
+            hasMoreUnknown: false,
+            snapshotAt: new Date(kickoff - 60_000).toISOString(),
+            freshness: null,
+            unavailableReason: null,
+          });
+        });
+        const handler = createEventHandler(
+          repository,
+          { list } as unknown as GamesRepository,
+          undefined,
+          route === "splits"
+            ? ({ listCurrent: () => Promise.resolve([]) } as never)
+            : undefined,
+        );
+        const query = {
+          sport: "mlb",
+          status: "scheduled",
+          day: "2026-08-08",
+        };
+
+        const before = await handler({ route, query });
+        await handler({ route, query });
+        expect(list).toHaveBeenCalledTimes(1);
+        const oddsState = (body: string) =>
+          (
+            JSON.parse(body) as {
+              readonly items: readonly {
+                readonly odds: { readonly state: string };
+              }[];
+            }
+          ).items[0]?.odds.state;
+        expect(oddsState(before.body)).toBe("available");
+
+        vi.setSystemTime(kickoff);
+        const after = await handler({ route, query });
+        expect(list).toHaveBeenCalledTimes(2);
+        expect(oddsState(after.body)).toBe("unavailable");
+      } finally {
+        clearHandlerCaches();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["games", "splits"] as const)(
+    "keeps canonical-closing %s responses cached after kickoff",
+    async (route) => {
+      vi.useFakeTimers();
+      const now = Date.parse("2026-08-08T12:05:00.000Z");
+      vi.setSystemTime(now);
+      try {
+        const list = vi.fn(() =>
+          Promise.resolve({
+            items: [
+              {
+                id: "event:mlb:closed",
+                startsAt: "2026-08-08T12:00:00.000Z",
+                odds: {
+                  state: "available" as const,
+                  source: "canonical-closing" as const,
+                  selections: [],
+                },
+                metadata: {
+                  freshness: { state: "current", evidenceAt: null },
+                  availability: "available",
+                  evaluatedAt: new Date(now).toISOString(),
+                },
+              },
+            ],
+            nextCursor: null,
+            projectionState: "ready" as const,
+            evaluationState: "complete" as const,
+            hasMoreUnknown: false,
+            snapshotAt: new Date(now).toISOString(),
+            freshness: null,
+            unavailableReason: null,
+          }),
+        );
+        const handler = createEventHandler(
+          repository,
+          { list } as unknown as GamesRepository,
+          undefined,
+          route === "splits"
+            ? ({ listCurrent: () => Promise.resolve([]) } as never)
+            : undefined,
+        );
+        const query = {
+          sport: "mlb",
+          status: "scheduled",
+          day: "2026-08-08",
+        };
+
+        await handler({ route, query });
+        vi.setSystemTime(now + 14_999);
+        await handler({ route, query });
+        expect(list).toHaveBeenCalledTimes(1);
+      } finally {
+        clearHandlerCaches();
+        vi.useRealTimers();
+      }
+    },
+  );
   it("accepts every games lifecycle but keeps splits scheduled-only", async () => {
     let reads = 0;
     const games = {

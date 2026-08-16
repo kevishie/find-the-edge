@@ -7,7 +7,7 @@ import {
   MemoryGamesRepository,
 } from "@find-the-edge/database";
 import { mvpFixtureOdds } from "@find-the-edge/providers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FixtureOddsSeedError,
   seedFixtureOdds,
@@ -52,6 +52,8 @@ class MemoryOdds implements FixtureOddsPersister {
 }
 
 describe("fixture odds seed", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("converges on rerun without duplicate snapshots", async () => {
     const store = new MemoryEventIngestionStore();
     const odds = new MemoryOdds();
@@ -67,6 +69,8 @@ describe("fixture odds seed", () => {
   });
 
   it("reads unchanged MLB and MLS semantic IDs through the joined games repository", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-01T12:31:00.000Z"));
     const store = new MemoryEventIngestionStore();
     const odds = new MemoryOdds();
     await seedFixtureOdds(store, odds);
