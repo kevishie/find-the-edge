@@ -254,6 +254,40 @@ describe("canonical closing lines capture", () => {
     expect(fetchClosing).not.toHaveBeenCalled();
   });
 
+  it("backfills an exact legacy source binding before canonical capture", async () => {
+    const closingLines = new MemoryClosingLinesRepository();
+    const resolveBinding = vi.fn().mockResolvedValue({
+      canonicalEventId: "event-1",
+      canonicalEventVersion: 2,
+      providerId: "sharpapi",
+      providerEventId: "provider-event-1",
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      startsAt: game().startsAt,
+      observedAt: "2026-08-09T12:00:00.000Z",
+    });
+    const fetchClosing = vi
+      .fn()
+      .mockResolvedValue(snapshot([book("hardrock"), book("pinnacle")]));
+
+    await expect(
+      captureClosingLines(
+        {
+          games: games([game()]),
+          closingLines,
+          resolveBinding,
+          fetchClosing,
+          targets: [{ sportKey: "mlb", leagueKey: "mlb" }],
+        },
+        now,
+      ),
+    ).resolves.toMatchObject({ captured: 2, pending: 0, requests: 1 });
+    expect(resolveBinding).toHaveBeenCalledWith(game());
+    await expect(closingLines.getBinding("event-1")).resolves.toMatchObject({
+      providerEventId: "provider-event-1",
+    });
+  });
+
   it("isolates one conflicting finalized book and persists its valid sibling", async () => {
     const backing = await bound();
     const closingLines = {

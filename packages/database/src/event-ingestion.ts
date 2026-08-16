@@ -102,6 +102,13 @@ export interface ScheduledEventReconciliationInput {
   readonly providerEventUuid?: string;
 }
 export interface EventIngestionStore {
+  /** Resolves the original exact source mapping for an existing canonical
+   * event. This is the bounded reverse seam used to backfill provider-owned
+   * capture bindings after a new capture capability is deployed. */
+  resolveCanonicalSourceBinding(
+    canonicalEventId: string,
+    providerId: string,
+  ): Promise<ProviderEventMapping | null>;
   resolveExactCanonicalBinding(
     input: Pick<
       EventIngestionInput,
@@ -1214,6 +1221,21 @@ export const mappingId = (
       input.providerEventId,
     ]),
   );
+
+/** Recovers the immutable bootstrap key encoded by the canonical event ID.
+ * Semantic IDs percent-encode every segment, so a provider key can never add
+ * an ambiguous colon delimiter. */
+export const canonicalSourceKeyFromEventId = (eventId: string) => {
+  const segments = eventId.split(":");
+  if (segments.length !== 3 || segments[0] !== "event" || !segments[2])
+    return null;
+  try {
+    const value = decodeURIComponent(segments[2]);
+    return value.length > 0 && value.length <= 512 ? value : null;
+  } catch {
+    return null;
+  }
+};
 export const identityKey = (
   sportKey: SportKey,
   leagueKey: string,

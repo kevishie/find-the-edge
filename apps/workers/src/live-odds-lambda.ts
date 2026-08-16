@@ -704,6 +704,23 @@ const runLiveOddsHandler = async (event?: unknown) => {
           {
             games: boardGames,
             closingLines,
+            resolveBinding: async (game) => {
+              const source = await eventStore.resolveCanonicalSourceBinding(
+                game.id,
+                "sharpapi",
+              );
+              if (!source) return null;
+              return {
+                canonicalEventId: game.id,
+                canonicalEventVersion: game.version,
+                providerId: "sharpapi",
+                providerEventId: source.providerEventId,
+                sportKey: game.sportKey,
+                leagueKey: game.leagueKey,
+                startsAt: game.startsAt,
+                observedAt: source.createdAt,
+              };
+            },
             clv: new DynamoClvRepository(client, tableName),
             sportsbookIds: approvedDetailSportsbooks.map(({ id }) => id),
             fetchClosing: (providerEventId) =>
