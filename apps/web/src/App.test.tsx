@@ -2867,6 +2867,60 @@ describe("Games", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("labels only provider-authored evidence as closing lines after start", async () => {
+    const startedAt = "2026-08-01T11:05:00.000Z";
+    const started = {
+      ...game,
+      startsAt: startedAt,
+      status: "started" as const,
+      odds: { ...game.odds, source: "pregame-snapshot" as const },
+    };
+    const list = vi.fn<GamesClient["list"]>(() =>
+      Promise.resolve({
+        ...page([started]),
+        snapshotAt: "2026-08-01T12:30:00.000Z",
+      }),
+    );
+    const rendered = render(
+      <App
+        sessionStore={activeSession()}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{ ok: true, value: { list } }}
+      />,
+    );
+    expect(await screen.findByText(/pregame snapshot/i)).toBeVisible();
+    expect(screen.queryByText(/closing lines/i)).toBeNull();
+    rendered.unmount();
+
+    render(
+      <App
+        sessionStore={activeSession()}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() =>
+              Promise.resolve({
+                ...page([
+                  {
+                    ...started,
+                    odds: {
+                      ...started.odds,
+                      source: "canonical-closing" as const,
+                    },
+                  },
+                ]),
+                snapshotAt: "2026-08-01T12:30:00.000Z",
+              }),
+            ),
+          },
+        }}
+      />,
+    );
+    expect(await screen.findByText(/closing lines/i)).toBeVisible();
+    expect(screen.queryByText(/pregame snapshot/i)).toBeNull();
+  });
+
   it("derives the displayed Eastern start instead of trusting API display text", async () => {
     const list = vi.fn<GamesClient["list"]>().mockResolvedValue(
       page([

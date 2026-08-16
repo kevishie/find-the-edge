@@ -514,6 +514,9 @@ export interface GameDisplayDto extends EventDisplayDto {
     | {
         readonly state: "available";
         readonly selections: readonly GameOddsSelectionDto[];
+        /** Explicit evidence provenance. Optional only for backward-compatible
+         * readers of boards written before canonical closing capture shipped. */
+        readonly source?: "canonical-closing" | "pregame-snapshot";
       }
     | { readonly state: "unavailable" };
 }

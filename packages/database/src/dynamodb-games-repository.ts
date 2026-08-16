@@ -4,12 +4,14 @@ import {
   type CurrentOddsReadGateway,
   type GameDetailSportsbook,
 } from "./games-repository";
+import type { ClosingLinesRepository } from "./closing-lines-repository";
 
 export class DynamoGamesRepository extends JoinedGamesRepository {
   constructor(
     events: EventRepository,
     gateway: CurrentOddsReadGateway,
     detailSportsbooks?: readonly GameDetailSportsbook[],
+    closingLines?: Pick<ClosingLinesRepository, "listFinalized">,
   ) {
     super(
       events,
@@ -20,6 +22,7 @@ export class DynamoGamesRepository extends JoinedGamesRepository {
       undefined,
       undefined,
       detailSportsbooks,
+      closingLines,
     );
   }
 }

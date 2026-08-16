@@ -9,6 +9,7 @@ import { randomBytes } from "node:crypto";
 import { approvedDetailSportsbooks } from "@find-the-edge/config";
 import {
   fetchSharpApiSchedulePage,
+  fetchSharpApiClosingLines,
   sharpApiLeagueByKey,
 } from "@find-the-edge/providers";
 import {
@@ -485,6 +486,10 @@ const runLiveOddsHandler = async (event?: unknown) => {
     new AwsFixtureOddsGateway(client, tableName),
     new DynamoExactOddsSnapshotRepository(client, tableName),
   );
+  const closingLines = new DynamoClosingLinesRepository(client, tableName);
+  const controlStore = new DynamoOddsControlPlaneStore(client, tableName);
+  const accountRateHealthKey = "sharpapi:account:account";
+  const closingCapabilityHealthKey = "sharpapi:account:closing";
   const provider = "odds-control-plane";
   const sharpSecret = await withBoundedInvocationStage(
     "live-odds-secret-read-failed",
@@ -494,7 +499,7 @@ const runLiveOddsHandler = async (event?: unknown) => {
   const common = {
     events: eventStore,
     odds: oddsStore,
-    control: new DynamoOddsControlPlaneStore(client, tableName),
+    control: controlStore,
     sharpApiKey,
     metrics: embeddedOddsControlPlaneMetrics,
   };
@@ -512,6 +517,7 @@ const runLiveOddsHandler = async (event?: unknown) => {
           runProductionOddsControlPlane({
             ...common,
             splits: new DynamoBettingSplitRepository(client, tableName),
+            closingLines,
             ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
           }),
         );
@@ -647,20 +653,164 @@ const runLiveOddsHandler = async (event?: unknown) => {
         boardEvents,
         boardGateway,
         approvedDetailSportsbooks,
+        closingLines,
       );
-      const boards = await materializeBoards({
-        games: boardGames,
-        splits: new DynamoBettingSplitRepository(client, tableName),
-        put: (item) => boardGateway.put(item),
-        now: new Date(),
-        scheduleListings,
-      });
       try {
+        let closingBlocked = false;
+        const closingHealth = await controlStore.getHealth(
+          closingCapabilityHealthKey,
+        );
+        if (
+          !closingHealth ||
+          closingHealth.failureClass === "terminal" ||
+          (closingHealth?.cooldownUntil !== undefined &&
+            Date.parse(closingHealth.cooldownUntil) > Date.now())
+        )
+          closingBlocked = true;
+        const putClosingHealth = async (
+          value: Omit<
+            NonNullable<Awaited<ReturnType<typeof controlStore.getHealth>>>,
+            "version"
+          >,
+        ) => {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const current = await controlStore.getHealth(
+              closingCapabilityHealthKey,
+            );
+            if (
+              current?.failureClass === "terminal" &&
+              value.failureClass !== "terminal"
+            )
+              return;
+            try {
+              await controlStore.putHealth({
+                ...value,
+                ...(current?.version === undefined
+                  ? {}
+                  : { version: current.version }),
+              });
+              return;
+            } catch (error) {
+              if (
+                !(error instanceof Error) ||
+                error.message !== "health-transition-conflict" ||
+                attempt === 2
+              )
+                throw error;
+            }
+          }
+        };
         const closing = await captureClosingLines(
           {
             games: boardGames,
-            closingLines: new DynamoClosingLinesRepository(client, tableName),
+            closingLines,
             clv: new DynamoClvRepository(client, tableName),
+            sportsbookIds: approvedDetailSportsbooks.map(({ id }) => id),
+            fetchClosing: (providerEventId) =>
+              fetchSharpApiClosingLines(providerEventId, sharpApiKey),
+            reserveQuota: async () => {
+              if (closingBlocked) return false;
+              const health = await controlStore.getHealth(accountRateHealthKey);
+              if (
+                !health?.healthy ||
+                health.failureClass === "terminal" ||
+                health.rateWindow?.remaining === undefined
+              )
+                return false;
+              const limit = health.rateWindow.limit;
+              const reserve =
+                limit === undefined
+                  ? 100
+                  : Math.max(1, Math.min(100, Math.floor(limit / 2)));
+              return controlStore.reserveAccountRate(
+                accountRateHealthKey,
+                reserve,
+                1,
+                new Date().toISOString(),
+                {
+                  ...(health.version === undefined
+                    ? {}
+                    : { version: health.version }),
+                  ...(limit === undefined ? {} : { limit }),
+                  ...(health.rateWindow.resetsAt === undefined
+                    ? {}
+                    : { resetsAt: health.rateWindow.resetsAt }),
+                },
+              );
+            },
+            reconcileQuota: async (metadata) =>
+              Promise.all([
+                controlStore.reconcileAccountRateWindow(
+                  accountRateHealthKey,
+                  1,
+                  1,
+                  metadata?.rateWindow,
+                  new Date().toISOString(),
+                ),
+                putClosingHealth({
+                  providerId: "sharpapi",
+                  healthKey: closingCapabilityHealthKey,
+                  healthy: true,
+                  status: "healthy",
+                  consecutiveSuccesses: 1,
+                  lastSuccessfulAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                }),
+              ]).then(() => undefined),
+            recordProviderFailure: async (error) => {
+              closingBlocked = true;
+              const observedAt = new Date().toISOString();
+              if (error.code === "unauthorized") {
+                await controlStore.blockAccountTerminal(
+                  accountRateHealthKey,
+                  "unauthorized",
+                  observedAt,
+                );
+                return;
+              }
+              if (error.code === "rate-limited") {
+                const accountHealth =
+                  await controlStore.getHealth(accountRateHealthKey);
+                const retryAt =
+                  error.retryAt ??
+                  accountHealth?.rateWindow?.resetsAt ??
+                  new Date(Date.now() + 60_000).toISOString();
+                await controlStore.blockAccountRateWindow(
+                  accountRateHealthKey,
+                  retryAt,
+                  observedAt,
+                );
+                return;
+              }
+              if (error.code === "not-entitled") {
+                await putClosingHealth({
+                  providerId: "sharpapi",
+                  healthKey: closingCapabilityHealthKey,
+                  healthy: false,
+                  status: "unhealthy",
+                  consecutiveSuccesses: 0,
+                  failureClass: "terminal",
+                  failureReason: "not-entitled",
+                  updatedAt: observedAt,
+                });
+                return;
+              }
+              const retryAt =
+                error.retryAt ?? new Date(Date.now() + 60_000).toISOString();
+              await putClosingHealth({
+                providerId: "sharpapi",
+                healthKey: closingCapabilityHealthKey,
+                healthy: false,
+                status: "unhealthy",
+                consecutiveSuccesses: 0,
+                failureClass: "transient",
+                failureReason: error.code,
+                retryAt,
+                cooldownUntil: retryAt,
+                expiresAt: Math.floor(Date.parse(retryAt) / 1_000) + 3_600,
+                updatedAt: observedAt,
+              });
+            },
           },
           new Date(),
         );
@@ -678,6 +828,13 @@ const runLiveOddsHandler = async (event?: unknown) => {
           })}\n`,
         );
       }
+      const boards = await materializeBoards({
+        games: boardGames,
+        splits: new DynamoBettingSplitRepository(client, tableName),
+        put: (item) => boardGateway.put(item),
+        now: new Date(),
+        scheduleListings,
+      });
       process.stdout.write(
         `${JSON.stringify({ event: "board-materialization", ...boards })}\n`,
       );

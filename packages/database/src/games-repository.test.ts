@@ -15,6 +15,7 @@ import {
   assessEventMetadata,
   participantSelectionKey,
   fixtureOddsGroupAvailabilityIdentity,
+  CLOSING_BOOK_SCHEMA_VERSION,
   type EventDisplayDto,
   type EntityId,
 } from "@find-the-edge/domain";
@@ -23,6 +24,7 @@ import type { EventRepository } from "./event-repository";
 import { DynamoGamesRepository } from "./dynamodb-games-repository";
 import { JoinedGamesRepository } from "./games-repository";
 import { MemoryGamesRepository } from "./memory-games-repository";
+import { MemoryClosingLinesRepository } from "./closing-lines-repository";
 
 const event: EventDisplayDto = {
   id: "event-1",
@@ -111,6 +113,40 @@ const row = (value: ReturnType<typeof current>) => ({
   pk: value.partitionKey,
   sk: "CURRENT",
   value,
+});
+const recordClosingBookForTest = (source: EventDisplayDto) => ({
+  schemaVersion: CLOSING_BOOK_SCHEMA_VERSION,
+  canonicalEventId: source.id,
+  canonicalEventVersion: source.version,
+  providerId: "sharpapi" as const,
+  providerEventId: "provider-event-1",
+  sportKey: source.sportKey,
+  leagueKey: source.leagueKey,
+  startsAt: source.startsAt,
+  sportsbookId: "hardrock",
+  providerSportsbookId: "hardrock",
+  capturedAt: source.startsAt,
+  retrievedAt: "2026-08-01T12:20:00.000Z",
+  captureTrigger: "kickoff" as const,
+  isFinal: true as const,
+  selections: [
+    {
+      marketKey: "moneyline",
+      selectionKey: participantKey(source.participants[0]!.id),
+      sportsbookId: "hardrock",
+      americanOdds: 130,
+      observedAt: "2026-08-01T11:59:00.000Z",
+      retrievedAt: "2026-08-01T12:20:00.000Z",
+    },
+    {
+      marketKey: "moneyline",
+      selectionKey: participantKey(source.participants[1]!.id),
+      sportsbookId: "hardrock",
+      americanOdds: -145,
+      observedAt: "2026-08-01T11:59:00.000Z",
+      retrievedAt: "2026-08-01T12:20:00.000Z",
+    },
+  ],
 });
 const activeEvidence = (prices: readonly ReturnType<typeof current>[]) => {
   const evidence: {
@@ -1037,6 +1073,129 @@ describe("joined games repository", () => {
         { sportsbookId: "pinnacle", selectionKey: participantKey("nyy") },
       ],
     });
+  });
+
+  it("prefers a coherent canonical close only after the event starts", async () => {
+    const closingLines = new MemoryClosingLinesRepository();
+    const started = {
+      ...event,
+      startsAt: "2026-08-01T12:00:00.000Z",
+      status: "started" as const,
+      metadata: assessEventMetadata(
+        "started",
+        "2026-08-01T12:00:00.000Z",
+        "2026-08-01T12:30:00.000Z",
+      ),
+    };
+    await closingLines.finalizeBook({
+      schemaVersion: CLOSING_BOOK_SCHEMA_VERSION,
+      canonicalEventId: started.id,
+      canonicalEventVersion: started.version,
+      providerId: "sharpapi",
+      providerEventId: "provider-event-1",
+      sportKey: "mlb",
+      leagueKey: "mlb",
+      startsAt: started.startsAt,
+      sportsbookId: "hardrock",
+      providerSportsbookId: "hardrock",
+      capturedAt: "2026-08-01T12:00:00.000Z",
+      retrievedAt: "2026-08-01T12:20:00.000Z",
+      captureTrigger: "kickoff",
+      isFinal: true,
+      selections: [
+        {
+          marketKey: "moneyline",
+          selectionKey: participantKey("bos"),
+          sportsbookId: "hardrock",
+          americanOdds: 130,
+          observedAt: "2026-08-01T11:59:00.000Z",
+          retrievedAt: "2026-08-01T12:20:00.000Z",
+        },
+        {
+          marketKey: "moneyline",
+          selectionKey: participantKey("nyy"),
+          sportsbookId: "hardrock",
+          americanOdds: -145,
+          observedAt: "2026-08-01T11:59:00.000Z",
+          retrievedAt: "2026-08-01T12:20:00.000Z",
+        },
+      ],
+    });
+    const page = await new DynamoGamesRepository(
+      events([started]),
+      { batchGet: () => Promise.resolve([]) },
+      [{ id: "hardrock", label: "Hard Rock Bet" }],
+      closingLines,
+    ).list({ sportKey: "mlb", status: "started", day: "2026-08-01" }, 1);
+    expect(page.items[0]?.odds).toMatchObject({
+      state: "available",
+      source: "canonical-closing",
+      selections: [{ americanOdds: 130 }, { americanOdds: -145 }],
+    });
+
+    const scheduled = await new DynamoGamesRepository(
+      events([event]),
+      { batchGet: () => Promise.resolve([]) },
+      [{ id: "hardrock", label: "Hard Rock Bet" }],
+      closingLines,
+    ).list({ sportKey: "mlb", status: "scheduled", day: "2026-08-01" }, 1);
+    expect(scheduled.items[0]?.odds).toEqual({ state: "unavailable" });
+  });
+
+  it("falls back to current odds when closing storage is unavailable", async () => {
+    const started = {
+      ...event,
+      startsAt: "2026-08-01T12:00:00.000Z",
+      status: "started" as const,
+    };
+    const prices = [
+      current(started, "away", "Boston Red Sox"),
+      current(started, "home", "New York Yankees"),
+    ];
+    const page = await new DynamoGamesRepository(
+      events([started]),
+      { batchGet: () => Promise.resolve(prices.map(row)) },
+      [{ id: "draftkings", label: "DraftKings" }],
+      {
+        listFinalized: () => Promise.reject(new Error("closing-read-failed")),
+      },
+    ).list({ sportKey: "mlb", status: "started", day: "2026-08-01" }, 1);
+
+    expect(page.items[0]?.odds).toMatchObject({
+      state: "available",
+      source: "pregame-snapshot",
+      selections: [{ americanOdds: 120 }, { americanOdds: -135 }],
+    });
+  });
+
+  it("ignores closing books whose canonical event binding is stale", async () => {
+    const closingLines = new MemoryClosingLinesRepository();
+    const started = {
+      ...event,
+      startsAt: "2026-08-01T12:00:00.000Z",
+      status: "started" as const,
+    };
+    await closingLines.finalizeBook({
+      ...recordClosingBookForTest(started),
+      canonicalEventVersion: started.version - 1,
+    });
+    const prices = [
+      current(started, "away", "Boston Red Sox"),
+      current(started, "home", "New York Yankees"),
+    ];
+    const page = await new DynamoGamesRepository(
+      events([started]),
+      { batchGet: () => Promise.resolve(prices.map(row)) },
+      [{ id: "draftkings", label: "DraftKings" }],
+      closingLines,
+    ).list({ sportKey: "mlb", status: "started", day: "2026-08-01" }, 1);
+
+    expect(page.items[0]?.odds.state).toBe("available");
+    expect(
+      page.items[0]?.odds.state === "available"
+        ? page.items[0].odds.selections.map(({ sportsbookId }) => sportsbookId)
+        : [],
+    ).toEqual(["draftkings", "draftkings"]);
   });
 
   it("rebuilds soccer away/draw/home order", async () => {

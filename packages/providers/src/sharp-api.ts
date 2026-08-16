@@ -821,6 +821,7 @@ type SharpApiEndpoint =
   | "universal-odds"
   | "odds"
   | "focused-odds"
+  | "closing-odds"
   | "schedule"
   | "splits"
   | "splits-history";
@@ -3057,6 +3058,403 @@ export interface SharpApiOddsRequestMetadata {
 export interface SharpApiOddsOperation {
   readonly page: SharpApiOddsPage;
   readonly request: SharpApiOddsRequestMetadata;
+}
+
+export interface SharpApiClosingPrice {
+  readonly providerMarketType: "moneyline" | "run_line" | "total_runs";
+  readonly marketKey: "moneyline" | "spread" | "total";
+  readonly providerMarketId: string;
+  readonly selectionKey: "away" | "draw" | "home" | "over" | "under";
+  readonly selectionLabel: string;
+  readonly providerSelectionId: string;
+  readonly canonicalKey: string;
+  readonly point?: number;
+  readonly americanOdds: number;
+  readonly decimalOdds: number;
+  readonly impliedProbability: number;
+  readonly noVigProbability?: number;
+  readonly fairCloseDecimal: number;
+  readonly closingProbability: number;
+  readonly sourceUpdatedAt: IsoTimestamp;
+}
+
+export type SharpApiClosingCaptureTrigger =
+  "transition" | "kickoff" | "disappearance" | "evict" | "backfill";
+
+export interface SharpApiClosingBook {
+  /** Canonical FTE sportsbook id. */
+  readonly id: string;
+  /** Exact key used by the provider's `books` map. */
+  readonly providerSportsbookId: string;
+  readonly capturedAt: IsoTimestamp;
+  readonly secondsBeforeKickoff: number;
+  readonly captureTrigger: SharpApiClosingCaptureTrigger;
+  readonly isFinal: boolean;
+  readonly prices: readonly SharpApiClosingPrice[];
+}
+
+export interface SharpApiClosingRejection {
+  readonly reason:
+    | "unknown-bookmaker"
+    | "malformed-book"
+    | "unsupported-market"
+    | "unsupported-selection"
+    | "incomplete-market"
+    | "ambiguous-market";
+  readonly auditId: string;
+  readonly providerSportsbookId?: string;
+}
+
+export interface SharpApiClosingSnapshot {
+  readonly providerEventId: string;
+  readonly sport?: string;
+  readonly league?: string;
+  readonly awayTeam?: string;
+  readonly homeTeam?: string;
+  readonly startsAt?: IsoTimestamp;
+  readonly firstCapturedAt?: IsoTimestamp;
+  readonly books: readonly SharpApiClosingBook[];
+  readonly rejections: readonly SharpApiClosingRejection[];
+  readonly retrievedAt: IsoTimestamp;
+  readonly responseMetadata?: SharpApiResponseMetadata;
+}
+
+const closingMarket = (
+  value: unknown,
+):
+  | Pick<SharpApiClosingPrice, "providerMarketType" | "marketKey">
+  | undefined => {
+  if (value === "moneyline")
+    return { providerMarketType: value, marketKey: "moneyline" };
+  if (value === "run_line")
+    return { providerMarketType: value, marketKey: "spread" };
+  if (value === "total_runs")
+    return { providerMarketType: value, marketKey: "total" };
+  return undefined;
+};
+
+const closingSelection = (
+  value: unknown,
+): SharpApiClosingPrice["selectionKey"] | undefined =>
+  value === "away" ||
+  value === "draw" ||
+  value === "home" ||
+  value === "over" ||
+  value === "under"
+    ? value
+    : undefined;
+
+const coherentClosingMarket = (
+  prices: readonly SharpApiClosingPrice[],
+): "coherent" | "incomplete" | "ambiguous" => {
+  if (prices.length === 0) return "incomplete";
+  const marketKey = prices[0]!.marketKey;
+  if (prices.some((price) => price.marketKey !== marketKey))
+    return "incomplete";
+  const counts = new Map<string, number>();
+  for (const price of prices)
+    counts.set(price.selectionKey, (counts.get(price.selectionKey) ?? 0) + 1);
+  if ([...counts.values()].some((count) => count > 1)) return "ambiguous";
+  if (
+    new Set(prices.map(({ providerMarketId }) => providerMarketId)).size !==
+      1 ||
+    new Set(prices.map(({ providerSelectionId }) => providerSelectionId))
+      .size !== prices.length ||
+    new Set(prices.map(({ canonicalKey }) => canonicalKey)).size !==
+      prices.length
+  )
+    return "incomplete";
+  if (marketKey === "moneyline") {
+    if (prices.some((price) => price.point !== undefined)) return "incomplete";
+    const keys = [...counts.keys()].sort().join(",");
+    return keys === "away,home" || keys === "away,draw,home"
+      ? "coherent"
+      : "incomplete";
+  }
+  if (prices.length !== 2)
+    return prices.length > 2 ? "ambiguous" : "incomplete";
+  const [left, right] = prices;
+  if (left?.point === undefined || right?.point === undefined)
+    return "incomplete";
+  if (marketKey === "spread") {
+    if ([...counts.keys()].sort().join(",") !== "away,home")
+      return "incomplete";
+    return Math.abs(left.point + right.point) <= 1e-9
+      ? "coherent"
+      : "incomplete";
+  }
+  if ([...counts.keys()].sort().join(",") !== "over,under") return "incomplete";
+  return Math.abs(left.point - right.point) <= 1e-9 ? "coherent" : "incomplete";
+};
+
+/** Parse the documented `/odds/closing` response without retaining its raw body.
+ * A malformed book is isolated so independently finalized siblings remain usable. */
+export function parseSharpApiClosingLines(
+  input: unknown,
+  expectedProviderEventId: string,
+  retrievedAt: IsoTimestamp,
+): SharpApiClosingSnapshot {
+  const invalid = (stage: string) => invalidResponse("closing-odds", stage);
+  if (!canonical(expectedProviderEventId, 256) || !instant(retrievedAt))
+    throw new SharpApiError("configuration");
+  if (!record(input)) throw invalid("envelope");
+  assertProviderEnvelope(input, "closing-odds");
+  const data = input["data"];
+  if (!record(data) || data["event_id"] !== expectedProviderEventId)
+    throw invalid("identity");
+  const rawBooks = data["books"];
+  if (!record(rawBooks) || Object.keys(rawBooks).length > 100)
+    throw invalid("books-envelope");
+  const bookEntries = Object.entries(rawBooks);
+  const isEmpty = bookEntries.length === 0;
+  const eventFields = [
+    data["sport"],
+    data["league"],
+    data["away_team"],
+    data["home_team"],
+  ];
+  if (
+    !isEmpty &&
+    (eventFields.some((value) => !canonical(value, 256)) ||
+      data["away_team"] === data["home_team"] ||
+      !instant(data["event_start_time"]) ||
+      !instant(data["captured_at"]))
+  )
+    throw invalid("event-shape");
+
+  const books: SharpApiClosingBook[] = [];
+  const rejections: SharpApiClosingRejection[] = [];
+  const reject = (
+    reason: SharpApiClosingRejection["reason"],
+    providerSportsbookId: string | undefined,
+    value: unknown,
+  ) => {
+    if (rejections.length >= 256) return;
+    rejections.push({
+      reason,
+      auditId: auditId(value),
+      ...(providerSportsbookId ? { providerSportsbookId } : {}),
+    });
+  };
+  const triggers = new Set<SharpApiClosingCaptureTrigger>([
+    "transition",
+    "kickoff",
+    "disappearance",
+    "evict",
+    "backfill",
+  ]);
+  let totalRows = 0;
+  for (const [providerSportsbookId, rawBook] of bookEntries) {
+    if (!canonical(providerSportsbookId, 128)) {
+      reject("malformed-book", undefined, providerSportsbookId);
+      continue;
+    }
+    const normalizedBook = normalizeSportsbook(providerSportsbookId);
+    if (normalizedBook.kind === "rejected") {
+      reject("unknown-bookmaker", providerSportsbookId, providerSportsbookId);
+      continue;
+    }
+    if (!record(rawBook) || !Array.isArray(rawBook["odds"])) {
+      reject("malformed-book", providerSportsbookId, providerSportsbookId);
+      continue;
+    }
+    totalRows += rawBook["odds"].length;
+    if (
+      rawBook["odds"].length > 1_000 ||
+      totalRows > 5_000 ||
+      !instant(rawBook["captured_at"]) ||
+      !safeInteger(rawBook["seconds_before_kickoff"]) ||
+      Math.abs(rawBook["seconds_before_kickoff"]) > 7 * 24 * 60 * 60 ||
+      !triggers.has(
+        rawBook["capture_trigger"] as SharpApiClosingCaptureTrigger,
+      ) ||
+      typeof rawBook["is_final"] !== "boolean"
+    ) {
+      reject("malformed-book", providerSportsbookId, providerSportsbookId);
+      continue;
+    }
+    const capturedAt = iso(rawBook["captured_at"]);
+    const byMarket = new Map<string, SharpApiClosingPrice[]>();
+    const invalidSupportedMarkets = new Set<string>();
+    for (const rawOdd of rawBook["odds"]) {
+      if (!record(rawOdd)) {
+        reject("incomplete-market", providerSportsbookId, "non-record-row");
+        continue;
+      }
+      const normalizedRowBook = canonical(rawOdd["sportsbook"], 128)
+        ? normalizeSportsbook(rawOdd["sportsbook"])
+        : undefined;
+      const marketIdentity = closingMarket(rawOdd["market_type"]);
+      if (!marketIdentity) {
+        reject(
+          "unsupported-market",
+          providerSportsbookId,
+          rawOdd["market_type"],
+        );
+        continue;
+      }
+      const selectionKey = closingSelection(rawOdd["selection_type"]);
+      const compatible =
+        (marketIdentity.marketKey === "moneyline" &&
+          selectionKey !== undefined &&
+          ["away", "draw", "home"].includes(selectionKey)) ||
+        (marketIdentity.marketKey === "spread" &&
+          (selectionKey === "away" || selectionKey === "home")) ||
+        (marketIdentity.marketKey === "total" &&
+          (selectionKey === "over" || selectionKey === "under"));
+      if (!compatible || !selectionKey) {
+        invalidSupportedMarkets.add(marketIdentity.providerMarketType);
+        reject(
+          "unsupported-selection",
+          providerSportsbookId,
+          rawOdd["selection_type"],
+        );
+        continue;
+      }
+      const line = rawOdd["line"];
+      const lineValid =
+        marketIdentity.marketKey === "moneyline"
+          ? line === null || line === undefined
+          : providerNumber(line);
+      const noVig = rawOdd["no_vig_probability"];
+      const expectedCanonicalKey = `${expectedProviderEventId}:${marketIdentity.providerMarketType}:${selectionKey}${providerNumber(line) ? `:${String(line)}` : ""}`;
+      const sideLabelValid =
+        marketIdentity.marketKey === "total" ||
+        selectionKey === "draw" ||
+        (selectionKey === "away" &&
+          rawOdd["selection"] === data["away_team"]) ||
+        (selectionKey === "home" && rawOdd["selection"] === data["home_team"]);
+      if (
+        normalizedRowBook?.kind !== "normalized" ||
+        normalizedRowBook.sportsbook.id !== normalizedBook.sportsbook.id ||
+        !canonical(rawOdd["selection"], 256) ||
+        !canonical(rawOdd["market_id"], 512) ||
+        !canonical(rawOdd["selection_id"], 512) ||
+        !canonical(rawOdd["canonical_key"], 1_024) ||
+        rawOdd["canonical_key"] !== expectedCanonicalKey ||
+        !lineValid ||
+        !safeInteger(rawOdd["odds_american"]) ||
+        Math.abs(rawOdd["odds_american"]) < 100 ||
+        !providerNumber(rawOdd["odds_decimal"]) ||
+        rawOdd["odds_decimal"] <= 1 ||
+        !providerNumber(rawOdd["implied_probability"]) ||
+        rawOdd["implied_probability"] < 0 ||
+        rawOdd["implied_probability"] > 1 ||
+        (noVig !== null &&
+          noVig !== undefined &&
+          (!providerNumber(noVig) || noVig < 0 || noVig > 1)) ||
+        !providerNumber(rawOdd["fair_close_decimal"]) ||
+        rawOdd["fair_close_decimal"] <= 1 ||
+        !providerNumber(rawOdd["closing_probability"]) ||
+        rawOdd["closing_probability"] < 0 ||
+        rawOdd["closing_probability"] > 1 ||
+        !instant(rawOdd["source_updated_at"]) ||
+        Date.parse(rawOdd["source_updated_at"]) > Date.parse(capturedAt) ||
+        !sideLabelValid
+      ) {
+        invalidSupportedMarkets.add(marketIdentity.providerMarketType);
+        reject(
+          "incomplete-market",
+          providerSportsbookId,
+          rawOdd["selection_id"],
+        );
+        continue;
+      }
+      const price: SharpApiClosingPrice = {
+        ...marketIdentity,
+        providerMarketId: rawOdd["market_id"],
+        selectionKey,
+        selectionLabel: rawOdd["selection"],
+        providerSelectionId: rawOdd["selection_id"],
+        canonicalKey: rawOdd["canonical_key"],
+        ...(providerNumber(line) ? { point: line } : {}),
+        americanOdds: rawOdd["odds_american"],
+        decimalOdds: rawOdd["odds_decimal"],
+        impliedProbability: rawOdd["implied_probability"],
+        ...(providerNumber(noVig) ? { noVigProbability: noVig } : {}),
+        fairCloseDecimal: rawOdd["fair_close_decimal"],
+        closingProbability: rawOdd["closing_probability"],
+        sourceUpdatedAt: iso(rawOdd["source_updated_at"]),
+      };
+      const group = byMarket.get(marketIdentity.providerMarketType) ?? [];
+      group.push(price);
+      byMarket.set(marketIdentity.providerMarketType, group);
+    }
+    const prices: SharpApiClosingPrice[] = [];
+    for (const [providerMarketType, candidates] of byMarket) {
+      const coherence = invalidSupportedMarkets.has(providerMarketType)
+        ? "incomplete"
+        : coherentClosingMarket(candidates);
+      if (coherence === "coherent") prices.push(...candidates);
+      else
+        reject(
+          coherence === "ambiguous" ? "ambiguous-market" : "incomplete-market",
+          providerSportsbookId,
+          providerMarketType,
+        );
+    }
+    books.push({
+      id: normalizedBook.sportsbook.id,
+      providerSportsbookId,
+      capturedAt,
+      secondsBeforeKickoff: rawBook["seconds_before_kickoff"],
+      captureTrigger: rawBook[
+        "capture_trigger"
+      ] as SharpApiClosingCaptureTrigger,
+      isFinal: rawBook["is_final"],
+      prices,
+    });
+  }
+  return {
+    providerEventId: expectedProviderEventId,
+    ...(!isEmpty
+      ? {
+          sport: data["sport"] as string,
+          league: data["league"] as string,
+          awayTeam: data["away_team"] as string,
+          homeTeam: data["home_team"] as string,
+          startsAt: iso(data["event_start_time"] as string),
+          firstCapturedAt: iso(data["captured_at"] as string),
+        }
+      : {}),
+    books,
+    rejections,
+    retrievedAt,
+  };
+}
+
+export async function fetchSharpApiClosingLines(
+  providerEventId: string,
+  apiKey: string,
+  sportsbooks: readonly string[] = [],
+  fetcher: typeof fetch = fetch,
+): Promise<SharpApiClosingSnapshot> {
+  if (
+    !canonical(providerEventId, 256) ||
+    sportsbooks.length > 25 ||
+    sportsbooks.some((book) => !storageKeyComponent(book, 128)) ||
+    new Set(sportsbooks).size !== sportsbooks.length
+  )
+    throw new SharpApiError("configuration");
+  const query = new URLSearchParams({ event_id: providerEventId });
+  if (sportsbooks.length > 0) query.set("sportsbook", sportsbooks.join(","));
+  try {
+    const { payload, metadata } = await request(
+      `/odds/closing?${query.toString()}`,
+      "closing-odds",
+      apiKey,
+      fetcher,
+    );
+    // Evidence-receipt time is response completion, not request initiation.
+    // A provider may finalize a book while this request is in flight.
+    const retrievedAt = new Date().toISOString() as IsoTimestamp;
+    return {
+      ...parseSharpApiClosingLines(payload, providerEventId, retrievedAt),
+      responseMetadata: metadata,
+    };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "closing-odds");
+  }
 }
 
 export async function fetchSharpApiFeaturedOdds(

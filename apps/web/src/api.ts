@@ -2773,7 +2773,11 @@ const validGame = (
   if (odds["state"] === "unavailable") return exact(odds, ["state"]);
   if (
     odds["state"] !== "available" ||
-    !exact(odds, ["state", "selections"]) ||
+    (!exact(odds, ["state", "selections"]) &&
+      !exact(odds, ["state", "selections", "source"])) ||
+    (odds["source"] !== undefined &&
+      odds["source"] !== "canonical-closing" &&
+      odds["source"] !== "pregame-snapshot") ||
     !Array.isArray(odds["selections"]) ||
     odds["selections"].length < (filter.sport === "mlb" ? 2 : 3) ||
     odds["selections"].length > (filter.sport === "mlb" ? 6 : 7) ||
