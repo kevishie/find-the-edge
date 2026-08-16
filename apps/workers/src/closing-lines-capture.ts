@@ -11,6 +11,7 @@ import {
   createClosingLinesRecord,
   participantSelectionKey,
   type ClosingBookRecord,
+  type ClosingEventBinding,
   type ClvResult,
   type EntityId,
   type GameDisplayDto,
@@ -129,6 +130,9 @@ export async function captureClosingLines(
   dependencies: {
     readonly games: GamesRepository;
     readonly closingLines: ClosingLinesRepository;
+    readonly resolveBinding?: (
+      game: GameDisplayDto,
+    ) => Promise<ClosingEventBinding | null>;
     readonly clv?: Pick<ClvRepository, "listEntries" | "appendResults">;
     readonly targets?: readonly {
       readonly sportKey: string;
@@ -279,9 +283,14 @@ export async function captureClosingLines(
   const rotated = [...ordered.slice(rotation), ...ordered.slice(0, rotation)];
   for (const game of rotated) {
     try {
-      const currentBinding = await dependencies.closingLines.getBinding(
-        game.id,
-      );
+      let currentBinding = await dependencies.closingLines.getBinding(game.id);
+      if (!currentBinding && dependencies.resolveBinding) {
+        const recovered = await dependencies.resolveBinding(game);
+        if (recovered) {
+          await dependencies.closingLines.bind(recovered);
+          currentBinding = recovered;
+        }
+      }
       const historicalBindings = await dependencies.closingLines.listBindings(
         game.id,
       );

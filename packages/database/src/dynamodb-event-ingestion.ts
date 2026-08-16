@@ -14,6 +14,7 @@ import type {
 import { randomUUID } from "node:crypto";
 import {
   bootstrapMarkerId,
+  canonicalSourceKeyFromEventId,
   canonicalContinuationCommand,
   compareAuthority,
   compareRevision,
@@ -710,6 +711,35 @@ export class DynamoEventIngestionStore implements EventIngestionStore {
     }
     throw new Error("identity-snapshot-unstable");
   }
+  async resolveCanonicalSourceBinding(
+    canonicalEventId: string,
+    providerId: string,
+  ) {
+    const canonicalItem = await this.gateway.get(
+      eventKey(canonicalEventId),
+      "CURRENT",
+    );
+    if (!canonicalItem) return null;
+    const canonical = validateCanonicalEvent(canonicalItem.value);
+    const providerEventId = canonicalSourceKeyFromEventId(canonical.id);
+    if (!providerEventId) return null;
+    const mappingItem = await this.gateway.get(
+      `MAPPING#${mappingId({
+        providerId,
+        providerEventId,
+        sportKey: canonical.sportKey,
+        leagueKey: canonical.leagueKey,
+      })}`,
+      "CURRENT",
+    );
+    if (!mappingItem) return null;
+    const mapping = validateProviderEventMapping(mappingItem.value);
+    return mapping.bindingKind === "source" &&
+      mapping.canonicalEventId === canonicalEventId
+      ? mapping
+      : null;
+  }
+
   async getExactMapping(
     input: Pick<
       EventIngestionInput,

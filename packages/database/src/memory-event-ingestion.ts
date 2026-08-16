@@ -12,6 +12,7 @@ import type {
 } from "@find-the-edge/domain";
 import {
   bootstrapMarkerId,
+  canonicalSourceKeyFromEventId,
   canonicalContinuationCommand,
   compareAuthority,
   compareRevision,
@@ -245,6 +246,32 @@ export class MemoryEventIngestionStore implements EventIngestionStore {
     });
     return "registered" as const;
   }
+  async resolveCanonicalSourceBinding(
+    canonicalEventId: string,
+    providerId: string,
+  ) {
+    await Promise.resolve();
+    const event = this.events.get(canonicalEventId);
+    if (!event) return null;
+    const canonical = validateCanonicalEvent(event);
+    const providerEventId = canonicalSourceKeyFromEventId(canonical.id);
+    if (!providerEventId) return null;
+    const rawMapping = this.mappings.get(
+      mappingId({
+        providerId,
+        providerEventId,
+        sportKey: canonical.sportKey,
+        leagueKey: canonical.leagueKey,
+      }),
+    );
+    if (!rawMapping) return null;
+    const mapping = validateProviderEventMapping(rawMapping);
+    return mapping.bindingKind === "source" &&
+      mapping.canonicalEventId === canonicalEventId
+      ? mapping
+      : null;
+  }
+
   async getExactMapping(
     input: Pick<
       EventIngestionInput,
