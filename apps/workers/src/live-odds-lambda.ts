@@ -12,10 +12,7 @@ import {
   fetchSharpApiClosingLines,
   sharpApiLeagueByKey,
 } from "@find-the-edge/providers";
-import {
-  instrumentDynamoCapacity,
-  usableScheduleListings,
-} from "@find-the-edge/database";
+import { usableScheduleListings } from "@find-the-edge/database";
 import { captureClosingLines } from "./closing-lines-capture";
 import {
   AwsDynamoGateway,
@@ -36,8 +33,6 @@ import {
   runFocusedSharpOddsIngestion,
   runProductionOddsControlPlane,
 } from "./production-odds-control-plane";
-import { embeddedOddsControlPlaneMetrics } from "./odds-control-plane";
-import { emitDynamoCapacityMetrics } from "./dynamo-capacity-metrics";
 import { decideOddsRetry } from "./odds-control-plane";
 
 export function parseProviderApiSecret(value: string | undefined): string {
@@ -470,10 +465,7 @@ const runLiveOddsHandler = async (event?: unknown) => {
   if (!tableName || !sharpEnabled || !sharpSecretId)
     throw new Error("live-odds-configuration-invalid");
   const secrets = new SecretsManagerClient({});
-  const client = instrumentDynamoCapacity(
-    DynamoDBDocumentClient.from(new DynamoDBClient({})),
-    emitDynamoCapacityMetrics,
-  );
+  const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   await assertLiveOddsMaintenanceOwnership(
     client,
     tableName,
@@ -501,7 +493,6 @@ const runLiveOddsHandler = async (event?: unknown) => {
     odds: oddsStore,
     control: controlStore,
     sharpApiKey,
-    metrics: embeddedOddsControlPlaneMetrics,
   };
   let summary;
   try {
@@ -527,11 +518,6 @@ const runLiveOddsHandler = async (event?: unknown) => {
       error,
       invocation.sqs.receiveCount,
     );
-    embeddedOddsControlPlaneMetrics.emit("OddsCommandOutcome", 1, {
-      class: decision.class,
-      action: decision.action,
-      reason: decision.reason,
-    });
     if (decision.action === "stop")
       return { batchItemFailures: [] as readonly never[] };
     if (decision.action !== "exhausted")
@@ -855,105 +841,6 @@ const runLiveOddsHandler = async (event?: unknown) => {
       process.stdout.write(
         `${JSON.stringify({ event: "board-materialization", ...boards })}\n`,
       );
-      // Provider health alone has twice proven blind to frozen persistence;
-      // this measures the served data itself. An empty slate emits nothing,
-      // so the alarm treats missing data as healthy.
-      if (boards.scheduledOddsAgeSeconds !== null)
-        process.stdout.write(
-          `${JSON.stringify({
-            _aws: {
-              Timestamp: Date.now(),
-              CloudWatchMetrics: [
-                {
-                  Namespace: "FindTheEdge/Boards",
-                  Dimensions: [[]],
-                  Metrics: [
-                    {
-                      Name: "ScheduledBoardOddsAgeSeconds",
-                      Unit: "Seconds",
-                    },
-                  ],
-                },
-              ],
-            },
-            ScheduledBoardOddsAgeSeconds: boards.scheduledOddsAgeSeconds,
-          })}\n`,
-        );
-      // Dropping a listing is the most consequential thing the board does and
-      // it was counted, then discarded unread — so a reader reporting a short
-      // board on 2026-08-12 could not be answered from telemetry at all. Split
-      // by rule, because the total cannot tell four correctly-rejected churn
-      // orphans from four deleted real games.
-      for (const [reason, count] of Object.entries(boards.withdrawnByReason))
-        if (count > 0)
-          process.stdout.write(
-            `${JSON.stringify({
-              _aws: {
-                Timestamp: Date.now(),
-                CloudWatchMetrics: [
-                  {
-                    Namespace: "FindTheEdge/Boards",
-                    Dimensions: [["reason"]],
-                    Metrics: [{ Name: "BoardListingsDropped", Unit: "Count" }],
-                  },
-                ],
-              },
-              reason,
-              BoardListingsDropped: count,
-            })}\n`,
-          );
-      // A board that is never materialised serves from the live path forever
-      // and nobody is told. On 2026-08-13 one Eastern day's soccer board went
-      // six hours without being stored while every other board refreshed on
-      // the three-minute cadence; the count existed and was returned unread,
-      // exactly as the withdrawn-listing count had been.
-      for (const { board, reason } of boards.skippedBoards)
-        process.stdout.write(
-          `${JSON.stringify({
-            _aws: {
-              Timestamp: Date.now(),
-              CloudWatchMetrics: [
-                {
-                  Namespace: "FindTheEdge/Boards",
-                  Dimensions: [["reason"]],
-                  Metrics: [
-                    { Name: "BoardMaterializationSkipped", Unit: "Count" },
-                  ],
-                },
-              ],
-            },
-            reason,
-            board,
-            BoardMaterializationSkipped: 1,
-          })}\n`,
-        );
-      // The share of upcoming games in a sport that carry a price. Board
-      // freshness is blind to a sport with no prices at all — there is
-      // nothing to be stale — and that is exactly how soccer sat priceless
-      // for eleven hours behind green provider health. A sport with no
-      // upcoming games emits nothing, so an empty slate stays healthy.
-      for (const [sport, { upcoming, priced }] of Object.entries(
-        boards.pricedBySport,
-      ))
-        if (upcoming > 0)
-          process.stdout.write(
-            `${JSON.stringify({
-              _aws: {
-                Timestamp: Date.now(),
-                CloudWatchMetrics: [
-                  {
-                    Namespace: "FindTheEdge/Boards",
-                    Dimensions: [["sport"]],
-                    Metrics: [
-                      { Name: "UpcomingGamesPricedShare", Unit: "Percent" },
-                    ],
-                  },
-                ],
-              },
-              sport,
-              UpcomingGamesPricedShare: (priced / upcoming) * 100,
-            })}\n`,
-          );
     } catch (error) {
       process.stdout.write(
         `${JSON.stringify({
@@ -981,17 +868,8 @@ const runLiveOddsHandler = async (event?: unknown) => {
   if (invocation.sqs) {
     const retryDecision = liveOddsSummaryRetryDecision(summary);
     if (retryDecision) {
-      const retryReason = retryDecision.reason;
       if (invocation.sqs.receiveCount < 5)
         await extendRetryVisibility(invocation.sqs, retryDecision.retryAt);
-      embeddedOddsControlPlaneMetrics.emit("OddsCommandOutcome", 1, {
-        class:
-          retryReason === "provider-request-ambiguous"
-            ? "ambiguous"
-            : "transient",
-        action: invocation.sqs.receiveCount >= 5 ? "exhausted" : "retry",
-        reason: retryReason,
-      });
       return {
         batchItemFailures: [{ itemIdentifier: invocation.sqs.messageId }],
       };

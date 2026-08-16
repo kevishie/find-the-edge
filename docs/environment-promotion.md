@@ -28,7 +28,7 @@ The preferred steady state is an authoritative Route 53 public hosted zone with 
 
 ## Legacy development inventory
 
-`FindTheEdge-dev-Foundation` contains retained DynamoDB, Cognito, S3, and CloudWatch Logs resources plus its existing Lambda, API Gateway, CloudFront, queue, workflow, alarm, and scheduler resources. It also references `find-the-edge/dev/*` secrets. The new stages create new `FindTheEdge-staging-Foundation` and `FindTheEdge-prod-Foundation` stacks and distinct secret prefixes.
+`FindTheEdge-dev-Foundation` contains retained DynamoDB, Cognito, and S3 resources plus its existing Lambda, API Gateway, CloudFront, queue, workflow, and scheduler resources. It also references `find-the-edge/dev/*` secrets. The new stages create new `FindTheEdge-staging-Foundation` and `FindTheEdge-prod-Foundation` stacks and distinct secret prefixes. Observability resources and runtime log delivery are intentionally absent.
 
 Do not delete, rename, import, empty, or repurpose the legacy stack or its retained resources in this rollout. Data migration and legacy-dev disposition require a separate reviewed plan after both new environments are proven.
 
@@ -142,6 +142,6 @@ back on.
 
 Application rollback restores the prior versioned S3 release, waits for CloudFront invalidation, and leaves retained data untouched. Infrastructure rollback uses a reviewed CDK/CloudFormation change and must pass the retained-resource guard.
 
-DNS rollback restores the captured prior apex and API records with their prior values and TTLs. If authoritative name servers were migrated, restore the prior registrar delegation only from the approved snapshot and confirm all unrelated records still resolve. A failed production smoke is not permission to delete DynamoDB, Cognito, S3, logs, secrets, queues, or immutable odds history.
+DNS rollback restores the captured prior apex and API records with their prior values and TTLs. If authoritative name servers were migrated, restore the prior registrar delegation only from the approved snapshot and confirm all unrelated records still resolve. A failed production smoke is not permission to delete DynamoDB, Cognito, S3, secrets, queues, or immutable odds history. Legacy log groups are removed only through the bounded procedure in `docs/cloudwatch-shutdown.md`.
 
 After rollback, disable spend-producing schedules if needed, preserve evidence, link the failed Git SHA and workflow, and reconcile any production hotfix or rollback commit back into `main` before further promotion.

@@ -105,7 +105,8 @@ aws cloudformation describe-stacks --stack-name FindTheEdge-dev-Foundation --reg
 The launch command consumes all stack outputs directly. Roll back assets by
 uploading the prior checksum-verified bundle and invalidating `/*`.
 Infrastructure rollback requires a reviewed CDK diff; the event table, dormant
-user pool, web bucket, and logs are retained.
+user pool, and web bucket are retained. Legacy log groups require the explicit
+cleanup in `docs/cloudwatch-shutdown.md`.
 
 ## Live ingestion, quota, and cadence
 
@@ -123,7 +124,7 @@ export FTE_PHASE1_SMOKE=1
 pnpm phase1:smoke
 ```
 
-Normal MLB/MLS odds refresh hourly. Inside 90 minutes of first pitch, MLB refreshes every 15 minutes and MLS every 30 minutes. Other league profiles default to six hours. An authoritative provider rate window blocks paid calls at its configured reserve; requests-per-minute is never represented as durable subscription quota, and absent headers remain unknown. Schedule discovery continues independently. CloudWatch logs emit only bounded summaries, never keys or credential-bearing URLs.
+Normal MLB/MLS odds refresh hourly. Inside 90 minutes of first pitch, MLB refreshes every 15 minutes and MLS every 30 minutes. Other league profiles default to six hours. An authoritative provider rate window blocks paid calls at its configured reserve; requests-per-minute is never represented as durable subscription quota, and absent headers remain unknown. Schedule discovery continues independently. The deployment intentionally grants no runtime log-delivery permissions.
 
 The versioned control-plane policy keeps a 100-request SharpAPI reserve. Schedule discovery has its own explicit request-cost/reserve policy and fails closed with a bounded reason when SharpAPI is unavailable. Every physical request is reserved before execution, and its redacted outcome, quota cost, sealed normalized page, cursor, gap evidence, provider-and-league health and league checkpoint are durable. An unsealed paid response remains ambiguous behind a five-minute reconciliation lease; it is not automatically recalled during that lease. A retry consumes a sealed normalized page before making another paid call.
 
@@ -202,15 +203,15 @@ Deploy the retained-table schema and disabled FIFO path first, verify the `LiveO
 
 Odds history starts when live collection is activated. Do not infer or synthesize pre-launch opening prices. Immutable `SNAPSHOT` rows intentionally have no TTL even though the shared table supports TTL for transient records. Legacy positional `away`/`home` selection partitions may coexist with participant-bound partitions; leave them untouched and treat them as legacy evidence rather than merging histories implicitly.
 
-Each primary snapshot also receives a repairable content-hash lookup row. If that mirror write is interrupted after the primary snapshot commits, ingestion emits `OddsExactSnapshotMirrorFailure`; replay the same sealed ingestion page so the conditional snapshot insert resolves as an identical duplicate, the exact-ID mirror is recreated, and `CURRENT` converges without rewriting history. Alert on repeated nonzero mirror-failure metrics.
+Each primary snapshot also receives a repairable content-hash lookup row. If that mirror write is interrupted after the primary snapshot commits, replay the same sealed ingestion page so the conditional snapshot insert resolves as an identical duplicate, the exact-ID mirror is recreated, and `CURRENT` converges without rewriting history. Repeated failures surface through the sustained Live Odds Lambda error alarm or the odds DLQ.
 
 ### Odds projection rollout and rebuild
 
 The retained event table publishes `NEW_IMAGE` stream records to the fixture-odds projector. Its infrastructure filter and runtime guard accept only immutable `FIXTURE_ODDS#…` / `SNAPSHOT#…` inserts. `CURRENT`, exact-ID mirrors, event data, betting splits, results, paper records, control-plane records, modifications, and removals are successful no-ops. The projector validates the complete immutable row and uses the same provider `observedAt`, then snapshot-ID ordering as synchronous ingestion.
 
-Keep synchronous `CURRENT` writes enabled during this rollout. Deploy the stream, projector, dedicated projection DLQ, and alarms; ingest a known snapshot; then verify `ProjectionProcessed`, `ProjectionAdvanced` or `ProjectionRetained`, and `ProjectionLagMilliseconds` in `FindTheEdge/OddsProjection`. Verify `FixtureOddsProjectionErrorsAlarm`, `FixtureOddsProjectionLagAlarm`, and `FixtureOddsProjectionDlqAlarm` remain clear. The two writers are intentionally safe because they share the same conditional winner. Removing synchronous projection is a separate migration after sustained production proof.
+Keep synchronous `CURRENT` writes enabled during this rollout. Deploy the stream, projector, and dedicated projection DLQ; ingest a known snapshot; then verify the expected projection row directly in DynamoDB and confirm the projection DLQ remains empty. The two writers are intentionally safe because they share the same conditional winner. Removing synchronous projection is a separate migration after sustained production proof.
 
-Malformed relevant records retry up to five times for at most one day and then send invocation metadata and the stream locator to the dedicated projection DLQ. The failure destination is not a raw snapshot archive. Logs contain only bounded sequence number and canonical partition/sort-key locators, never the `NEW_IMAGE` or odds payload. Reconstruct the exact record from the immutable table by those keys while it is retained, correct the producer or deployment defect, and then redrive. Unrelated shared-table records must not be redriven into the projector.
+Malformed relevant records retry up to five times for at most one day and then send invocation metadata and the stream locator to the dedicated projection DLQ. The failure destination is not a raw snapshot archive. Reconstruct the exact record from the immutable table using the bounded partition/sort-key locator while it is retained, correct the producer or deployment defect, and then redrive. Unrelated shared-table records must not be redriven into the projector.
 
 For a rebuild, replay DynamoDB stream records only while they remain available in the 24-hour stream retention window. Outside that window, use a point-in-time/export-derived list of immutable snapshot inserts or an explicit manifest that enumerates known fixture-odds partitions and queries their `SNAPSHOT#` rows. Do not Scan the shared table, fabricate missing history, mutate snapshots, or use `CURRENT`/exact-ID mirror rows as replay inputs. Replay order does not matter because duplicate and older snapshots retain the deterministic winner.
 

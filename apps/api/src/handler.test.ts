@@ -376,7 +376,8 @@ it("emits bounded scouting lifecycle metrics", async () => {
     Status: 202,
     ScoutingJobCreated: 1,
   });
-  expect(JSON.stringify(logs.at(-1))).toContain('"Name":"ScoutingLatency"');
+  expect(typeof logs.at(-1)?.ScoutingLatency).toBe("number");
+  expect(logs.at(-1)).not.toHaveProperty("_aws");
 });
 
 describe("scouting report read routes", () => {
@@ -1068,9 +1069,7 @@ describe("event API", () => {
     const serialized = JSON.stringify(logs.at(-1));
     expect(serialized).not.toContain(item.id);
     expect(serialized).not.toContain("hardrock");
-    expect(serialized).toContain(
-      '"Name":"SuspendedOrUnavailableOddsCells","Unit":"Count"',
-    );
+    expect(serialized).not.toContain('"_aws"');
   });
 
   it("emits only bounded aggregate metadata counts", async () => {
@@ -2132,9 +2131,8 @@ describe("event API", () => {
       errorName: "Error",
     });
     const serialized = JSON.stringify(logs[1]);
-    expect(serialized).toContain('"Namespace":"FindTheEdge/EventApi"');
-    expect(serialized).toContain('"Dimensions":[["Route"]]');
-    expect(serialized).toContain('"Name":"Caught5xx","Unit":"Count"');
+    expect(serialized).not.toContain('"_aws"');
+    expect(serialized).toContain('"Caught5xx":1');
     expect(serialized).toContain('"Route":"list"');
   });
 

@@ -34,13 +34,16 @@ Resources:
                   - apigateway:*
                   - cloudformation:*
                   - cloudfront:*
-                  - cloudwatch:*
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:TagResource
+                  - cloudwatch:UntagResource
                   - cognito-idp:*
                   - dynamodb:*
                   - events:*
                   - iam:*
                   - lambda:*
-                  - logs:*
                   - s3:*
                   - secretsmanager:*
                   - sns:*
@@ -81,13 +84,16 @@ Resources:
                   - apigateway:*
                   - cloudformation:*
                   - cloudfront:*
-                  - cloudwatch:*
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:TagResource
+                  - cloudwatch:UntagResource
                   - cognito-idp:*
                   - dynamodb:*
                   - events:*
                   - iam:*
                   - lambda:*
-                  - logs:*
                   - s3:*
                   - secretsmanager:*
                   - sns:*

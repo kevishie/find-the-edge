@@ -17,7 +17,6 @@ import {
 import {
   Alarm,
   ComparisonOperator,
-  Metric,
   TreatMissingData,
 } from "aws-cdk-lib/aws-cloudwatch";
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
@@ -38,7 +37,7 @@ import {
   StartingPosition,
 } from "aws-cdk-lib/aws-lambda";
 import { SqsDestination } from "aws-cdk-lib/aws-lambda-destinations";
-import { PolicyStatement } from "aws-cdk-lib/aws-iam";
+import { PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import {
   AccountRecovery,
   OAuthScope,
@@ -83,7 +82,6 @@ import {
   DefinitionBody,
   Fail,
   JsonPath,
-  LogLevel,
   StateMachine,
   StateMachineType,
   Succeed,
@@ -95,7 +93,6 @@ import {
   SqsSendMessage,
 } from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Secret } from "aws-cdk-lib/aws-secretsmanager";
-import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
   ApiMapping,
   CfnStage,
@@ -104,12 +101,10 @@ import {
   HttpApi,
   HttpMethod,
   HttpStage,
-  LogGroupLogDestination,
   SecurityPolicy,
 } from "aws-cdk-lib/aws-apigatewayv2";
 import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
-import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import {
   AwsCustomResource,
   AwsCustomResourcePolicy,
@@ -131,20 +126,17 @@ export interface FoundationConfig {
   schedulerEnabled?: boolean;
   paperPickSchedulerEnabled?: boolean;
   paperPickGenerationMinutes?: number;
-  alarmTopicArn?: string;
-  alarmEmail?: string;
   cursorSecretArn?: string;
   fixtureOddsSeedEnabled?: boolean;
   productAccessEnforced: boolean;
   webOrigin?: string;
+  criticalAlarmEmail?: string;
 }
 
 interface FoundationStackProps extends StackProps {
   schedulerEnabled: boolean;
   paperPickSchedulerEnabled: boolean;
   paperPickGenerationMinutes: number;
-  alarmTopicArn?: string;
-  alarmEmail?: string;
   stageName: string;
   releaseSha?: string;
   webDomainName?: string;
@@ -155,18 +147,22 @@ interface FoundationStackProps extends StackProps {
   fixtureOddsSeedEnabled: boolean;
   /** FTE-073. Required so persistent deployments cannot silently default. */
   productAccessEnforced: boolean;
+  criticalAlarmEmail?: string;
 }
 
 export class FoundationStack extends Stack {
   constructor(scope: Construct, id: string, props: FoundationStackProps) {
     super(scope, id, props);
+    const lambdaRole = (logicalId: string) =>
+      new Role(this, `${logicalId}Role`, {
+        assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      });
     const table = new Table(this, "EventIngestionTable", {
       partitionKey: { name: "pk", type: AttributeType.STRING },
       sortKey: { name: "sk", type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       // FTE-075: retain low-cardinality hot-partition evidence alongside the
       // exact consumed-capacity attribution emitted by ingestion callers.
-      contributorInsightsEnabled: true,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: RemovalPolicy.RETAIN,
       timeToLiveAttribute: "expiresAt",
@@ -177,16 +173,15 @@ export class FoundationStack extends Stack {
       partitionKey: { name: "activePk", type: AttributeType.STRING },
       sortKey: { name: "activeSk", type: AttributeType.STRING },
       projectionType: ProjectionType.KEYS_ONLY,
-      contributorInsightsEnabled: true,
     });
     table.addGlobalSecondaryIndex({
       indexName: "opportunity-rank-v1",
       partitionKey: { name: "rankPk", type: AttributeType.STRING },
       sortKey: { name: "rankSk", type: AttributeType.STRING },
       projectionType: ProjectionType.KEYS_ONLY,
-      contributorInsightsEnabled: true,
     });
     const performanceWorker = new NodejsFunction(this, "PerformanceWorker", {
+      role: lambdaRole("PerformanceWorker"),
       runtime: Runtime.NODEJS_22_X,
       entry: path.join(
         path.dirname(fileURLToPath(import.meta.url)),
@@ -217,6 +212,7 @@ export class FoundationStack extends Stack {
       this,
       "WalkForwardExperimentWorker",
       {
+        role: lambdaRole("WalkForwardExperimentWorker"),
         runtime: Runtime.NODEJS_22_X,
         entry: path.join(
           path.dirname(fileURLToPath(import.meta.url)),
@@ -244,6 +240,7 @@ export class FoundationStack extends Stack {
       retentionPeriod: Duration.days(14),
     });
     const paperPickWorker = new NodejsFunction(this, "PaperPickWorker", {
+      role: lambdaRole("PaperPickWorker"),
       runtime: Runtime.NODEJS_22_X,
       entry: path.join(
         path.dirname(fileURLToPath(import.meta.url)),
@@ -595,6 +592,7 @@ export class FoundationStack extends Stack {
       `find-the-edge/${props.stageName}/sharpapi`,
     );
     const liveOdds = new NodejsFunction(this, "LiveOddsIngestion", {
+      role: lambdaRole("LiveOddsIngestion"),
       entry: path.resolve(
         directory,
         "../../../apps/workers/src/live-odds-lambda.ts",
@@ -688,6 +686,7 @@ export class FoundationStack extends Stack {
       retentionPeriod: Duration.days(14),
     });
     const providerLanding = new NodejsFunction(this, "ProviderLanding", {
+      role: lambdaRole("ProviderLanding"),
       entry: path.resolve(
         directory,
         "../../../apps/workers/src/provider-landing-lambda.ts",
@@ -771,6 +770,7 @@ export class FoundationStack extends Stack {
       retentionPeriod: Duration.days(14),
     });
     const oddsProjection = new NodejsFunction(this, "FixtureOddsProjection", {
+      role: lambdaRole("FixtureOddsProjection"),
       entry: path.resolve(
         directory,
         "../../../apps/workers/src/fixture-odds-projection-lambda.ts",
@@ -837,6 +837,7 @@ export class FoundationStack extends Stack {
       this,
       "CompletedResultsWorker",
       {
+        role: lambdaRole("CompletedResultsWorker"),
         entry: path.resolve(
           directory,
           "../../../apps/workers/src/completed-result-lambda.ts",
@@ -880,18 +881,11 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "CompletedResultsFunctionName", {
       value: completedResults.functionName,
     });
-    const opportunityExpirationLogs = new LogGroup(
-      this,
-      "OpportunityExpirationLogs",
-      {
-        retention: RetentionDays.ONE_MONTH,
-        removalPolicy: RemovalPolicy.DESTROY,
-      },
-    );
     const opportunityExpiration = new NodejsFunction(
       this,
       "OpportunityExpirationWorker",
       {
+        role: lambdaRole("OpportunityExpirationWorker"),
         entry: path.resolve(
           directory,
           "../../../apps/workers/src/opportunities/opportunity-expiration-lambda.ts",
@@ -901,7 +895,6 @@ export class FoundationStack extends Stack {
         timeout: Duration.minutes(2),
         memorySize: 256,
         reservedConcurrentExecutions: 1,
-        logGroup: opportunityExpirationLogs,
         environment: {
           FTE_EVENT_TABLE: table.tableName,
           FTE_OPPORTUNITY_SPORT_KEYS: "mlb,soccer,tennis,nfl,nba,ncaaf",
@@ -944,18 +937,11 @@ export class FoundationStack extends Stack {
     new CfnOutput(this, "OpportunityExpirationFunctionName", {
       value: opportunityExpiration.functionName,
     });
-    const opportunityGenerationLogs = new LogGroup(
-      this,
-      "OpportunityGenerationLogs",
-      {
-        retention: RetentionDays.ONE_MONTH,
-        removalPolicy: RemovalPolicy.DESTROY,
-      },
-    );
     const opportunityGeneration = new NodejsFunction(
       this,
       "OpportunityGenerationWorker",
       {
+        role: lambdaRole("OpportunityGenerationWorker"),
         entry: path.resolve(
           directory,
           "../../../apps/workers/src/opportunities/opportunity-generation-lambda.ts",
@@ -965,7 +951,6 @@ export class FoundationStack extends Stack {
         timeout: Duration.minutes(2),
         memorySize: 512,
         reservedConcurrentExecutions: 1,
-        logGroup: opportunityGenerationLogs,
         environment: {
           FTE_EVENT_TABLE: table.tableName,
         },
@@ -1006,6 +991,7 @@ export class FoundationStack extends Stack {
       value: opportunityGeneration.functionName,
     });
     const worker = new NodejsFunction(this, "UpcomingEventsWorker", {
+      role: lambdaRole("UpcomingEventsWorker"),
       entry: path.resolve(directory, "../../../apps/workers/src/lambda.ts"),
       handler: "handler",
       runtime: Runtime.NODEJS_24_X,
@@ -1042,6 +1028,7 @@ export class FoundationStack extends Stack {
     );
     if (props.fixtureOddsSeedEnabled) {
       const fixtureSeed = new NodejsFunction(this, "FixtureOddsSeed", {
+        role: lambdaRole("FixtureOddsSeed"),
         entry: path.resolve(
           directory,
           "../../../apps/workers/src/fixture-odds-seed-lambda.ts",
@@ -1073,6 +1060,7 @@ export class FoundationStack extends Stack {
       });
     }
     const producer = new NodejsFunction(this, "UpcomingEventsProducer", {
+      role: lambdaRole("UpcomingEventsProducer"),
       entry: path.resolve(
         directory,
         "../../../apps/workers/src/scheduler-producer.ts",
@@ -1111,6 +1099,7 @@ export class FoundationStack extends Stack {
       this,
       "ScoutingWorkflowWorker",
       {
+        role: lambdaRole("ScoutingWorkflowWorker"),
         entry: path.resolve(
           directory,
           "../../../apps/workers/src/scouting-workflow-lambda.ts",
@@ -1242,23 +1231,15 @@ export class FoundationStack extends Stack {
         resultPath: "$.workflowFailure",
       },
     );
-    const scoutingWorkflowLogs = new LogGroup(this, "ScoutingWorkflowLogs", {
-      retention: RetentionDays.ONE_MONTH,
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
     const scoutingWorkflow = new StateMachine(this, "ScoutingWorkflow", {
       stateMachineType: StateMachineType.STANDARD,
       definitionBody: DefinitionBody.fromChainable(
         scoutingWorkflowInvoke.next(scoutingWorkflowSucceeded),
       ),
       timeout: Duration.minutes(5),
-      logs: {
-        destination: scoutingWorkflowLogs,
-        level: LogLevel.ERROR,
-        includeExecutionData: false,
-      },
     });
     const scoutingDispatcher = new NodejsFunction(this, "ScoutingDispatcher", {
+      role: lambdaRole("ScoutingDispatcher"),
       entry: path.resolve(
         directory,
         "../../../apps/workers/src/scouting-dispatcher-lambda.ts",
@@ -1315,6 +1296,7 @@ export class FoundationStack extends Stack {
       this,
       "ScoutingOutboxPublisher",
       {
+        role: lambdaRole("ScoutingOutboxPublisher"),
         entry: path.resolve(
           directory,
           "../../../apps/workers/src/scouting-outbox-lambda.ts",
@@ -1406,6 +1388,7 @@ export class FoundationStack extends Stack {
       `find-the-edge/${props.stageName}/stripe`,
     );
     const eventApi = new NodejsFunction(this, "EventApi", {
+      role: lambdaRole("EventApi"),
       entry: path.resolve(directory, "../../../apps/api/src/lambda.ts"),
       handler: "handler",
       runtime: Runtime.NODEJS_24_X,
@@ -1693,6 +1676,7 @@ export class FoundationStack extends Stack {
       onCreate: configureCorsCall,
       onUpdate: configureCorsCall,
       installLatestAwsSdk: false,
+      role: lambdaRole("ConfigureEventsApiCors"),
       policy: AwsCustomResourcePolicy.fromStatements([
         new PolicyStatement({
           actions: ["apigateway:PATCH"],
@@ -1708,26 +1692,10 @@ export class FoundationStack extends Stack {
         }),
       ]),
     });
-    const accessLogs = new LogGroup(this, "EventApiAccessLogs", {
-      retention: RetentionDays.ONE_MONTH,
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
     const eventApiStage = new HttpStage(this, "EventApiStage", {
       httpApi: api,
       stageName: props.stageName,
       autoDeploy: true,
-      accessLogSettings: {
-        destination: new LogGroupLogDestination(accessLogs),
-        format: AccessLogFormat.custom(
-          JSON.stringify({
-            requestId: "$context.requestId",
-            routeKey: "$context.routeKey",
-            status: "$context.status",
-            responseLatency: "$context.responseLatency",
-            authorizerStatus: "$context.authorizer.status",
-          }),
-        ),
-      },
     });
     const eventApiStageResource = eventApiStage.node.defaultChild as CfnStage;
     eventApiStageResource.defaultRouteSettings = {
@@ -1794,717 +1762,81 @@ export class FoundationStack extends Stack {
       value: "events/scouting:write",
     });
     new CfnOutput(this, "CognitoCallbackUrl", { value: callbackUrl });
-    const alarms = [
-      new Alarm(this, "ScoutingOutboxPublisherErrorsAlarm", {
-        metric: scoutingOutboxPublisher.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingOutboxFailuresAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/Scouting",
-          metricName: "OutboxFailure",
-          dimensionsMap: { Component: "outbox" },
-          statistic: "Sum",
-          period: Duration.minutes(5),
+    const standardAlarmOptions = {
+      period: Duration.minutes(5),
+      statistic: "Sum",
+    } as const;
+    const criticalAlarms: Alarm[] = [];
+    const addCriticalAlarm = (
+      id: string,
+      metric: ReturnType<NodejsFunction["metricErrors"]>,
+    ) =>
+      criticalAlarms.push(
+        new Alarm(this, id, {
+          metric,
+          threshold: 1,
+          evaluationPeriods: 3,
+          datapointsToAlarm: 2,
+          comparisonOperator:
+            ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+          treatMissingData: TreatMissingData.NOT_BREACHING,
         }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingOutboxPublisherDlqAlarm", {
-        metric:
-          scoutingOutboxPublisherDlq.metricApproximateNumberOfMessagesVisible(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingOutboxIteratorAgeAlarm", {
-        metric: scoutingOutboxPublisher.metric("IteratorAge", {
-          statistic: "Maximum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 300_000,
-        evaluationPeriods: 2,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingOutboxLagAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/Scouting",
-          metricName: "OutboxLagMilliseconds",
-          dimensionsMap: { Component: "outbox" },
-          statistic: "Maximum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 300_000,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingDispatcherErrorsAlarm", {
-        metric: scoutingDispatcher.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingDispatchFailuresAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/Scouting",
-          metricName: "DispatchFailure",
-          dimensionsMap: { Component: "dispatcher" },
-          statistic: "Sum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingWorkflowWorkerErrorsAlarm", {
-        metric: scoutingWorkflowWorker.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingDispatchDlqAlarm", {
-        metric: scoutingDispatchDlq.metricApproximateNumberOfMessagesVisible(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingDispatchOldestMessageAlarm", {
-        metric: scoutingDispatchQueue.metricApproximateAgeOfOldestMessage(),
-        threshold: 300,
-        evaluationPeriods: 2,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingWorkflowFailuresAlarm", {
-        metric: scoutingWorkflow.metricFailed(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScoutingWorkflowTimeoutsAlarm", {
-        metric: scoutingWorkflow.metricTimedOut(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "PaperPickWorkerErrorsAlarm", {
-        metric: paperPickWorker.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-      }),
-      new Alarm(this, "PaperPickDlqAlarm", {
-        metric: paperPickDlq.metricApproximateNumberOfMessagesVisible(),
-        threshold: 1,
-        evaluationPeriods: 1,
-      }),
-      new Alarm(this, "PaperPickWorkflowFailuresAlarm", {
-        metric: paperPickWorkflow.metricFailed(),
-        threshold: 1,
-        evaluationPeriods: 1,
-      }),
-      new Alarm(this, "PaperPickLimitAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/PaperPicks",
-          metricName: "Limits",
-          statistic: "Sum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 1,
-        evaluationPeriods: 1,
-      }),
-      new Alarm(this, "LiveOddsIngestionErrorsAlarm", {
-        metric: liveOdds.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "LiveOddsControlPlaneDlqAlarm", {
-        metric: liveOddsDlq.metricApproximateNumberOfMessagesVisible(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ProviderLandingErrorsAlarm", {
-        // One transient provider/storage failure is recovered by the async
-        // retry or the next durable checkpoint tick. Page only when failures
-        // persist across independent CloudWatch periods.
-        metric: providerLanding.metricErrors({
-          period: Duration.minutes(5),
-          statistic: "Sum",
-        }),
-        threshold: 2,
-        evaluationPeriods: 2,
-        datapointsToAlarm: 2,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ProviderLandingTerminalFailureAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/ProviderLanding",
-          metricName: "ProviderLandingTerminalFailure",
-          dimensionsMap: {
-            Stage: props.stageName,
-            Stream: "account",
-            Outcome: "terminal",
-          },
-          statistic: "Sum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        datapointsToAlarm: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: TreatMissingData.NOT_BREACHING,
-      }),
-      new Alarm(this, "ProviderLandingDlqAlarm", {
-        metric: providerLandingDlq.metricApproximateNumberOfMessagesVisible(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      ...(["catalog", "events", "odds"] as const).map(
-        (stream) =>
-          new Alarm(
-            this,
-            `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}RecoveryAlarm`,
-            {
-              metric: new Metric({
-                namespace: "FindTheEdge/ProviderLanding",
-                metricName: "ProviderLandingRecovery",
-                dimensionsMap: {
-                  Stage: props.stageName,
-                  Stream: stream,
-                  Outcome: "restart",
-                },
-                statistic: "Sum",
-                period: Duration.minutes(15),
-              }),
-              // One self-heal is expected resilience. Repeated recovery in two
-              // independent periods means the stream cannot publish a snapshot.
-              threshold: 1,
-              evaluationPeriods: 2,
-              datapointsToAlarm: 2,
-              comparisonOperator:
-                ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-              treatMissingData: TreatMissingData.NOT_BREACHING,
-            },
-          ),
-      ),
-      ...(
-        [
-          ["catalog", 8 * 60 * 60, 30 * 60],
-          ["events", 60 * 60, 2 * 60 * 60],
-          ["odds", 60 * 60, 12 * 60 * 60],
-        ] as const
-      ).flatMap(([stream, completionThreshold, runThreshold]) => [
-        new Alarm(
-          this,
-          `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}FreshnessAlarm`,
-          {
-            metric: new Metric({
-              namespace: "FindTheEdge/ProviderLanding",
-              metricName: "ProviderLandingCompletionAgeSeconds",
-              dimensionsMap: {
-                Stage: props.stageName,
-                Stream: stream,
-                Outcome: "observed",
-              },
-              statistic: "Maximum",
-              period: Duration.minutes(15),
-            }),
-            threshold: completionThreshold,
-            evaluationPeriods: 2,
-            datapointsToAlarm: 2,
-            comparisonOperator:
-              ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-            // Inert development/production stacks intentionally emit no
-            // landing metrics. Missing data becomes actionable only in a
-            // stage where the universal collector is actually scheduled.
-            treatMissingData: providerLandingScheduled
-              ? TreatMissingData.BREACHING
-              : TreatMissingData.NOT_BREACHING,
-          },
-        ),
-        new Alarm(
-          this,
-          `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}RunAgeAlarm`,
-          {
-            metric: new Metric({
-              namespace: "FindTheEdge/ProviderLanding",
-              metricName: "ProviderLandingRunAgeSeconds",
-              dimensionsMap: {
-                Stage: props.stageName,
-                Stream: stream,
-                Outcome: "running",
-              },
-              statistic: "Maximum",
-              period: Duration.minutes(15),
-            }),
-            threshold: runThreshold,
-            evaluationPeriods: 2,
-            datapointsToAlarm: 2,
-            comparisonOperator:
-              ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-            treatMissingData: TreatMissingData.NOT_BREACHING,
-          },
-        ),
-      ]),
-      ...(["catalog", "events", "odds"] as const).flatMap((stream) =>
-        (["quarantined", "warning"] as const).map(
-          (outcome) =>
-            new Alarm(
-              this,
-              `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}${outcome === "quarantined" ? "Quarantine" : "Warning"}Alarm`,
-              {
-                metric: new Metric({
-                  namespace: "FindTheEdge/ProviderLanding",
-                  metricName: "ProviderLandingRows",
-                  dimensionsMap: {
-                    Stage: props.stageName,
-                    Stream: stream,
-                    Outcome: outcome,
-                  },
-                  statistic: "Sum",
-                  period: Duration.minutes(30),
-                }),
-                threshold: 1,
-                // Quarantine is confirmed row loss and alerts immediately.
-                // A bounded warning remains visible as a metric but pages only
-                // when schema degradation persists across two full windows.
-                evaluationPeriods: outcome === "quarantined" ? 1 : 2,
-                datapointsToAlarm: outcome === "quarantined" ? 1 : 2,
-                comparisonOperator:
-                  ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-                treatMissingData: TreatMissingData.NOT_BREACHING,
-              },
-            ),
-        ),
-      ),
-      ...(["catalog", "events", "odds"] as const).map(
-        (stream) =>
-          new Alarm(
-            this,
-            `ProviderLanding${stream[0]!.toUpperCase()}${stream.slice(1)}DiagnosticAlarm`,
-            {
-              metric: new Metric({
-                namespace: "FindTheEdge/ProviderLanding",
-                metricName: "ProviderLandingDiagnostic",
-                dimensionsMap: {
-                  Stage: props.stageName,
-                  Stream: stream,
-                  Outcome: "observed",
-                },
-                statistic: "Sum",
-                period: Duration.minutes(5),
-              }),
-              threshold: 1,
-              evaluationPeriods: 1,
-              datapointsToAlarm: 1,
-              comparisonOperator:
-                ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-              treatMissingData: TreatMissingData.NOT_BREACHING,
-            },
-          ),
-      ),
-      new Alarm(this, "FixtureOddsProjectionErrorsAlarm", {
-        metric: oddsProjection.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-      }),
-      new Alarm(this, "FixtureOddsProjectionFailuresAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/OddsProjection",
-          metricName: "ProjectionFailure",
-          statistic: "Sum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 1,
-        evaluationPeriods: 1,
-      }),
-      new Alarm(this, "FixtureOddsProjectionLagAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/OddsProjection",
-          metricName: "ProjectionLagMilliseconds",
-          statistic: "Maximum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 300_000,
-        evaluationPeriods: 1,
-      }),
-      new Alarm(this, "FixtureOddsProjectionDlqAlarm", {
-        metric: oddsProjectionDlq.metricApproximateNumberOfMessagesVisible(),
-        threshold: 1,
-        evaluationPeriods: 1,
-      }),
-      new Alarm(this, "OddsControlPlaneLeagueFailureAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/OddsControlPlane",
-          metricName: "OddsLeagueFailure",
-          statistic: "Sum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "OddsSplitFailureAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/OddsControlPlane",
-          metricName: "OddsSplitFailure",
-          statistic: "Sum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "ScheduledBoardOddsFreshnessAlarm", {
-        // Measures the served boards, not provider health: age of the newest
-        // priced evidence across scheduled boards with upcoming games. An
-        // empty slate emits nothing, so missing data stays healthy.
-        //
-        // Snapshot identity is the observed price, so this age is now the time
-        // since a price last MOVED, not since we last polled. A genuinely quiet
-        // market can sit still for a long while without anything being wrong,
-        // so the threshold buys enough room to never page on a calm board while
-        // still catching the failure mode it exists for: both real incidents
-        // (the 16-hour odds freeze and the 20-hour splits stall) ran far past
-        // two hours.
-        metric: new Metric({
-          namespace: "FindTheEdge/Boards",
-          metricName: "ScheduledBoardOddsAgeSeconds",
-          statistic: "Maximum",
-          period: Duration.minutes(15),
-        }),
-        threshold: 7_200,
-        evaluationPeriods: 2,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: TreatMissingData.NOT_BREACHING,
-      }),
-      // A sport where none of the upcoming games carry a price. Board
-      // freshness cannot see this: with no price on the board there is
-      // nothing to be stale, which is how soccer ran priceless for eleven
-      // hours on 2026-08-11 behind healthy provider status. Two causes, one
-      // signal. Zero is the threshold because a partial outage is a
-      // different, noisier question; this alarm answers "is this sport dead".
-      // One alarm per sport, and the dimension is not optional. The metric is
-      // published WITH a `sport` dimension, and a CloudWatch alarm does not
-      // aggregate across dimensions — declared without one it watches a
-      // metric that is never emitted and sits permanently OK. It shipped that
-      // way on 2026-08-11 and reported "no datapoints received" while soccer
-      // read 0% for two hours. An alarm that cannot fire is worse than none,
-      // because it buys false confidence.
-      ...(["mlb", "soccer"] as const).map(
-        (sport) =>
-          new Alarm(this, `SportPricelessBoardAlarm${sport}`, {
-            metric: new Metric({
-              namespace: "FindTheEdge/Boards",
-              metricName: "UpcomingGamesPricedShare",
-              dimensionsMap: { sport },
-              statistic: "Maximum",
-              period: Duration.minutes(15),
-            }),
-            threshold: 0,
-            evaluationPeriods: 2,
-            comparisonOperator:
-              ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-            // A sport with no upcoming games emits nothing; that is an empty
-            // slate, not an outage.
-            treatMissingData: TreatMissingData.NOT_BREACHING,
-          }),
-      ),
-      new Alarm(this, "OddsControlPlaneCadenceLagAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/OddsControlPlane",
-          metricName: "OddsCadenceLagSeconds",
-          statistic: "Maximum",
-          period: Duration.minutes(15),
-        }),
-        threshold: 3_600,
-        evaluationPeriods: 2,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "OddsControlPlaneQuotaReserveAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/OddsControlPlane",
-          metricName: "OddsQuotaReserveSkip",
-          statistic: "Sum",
-          period: Duration.minutes(15),
-        }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      ...[
-        "OddsCommandOutcome",
-        "OddsProviderHealthUnavailable",
-        "OddsRateWindowBlocked",
-        "OddsMarketSuspended",
-        "OddsPartialEvidence",
-      ].map(
-        (metricName) =>
-          new Alarm(this, `${metricName}Alarm`, {
-            metric: new Metric({
-              namespace: "FindTheEdge/OddsControlPlane",
-              metricName,
-              statistic: "Sum",
-              period: Duration.minutes(5),
-            }),
-            threshold: 1,
-            evaluationPeriods: 1,
-            comparisonOperator:
-              ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-          }),
-      ),
-      new Alarm(this, "CompletedResultsErrorsAlarm", {
-        metric: completedResults.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "OpportunityExpirationFailuresAlarm", {
-        metric: opportunityExpiration.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "OpportunityGenerationFailuresAlarm", {
-        metric: opportunityGeneration.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "OpportunityStaleActiveAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/OpportunityLifecycle",
-          metricName: "StaleActiveCount",
-          dimensionsMap: { Cause: "sweep", Outcome: "transition" },
-          statistic: "Sum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      ...[
-        ["PaperGradingFailuresAlarm", "PaperGradingFailed"],
-        ["PaperGradingUnresolvedAlarm", "PaperGradingUnresolved"],
-        ["PaperGradingRegradesAlarm", "PaperGradingRegraded"],
-      ].map(
-        ([id, metricName]) =>
-          new Alarm(this, id!, {
-            metric: new Metric({
-              namespace: "FindTheEdge/PaperGrading",
-              metricName: metricName!,
-              statistic: "Sum",
-              period: Duration.minutes(15),
-            }),
-            threshold: 1,
-            evaluationPeriods: 1,
-            comparisonOperator:
-              ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-          }),
-      ),
-      new Alarm(this, "UpcomingEventsDlqAlarm", {
-        metric: dlq.metricApproximateNumberOfMessagesVisible(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "UpcomingEventsWorkerErrorsAlarm", {
-        metric: worker.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "UpcomingEventsProducerErrorsAlarm", {
-        metric: producer.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "UpcomingEventsPartialBatchAlarm", {
-        metric: new Metric({
-          namespace: "FindTheEdge/UpcomingEvents",
-          metricName: "FailedRecords",
-          dimensionsMap: { FunctionName: worker.functionName },
-          statistic: "Sum",
-          period: Duration.minutes(1),
-        }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "UpcomingEventsBacklogAlarm", {
-        metric: queue.metricApproximateNumberOfMessagesVisible(),
-        threshold: 100,
-        evaluationPeriods: 2,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "UpcomingEventsOldestMessageAlarm", {
-        metric: queue.metricApproximateAgeOfOldestMessage(),
-        threshold: 300,
-        evaluationPeriods: 2,
-        comparisonOperator:
-          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      }),
-      new Alarm(this, "EventApiErrorsAlarm", {
-        metric: eventApi.metricErrors(),
-        threshold: 1,
-        evaluationPeriods: 1,
-      }),
-      new Alarm(this, "EventApiLatencyAlarm", {
-        metric: eventApi.metricDuration(),
-        threshold: 2000,
-        evaluationPeriods: 2,
-      }),
-      ...(
-        [
-          "list",
-          "detail",
-          "performance-list",
-          "performance-reports",
-          "performance-detail",
-          "performance-members",
-          "retrospective-list",
-          "retrospective-detail",
-          "retrospective-versions",
-          "retrospective-review",
-          "experiment-list",
-          "experiment-detail",
-          "experiment-approve",
-          "experiment-promote",
-          "experiment-rollback",
-          "opportunity-list",
-          "opportunity-detail",
-          "provider-status",
-          "scout-create",
-          "scout-status",
-          "scout-retry",
-        ] as const
-      ).map(
-        (route) =>
-          new Alarm(this, `EventApiCaught5xx${route}Alarm`, {
-            metric: new Metric({
-              namespace: "FindTheEdge/EventApi",
-              metricName: "Caught5xx",
-              dimensionsMap: { Route: route },
-              statistic: "Sum",
-              period: Duration.minutes(1),
-            }),
-            threshold: 1,
-            evaluationPeriods: 1,
-          }),
-      ),
-      ...(
-        [
-          "CohortBuildFailures",
-          "PerformanceReportFailures",
-          "RetrospectiveFailures",
-          "RetrospectiveValidationFailures",
-        ] as const
-      ).map(
-        (metricName) =>
-          new Alarm(this, `${metricName}Alarm`, {
-            metric: new Metric({
-              namespace: "FindTheEdge/Performance",
-              metricName,
-              statistic: "Sum",
-              period: Duration.minutes(5),
-            }),
-            threshold: 1,
-            evaluationPeriods: 1,
-          }),
-      ),
-      ...(
-        [
-          "RetrospectiveReviewConflict",
-          "RetrospectiveReviewForbidden",
-          "StrategyPromotionConflict",
-          "StrategyPromotionForbidden",
-        ] as const
-      ).map(
-        (metricName) =>
-          new Alarm(this, `${metricName}Alarm`, {
-            metric: new Metric({
-              namespace: "FindTheEdge/EventApi",
-              metricName,
-              dimensionsMap: {
-                Route: metricName.startsWith("Strategy")
-                  ? "experiment-promote"
-                  : "retrospective-review",
-              },
-              statistic: "Sum",
-              period: Duration.minutes(5),
-            }),
-            threshold: 5,
-            evaluationPeriods: 1,
-          }),
-      ),
-      ...(["OpportunityJoinFailure", "OpportunityStaleRead"] as const).map(
-        (metricName) =>
-          new Alarm(this, `${metricName}Alarm`, {
-            metric: new Metric({
-              namespace: "FindTheEdge/EventApi",
-              metricName,
-              dimensionsMap: { Route: "opportunity-list" },
-              statistic: "Sum",
-              period: Duration.minutes(5),
-            }),
-            threshold: 1,
-            evaluationPeriods: 1,
-          }),
-      ),
-    ];
-    if (props.alarmTopicArn) {
-      const topic = Topic.fromTopicArn(
-        this,
-        "UpcomingEventsAlarmTopic",
-        props.alarmTopicArn,
       );
-      for (const alarm of alarms) alarm.addAlarmAction(new SnsAction(topic));
+
+    if (props.stageName === "staging") {
+      addCriticalAlarm(
+        "LiveOddsIngestionErrorsAlarm",
+        liveOdds.metricErrors(standardAlarmOptions),
+      );
+      addCriticalAlarm(
+        "LiveOddsControlPlaneDlqAlarm",
+        liveOddsDlq.metricApproximateNumberOfMessagesVisible({
+          ...standardAlarmOptions,
+          statistic: "Maximum",
+        }),
+      );
+      addCriticalAlarm(
+        "ProviderLandingErrorsAlarm",
+        providerLanding.metricErrors(standardAlarmOptions),
+      );
+      addCriticalAlarm(
+        "ProviderLandingDlqAlarm",
+        providerLandingDlq.metricApproximateNumberOfMessagesVisible({
+          ...standardAlarmOptions,
+          statistic: "Maximum",
+        }),
+      );
+    } else if (props.stageName === "prod") {
+      addCriticalAlarm(
+        "LiveOddsIngestionErrorsAlarm",
+        liveOdds.metricErrors(standardAlarmOptions),
+      );
+      addCriticalAlarm(
+        "LiveOddsControlPlaneDlqAlarm",
+        liveOddsDlq.metricApproximateNumberOfMessagesVisible({
+          ...standardAlarmOptions,
+          statistic: "Maximum",
+        }),
+      );
+      addCriticalAlarm(
+        "UpcomingEventsWorkerErrorsAlarm",
+        worker.metricErrors(standardAlarmOptions),
+      );
+      addCriticalAlarm(
+        "UpcomingEventsDlqAlarm",
+        dlq.metricApproximateNumberOfMessagesVisible({
+          ...standardAlarmOptions,
+          statistic: "Maximum",
+        }),
+      );
     }
-    if (props.alarmEmail) {
-      // An alarm that notifies nobody is a dashboard curiosity; the
-      // expiration worker failed silently for weeks behind exactly that gap.
+    if (props.criticalAlarmEmail && criticalAlarms.length > 0) {
       const notifications = new Topic(this, "AlarmNotifications");
-      notifications.addSubscription(new EmailSubscription(props.alarmEmail));
-      for (const alarm of alarms) {
+      notifications.addSubscription(
+        new EmailSubscription(props.criticalAlarmEmail),
+      );
+      for (const alarm of criticalAlarms)
         alarm.addAlarmAction(new SnsAction(notifications));
-        alarm.addOkAction(new SnsAction(notifications));
-      }
     }
   }
 }
@@ -2556,6 +1888,11 @@ export function createFoundationApp(config: FoundationConfig): {
     throw new Error("fixture odds seed can only be enabled for the dev stage");
   if (typeof config.productAccessEnforced !== "boolean")
     throw new Error("product access enforcement must be an explicit boolean");
+  if (
+    config.criticalAlarmEmail &&
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(config.criticalAlarmEmail)
+  )
+    throw new Error("FTE_CRITICAL_ALARM_EMAIL must be a valid email address");
   const paperPickGenerationMinutes = config.paperPickGenerationMinutes ?? 15;
   if (
     !Number.isSafeInteger(paperPickGenerationMinutes) ||
@@ -2584,24 +1921,6 @@ export function createFoundationApp(config: FoundationConfig): {
     )
       throw new Error("FTE_WEB_ORIGIN must be an exact HTTPS origin");
   }
-  const alarmArn = config.alarmTopicArn;
-  const alarmMatch = alarmArn?.match(
-    /^arn:(aws|aws-us-gov|aws-cn):sns:([a-z]{2}(?:-gov)?-[a-z]+-\d):\d{12}:[A-Za-z0-9_-]{1,256}$/,
-  );
-  if (
-    alarmArn &&
-    (!alarmMatch || (config.region && alarmMatch[2] !== config.region))
-  )
-    throw new Error(
-      "FTE_UPCOMING_ALARM_TOPIC_ARN must be a valid SNS ARN in the stack region",
-    );
-
-  if (
-    config.alarmEmail &&
-    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(config.alarmEmail)
-  )
-    throw new Error("FTE_ALARM_EMAIL must be a plain email address");
-
   const app = new App({ analyticsReporting: false });
   const environment =
     config.account && config.region
@@ -2629,8 +1948,9 @@ export function createFoundationApp(config: FoundationConfig): {
       cursorSecretArn: config.cursorSecretArn,
       fixtureOddsSeedEnabled: config.fixtureOddsSeedEnabled ?? false,
       productAccessEnforced: config.productAccessEnforced,
-      ...(config.alarmTopicArn ? { alarmTopicArn: config.alarmTopicArn } : {}),
-      ...(config.alarmEmail ? { alarmEmail: config.alarmEmail } : {}),
+      ...(config.criticalAlarmEmail
+        ? { criticalAlarmEmail: config.criticalAlarmEmail }
+        : {}),
       ...(environment ? { env: environment } : {}),
     },
   );

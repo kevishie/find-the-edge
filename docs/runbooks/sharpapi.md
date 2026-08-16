@@ -265,35 +265,19 @@ identities removed by the provider disappear from the logical view at that
 boundary. Reusing a slot does not revive an older row because its sweep ID no
 longer matches. Snapshot and identity rows expire after ninety days; quarantine
 expires after thirty days, both measured from retrieval time rather than sweep
-start. Health alarms fire long before a current snapshot can expire.
+start.
 
-Low-cardinality EMF records exact persisted pages and landed, quarantined, and
-warning rows. Durable cumulative quarantine/warning counts are replayed at the
-next invocation, so a crash after checkpoint commit but before EMF publication
-cannot permanently hide bad data. Completion-age alarms use their configured
-CloudWatch evaluation periods rather than the invocation cadence and breach
-beyond eight hours for catalog or one hour for events/odds. Run-age
-alarms require two periods beyond thirty minutes for catalog, two hours for
-events, or twelve hours for odds. Recovery preserves the original run-age
-boundary, and two consecutive recovery periods alert instead of presenting a
-perpetually young run. Lambda errors require sustained failures; EventBridge
-delivery failures and exhausted asynchronous Lambda-handler failures both reach
-the retained DLQ, whose messages alert immediately. Provider source-row
-quarantines alert immediately and remain exactly reconciled with checkpoint row
-counts. Coverage contradictions and event-plan-capacity failures are support
-diagnostics rather than source rows; they have a separate immediate per-stream
-alarm and retain only bounded code/status/request-position evidence. Expected
-rate limits and ambiguous transport outcomes remain durable but use the sustained
-failure policy instead of the immediate diagnostic alarm. Warning rows remain exact
-metrics and alert only after two consecutive thirty-minute windows. Missing
-completion metrics breach only where this worker is scheduled,
-so inert development and production stacks do not page. Universal acquisition
+CloudWatch Logs, embedded metrics, and custom metrics are intentionally
+disabled. Four standard staging alarms cover sustained Live Odds and Provider
+Landing Lambda errors or DLQ depth; operational detail remains durable in
+DynamoDB checkpoints, account health records, quarantine rows, and DLQs.
+Universal acquisition
 is enabled in staging only until the data-quality promotion gate passes.
 Configuration, entitlement, and authorization failures mark the shared account
-health terminal and raise one immediate terminal alarm; the scheduled delivery
-then completes without two identical blind retries. Unexpected Lambda/storage
-failures retain bounded asynchronous retries and page only when sustained (or
-immediately if they reach the DLQ). The schedule is enabled only when both the
+health terminal; the scheduled delivery then completes without two identical
+blind retries. Unexpected Lambda/storage failures retain bounded asynchronous
+retries and page only after two of three five-minute periods breach. The
+schedule is enabled only when both the
 scheduler flag is true and the stage is exactly `staging`; `dev`, test aliases,
 and production remain inert.
 
@@ -516,12 +500,9 @@ Before redrive, identify the bounded reason, verify the provider cooldown/window
 has reset, and verify no ambiguous attempt or sealed page already owns the paid
 request. Redrive the exact command once; never bulk-redrive unknown messages.
 
-Operational metrics are intentionally at-least-once. They are emitted only
-after the corresponding durable evidence write, but a worker replay can emit
-the same bounded metric again. Dashboards and alarms must aggregate by their
-time window and must not treat metric totals as an exact row count; DynamoDB
-snapshots, availability evidence, attempts, and sealed pages are the source of
-truth.
+Standard Lambda error and SQS DLQ metrics are signals, not row counts. DynamoDB
+snapshots, availability evidence, attempts, sealed pages, and DLQ messages are
+the source of operational truth.
 
 Newer suspended, closed, missing, malformed, incomplete, or unavailable market
 evidence blocks the older current price from recommendation inputs while leaving

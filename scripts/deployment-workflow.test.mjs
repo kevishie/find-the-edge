@@ -21,6 +21,7 @@ test("deployment maps only verified main and production revisions to isolated en
     "FTE_RELEASE_SHA:",
     "FTE_WEB_CERTIFICATE_ARN:",
     "FTE_API_CERTIFICATE_ARN:",
+    "FTE_CRITICAL_ALARM_EMAIL: ${{ secrets.ALARM_EMAIL }}",
     "product_access_enforced: ${{ steps.target.outputs.product_access_enforced }}",
     "FTE_PRODUCT_ACCESS_ENFORCED: ${{ needs.target.outputs.product_access_enforced }}",
   ])
@@ -76,6 +77,19 @@ test("OIDC bootstrap has isolated environment subjects and no administrator poli
   assert.match(template, /github-actions-find-the-edge-production-deploy/);
   assert.doesNotMatch(template, /AdministratorAccess/);
   assert.doesNotMatch(template, /pull_request|environment:\*/);
+  for (const action of [
+    "cloudwatch:DeleteAlarms",
+    "cloudwatch:DescribeAlarms",
+    "cloudwatch:PutMetricAlarm",
+    "cloudwatch:TagResource",
+    "cloudwatch:UntagResource",
+  ])
+    assert.equal(
+      template.split(action).length - 1,
+      2,
+      `${action} must be granted only to both deployment roles`,
+    );
+  assert.doesNotMatch(template, /cloudwatch:\*|logs:\*/);
 });
 
 test("authorization provisioning is branch-bound, serialized, and uses a dedicated exact-key role", async () => {

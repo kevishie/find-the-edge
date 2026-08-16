@@ -20,29 +20,7 @@ export interface ScoutingOutboxMetricSink {
 }
 
 const metrics: ScoutingOutboxMetricSink = {
-  emit(name, value) {
-    console.log(
-      JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/Scouting",
-              Dimensions: [["Component"]],
-              Metrics: [
-                {
-                  Name: name,
-                  Unit: name.includes("Lag") ? "Milliseconds" : "Count",
-                },
-              ],
-            },
-          ],
-        },
-        Component: "outbox",
-        [name]: value,
-      }),
-    );
-  },
+  emit() {},
 };
 
 const scalar = (value: AttributeValue): unknown => {

@@ -35,22 +35,5 @@ export const handler = createSqsHandler(
     undefined,
     new SqsContinuationPublisher(new SQSClient({}), queueUrl),
   ),
-  (count) => {
-    process.stdout.write(
-      `${JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/UpcomingEvents",
-              Dimensions: [["FunctionName"]],
-              Metrics: [{ Name: "FailedRecords", Unit: "Count" }],
-            },
-          ],
-        },
-        FunctionName: process.env["AWS_LAMBDA_FUNCTION_NAME"] ?? "unknown",
-        FailedRecords: count,
-      })}\n`,
-    );
-  },
+  () => {},
 );

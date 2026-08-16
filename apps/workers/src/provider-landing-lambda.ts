@@ -9,7 +9,6 @@ import {
   type AccountRateCoordinationStore,
   DynamoOddsControlPlaneStore,
   DynamoProviderLandingRepository,
-  instrumentDynamoCapacity,
 } from "@find-the-edge/database";
 import {
   fetchSharpApiAccount,
@@ -20,7 +19,6 @@ import {
 } from "@find-the-edge/providers";
 import type { Context } from "aws-lambda";
 
-import { emitDynamoCapacityMetrics } from "./dynamo-capacity-metrics";
 import {
   runProviderLanding,
   SharedSharpApiAccountRateCoordinator,
@@ -54,37 +52,10 @@ export const parseProviderLandingSecret = (value: string | undefined) => {
   throw new Error("provider-landing-secret-invalid");
 };
 
-export const createProviderLandingMetricSink = (
-  stage: string,
-): ProviderLandingMetricSink => ({
-  emit(metric, value, dimensions) {
-    const Stream = dimensions["stream"] ?? "unknown";
-    const Outcome = dimensions["outcome"] ?? dimensions["reason"] ?? "unknown";
-    process.stdout.write(
-      `${JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/ProviderLanding",
-              Dimensions: [["Stage", "Stream", "Outcome"]],
-              Metrics: [
-                {
-                  Name: metric,
-                  Unit: metric.endsWith("AgeSeconds") ? "Seconds" : "Count",
-                },
-              ],
-            },
-          ],
-        },
-        Stage: stage,
-        Stream,
-        Outcome,
-        [metric]: value,
-      })}\n`,
-    );
-  },
-});
+export const createProviderLandingMetricSink =
+  (): ProviderLandingMetricSink => ({
+    emit() {},
+  });
 
 export const providerLandingTerminalReason = (error: unknown) => {
   if (
@@ -136,15 +107,6 @@ export const settleProviderLandingTerminalFailure = async (
     `${JSON.stringify({ event: "provider-landing-terminal", reason })}\n`,
   );
   return { terminal: true as const, reason };
-};
-
-const inferredMetricStage = () => {
-  const configured = process.env["FTE_AWS_STAGE"];
-  if (configured) return configured;
-  const functionName = process.env["AWS_LAMBDA_FUNCTION_NAME"] ?? "";
-  return (
-    functionName.match(/(?:^|-)(staging|prod|dev)(?:-|$)/)?.[1] ?? "unknown"
-  );
 };
 
 const SHARP_API_ACCOUNT_HEALTH_KEY = "sharpapi:account:account";
@@ -245,7 +207,7 @@ export const handler = async (event: unknown, context: Context) => {
   const tableName = process.env["FTE_EVENT_TABLE"];
   const secretId = process.env["FTE_SHARP_API_SECRET_ID"];
   const stage = process.env["FTE_AWS_STAGE"];
-  const metrics = createProviderLandingMetricSink(inferredMetricStage());
+  const metrics = createProviderLandingMetricSink();
   let accountRate: SharedSharpApiAccountRateCoordinator | undefined;
   let apiKey: string | undefined;
   try {
@@ -254,10 +216,7 @@ export const handler = async (event: unknown, context: Context) => {
     // the provider secret so a broken secret cannot leave the shared account
     // state recoverable and trigger repeated paid attempts elsewhere.
     if (!tableName) throw new Error("provider-landing-configuration-invalid");
-    const client = instrumentDynamoCapacity(
-      DynamoDBDocumentClient.from(new DynamoDBClient({})),
-      emitDynamoCapacityMetrics,
-    );
+    const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
     const store = new DynamoProviderLandingRepository(client, tableName);
     const control = new DynamoOddsControlPlaneStore(client, tableName);
     accountRate = new SharedSharpApiAccountRateCoordinator(control, {
