@@ -22,6 +22,10 @@ import type {
   EventPage,
   EventRepository,
 } from "./event-repository";
+import {
+  projectFinalizedClosingSelections,
+  type ClosingLinesRepository,
+} from "./closing-lines-repository";
 
 export interface GamesPage extends Omit<EventPage, "items"> {
   readonly items: readonly GameDisplayDto[];
@@ -340,6 +344,7 @@ export class JoinedGamesRepository implements GamesRepository {
     readonly detailSportsbooks: readonly GameDetailSportsbook[] = sportsbookIds.map(
       (id) => ({ id, label: id }),
     ),
+    readonly closingLines?: Pick<ClosingLinesRepository, "listFinalized">,
   ) {
     if (!Number.isFinite(freshnessWindowMs) || freshnessWindowMs < 0)
       throw new EventStorageError("invalid-detail-freshness-window");
@@ -723,6 +728,51 @@ export class JoinedGamesRepository implements GamesRepository {
       nextCursor: nextCursor ?? null,
     };
     if (!page.items.length) return { ...page, items: [], freshness: null };
+    const readAt = this.now().getTime();
+    const closingByEvent = new Map<string, readonly GameOddsSelectionDto[]>();
+    if (this.closingLines)
+      await Promise.all(
+        page.items.map(async (event) => {
+          if (
+            event.status === "scheduled" &&
+            Date.parse(event.startsAt) > readAt
+          )
+            return;
+          let finalized;
+          try {
+            finalized = await this.closingLines!.listFinalized(event.id);
+          } catch {
+            // A canonical close is an optional preference. Its storage being
+            // unavailable must not take the ordinary odds board down with it.
+            return;
+          }
+          const projection = projectFinalizedClosingSelections(
+            finalized.filter(
+              (book) =>
+                book.canonicalEventId === event.id &&
+                book.canonicalEventVersion <= event.version &&
+                book.sportKey === event.sportKey &&
+                book.leagueKey === event.leagueKey &&
+                book.startsAt === event.startsAt,
+            ),
+            this.sportsbookIds,
+          );
+          if (projection) {
+            const expected = new Map<string, ReadonlySet<string>>(
+              marketSpecifications(event).map((specification) => [
+                specification.marketKey,
+                new Set<string>(specification.selectionKeys),
+              ]),
+            );
+            if (
+              projection.every((selection) =>
+                expected.get(selection.marketKey)?.has(selection.selectionKey),
+              )
+            )
+              closingByEvent.set(event.id, projection);
+          }
+        }),
+      );
     // Provider id churn advances canonical versions faster than the odds
     // persist path follows, so fresh rows can sit one version behind the
     // event. Each selection reads both versions and the newer row wins.
@@ -895,12 +945,21 @@ export class JoinedGamesRepository implements GamesRepository {
       });
       return {
         ...event,
-        odds: anchored
+        odds: closingByEvent.has(event.id)
           ? {
               state: "available" as const,
-              selections: anchored,
+              selections: closingByEvent.get(event.id)!,
+              source: "canonical-closing" as const,
             }
-          : { state: "unavailable" as const },
+          : anchored
+            ? {
+                state: "available" as const,
+                selections: anchored,
+                ...(event.status === "scheduled"
+                  ? {}
+                  : { source: "pregame-snapshot" as const }),
+              }
+            : { state: "unavailable" as const },
       };
     });
     // The provider occasionally publishes a spurious listing and withdraws it

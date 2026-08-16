@@ -1,5 +1,6 @@
 import type {
   BettingSplitRepository,
+  ClosingLinesRepository,
   EventIngestionStore,
   FixtureOddsIngestInput,
   FixtureOddsPersistResult,
@@ -1342,6 +1343,7 @@ export async function runProductionOddsControlPlane(input: {
   readonly odds: LiveOddsPersister;
   readonly control: OddsControlPlaneStore;
   readonly splits: BettingSplitRepository;
+  readonly closingLines?: Pick<ClosingLinesRepository, "bind">;
   readonly sharpApiKey: string;
   readonly now?: Date;
   readonly forceRefresh?: boolean;
@@ -1679,13 +1681,30 @@ export async function runProductionOddsControlPlane(input: {
           }
           if (!persistedDisposition)
             try {
-              await bindScheduleEvent(
+              const binding = await bindScheduleEvent(
                 input.events,
                 SHARP_API_PROVIDER_ID,
                 sharpLeague,
                 event,
                 page.retrievedAt,
               );
+              if (input.closingLines)
+                await input.closingLines.bind({
+                  canonicalEventId: binding.eventId,
+                  canonicalEventVersion:
+                    (await input.events.resolveExactCanonicalBinding({
+                      providerId: SHARP_API_PROVIDER_ID,
+                      providerEventId: event.providerEventId,
+                      sportKey: sharpLeague.sportKey,
+                      leagueKey: sharpLeague.leagueKey,
+                    }))!.version,
+                  providerId: SHARP_API_PROVIDER_ID,
+                  providerEventId: event.providerEventId,
+                  sportKey: sharpLeague.sportKey,
+                  leagueKey: sharpLeague.leagueKey,
+                  startsAt: event.startsAt,
+                  observedAt: page.retrievedAt,
+                });
               pageDispositions.push({
                 eventIdentityHash: scheduleEventIdentityHash(
                   sharpLeague.leagueKey,
@@ -2671,6 +2690,32 @@ export async function runProductionOddsControlPlane(input: {
         ),
         ...(accountRateWindow ? { rateWindow: accountRateWindow } : {}),
       });
+      const closingHealthKey = `${SHARP_API_PROVIDER_ID}:account:closing`;
+      const existingClosingHealth =
+        await input.control.getHealth(closingHealthKey);
+      if (account.features.includes("closing_line"))
+        await input.control.putHealth(
+          healthyOddsProviderState(existingClosingHealth, {
+            providerId: SHARP_API_PROVIDER_ID,
+            healthKey: closingHealthKey,
+            consecutiveSuccesses: 1,
+            updatedAt: now.toISOString(),
+          }),
+        );
+      else
+        await input.control.putHealth({
+          ...(existingClosingHealth?.version === undefined
+            ? {}
+            : { version: existingClosingHealth.version }),
+          providerId: SHARP_API_PROVIDER_ID,
+          healthKey: closingHealthKey,
+          healthy: false,
+          status: "unhealthy",
+          consecutiveSuccesses: 0,
+          failureClass: "terminal",
+          failureReason: "not-entitled",
+          updatedAt: now.toISOString(),
+        });
       if (!account.features.includes("splits"))
         for (const league of sharpApiLeagues)
           await input.control.putGap({

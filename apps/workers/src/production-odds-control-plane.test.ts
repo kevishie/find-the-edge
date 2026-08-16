@@ -210,6 +210,64 @@ describe("production odds control-plane composition", () => {
     );
   });
 
+  it("hands the exact accepted schedule binding to closing capture storage", async () => {
+    const closingLines = { bind: vi.fn().mockResolvedValue("updated") };
+    await runProductionOddsControlPlane({
+      events: new MemoryEventIngestionStore(),
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      closingLines,
+      control: new MemoryOddsControlPlaneStore(),
+      sharpApiKey: "sharp-key",
+      now,
+      clock: () => now,
+      fetchSharpSchedule: vi.fn((league: SharpApiLeague) =>
+        Promise.resolve({
+          events:
+            league.leagueKey === "mlb"
+              ? [
+                  {
+                    providerEventId: "provider-event-1",
+                    providerEventUuid: "uuid-event-1",
+                    awayTeam: "Boston Red Sox",
+                    homeTeam: "New York Yankees",
+                    awayClubKey: "bos",
+                    homeClubKey: "nyy",
+                    startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+                    status: "scheduled" as const,
+                  },
+                ]
+              : [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+      ),
+      fetchSharpOdds: vi
+        .fn()
+        .mockResolvedValue({ events: [], hasMore: false, retrievedAt: at }),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 25,
+        streamingEnabled: false,
+      }),
+    });
+    expect(closingLines.bind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerEventId: "provider-event-1",
+        providerId: "sharpapi",
+        sportKey: "mlb",
+        leagueKey: "mlb",
+      }),
+    );
+  });
+
   it("preserves SharpAPI account and splits rejection diagnostics", async () => {
     const run = async (capability: "account" | "splits") => {
       const control = new MemoryOddsControlPlaneStore();

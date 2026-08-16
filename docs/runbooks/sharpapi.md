@@ -37,6 +37,39 @@ freshness, not the exact time a line moved. Split `fetched_at` remains separate.
 The operator approved Pro activation. A plan upgrade or add-on remains a manual
 decision and is never performed by deployment automation.
 
+## Canonical closing lines
+
+Started-game closing evidence comes only from SharpAPI's documented
+`GET /api/v1/odds/closing?event_id=...` endpoint. The worker sends the exact
+SharpAPI event ID retained when schedule reconciliation binds the provider row
+to a canonical event; it never sends an FTE canonical ID or reconstructs an ID
+from participants. The account must expose the `closing_line` feature. A 403
+`tier_restricted` response is an entitlement failure and is never bypassed with
+the last pregame snapshot.
+
+SharpAPI captures each sportsbook independently and retains those captures for
+48 hours after event start. The worker checks the current and preceding two
+Eastern calendar days, reserves each request against the same authoritative
+account rate window used by live odds, and caps work per invocation. A `200`
+response with `books: {}`, a non-final book, 429, or retryable 503 leaves prior
+evidence unchanged and is retried on a later one-minute scheduling opportunity.
+The one-minute trigger is an opportunity, not a completion guarantee.
+
+Each finalized book is stored once under the canonical event. Later responses
+may add newly finalized books but cannot rewrite a prior source capture. A
+malformed or ambiguous book is isolated from valid siblings. Serving switches a
+started game to canonical closing prices only when one configured display book
+has a coherent moneyline; spread and total appear only as complete unambiguous
+pairs, and Pinnacle annotates only an exact matching proposition. Scheduled
+games continue to use current pregame odds byte-for-byte.
+
+Operational verification should confirm bounded `closing-lines-capture`
+records report request, captured-book, pending, and failed counts; inspect the
+shared SharpAPI health window before redrive. For empty/not-ready responses,
+wait for the next cadence. For missing bindings, verify schedule reconciliation.
+For 401 or `tier_restricted`, correct credentials or entitlement manually. Do
+not replay raw payloads, loosen identity checks, or substitute pregame prices.
+
 ## Universal provider acquisition
 
 FTE-DQ-001 separates source acquisition from product normalization. SharpAPI's

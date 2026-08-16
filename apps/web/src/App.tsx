@@ -426,6 +426,7 @@ export interface UiGamesPage {
     readonly odds:
       | {
           readonly state: "available";
+          readonly source?: "canonical-closing" | "pregame-snapshot";
           readonly selections: readonly {
             readonly marketKey: string;
             readonly selectionKey: string;
@@ -2229,8 +2230,14 @@ function EventGameBlock({
                 snapshotAt !== null &&
                 snapshotAt !== undefined &&
                 Date.parse(game.startsAt) <= Date.parse(snapshotAt);
-              if (started)
+              if (
+                started &&
+                game.odds.state === "available" &&
+                game.odds.source === "canonical-closing"
+              )
                 return <span className="evb-age">· closing lines</span>;
+              if (started)
+                return <span className="evb-age">· pregame snapshot</span>;
               // Staleness follows the same evidence the label shows: the
               // odds rows themselves. The metadata freshness flag tracks
               // schedule evidence, which legitimately idles for hours on an
