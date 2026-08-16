@@ -40,11 +40,18 @@ function same(left, right) {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
-function permitsContributorInsightsUpgrade(before, after) {
+function permitsRetainedLogGroupRemoval(logicalId, resource) {
+  return (
+    resource.Type === "AWS::Logs::LogGroup" &&
+    /^(ScoutingWorkflowLogs|EventApiAccessLogs)[A-F0-9]{8}$/.test(logicalId)
+  );
+}
+
+function permitsContributorInsightsRemoval(before, after) {
   return (
     same(before, after) ||
-    ((before === undefined || same(before, { Enabled: false })) &&
-      same(after, { Enabled: true }))
+    (same(before, { Enabled: true }) &&
+      (after === undefined || same(after, { Enabled: false })))
   );
 }
 
@@ -55,7 +62,7 @@ function preservesDynamoIndexIdentity(before, after) {
     after;
   return (
     same(oldIdentity, nextIdentity) &&
-    permitsContributorInsightsUpgrade(oldInsights, nextInsights)
+    permitsContributorInsightsRemoval(oldInsights, nextInsights)
   );
 }
 
@@ -284,6 +291,7 @@ export function assertRetainedResourcesSafe(existing, proposed) {
     throw new Error("Deployed stack has no retained resources to protect");
   for (const [logicalId, resource] of retained) {
     const next = proposed.Resources?.[logicalId];
+    if (!next && permitsRetainedLogGroupRemoval(logicalId, resource)) continue;
     if (
       !next ||
       next.Type !== resource.Type ||
@@ -334,7 +342,7 @@ export function assertRetainedResourcesSafe(existing, proposed) {
               "SSEType",
               "KMSMasterKeyId",
             ]))) &&
-        permitsContributorInsightsUpgrade(
+        permitsContributorInsightsRemoval(
           before.ContributorInsightsSpecification,
           after.ContributorInsightsSpecification,
         ) &&
@@ -417,21 +425,6 @@ export function assertRetainedResourcesSafe(existing, proposed) {
           "WebAuthnConfiguration",
         ]) &&
         retainsArray(before, after, "AutoVerifiedAttributes");
-    } else if (resource.Type === "AWS::Logs::LogGroup") {
-      safe =
-        requireSame(before, after, [
-          "LogGroupName",
-          "FieldIndexPolicies",
-          "ResourcePolicyDocument",
-          "LogGroupClass",
-        ]) &&
-        (before.RetentionInDays === undefined ||
-          (typeof after.RetentionInDays === "number" &&
-            after.RetentionInDays >= before.RetentionInDays)) &&
-        (before.KmsKeyId === undefined ||
-          same(before.KmsKeyId, after.KmsKeyId)) &&
-        (before.DataProtectionPolicy === undefined ||
-          same(before.DataProtectionPolicy, after.DataProtectionPolicy));
     } else {
       safe = same(before, after);
     }
@@ -1060,6 +1053,7 @@ async function waitForDeployedGsiActive(
 }
 
 export function assertStackResourceDriftsSafe(drifts) {
+  if (drifts.length === 0) return;
   if (
     drifts.length !== 1 ||
     drifts[0].ResourceType !== "AWS::ApiGatewayV2::Stage" ||

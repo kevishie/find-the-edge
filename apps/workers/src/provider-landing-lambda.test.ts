@@ -38,31 +38,14 @@ describe("provider landing Lambda boundary", () => {
     },
   );
 
-  it("emits exact low-cardinality EMF with seconds for age metrics", () => {
+  it("does not publish embedded metrics", () => {
     const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-    createProviderLandingMetricSink("staging").emit(
+    createProviderLandingMetricSink().emit(
       "ProviderLandingCompletionAgeSeconds",
       42,
       { stream: "odds", outcome: "observed" },
     );
-    const envelope = JSON.parse(String(write.mock.calls[0]?.[0])) as {
-      _aws: {
-        CloudWatchMetrics: { Metrics: { Name: string; Unit: string }[] }[];
-      };
-      Stage: string;
-      Stream: string;
-      Outcome: string;
-      ProviderLandingCompletionAgeSeconds: number;
-    };
-    expect(envelope).toMatchObject({
-      Stage: "staging",
-      Stream: "odds",
-      Outcome: "observed",
-      ProviderLandingCompletionAgeSeconds: 42,
-    });
-    expect(envelope._aws.CloudWatchMetrics[0]?.Metrics).toEqual([
-      { Name: "ProviderLandingCompletionAgeSeconds", Unit: "Seconds" },
-    ]);
+    expect(write).not.toHaveBeenCalled();
   });
 
   it.each([

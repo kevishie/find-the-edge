@@ -17,7 +17,6 @@
     "game-state:truth": "node scripts/game-state-truth.mjs analyze",
     "game-state:truth:init": "node scripts/game-state-truth.mjs initialize",
     "identity-authorization:provision": "node scripts/identity-authorization-provision.mjs",
-    "ingestion-cost:baseline": "node scripts/ingestion-cost-attribution.mjs",
     "phase1:preflight": "node scripts/phase1-preflight.mjs",
     "phase1:bundle": "node scripts/build-phase1-web.mjs",
     "phase1:smoke": "node scripts/phase1-environment-smoke.mjs",

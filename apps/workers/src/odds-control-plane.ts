@@ -142,36 +142,7 @@ export interface OddsControlPlaneMetrics {
   ): void;
 }
 export const embeddedOddsControlPlaneMetrics: OddsControlPlaneMetrics = {
-  emit(name, value, dimensions) {
-    if (!/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(name) || !Number.isFinite(value))
-      throw new Error("odds-metric-invalid");
-    const bounded = Object.fromEntries(
-      Object.entries(dimensions)
-        .filter(
-          ([key, item]) =>
-            /^[A-Za-z][A-Za-z0-9]{0,31}$/.test(key) &&
-            item.length > 0 &&
-            item.length <= 128,
-        )
-        .slice(0, 8),
-    );
-    process.stdout.write(
-      `${JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/OddsControlPlane",
-              Dimensions: [Object.keys(bounded)],
-              Metrics: [{ Name: name, Unit: "Count" }],
-            },
-          ],
-        },
-        ...bounded,
-        [name]: value,
-      })}\n`,
-    );
-  },
+  emit() {},
 };
 export interface OddsLeagueRunResult {
   readonly leagueKey: string;

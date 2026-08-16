@@ -640,36 +640,26 @@ describe("identity observability", () => {
     expect(identityLogs).toHaveLength(2);
     expect(identityLogs[0]?.["phoneDigest"]).toMatch(/^[a-f0-9]{32}$/);
     expect(identityLogs[1]).toMatchObject({ outcome: "verified" });
-    const metrics = harness.logs.filter((entry) => "_aws" in entry);
-    const names = metrics.flatMap((entry) => {
-      const aws = entry["_aws"] as {
-        CloudWatchMetrics: {
-          Dimensions: string[][];
-          Metrics: { Name: string }[];
-        }[];
-      };
-      expect(aws.CloudWatchMetrics[0]?.Dimensions).toEqual([["Route"]]);
-      return aws.CloudWatchMetrics[0]!.Metrics.map(({ Name }) => Name);
-    });
-    expect(names).toContain("AuthOtpDelivered");
-    expect(names).toContain("AuthOtpVerified");
-    expect(metrics.every((entry) => !("Phone" in entry))).toBe(true);
+    expect(harness.logs.some((entry) => entry["AuthOtpDelivered"] === 1)).toBe(
+      true,
+    );
+    expect(harness.logs.some((entry) => entry["AuthOtpVerified"] === 1)).toBe(
+      true,
+    );
+    expect(harness.logs.every((entry) => !("_aws" in entry))).toBe(true);
+    expect(harness.logs.every((entry) => !("Phone" in entry))).toBe(true);
   });
 
   it("counts rejections, rate limits, and refusals separately", async () => {
     const harness = build();
     await harness.call(verifyOtp(PHONE, "000000"));
     await harness.call({ route: "auth-session-refresh", method: "POST" });
-    const names = harness.logs
-      .filter((entry) => "_aws" in entry)
-      .flatMap((entry) => {
-        const aws = entry["_aws"] as {
-          CloudWatchMetrics: { Metrics: { Name: string }[] }[];
-        };
-        return aws.CloudWatchMetrics[0]!.Metrics.map(({ Name }) => Name);
-      });
-    expect(names).toContain("AuthOtpRejected");
-    expect(names).toContain("AuthUnauthorized");
+    expect(harness.logs.some((entry) => entry["AuthOtpRejected"] === 1)).toBe(
+      true,
+    );
+    expect(harness.logs.some((entry) => entry["AuthUnauthorized"] === 1)).toBe(
+      true,
+    );
   });
 
   it("fails neutrally when the identity service is not configured", async () => {

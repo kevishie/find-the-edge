@@ -12,7 +12,6 @@ import {
 } from "@find-the-edge/database";
 import { CohortBuilder } from "./cohort-builder.js";
 import { DayIndexedCohortMemberSource } from "./day-indexed-cohort-member-source.js";
-import { EmfPerformanceMetricSink } from "./performance-metrics.js";
 import {
   ExactPerformanceEvidenceAdapter,
   PerformanceReportBuilder,
@@ -32,7 +31,6 @@ const grades = new DynamoPaperGradeRepository(client, tableName);
 const snapshots = new DynamoExactOddsSnapshotRepository(client, tableName);
 const closing = new DynamoClosingCandidateSource(client, tableName);
 const cohorts = new DynamoCohortRepository(client, tableName);
-const metrics = new EmfPerformanceMetricSink();
 const memberSource = new DayIndexedCohortMemberSource(
   evaluations,
   new ProductionCohortMemberMaterializer(grades, snapshots, closing),
@@ -42,16 +40,14 @@ const evidence = new PerformanceEvidenceRepository(
 );
 
 export const handler = createPerformanceScheduledHandler({
-  cohorts: new CohortBuilder(memberSource, cohorts, metrics),
+  cohorts: new CohortBuilder(memberSource, cohorts),
   reports: new PerformanceReportBuilder(
     new ExactPerformanceEvidenceAdapter(evidence),
     cohorts,
-    metrics,
   ),
   repository: cohorts,
   retrospectives: new RetrospectiveBuilder(
     new ExactRetrospectiveEvidenceAdapter(evidence),
     new DynamoRetrospectiveRepository(client, tableName),
-    metrics,
   ),
 });

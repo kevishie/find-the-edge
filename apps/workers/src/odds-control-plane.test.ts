@@ -64,19 +64,14 @@ it("clears prior partial evidence when a later successful run is complete", () =
   expect(recovered.lastSuccessfulAt).toBe("2026-08-03T11:59:00.000Z");
 });
 
-it("publishes bounded EMF dimensions instead of an empty dimension set", () => {
+it("does not publish embedded metrics", () => {
   const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
   embeddedOddsControlPlaneMetrics.emit("OddsSnapshotCreated", 1, {
     provider: "sharpapi",
     league: "mlb",
     reason: "created",
   });
-  const payload = JSON.parse(String(write.mock.calls[0]?.[0])) as {
-    _aws: { CloudWatchMetrics: { Dimensions: string[][] }[] };
-  };
-  expect(payload._aws.CloudWatchMetrics[0]?.Dimensions).toEqual([
-    ["provider", "league", "reason"],
-  ]);
+  expect(write).not.toHaveBeenCalled();
   write.mockRestore();
 });
 // The generic control-plane retains explicit failover behavior for reusable

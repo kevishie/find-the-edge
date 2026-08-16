@@ -333,41 +333,7 @@ export async function runOpportunityGeneration(
 }
 
 const telemetry: OpportunityGenerationRunTelemetry = {
-  emit(event) {
-    console.log(
-      JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/OpportunityGeneration",
-              Dimensions: [["League", "Outcome"]],
-              Metrics: [
-                { Name: "EventCount", Unit: "Count" },
-                { Name: "QualifiedCount", Unit: "Count" },
-                { Name: "DisqualifiedCount", Unit: "Count" },
-                { Name: "CreatedCount", Unit: "Count" },
-                { Name: "DuplicateCount", Unit: "Count" },
-                { Name: "FailureCount", Unit: "Count" },
-                { Name: "ArbFindingCount", Unit: "Count" },
-                { Name: "LowHoldFindingCount", Unit: "Count" },
-              ],
-            },
-          ],
-        },
-        League: event.leagueKey,
-        Outcome: event.outcome,
-        EventCount: event.eventCount,
-        QualifiedCount: event.qualifiedCount,
-        DisqualifiedCount: event.disqualifiedCount,
-        CreatedCount: event.createdCount,
-        DuplicateCount: event.duplicateCount,
-        FailureCount: event.failureCount,
-        ArbFindingCount: event.arbitrageCount,
-        LowHoldFindingCount: event.lowHoldCount,
-      }),
-    );
-  },
+  emit() {},
 };
 
 let runtime: ((input: unknown) => Promise<unknown>) | undefined;

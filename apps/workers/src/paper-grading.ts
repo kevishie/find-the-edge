@@ -48,27 +48,6 @@ const failureReason = (error: unknown): PaperGradingFailureReason => {
 };
 export const embeddedPaperGradingTelemetry = {
   emit(counters: Readonly<PaperGradingCounters>) {
-    for (const [name, value] of [
-      ["PaperGradingFailed", counters.failed],
-      ["PaperGradingUnresolved", counters.unresolved],
-      ["PaperGradingRegraded", counters.regraded],
-    ] as const) {
-      process.stdout.write(
-        `${JSON.stringify({
-          _aws: {
-            Timestamp: Date.now(),
-            CloudWatchMetrics: [
-              {
-                Namespace: "FindTheEdge/PaperGrading",
-                Dimensions: [[]],
-                Metrics: [{ Name: name, Unit: "Count" }],
-              },
-            ],
-          },
-          [name]: value,
-        })}\n`,
-      );
-    }
     for (const audit of counters.failureAudits)
       process.stdout.write(
         `${JSON.stringify({

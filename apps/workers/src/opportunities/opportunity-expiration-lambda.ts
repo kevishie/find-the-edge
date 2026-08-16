@@ -68,35 +68,7 @@ export const createOpportunityExpirationHandler = (
 };
 
 const telemetry = {
-  emit(event: Record<string, unknown>) {
-    console.log(
-      JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/OpportunityLifecycle",
-              Dimensions: [["Cause", "Outcome"]],
-              Metrics: [
-                { Name: "StaleActiveCount", Unit: "Count" },
-                { Name: "TransitionCount", Unit: "Count" },
-                { Name: "ExpirationCount", Unit: "Count" },
-                { Name: "ConflictCount", Unit: "Count" },
-                { Name: "FailureCount", Unit: "Count" },
-              ],
-            },
-          ],
-        },
-        Cause: event["cause"],
-        Outcome: event["outcome"],
-        StaleActiveCount: event["staleActiveCount"] ?? 0,
-        TransitionCount: event["transitionCount"] ?? 0,
-        ExpirationCount: event["expirationCount"] ?? 0,
-        ConflictCount: event["conflictCount"] ?? 0,
-        FailureCount: event["failureCount"] ?? 0,
-      }),
-    );
-  },
+  emit() {},
 };
 let runtime: ((input: unknown) => Promise<unknown>) | undefined;
 export const handler = (input: unknown) => {

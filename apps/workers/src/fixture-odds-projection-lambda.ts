@@ -22,30 +22,7 @@ export interface ProjectionMetricSink {
   emit(name: ProjectionMetric, value: number): void;
 }
 
-const emfMetrics: ProjectionMetricSink = {
-  emit(name, value) {
-    console.log(
-      JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/OddsProjection",
-              Dimensions: [[]],
-              Metrics: [
-                {
-                  Name: name,
-                  Unit: name.includes("Lag") ? "Milliseconds" : "Count",
-                },
-              ],
-            },
-          ],
-        },
-        [name]: value,
-      }),
-    );
-  },
-};
+const disabledMetrics: ProjectionMetricSink = { emit() {} };
 
 function scalar(value: AttributeValue): unknown {
   if ("S" in value) return value.S;
@@ -85,7 +62,7 @@ export const isCanonicalSnapshotInsert = (
 export const createFixtureOddsProjectionHandler =
   (
     projector: FixtureOddsCurrentProjector,
-    metrics: ProjectionMetricSink = emfMetrics,
+    metrics: ProjectionMetricSink = disabledMetrics,
     now: () => number = Date.now,
   ): DynamoDBStreamHandler =>
   async (event) => {
