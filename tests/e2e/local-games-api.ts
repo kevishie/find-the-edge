@@ -313,19 +313,41 @@ export async function startLocalGamesApi(): Promise<LocalGamesApi> {
     impliedProbability,
     () => new Date("2026-08-01T12:31:00.000Z"),
   );
+  const gamesRepository = new MemoryGamesRepository(
+    events,
+    odds,
+    ["hardrock", "draftkings", "pinnacle"],
+    () => new Date("2026-08-01T12:31:00.000Z"),
+    [
+      { id: "hardrock", label: "Hard Rock Bet" },
+      { id: "draftkings", label: "DraftKings" },
+      { id: "pinnacle", label: "Pinnacle" },
+    ],
+  );
+  // These deliberately historical browser fixtures represent their settled
+  // display evidence. Mark available rows explicitly canonical so the E2E
+  // server exercises the post-kickoff contract instead of manufacturing a
+  // pregame response years after its declared evaluation clock.
+  const historicalGames = {
+    detail: gamesRepository.detail.bind(gamesRepository),
+    list: async (...args: Parameters<typeof gamesRepository.list>) => {
+      const page = await gamesRepository.list(...args);
+      return {
+        ...page,
+        items: page.items.map((game) =>
+          game.odds.state === "available"
+            ? {
+                ...game,
+                odds: { ...game.odds, source: "canonical-closing" as const },
+              }
+            : game,
+        ),
+      };
+    },
+  };
   const handler = createEventHandler(
     events,
-    new MemoryGamesRepository(
-      events,
-      odds,
-      ["hardrock", "draftkings", "pinnacle"],
-      () => new Date("2026-08-01T12:31:00.000Z"),
-      [
-        { id: "hardrock", label: "Hard Rock Bet" },
-        { id: "draftkings", label: "DraftKings" },
-        { id: "pinnacle", label: "Pinnacle" },
-      ],
-    ),
+    historicalGames,
     () => undefined,
     splits,
     undefined,

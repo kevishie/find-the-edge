@@ -333,6 +333,74 @@ export const boardPartition = (key: BoardKey) =>
 const finiteCount = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
+export interface BoardBodyInspection {
+  /** Null means every item carries explicit canonical-closing provenance. */
+  readonly earliestUnsafeKickoff: number | null;
+  /** Null means no noncanonical item exposes available prices. */
+  readonly earliestPregamePriceKickoff: number | null;
+}
+
+/**
+ * Reads only the identity and provenance fields needed to decide how long a
+ * board may be reused. Missing provenance is a backward-compatible pregame
+ * snapshot; malformed or unknown provenance cannot prove safety at all.
+ */
+export const inspectBoardBody = (body: string): BoardBodyInspection | null => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
+  const items = (parsed as Record<string, unknown>)["items"];
+  if (!Array.isArray(items)) return null;
+
+  let earliestUnsafeKickoff: number | null = null;
+  let earliestPregamePriceKickoff: number | null = null;
+  for (const item of items) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const record = item as Record<string, unknown>;
+    const startsAt = record["startsAt"];
+    const odds = record["odds"];
+    if (
+      typeof record["id"] !== "string" ||
+      record["id"].length === 0 ||
+      typeof startsAt !== "string" ||
+      !Number.isFinite(Date.parse(startsAt)) ||
+      new Date(startsAt).toISOString() !== startsAt ||
+      !odds ||
+      typeof odds !== "object" ||
+      Array.isArray(odds)
+    )
+      return null;
+    const oddsRecord = odds as Record<string, unknown>;
+    const state = oddsRecord["state"];
+    const source = oddsRecord["source"];
+    if (
+      (state !== "available" && state !== "unavailable") ||
+      (source !== undefined &&
+        source !== "pregame-snapshot" &&
+        source !== "canonical-closing") ||
+      (state === "unavailable" && source !== undefined)
+    )
+      return null;
+    if (source === "canonical-closing") continue;
+    const kickoff = Date.parse(startsAt);
+    earliestUnsafeKickoff =
+      earliestUnsafeKickoff === null
+        ? kickoff
+        : Math.min(earliestUnsafeKickoff, kickoff);
+    if (state === "available")
+      earliestPregamePriceKickoff =
+        earliestPregamePriceKickoff === null
+          ? kickoff
+          : Math.min(earliestPregamePriceKickoff, kickoff);
+  }
+  return { earliestUnsafeKickoff, earliestPregamePriceKickoff };
+};
+
 export const validateStoredBoard = (
   value: unknown,
   now: Date,
@@ -358,6 +426,13 @@ export const validateStoredBoard = (
   const age = now.getTime() - Date.parse(record["generatedAt"]);
   // A future timestamp is as untrustworthy as a stale one.
   if (age < -60_000 || age > BOARD_MAX_AGE_MS) return null;
+  const inspection = inspectBoardBody(record["body"]);
+  if (
+    !inspection ||
+    (inspection.earliestUnsafeKickoff !== null &&
+      now.getTime() >= inspection.earliestUnsafeKickoff)
+  )
+    return null;
   return value as StoredBoard;
 };
 

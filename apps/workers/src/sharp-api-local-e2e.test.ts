@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventHandler } from "@find-the-edge/api";
 import {
   productionOddsCollectionPolicies,
@@ -324,7 +324,11 @@ const sharpApiCollectionPolicy = (league: SharpApiLeague) => {
 };
 
 describe("local SharpAPI ingestion end to end", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("preserves schedule-classified games, Pinnacle odds, immutable history, current winners, and paginated splits", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-05T12:05:00.000Z"));
     const eventStore = new MemoryEventIngestionStore();
     const oddsGateway = new LocalFixtureOddsGateway(eventStore);
     const odds = new DynamoFixtureOddsAdapter(oddsGateway);
