@@ -77,7 +77,12 @@ describe("fixture odds seed", () => {
       }),
       () => new Date("2026-08-01T12:31:00.000Z"),
     );
-    const games = new MemoryGamesRepository(events, odds);
+    const games = new MemoryGamesRepository(
+      events,
+      odds,
+      undefined,
+      () => new Date("2026-08-01T12:31:00.000Z"),
+    );
 
     const mlbFirstDay = await games.list(
       {

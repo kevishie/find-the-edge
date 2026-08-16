@@ -1145,7 +1145,7 @@ describe("joined games repository", () => {
     expect(scheduled.items[0]?.odds).toEqual({ state: "unavailable" });
   });
 
-  it("falls back to current odds when closing storage is unavailable", async () => {
+  it("fails closed after kickoff when closing storage is unavailable", async () => {
     const started = {
       ...event,
       startsAt: "2026-08-01T12:00:00.000Z",
@@ -1164,11 +1164,7 @@ describe("joined games repository", () => {
       },
     ).list({ sportKey: "mlb", status: "started", day: "2026-08-01" }, 1);
 
-    expect(page.items[0]?.odds).toMatchObject({
-      state: "available",
-      source: "pregame-snapshot",
-      selections: [{ americanOdds: 120 }, { americanOdds: -135 }],
-    });
+    expect(page.items[0]?.odds).toEqual({ state: "unavailable" });
   });
 
   it("ignores closing books whose canonical event binding is stale", async () => {
@@ -1193,12 +1189,7 @@ describe("joined games repository", () => {
       closingLines,
     ).list({ sportKey: "mlb", status: "started", day: "2026-08-01" }, 1);
 
-    expect(page.items[0]?.odds.state).toBe("available");
-    expect(
-      page.items[0]?.odds.state === "available"
-        ? page.items[0].odds.selections.map(({ sportsbookId }) => sportsbookId)
-        : [],
-    ).toEqual(["draftkings", "draftkings"]);
+    expect(page.items[0]?.odds).toEqual({ state: "unavailable" });
   });
 
   it("rebuilds soccer order and canonicalizes provider abbreviations", async () => {
