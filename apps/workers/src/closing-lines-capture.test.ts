@@ -52,14 +52,32 @@ const games = (items: readonly GameDisplayDto[]) => ({
       unavailableReason: null,
     }) as never,
 });
-const price = (selectionKey: "away" | "home", odds: number) => ({
-  providerMarketType: "moneyline" as const,
-  marketKey: "moneyline" as const,
-  providerMarketId: "moneyline",
+const price = (
+  selectionKey: "away" | "home" | "over" | "under",
+  odds: number,
+) => ({
+  providerMarketType:
+    selectionKey === "over" || selectionKey === "under"
+      ? ("total_runs" as const)
+      : ("moneyline" as const),
+  marketKey:
+    selectionKey === "over" || selectionKey === "under"
+      ? ("total" as const)
+      : ("moneyline" as const),
+  providerMarketId:
+    selectionKey === "over" || selectionKey === "under" ? "total" : "moneyline",
   selectionKey,
-  selectionLabel: selectionKey === "away" ? "Away Club" : "Home Club",
+  selectionLabel:
+    selectionKey === "away"
+      ? "Visitors"
+      : selectionKey === "home"
+        ? "Hosts"
+        : `Provider ${selectionKey}`,
   providerSelectionId: selectionKey,
-  canonicalKey: `moneyline:${selectionKey}`,
+  canonicalKey: `${selectionKey === "over" || selectionKey === "under" ? "total" : "moneyline"}:${selectionKey}`,
+  ...(selectionKey === "over" || selectionKey === "under"
+    ? { point: 8.5 }
+    : {}),
   americanOdds: odds,
   decimalOdds: odds > 0 ? 2.2 : 1.8,
   impliedProbability: 0.5,
@@ -91,6 +109,8 @@ const book = (id: "hardrock" | "pinnacle", final = true) => ({
   prices: [
     price("away", id === "pinnacle" ? 118 : 120),
     price("home", id === "pinnacle" ? -124 : -135),
+    price("over", -110),
+    price("under", -110),
   ],
 });
 const bound = async () => {
@@ -137,9 +157,15 @@ describe("canonical closing lines capture", () => {
       providerMarketId: "moneyline",
       providerSelectionId: "away",
       canonicalKey: "moneyline:away",
+      selectionLabel: "Away Club",
       impliedProbability: 0.5,
       closingProbability: 0.5,
     });
+    expect(
+      (await closingLines.listFinalized("event-1"))[0]?.selections.find(
+        ({ selectionKey }) => selectionKey === "over",
+      )?.selectionLabel,
+    ).toBe("Over");
     const replay = await captureClosingLines(
       {
         games: games([game()]),

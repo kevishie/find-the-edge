@@ -156,6 +156,94 @@ describe("SharpAPI canonical closing lines", () => {
     );
   });
 
+  it("accepts the live endpoint's full-precision probabilities and nanosecond timestamps", () => {
+    const odds = [
+      closingOdd({
+        sportsbook: "pinnacle",
+        odds_decimal: 1.9433962264150944,
+        implied_probability: 0.5145631067961165,
+        no_vig_probability: 0.5047143126532152,
+        fair_close_decimal: 1.9813188866056415,
+        closing_probability: 0.5048495241801317,
+        source_updated_at: "2026-04-22T22:09:55.001907432Z",
+      }),
+      closingOdd({
+        sportsbook: "pinnacle",
+        selection: "Athletics",
+        selection_type: "away",
+        odds_american: -102,
+        odds_decimal: 1.9803921568627452,
+        selection_id: "ml-away",
+        canonical_key: `${eventId}:moneyline:away`,
+        implied_probability: 0.504950495049505,
+        no_vig_probability: 0.49528568734678485,
+        fair_close_decimal: 2.0190367409099563,
+        closing_probability: 0.4951504779680169,
+        source_updated_at: "2026-04-22T22:09:55.001907432Z",
+      }),
+    ];
+    const snapshot = parseSharpApiClosingLines(
+      closingPayload({
+        pinnacle: closingBook({
+          captured_at: "2026-04-22T22:09:58.41293461Z",
+          odds,
+        }),
+      }),
+      eventId,
+      retrievedAt,
+    );
+
+    expect(snapshot.books[0]?.prices).toHaveLength(2);
+    expect(snapshot.books[0]?.capturedAt).toBe("2026-04-22T22:09:58.412Z");
+    expect(snapshot.rejections).toEqual([]);
+  });
+
+  it("accepts provider-abbreviated team labels when exact event and side keys bind the row", () => {
+    const base = closingBook();
+    const odds = (base.odds as Record<string, unknown>[]).map((row) => ({
+      ...row,
+      ...(row["selection_type"] === "home"
+        ? { selection: "Mariners" }
+        : row["selection_type"] === "away"
+          ? { selection: "A's" }
+          : {}),
+    }));
+    const snapshot = parseSharpApiClosingLines(
+      closingPayload({ draftkings: closingBook({ odds }) }),
+      eventId,
+      retrievedAt,
+    );
+
+    expect(snapshot.books[0]?.prices).toHaveLength(6);
+    expect(snapshot.rejections).toEqual([]);
+  });
+
+  it("derives a fair decimal from closing probability when the live provider sends null", () => {
+    const base = closingBook();
+    const odds = (base.odds as Record<string, unknown>[]).map((row) =>
+      row["market_type"] === "run_line" && row["selection_type"] === "home"
+        ? {
+            ...row,
+            fair_close_decimal: null,
+            closing_probability: 0.4,
+          }
+        : row,
+    );
+    const snapshot = parseSharpApiClosingLines(
+      closingPayload({ draftkings: closingBook({ odds }) }),
+      eventId,
+      retrievedAt,
+    );
+
+    expect(
+      snapshot.books[0]?.prices.find(
+        ({ marketKey, selectionKey }) =>
+          marketKey === "spread" && selectionKey === "home",
+      )?.fairCloseDecimal,
+    ).toBe(2.5);
+    expect(snapshot.rejections).toEqual([]);
+  });
+
   it("retains nonfinal and valid sibling books while reason-coding malformed books", () => {
     const snapshot = parseSharpApiClosingLines(
       closingPayload({
@@ -191,7 +279,7 @@ describe("SharpAPI canonical closing lines", () => {
     );
   });
 
-  it("withholds an ambiguous alternate line while retaining coherent siblings", () => {
+  it("selects the most balanced coherent line when alternate lines are present", () => {
     const base = closingBook();
     const odds = (base.odds as Record<string, unknown>[]).concat([
       closingOdd({
@@ -220,22 +308,52 @@ describe("SharpAPI canonical closing lines", () => {
     );
 
     expect(
-      snapshot.books[0]?.prices.some(({ marketKey }) => marketKey === "total"),
-    ).toBe(false);
-    expect(snapshot.books[0]?.prices).toHaveLength(4);
-    expect(snapshot.rejections).toContainEqual(
-      expect.objectContaining({
-        reason: "ambiguous-market",
-        auditId: "total_runs",
-      }),
+      snapshot.books[0]?.prices
+        .filter(({ marketKey }) => marketKey === "total")
+        .map(({ point }) => point),
+    ).toEqual([7.5, 7.5]);
+    expect(snapshot.books[0]?.prices).toHaveLength(6);
+    expect(snapshot.rejections).not.toContainEqual(
+      expect.objectContaining({ auditId: "total_runs" }),
     );
   });
 
-  it("rejects selections paired across different native provider markets", () => {
+  it.each([
+    ["moneyline", "away", "moneyline"],
+    ["run_line", "away", "spread"],
+    ["total_runs", "over", "total"],
+  ] as const)(
+    "rejects %s selections paired across different native provider markets",
+    (providerMarketType, selectionType, marketKey) => {
+      const base = closingBook();
+      const odds = (base.odds as Record<string, unknown>[]).map((row) =>
+        row["selection_type"] === selectionType &&
+        row["market_type"] === providerMarketType
+          ? { ...row, market_id: `${providerMarketType}-other` }
+          : row,
+      );
+      const snapshot = parseSharpApiClosingLines(
+        closingPayload({ draftkings: closingBook({ odds }) }),
+        eventId,
+        retrievedAt,
+      );
+
+      expect(
+        snapshot.books[0]?.prices.some(
+          (price) => price.marketKey === marketKey,
+        ),
+      ).toBe(false);
+      expect(snapshot.rejections).toContainEqual(
+        expect.objectContaining({ reason: "incomplete-market" }),
+      );
+    },
+  );
+
+  it("rejects moneyline sides that reuse one provider selection identity", () => {
     const base = closingBook();
     const odds = (base.odds as Record<string, unknown>[]).map((row) =>
-      row["selection_type"] === "away" && row["market_type"] === "moneyline"
-        ? { ...row, market_id: "ml-other" }
+      row["market_type"] === "moneyline" && row["selection_type"] === "away"
+        ? { ...row, selection_id: "ml-home" }
         : row,
     );
     const snapshot = parseSharpApiClosingLines(
@@ -243,16 +361,43 @@ describe("SharpAPI canonical closing lines", () => {
       eventId,
       retrievedAt,
     );
-
     expect(
       snapshot.books[0]?.prices.some(
         ({ marketKey }) => marketKey === "moneyline",
       ),
     ).toBe(false);
-    expect(snapshot.rejections).toContainEqual(
-      expect.objectContaining({ reason: "incomplete-market" }),
-    );
   });
+
+  it.each([
+    ["run_line", "spread"],
+    ["total_runs", "total"],
+  ] as const)(
+    "selects a stable %s native market when duplicate propositions reorder",
+    (providerMarketType, marketKey) => {
+      const base = closingBook();
+      const original = base.odds as Record<string, unknown>[];
+      const duplicate = original
+        .filter(({ market_type }) => market_type === providerMarketType)
+        .map((row) => ({
+          ...row,
+          market_id: `duplicate-${providerMarketType}`,
+          selection_id: `duplicate-${String(row["selection_id"])}`,
+        }));
+      const parse = (odds: readonly Record<string, unknown>[]) =>
+        parseSharpApiClosingLines(
+          closingPayload({ draftkings: closingBook({ odds }) }),
+          eventId,
+          retrievedAt,
+        )
+          .books[0]?.prices.filter((price) => price.marketKey === marketKey)
+          .map(({ providerMarketId, providerSelectionId }) => ({
+            providerMarketId,
+            providerSelectionId,
+          }));
+      const rows = [...original, ...duplicate];
+      expect(parse(rows)).toEqual(parse([...rows].reverse()));
+    },
+  );
 
   it("rejects a canonical proposition key from another event", () => {
     const base = closingBook();

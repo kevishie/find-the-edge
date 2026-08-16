@@ -1105,17 +1105,17 @@ describe("joined games repository", () => {
       selections: [
         {
           marketKey: "moneyline",
-          selectionKey: participantKey("bos"),
+          selectionKey: participantKey("nyy"),
           sportsbookId: "hardrock",
-          americanOdds: 130,
+          americanOdds: -145,
           observedAt: "2026-08-01T11:59:00.000Z",
           retrievedAt: "2026-08-01T12:20:00.000Z",
         },
         {
           marketKey: "moneyline",
-          selectionKey: participantKey("nyy"),
+          selectionKey: participantKey("bos"),
           sportsbookId: "hardrock",
-          americanOdds: -145,
+          americanOdds: 130,
           observedAt: "2026-08-01T11:59:00.000Z",
           retrievedAt: "2026-08-01T12:20:00.000Z",
         },
@@ -1130,7 +1130,10 @@ describe("joined games repository", () => {
     expect(page.items[0]?.odds).toMatchObject({
       state: "available",
       source: "canonical-closing",
-      selections: [{ americanOdds: 130 }, { americanOdds: -145 }],
+      selections: [
+        { selectionKey: participantKey("bos"), americanOdds: 130 },
+        { selectionKey: participantKey("nyy"), americanOdds: -145 },
+      ],
     });
 
     const scheduled = await new DynamoGamesRepository(
