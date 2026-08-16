@@ -932,7 +932,21 @@ export class JoinedGamesRepository implements GamesRepository {
             continue;
           }
           if (specification.required) requiredAvailable = true;
-          selections.push(...market);
+          // Provider labels are evidence, not canonical identity. Schedule
+          // participants are the display authority, and legitimate soccer
+          // books abbreviate some bound selections. Passing those labels
+          // through makes the strict browser contract reject the whole page
+          // even though the selection key is exact. Canonicalize every served
+          // selection here, as the detail projection already does.
+          selections.push(
+            ...market.map((selection) => ({
+              ...selection,
+              selectionLabel: canonicalSelectionLabel(
+                event,
+                selection.selectionKey,
+              ),
+            })),
+          );
         }
         if (!requiredAvailable) return null;
         // Every market that survived above already shares one book and one
