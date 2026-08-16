@@ -1201,21 +1201,21 @@ describe("joined games repository", () => {
     ).toEqual(["draftkings", "draftkings"]);
   });
 
-  it("rebuilds soccer away/draw/home order", async () => {
+  it("rebuilds soccer order and canonicalizes provider abbreviations", async () => {
     const soccer = {
       ...event,
       id: "event-mls",
       sportKey: "soccer",
       leagueKey: "mls",
       participants: [
-        { id: "mia", label: "Miami" },
-        { id: "atl", label: "Atlanta" },
+        { id: "skc", label: "Sporting Kansas City" },
+        { id: "col", label: "Colorado Rapids" },
       ],
     } as EventDisplayDto;
     const selections = [
-      current(soccer, "away", "Miami"),
+      current(soccer, "away", "Kansas City"),
       current(soccer, "draw", "Draw"),
-      current(soccer, "home", "Atlanta"),
+      current(soccer, "home", "Colorado Rapids"),
     ];
     const page = await new JoinedGamesRepository(events([soccer]), {
       batchGet: () => Promise.resolve([...selections].reverse().map(row)),
@@ -1223,9 +1223,15 @@ describe("joined games repository", () => {
     expect(page.items[0]?.odds).toMatchObject({
       state: "available",
       selections: [
-        { selectionKey: participantKey("mia") },
-        { selectionKey: "draw" },
-        { selectionKey: participantKey("atl") },
+        {
+          selectionKey: participantKey("skc"),
+          selectionLabel: "Sporting Kansas City",
+        },
+        { selectionKey: "draw", selectionLabel: "Draw" },
+        {
+          selectionKey: participantKey("col"),
+          selectionLabel: "Colorado Rapids",
+        },
       ],
     });
   });
