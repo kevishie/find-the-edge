@@ -9,6 +9,8 @@ This runbook prepares and operates two isolated persistent environments:
 
 Feature branches merge into `main`. After the exact deployed staging SHA passes live smoke, promote it with a pull request from `main` to `production`. A production hotfix must be merged back into `main` immediately so the mainlines do not diverge.
 
+Recurring provider acquisition is stage-owned cost policy. `staging` keeps Live Odds, Provider Landing, opportunity generation, and opportunity expiration schedules disabled while retaining their functions, queues, checkpoints, DLQs, secrets, and manual invocation outputs. The provider workers also acknowledge old staging scheduler/SQS deliveries without reading secrets or calling SharpAPI, so queued work from before the deploy cannot extend the paid cadence; direct Lambda invocation remains available for deliberate canaries. `prod` keeps Live Odds and the two opportunity schedules enabled; universal Provider Landing remains promotion-gated and disabled. Preflight and synthesis reject a contradictory scheduler flag and structurally bind each retained output to its real schedule target. This first cost-control boundary does not share tables or let staging read production data.
+
 ## Safety boundary and current DNS observation
 
 As observed on 2026-08-07, `kevishie.com` used `ns-cloud-d1.googledomains.com` through `ns-cloud-d4.googledomains.com`, and its apex resolved to `173.230.142.141`. These are observations, not deployment constants. Re-query and export the complete zone immediately before certificate validation or traffic changes.

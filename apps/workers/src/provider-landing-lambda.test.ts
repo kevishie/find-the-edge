@@ -3,6 +3,7 @@ import { MemoryOddsControlPlaneStore } from "@find-the-edge/database";
 import { SharpApiError } from "@find-the-edge/providers";
 
 import {
+  automaticProviderLandingInvocationDisabled,
   createProviderLandingMetricSink,
   parseProviderLandingSecret,
   providerLandingTerminalReason,
@@ -16,6 +17,22 @@ afterEach(() => {
 });
 
 describe("provider landing Lambda boundary", () => {
+  it("drops scheduled staging retries while preserving direct manual runs", () => {
+    const scheduled = {
+      source: "aws.events",
+      "detail-type": "Scheduled Event",
+    };
+    expect(
+      automaticProviderLandingInvocationDisabled("staging", scheduled),
+    ).toBe(true);
+    expect(automaticProviderLandingInvocationDisabled("staging", {})).toBe(
+      false,
+    );
+    expect(automaticProviderLandingInvocationDisabled("prod", scheduled)).toBe(
+      false,
+    );
+  });
+
   it("accepts the existing plain and JSON SharpAPI secret shapes", () => {
     expect(parseProviderLandingSecret("server-key")).toBe("server-key");
     expect(parseProviderLandingSecret('{"apiKey":"server-key"}')).toBe(

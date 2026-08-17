@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { recurringDataPlaneEnabled } from "./environment-contract.mjs";
 import {
   assertRetainedResourcesSafe,
   assertDeployedTemplateMatches,
@@ -20,6 +21,7 @@ import {
   releaseSnapshotArguments,
   resolveExistingStackSummary,
   planReleaseRollback,
+  launchSchedulerEnabled,
   validateStackOutputs,
   validateLaunchEnvironment,
   selectLaunchTarget,
@@ -36,6 +38,14 @@ const valid = {
     "arn:aws:secretsmanager:us-east-1:228246988391:secret:cursor",
   FTE_PRODUCT_ACCESS_ENFORCED: "false",
 };
+test("protected launches enable recurrence only for production", () => {
+  assert.equal(recurringDataPlaneEnabled("staging"), false);
+  assert.equal(recurringDataPlaneEnabled("prod"), true);
+  assert.throws(() => recurringDataPlaneEnabled("dev"), /staging or prod/);
+  assert.equal(launchSchedulerEnabled({ stage: "dev" }), true);
+  assert.equal(launchSchedulerEnabled({ stage: "staging" }), false);
+  assert.equal(launchSchedulerEnabled({ stage: "prod" }), true);
+});
 test("launch requires explicit opt-in and exact account/region", () => {
   assert.doesNotThrow(() => validateLaunchEnvironment(valid));
   assert.throws(
@@ -67,6 +77,14 @@ test("launch binds verified branches, stages, certificates, and release provenan
   assert.equal(
     selectLaunchTarget(staging).stack,
     "FindTheEdge-staging-Foundation",
+  );
+  assert.throws(
+    () =>
+      validateLaunchEnvironment({
+        ...staging,
+        FTE_UPCOMING_SCHEDULER_ENABLED: "true",
+      }),
+    /must be false for staging/,
   );
   assert.throws(
     () =>

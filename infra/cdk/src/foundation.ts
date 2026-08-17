@@ -1921,6 +1921,22 @@ export function createFoundationApp(config: FoundationConfig): {
     )
       throw new Error("FTE_WEB_ORIGIN must be an exact HTTPS origin");
   }
+  const persistentSchedulerPolicy =
+    config.stage === "prod"
+      ? true
+      : config.stage === "staging"
+        ? false
+        : undefined;
+  if (
+    persistentSchedulerPolicy !== undefined &&
+    config.schedulerEnabled !== undefined &&
+    config.schedulerEnabled !== persistentSchedulerPolicy
+  )
+    throw new Error(
+      `recurring data-plane scheduling must be ${String(persistentSchedulerPolicy)} for ${config.stage}`,
+    );
+  const schedulerEnabled =
+    persistentSchedulerPolicy ?? config.schedulerEnabled ?? false;
   const app = new App({ analyticsReporting: false });
   const environment =
     config.account && config.region
@@ -1932,7 +1948,7 @@ export function createFoundationApp(config: FoundationConfig): {
     {
       description:
         "FIND THE EDGE checkpointed upcoming-event ingestion with a config-controlled scheduler producer.",
-      schedulerEnabled: config.schedulerEnabled ?? false,
+      schedulerEnabled,
       paperPickSchedulerEnabled: config.paperPickSchedulerEnabled ?? false,
       paperPickGenerationMinutes,
       stageName: config.stage,

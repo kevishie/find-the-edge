@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  automaticLiveOddsInvocationDisabled,
   assertLiveOddsMaintenanceOwnership,
   boundedLiveOddsInvocationError,
   boundedRetryVisibilitySeconds,
@@ -13,6 +14,26 @@ import {
 import { SharpApiError } from "@find-the-edge/providers";
 
 describe("live odds Lambda invocation", () => {
+  it("acknowledges queued staging cadence work while preserving manual invocation", () => {
+    const queued = parseLiveOddsInvocation({
+      Records: [
+        {
+          eventSource: "aws:sqs",
+          messageId: "scheduled-1",
+          attributes: { ApproximateReceiveCount: "1" },
+        },
+      ],
+    });
+    expect(automaticLiveOddsInvocationDisabled("staging", queued)).toBe(true);
+    expect(
+      automaticLiveOddsInvocationDisabled(
+        "staging",
+        parseLiveOddsInvocation(undefined),
+      ),
+    ).toBe(false);
+    expect(automaticLiveOddsInvocationDisabled("prod", queued)).toBe(false);
+  });
+
   it("preserves closed diagnostics and bounds unexpected runtime failures", () => {
     expect(
       boundedLiveOddsInvocationError(

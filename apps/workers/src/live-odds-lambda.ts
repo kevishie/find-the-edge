@@ -154,6 +154,13 @@ export function parseLiveOddsInvocation(event: unknown): {
   };
 }
 
+export function automaticLiveOddsInvocationDisabled(
+  stage: string | undefined,
+  invocation: ReturnType<typeof parseLiveOddsInvocation>,
+): boolean {
+  return stage === "staging" && invocation.sqs !== undefined;
+}
+
 export const assertLiveOddsMaintenanceOwnership = async (
   client: DynamoDBDocumentClient,
   tableName: string,
@@ -459,6 +466,13 @@ export const runLiveOddsFastLane = async (input: {
 
 const runLiveOddsHandler = async (event?: unknown) => {
   const invocation = parseLiveOddsInvocation(event);
+  if (
+    automaticLiveOddsInvocationDisabled(
+      process.env["FTE_AWS_STAGE"],
+      invocation,
+    )
+  )
+    return { batchItemFailures: [] as readonly never[] };
   const tableName = process.env["FTE_EVENT_TABLE"];
   const sharpSecretId = process.env["FTE_SHARP_API_SECRET_ID"];
   const sharpEnabled = process.env["FTE_SHARP_API_ENABLED"] === "true";

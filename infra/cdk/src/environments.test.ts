@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   resolveEnvironment,
   resolveProductAccessEnforcement,
+  resolveRecurringDataPlaneEnabled,
 } from "./environments";
 
 describe("deployment environment contract", () => {
@@ -75,5 +76,23 @@ describe("deployment environment contract", () => {
         /true or false/i,
       );
     }
+  });
+
+  it("owns recurring data-plane policy in protected stages without breaking legacy dev", () => {
+    expect(resolveRecurringDataPlaneEnabled("staging", undefined)).toBe(false);
+    expect(resolveRecurringDataPlaneEnabled("staging", "false")).toBe(false);
+    expect(resolveRecurringDataPlaneEnabled("prod", undefined)).toBe(true);
+    expect(resolveRecurringDataPlaneEnabled("prod", "true")).toBe(true);
+    expect(resolveRecurringDataPlaneEnabled("dev", "true")).toBe(true);
+    expect(resolveRecurringDataPlaneEnabled("local", undefined)).toBe(false);
+    expect(() => resolveRecurringDataPlaneEnabled("staging", "true")).toThrow(
+      /must be false for staging/,
+    );
+    expect(() => resolveRecurringDataPlaneEnabled("prod", "false")).toThrow(
+      /must be true for prod/,
+    );
+    expect(() => resolveRecurringDataPlaneEnabled("local", "TRUE")).toThrow(
+      /true or false/,
+    );
   });
 });

@@ -271,15 +271,23 @@ CloudWatch Logs, embedded metrics, and custom metrics are intentionally
 disabled. Four standard staging alarms cover sustained Live Odds and Provider
 Landing Lambda errors or DLQ depth; operational detail remains durable in
 DynamoDB checkpoints, account health records, quarantine rows, and DLQs.
-Universal acquisition
-is enabled in staging only until the data-quality promotion gate passes.
+Universal acquisition is now manual-only in staging. The Provider Landing
+function, queues, checkpoints, quarantine evidence, DLQ, secret binding, and
+stack outputs remain deployed so an operator can run a bounded validation after
+an ingest change without paying for continuous staging collection.
+Already queued Live Odds cadence messages and accepted Provider Landing
+scheduled retries are acknowledged by the staging workers without secret reads
+or provider calls. Direct operator invocation is intentionally not fenced and
+continues through the normal quota, checkpoint, and idempotency controls.
 Configuration, entitlement, and authorization failures mark the shared account
 health terminal; the scheduled delivery then completes without two identical
 blind retries. Unexpected Lambda/storage failures retain bounded asynchronous
 retries and page only after two of three five-minute periods breach. The
-schedule is enabled only when both the
-scheduler flag is true and the stage is exactly `staging`; `dev`, test aliases,
-and production remain inert.
+recurring Provider Landing schedule is disabled in every persistent stage until
+a separate promotion decision. Staging also disables recurring Live Odds and
+opportunity maintenance; production retains the aggressive Live Odds and
+opportunity cadence. Stage-aware synth and preflight checks reject attempts to
+turn staging recurrence on or production Live Odds recurrence off.
 
 Staging verification resolves `ProviderLandingFunctionName` from the exact stack,
 invokes it only with the deployed SharpAPI secret binding, then strongly reads
