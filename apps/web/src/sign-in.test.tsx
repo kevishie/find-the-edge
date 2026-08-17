@@ -257,10 +257,7 @@ it("never returns the reader to another origin", async () => {
 
 it("returns from sign-in to the root landing page instead of the return URL", async () => {
   render(
-    <App
-      initialPath="/login?returnUrl=%2Fsplits"
-      sessionStore={store()}
-    />,
+    <App initialPath="/login?returnUrl=%2Fsplits" sessionStore={store()} />,
   );
 
   const backHome = await screen.findByRole("link", { name: "Back to home" });
