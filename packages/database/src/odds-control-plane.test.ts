@@ -616,6 +616,12 @@ describe("atomic paid-call guards", () => {
         transaction = command.input;
         const error = new Error("authoritative remaining won race");
         error.name = "TransactionCanceledException";
+        Object.assign(error, {
+          CancellationReasons: [
+            { Code: "ConditionalCheckFailed" },
+            { Code: "None" },
+          ],
+        });
         throw error;
       },
     };
@@ -642,6 +648,61 @@ describe("atomic paid-call guards", () => {
     expect(update?.["ExpressionAttributeValues"]).toEqual(
       expect.objectContaining({ ":expectedVersion": 7 }),
     );
+  });
+
+  it("propagates quota transaction throttles and conflicts while retaining conditional loss", async () => {
+    const cancellation = (...codes: string[]) => {
+      const error = new Error("sensitive cancellation detail");
+      error.name = "TransactionCanceledException";
+      Object.assign(error, {
+        CancellationReasons: codes.map((Code) => ({ Code })),
+      });
+      return error;
+    };
+    const reserve = (error: Error) => {
+      const client = {
+        async send(command: { constructor: { name: string } }) {
+          if (command.constructor.name === "GetCommand")
+            return {
+              Item: {
+                value: {
+                  providerId: "sharpapi",
+                  healthKey: "sharpapi:mlb:odds",
+                  healthy: true,
+                  consecutiveSuccesses: 1,
+                  rateWindow: { limit: 60, remaining: 41 },
+                  updatedAt: "2026-08-04T12:00:00.000Z",
+                },
+              },
+            };
+          throw error;
+        },
+      };
+      return new DynamoOddsControlPlaneStore(
+        client as unknown as DynamoDBDocumentClient,
+        "table",
+      ).reserveQuotaAttempt("sharpapi:mlb:odds", 10, 1, {
+        attemptId: "attempt-1",
+        runId: "run-1",
+        pageToken: "start",
+        requestedAt: "2026-08-04T12:00:01.000Z",
+      });
+    };
+
+    await expect(
+      reserve(cancellation("ConditionalCheckFailed", "None")),
+    ).resolves.toBe(false);
+    for (const error of [
+      cancellation("ProvisionedThroughputExceeded", "None"),
+      cancellation("ThrottlingError", "None"),
+      cancellation("TransactionConflict", "None"),
+      cancellation("ConditionalCheckFailed", "ThrottlingError"),
+      cancellation(),
+      Object.assign(new Error("missing reasons"), {
+        name: "TransactionCanceledException",
+      }),
+    ])
+      await expect(reserve(error)).rejects.toBe(error);
   });
 
   it("reserves quota and a unique attempt together", async () => {

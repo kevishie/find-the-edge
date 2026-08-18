@@ -33,7 +33,11 @@ import {
   runFocusedSharpOddsIngestion,
   runProductionOddsControlPlane,
 } from "./production-odds-control-plane";
-import { decideOddsRetry } from "./odds-control-plane";
+import {
+  classifyOddsControlPlaneFailure,
+  decideOddsRetry,
+  isRetryableOddsStorageFailure,
+} from "./odds-control-plane";
 
 export function parseProviderApiSecret(value: string | undefined): string {
   if (!value) throw new Error("provider-api-secret-missing");
@@ -219,6 +223,9 @@ export const liveOddsSummaryRetryDecision = (summary: unknown) => {
     const normalized = reason.startsWith("schedule-")
       ? reason.slice("schedule-".length)
       : reason;
+    const storageReason = normalized.startsWith("provider-error-storage-")
+      ? normalized.slice("provider-error-".length)
+      : normalized;
     if (
       [
         "provider-unavailable",
@@ -226,10 +233,13 @@ export const liveOddsSummaryRetryDecision = (summary: unknown) => {
         "provider-cooldown",
         "quota-reserve",
         "provider-request-ambiguous",
-      ].includes(normalized)
+      ].includes(normalized) ||
+      isRetryableOddsStorageFailure(storageReason)
     )
       return {
-        reason: normalized,
+        reason: isRetryableOddsStorageFailure(storageReason)
+          ? storageReason
+          : normalized,
         ...(typeof record["retryAt"] === "string"
           ? { retryAt: record["retryAt"] }
           : {}),
@@ -271,6 +281,14 @@ export const liveOddsErrorRetryDecision = (
   return providerRetryAt ? { ...decision, retryAt: providerRetryAt } : decision;
 };
 
+export const liveOddsSqsFailureResponse = (
+  messageId: string,
+  action: ReturnType<typeof liveOddsErrorRetryDecision>["action"],
+) =>
+  action === "stop"
+    ? { batchItemFailures: [] as readonly never[] }
+    : { batchItemFailures: [{ itemIdentifier: messageId }] };
+
 const extendRetryVisibility = async (
   sqs: NonNullable<ReturnType<typeof parseLiveOddsInvocation>["sqs"]>,
   retryAt: unknown,
@@ -286,6 +304,28 @@ const extendRetryVisibility = async (
       VisibilityTimeout: visibilityTimeout,
     }),
   );
+};
+
+export const retainLiveOddsSqsRetryOwnership = async (
+  sqs: NonNullable<ReturnType<typeof parseLiveOddsInvocation>["sqs"]>,
+  decision: Pick<
+    ReturnType<typeof liveOddsErrorRetryDecision>,
+    "action" | "retryAt"
+  >,
+  extend: typeof extendRetryVisibility = extendRetryVisibility,
+) => {
+  if (decision.action !== "stop" && decision.action !== "exhausted")
+    try {
+      await extend(sqs, decision.retryAt);
+    } catch (error) {
+      process.stdout.write(
+        `${JSON.stringify({
+          event: "live-odds-retry-visibility-failed",
+          reason: classifyOddsControlPlaneFailure(error),
+        })}\n`,
+      );
+    }
+  return liveOddsSqsFailureResponse(sqs.messageId, decision.action);
 };
 
 const safeLiveOddsInvocationCodes = new Set([
@@ -420,8 +460,18 @@ const withBoundedInvocationStage = async <T>(
 export const runLiveOddsFastLane = async (input: {
   readonly budgetMs: number;
   readonly pauseMs: number;
-  readonly runPass: () => Promise<readonly { readonly pages: number }[]>;
+  readonly runPass: () => Promise<
+    readonly {
+      readonly pages: number;
+      readonly status?: string;
+      readonly reason?: string;
+    }[]
+  >;
   readonly materialize: () => Promise<void>;
+  readonly onRetryableStorageFailure?: (decision: {
+    readonly reason: string;
+    readonly retryAt?: string;
+  }) => void;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
 }): Promise<number> => {
@@ -439,6 +489,14 @@ export const runLiveOddsFastLane = async (input: {
     await sleep(input.pauseMs);
     try {
       const summary = await input.runPass();
+      const retryDecision = liveOddsSummaryRetryDecision(summary);
+      if (
+        retryDecision &&
+        isRetryableOddsStorageFailure(retryDecision.reason)
+      ) {
+        input.onRetryableStorageFailure?.(retryDecision);
+        break;
+      }
       const committedPages = summary.reduce(
         (total, result) => total + result.pages,
         0,
@@ -449,13 +507,17 @@ export const runLiveOddsFastLane = async (input: {
       );
       if (committedPages > 0) await input.materialize();
     } catch (error) {
+      const reason = classifyOddsControlPlaneFailure(error);
+      if (isRetryableOddsStorageFailure(reason)) {
+        input.onRetryableStorageFailure?.({ reason });
+        break;
+      }
       // The tick's first pass already committed its evidence; a fast-lane
       // failure waits for the next tick instead of failing the invocation.
       process.stdout.write(
         `${JSON.stringify({
           event: "live-odds-fast-lane-failed",
-          errorMessage:
-            error instanceof Error ? error.message.slice(0, 200) : "unknown",
+          reason,
         })}\n`,
       );
       break;
@@ -473,424 +535,451 @@ const runLiveOddsHandler = async (event?: unknown) => {
     )
   )
     return { batchItemFailures: [] as readonly never[] };
-  const tableName = process.env["FTE_EVENT_TABLE"];
-  const sharpSecretId = process.env["FTE_SHARP_API_SECRET_ID"];
-  const sharpEnabled = process.env["FTE_SHARP_API_ENABLED"] === "true";
-  if (!tableName || !sharpEnabled || !sharpSecretId)
-    throw new Error("live-odds-configuration-invalid");
-  const secrets = new SecretsManagerClient({});
-  const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-  await assertLiveOddsMaintenanceOwnership(
-    client,
-    tableName,
-    invocation.maintenanceToken,
-  );
-  const eventStore = new DynamoEventIngestionStore(
-    new AwsDynamoGateway(client, tableName),
-  );
-  const oddsStore = new DynamoFixtureOddsAdapter(
-    new AwsFixtureOddsGateway(client, tableName),
-    new DynamoExactOddsSnapshotRepository(client, tableName),
-  );
-  const closingLines = new DynamoClosingLinesRepository(client, tableName);
-  const controlStore = new DynamoOddsControlPlaneStore(client, tableName);
-  const accountRateHealthKey = "sharpapi:account:account";
-  const closingCapabilityHealthKey = "sharpapi:account:closing";
-  const provider = "odds-control-plane";
-  const sharpSecret = await withBoundedInvocationStage(
-    "live-odds-secret-read-failed",
-    () => secrets.send(new GetSecretValueCommand({ SecretId: sharpSecretId })),
-  );
-  const sharpApiKey = parseProviderApiSecret(sharpSecret.SecretString);
-  const common = {
-    events: eventStore,
-    odds: oddsStore,
-    control: controlStore,
-    sharpApiKey,
-  };
-  let summary;
   try {
-    const focused = invocation.focused;
-    summary = focused
-      ? await withBoundedInvocationStage("live-odds-control-plane-failed", () =>
-          runFocusedSharpOddsIngestion({
-            ...common,
-            request: focused,
-          }),
-        )
-      : await withBoundedInvocationStage("live-odds-control-plane-failed", () =>
-          runProductionOddsControlPlane({
-            ...common,
-            splits: new DynamoBettingSplitRepository(client, tableName),
-            closingLines,
-            ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
-          }),
-        );
-  } catch (error) {
-    if (!invocation.sqs) throw error;
-    const decision = liveOddsErrorRetryDecision(
-      error,
-      invocation.sqs.receiveCount,
+    const tableName = process.env["FTE_EVENT_TABLE"];
+    const sharpSecretId = process.env["FTE_SHARP_API_SECRET_ID"];
+    const sharpEnabled = process.env["FTE_SHARP_API_ENABLED"] === "true";
+    if (!tableName || !sharpEnabled || !sharpSecretId)
+      throw new Error("live-odds-configuration-invalid");
+    const secrets = new SecretsManagerClient({});
+    const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+    await assertLiveOddsMaintenanceOwnership(
+      client,
+      tableName,
+      invocation.maintenanceToken,
     );
-    if (decision.action === "stop")
-      return { batchItemFailures: [] as readonly never[] };
-    if (decision.action !== "exhausted")
-      await extendRetryVisibility(invocation.sqs, decision.retryAt);
-    // Returning the item identifier is explicit retry ownership. On the fifth
-    // receive SQS redrive moves it to the configured odds DLQ.
-    return {
-      batchItemFailures: [{ itemIdentifier: invocation.sqs.messageId }],
+    const eventStore = new DynamoEventIngestionStore(
+      new AwsDynamoGateway(client, tableName),
+    );
+    const oddsStore = new DynamoFixtureOddsAdapter(
+      new AwsFixtureOddsGateway(client, tableName),
+      new DynamoExactOddsSnapshotRepository(client, tableName),
+    );
+    const closingLines = new DynamoClosingLinesRepository(client, tableName);
+    const controlStore = new DynamoOddsControlPlaneStore(client, tableName);
+    const accountRateHealthKey = "sharpapi:account:account";
+    const closingCapabilityHealthKey = "sharpapi:account:closing";
+    const provider = "odds-control-plane";
+    const sharpSecret = await withBoundedInvocationStage(
+      "live-odds-secret-read-failed",
+      () =>
+        secrets.send(new GetSecretValueCommand({ SecretId: sharpSecretId })),
+    );
+    const sharpApiKey = parseProviderApiSecret(sharpSecret.SecretString);
+    const common = {
+      events: eventStore,
+      odds: oddsStore,
+      control: controlStore,
+      sharpApiKey,
     };
-  }
-  process.stdout.write(
-    `${JSON.stringify({ event: "live-odds-ingestion-complete", provider, summary })}\n`,
-  );
-  // The provider's live schedule is the authority on which scheduled listings
-  // still exist; a fetch failure disables the filter for this run rather than
-  // hiding anything. One sweep serves every materialization in this
-  // invocation — the listing set cannot meaningfully change inside a tick.
-  let mlbListingsSweep:
-    Promise<ReturnType<typeof usableScheduleListings> | null> | undefined;
-  const scheduleListings = (sportKey: string) => {
-    // Scoped to MLB: the withdrawn-listing class has only been observed
-    // there, the splits witness only exists there, and soccer club
-    // naming ("Inter Miami CF", "St. Louis City SC") defeats the
-    // nickname-anchored matcher — filtering soccer wiped real games.
-    if (sportKey !== "mlb") return Promise.resolve(null);
-    // A null result here disables the withdrawn-listing filter for this run,
-    // which is the right failure direction but was previously indistinguishable
-    // from "the schedule says every game is real". Ghost listings survived on
-    // the board for days because nothing said which of the two had happened.
-    // Every exit now names itself.
-    const abandon = (reason: string, detail?: Record<string, unknown>) => {
-      process.stdout.write(
-        `${JSON.stringify({
-          event: "schedule-sweep-unavailable",
-          reason,
-          ...detail,
-        })}\n`,
-      );
-      return null;
-    };
-    mlbListingsSweep ??= (async () => {
-      const league = sharpApiLeagueByKey("mlb");
-      const events: {
-        awayTeam?: string;
-        homeTeam?: string;
-        startsAt: string;
-      }[] = [];
-      let offset: number | undefined = 0;
-      for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
-        let schedulePage: Awaited<ReturnType<typeof fetchSharpApiSchedulePage>>;
-        try {
-          schedulePage = await fetchSharpApiSchedulePage(
-            league,
-            sharpApiKey,
-            offset,
-          );
-        } catch (error) {
-          return abandon("fetch-failed", {
-            pageNumber,
-            offset,
-            errorName: error instanceof Error ? error.name : "unknown",
-            errorMessage: error instanceof Error ? error.message : "unknown",
-          });
-        }
-        events.push(...schedulePage.events);
-        if (!schedulePage.hasMore) {
-          const listings = usableScheduleListings(events);
-          process.stdout.write(
-            `${JSON.stringify({
-              event: "schedule-sweep-complete",
-              pages: pageNumber + 1,
-              events: events.length,
-              listings: listings.length,
-            })}\n`,
-          );
-          // An empty sweep is not evidence that every listing was withdrawn;
-          // it is evidence that we learned nothing. Filtering on it would
-          // erase the whole board.
-          return listings.length > 0 ? listings : abandon("no-listings");
-        }
-        if (
-          schedulePage.nextOffset === undefined ||
-          schedulePage.nextOffset <= (offset ?? 0)
-        )
-          return abandon("pagination-stalled", {
-            pageNumber,
-            offset,
-            nextOffset: schedulePage.nextOffset ?? null,
-          });
-        offset = schedulePage.nextOffset;
-      }
-      return abandon("page-limit-exceeded", { offset });
-    })();
-    return mlbListingsSweep;
-  };
-  // Materialize the default boards so the API serves a stored body instead of
-  // re-running the projection per request. Never allowed to fail ingestion.
-  const materializeDefaultBoards = async () => {
+    let summary;
     try {
-      const boardGateway = new AwsDynamoGateway(client, tableName);
-      const boardEvents = new DynamoEventRepository(
-        boardGateway,
-        // The worker exhausts a bounded cursor chain under one snapshot, then
-        // persists only a terminal board that still fits the public fifty-game
-        // contract. These signatures remain internal and never reach a client.
-        new EventCursorCodec({
-          current: { id: "board-materializer", secret: randomBytes(32) },
-        }),
-        async () => {
-          const item = await boardGateway.get("EVENT_PROJECTIONS", "READINESS");
-          return (
-            !!item &&
-            JSON.stringify(item.value) ===
-              JSON.stringify({ schemaVersion: 1, state: "initialized" })
+      const focused = invocation.focused;
+      summary = focused
+        ? await withBoundedInvocationStage(
+            "live-odds-control-plane-failed",
+            () =>
+              runFocusedSharpOddsIngestion({
+                ...common,
+                request: focused,
+              }),
+          )
+        : await withBoundedInvocationStage(
+            "live-odds-control-plane-failed",
+            () =>
+              runProductionOddsControlPlane({
+                ...common,
+                splits: new DynamoBettingSplitRepository(client, tableName),
+                closingLines,
+                ...(invocation.forceRefresh ? { forceRefresh: true } : {}),
+              }),
           );
-        },
+    } catch (error) {
+      if (!invocation.sqs) throw error;
+      const decision = liveOddsErrorRetryDecision(
+        error,
+        invocation.sqs.receiveCount,
       );
-      const boardGames = new DynamoGamesRepository(
-        boardEvents,
-        boardGateway,
-        approvedDetailSportsbooks,
-        closingLines,
-      );
-      try {
-        let closingBlocked = false;
-        const closingHealth = await controlStore.getHealth(
-          closingCapabilityHealthKey,
+      // Returning the item identifier is explicit retry ownership. On the fifth
+      // receive SQS redrive moves it to the configured odds DLQ.
+      return retainLiveOddsSqsRetryOwnership(invocation.sqs, decision);
+    }
+    process.stdout.write(
+      `${JSON.stringify({ event: "live-odds-ingestion-complete", provider, summary })}\n`,
+    );
+    // The provider's live schedule is the authority on which scheduled listings
+    // still exist; a fetch failure disables the filter for this run rather than
+    // hiding anything. One sweep serves every materialization in this
+    // invocation — the listing set cannot meaningfully change inside a tick.
+    let mlbListingsSweep:
+      Promise<ReturnType<typeof usableScheduleListings> | null> | undefined;
+    const scheduleListings = (sportKey: string) => {
+      // Scoped to MLB: the withdrawn-listing class has only been observed
+      // there, the splits witness only exists there, and soccer club
+      // naming ("Inter Miami CF", "St. Louis City SC") defeats the
+      // nickname-anchored matcher — filtering soccer wiped real games.
+      if (sportKey !== "mlb") return Promise.resolve(null);
+      // A null result here disables the withdrawn-listing filter for this run,
+      // which is the right failure direction but was previously indistinguishable
+      // from "the schedule says every game is real". Ghost listings survived on
+      // the board for days because nothing said which of the two had happened.
+      // Every exit now names itself.
+      const abandon = (reason: string, detail?: Record<string, unknown>) => {
+        process.stdout.write(
+          `${JSON.stringify({
+            event: "schedule-sweep-unavailable",
+            reason,
+            ...detail,
+          })}\n`,
         );
-        if (
-          !closingHealth ||
-          closingHealth.failureClass === "terminal" ||
-          (closingHealth?.cooldownUntil !== undefined &&
-            Date.parse(closingHealth.cooldownUntil) > Date.now())
-        )
-          closingBlocked = true;
-        const putClosingHealth = async (
-          value: Omit<
-            NonNullable<Awaited<ReturnType<typeof controlStore.getHealth>>>,
-            "version"
-          >,
-        ) => {
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            const current = await controlStore.getHealth(
-              closingCapabilityHealthKey,
+        return null;
+      };
+      mlbListingsSweep ??= (async () => {
+        const league = sharpApiLeagueByKey("mlb");
+        const events: {
+          awayTeam?: string;
+          homeTeam?: string;
+          startsAt: string;
+        }[] = [];
+        let offset: number | undefined = 0;
+        for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+          let schedulePage: Awaited<
+            ReturnType<typeof fetchSharpApiSchedulePage>
+          >;
+          try {
+            schedulePage = await fetchSharpApiSchedulePage(
+              league,
+              sharpApiKey,
+              offset,
             );
-            if (
-              current?.failureClass === "terminal" &&
-              value.failureClass !== "terminal"
-            )
-              return;
-            try {
-              await controlStore.putHealth({
-                ...value,
-                ...(current?.version === undefined
-                  ? {}
-                  : { version: current.version }),
-              });
-              return;
-            } catch (error) {
-              if (
-                !(error instanceof Error) ||
-                error.message !== "health-transition-conflict" ||
-                attempt === 2
-              )
-                throw error;
-            }
+          } catch (error) {
+            return abandon("fetch-failed", {
+              pageNumber,
+              offset,
+              errorName: error instanceof Error ? error.name : "unknown",
+              errorMessage: error instanceof Error ? error.message : "unknown",
+            });
           }
-        };
-        const closing = await captureClosingLines(
-          {
-            games: boardGames,
-            closingLines,
-            resolveBinding: async (game) => {
-              const source = await eventStore.resolveCanonicalSourceBinding(
-                game.id,
-                "sharpapi",
+          events.push(...schedulePage.events);
+          if (!schedulePage.hasMore) {
+            const listings = usableScheduleListings(events);
+            process.stdout.write(
+              `${JSON.stringify({
+                event: "schedule-sweep-complete",
+                pages: pageNumber + 1,
+                events: events.length,
+                listings: listings.length,
+              })}\n`,
+            );
+            // An empty sweep is not evidence that every listing was withdrawn;
+            // it is evidence that we learned nothing. Filtering on it would
+            // erase the whole board.
+            return listings.length > 0 ? listings : abandon("no-listings");
+          }
+          if (
+            schedulePage.nextOffset === undefined ||
+            schedulePage.nextOffset <= (offset ?? 0)
+          )
+            return abandon("pagination-stalled", {
+              pageNumber,
+              offset,
+              nextOffset: schedulePage.nextOffset ?? null,
+            });
+          offset = schedulePage.nextOffset;
+        }
+        return abandon("page-limit-exceeded", { offset });
+      })();
+      return mlbListingsSweep;
+    };
+    // Materialize the default boards so the API serves a stored body instead of
+    // re-running the projection per request. Never allowed to fail ingestion.
+    const materializeDefaultBoards = async () => {
+      try {
+        const boardGateway = new AwsDynamoGateway(client, tableName);
+        const boardEvents = new DynamoEventRepository(
+          boardGateway,
+          // The worker exhausts a bounded cursor chain under one snapshot, then
+          // persists only a terminal board that still fits the public fifty-game
+          // contract. These signatures remain internal and never reach a client.
+          new EventCursorCodec({
+            current: { id: "board-materializer", secret: randomBytes(32) },
+          }),
+          async () => {
+            const item = await boardGateway.get(
+              "EVENT_PROJECTIONS",
+              "READINESS",
+            );
+            return (
+              !!item &&
+              JSON.stringify(item.value) ===
+                JSON.stringify({ schemaVersion: 1, state: "initialized" })
+            );
+          },
+        );
+        const boardGames = new DynamoGamesRepository(
+          boardEvents,
+          boardGateway,
+          approvedDetailSportsbooks,
+          closingLines,
+        );
+        try {
+          let closingBlocked = false;
+          const closingHealth = await controlStore.getHealth(
+            closingCapabilityHealthKey,
+          );
+          if (
+            !closingHealth ||
+            closingHealth.failureClass === "terminal" ||
+            (closingHealth?.cooldownUntil !== undefined &&
+              Date.parse(closingHealth.cooldownUntil) > Date.now())
+          )
+            closingBlocked = true;
+          const putClosingHealth = async (
+            value: Omit<
+              NonNullable<Awaited<ReturnType<typeof controlStore.getHealth>>>,
+              "version"
+            >,
+          ) => {
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+              const current = await controlStore.getHealth(
+                closingCapabilityHealthKey,
               );
-              if (!source) return null;
-              return {
-                canonicalEventId: game.id,
-                canonicalEventVersion: game.version,
-                providerId: "sharpapi",
-                providerEventId: source.providerEventId,
-                sportKey: game.sportKey,
-                leagueKey: game.leagueKey,
-                startsAt: game.startsAt,
-                observedAt: source.createdAt,
-              };
-            },
-            clv: new DynamoClvRepository(client, tableName),
-            sportsbookIds: approvedDetailSportsbooks.map(({ id }) => id),
-            fetchClosing: (providerEventId) =>
-              fetchSharpApiClosingLines(providerEventId, sharpApiKey),
-            reserveQuota: async () => {
-              if (closingBlocked) return false;
-              const health = await controlStore.getHealth(accountRateHealthKey);
               if (
-                !health?.healthy ||
-                health.failureClass === "terminal" ||
-                health.rateWindow?.remaining === undefined
+                current?.failureClass === "terminal" &&
+                value.failureClass !== "terminal"
               )
-                return false;
-              const limit = health.rateWindow.limit;
-              const reserve =
-                limit === undefined
-                  ? 100
-                  : Math.max(1, Math.min(100, Math.floor(limit / 2)));
-              return controlStore.reserveAccountRate(
-                accountRateHealthKey,
-                reserve,
-                1,
-                new Date().toISOString(),
-                {
-                  ...(health.version === undefined
+                return;
+              try {
+                await controlStore.putHealth({
+                  ...value,
+                  ...(current?.version === undefined
                     ? {}
-                    : { version: health.version }),
-                  ...(limit === undefined ? {} : { limit }),
-                  ...(health.rateWindow.resetsAt === undefined
-                    ? {}
-                    : { resetsAt: health.rateWindow.resetsAt }),
-                },
-              );
-            },
-            reconcileQuota: async (metadata) =>
-              Promise.all([
-                controlStore.reconcileAccountRateWindow(
-                  accountRateHealthKey,
-                  1,
-                  1,
-                  metadata?.rateWindow,
-                  new Date().toISOString(),
-                ),
-                putClosingHealth({
+                    : { version: current.version }),
+                });
+                return;
+              } catch (error) {
+                if (
+                  !(error instanceof Error) ||
+                  error.message !== "health-transition-conflict" ||
+                  attempt === 2
+                )
+                  throw error;
+              }
+            }
+          };
+          const closing = await captureClosingLines(
+            {
+              games: boardGames,
+              closingLines,
+              resolveBinding: async (game) => {
+                const source = await eventStore.resolveCanonicalSourceBinding(
+                  game.id,
+                  "sharpapi",
+                );
+                if (!source) return null;
+                return {
+                  canonicalEventId: game.id,
+                  canonicalEventVersion: game.version,
                   providerId: "sharpapi",
-                  healthKey: closingCapabilityHealthKey,
-                  healthy: true,
-                  status: "healthy",
-                  consecutiveSuccesses: 1,
-                  lastSuccessfulAt: new Date().toISOString(),
-                  updatedAt: new Date().toISOString(),
-                }),
-              ]).then(() => undefined),
-            recordProviderFailure: async (error) => {
-              closingBlocked = true;
-              const observedAt = new Date().toISOString();
-              if (error.code === "unauthorized") {
-                await controlStore.blockAccountTerminal(
-                  accountRateHealthKey,
-                  "unauthorized",
-                  observedAt,
-                );
-                return;
-              }
-              if (error.code === "rate-limited") {
-                const accountHealth =
+                  providerEventId: source.providerEventId,
+                  sportKey: game.sportKey,
+                  leagueKey: game.leagueKey,
+                  startsAt: game.startsAt,
+                  observedAt: source.createdAt,
+                };
+              },
+              clv: new DynamoClvRepository(client, tableName),
+              sportsbookIds: approvedDetailSportsbooks.map(({ id }) => id),
+              fetchClosing: (providerEventId) =>
+                fetchSharpApiClosingLines(providerEventId, sharpApiKey),
+              reserveQuota: async () => {
+                if (closingBlocked) return false;
+                const health =
                   await controlStore.getHealth(accountRateHealthKey);
-                const retryAt =
-                  error.retryAt ??
-                  accountHealth?.rateWindow?.resetsAt ??
-                  new Date(Date.now() + 60_000).toISOString();
-                await controlStore.blockAccountRateWindow(
+                if (
+                  !health?.healthy ||
+                  health.failureClass === "terminal" ||
+                  health.rateWindow?.remaining === undefined
+                )
+                  return false;
+                const limit = health.rateWindow.limit;
+                const reserve =
+                  limit === undefined
+                    ? 100
+                    : Math.max(1, Math.min(100, Math.floor(limit / 2)));
+                return controlStore.reserveAccountRate(
                   accountRateHealthKey,
-                  retryAt,
-                  observedAt,
+                  reserve,
+                  1,
+                  new Date().toISOString(),
+                  {
+                    ...(health.version === undefined
+                      ? {}
+                      : { version: health.version }),
+                    ...(limit === undefined ? {} : { limit }),
+                    ...(health.rateWindow.resetsAt === undefined
+                      ? {}
+                      : { resetsAt: health.rateWindow.resetsAt }),
+                  },
                 );
-                return;
-              }
-              if (error.code === "not-entitled") {
+              },
+              reconcileQuota: async (metadata) =>
+                Promise.all([
+                  controlStore.reconcileAccountRateWindow(
+                    accountRateHealthKey,
+                    1,
+                    1,
+                    metadata?.rateWindow,
+                    new Date().toISOString(),
+                  ),
+                  putClosingHealth({
+                    providerId: "sharpapi",
+                    healthKey: closingCapabilityHealthKey,
+                    healthy: true,
+                    status: "healthy",
+                    consecutiveSuccesses: 1,
+                    lastSuccessfulAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                  }),
+                ]).then(() => undefined),
+              recordProviderFailure: async (error) => {
+                closingBlocked = true;
+                const observedAt = new Date().toISOString();
+                if (error.code === "unauthorized") {
+                  await controlStore.blockAccountTerminal(
+                    accountRateHealthKey,
+                    "unauthorized",
+                    observedAt,
+                  );
+                  return;
+                }
+                if (error.code === "rate-limited") {
+                  const accountHealth =
+                    await controlStore.getHealth(accountRateHealthKey);
+                  const retryAt =
+                    error.retryAt ??
+                    accountHealth?.rateWindow?.resetsAt ??
+                    new Date(Date.now() + 60_000).toISOString();
+                  await controlStore.blockAccountRateWindow(
+                    accountRateHealthKey,
+                    retryAt,
+                    observedAt,
+                  );
+                  return;
+                }
+                if (error.code === "not-entitled") {
+                  await putClosingHealth({
+                    providerId: "sharpapi",
+                    healthKey: closingCapabilityHealthKey,
+                    healthy: false,
+                    status: "unhealthy",
+                    consecutiveSuccesses: 0,
+                    failureClass: "terminal",
+                    failureReason: "not-entitled",
+                    updatedAt: observedAt,
+                  });
+                  return;
+                }
+                const retryAt =
+                  error.retryAt ?? new Date(Date.now() + 60_000).toISOString();
                 await putClosingHealth({
                   providerId: "sharpapi",
                   healthKey: closingCapabilityHealthKey,
                   healthy: false,
                   status: "unhealthy",
                   consecutiveSuccesses: 0,
-                  failureClass: "terminal",
-                  failureReason: "not-entitled",
+                  failureClass: "transient",
+                  failureReason: error.code,
+                  retryAt,
+                  cooldownUntil: retryAt,
+                  expiresAt: Math.floor(Date.parse(retryAt) / 1_000) + 3_600,
                   updatedAt: observedAt,
                 });
-                return;
-              }
-              const retryAt =
-                error.retryAt ?? new Date(Date.now() + 60_000).toISOString();
-              await putClosingHealth({
-                providerId: "sharpapi",
-                healthKey: closingCapabilityHealthKey,
-                healthy: false,
-                status: "unhealthy",
-                consecutiveSuccesses: 0,
-                failureClass: "transient",
-                failureReason: error.code,
-                retryAt,
-                cooldownUntil: retryAt,
-                expiresAt: Math.floor(Date.parse(retryAt) / 1_000) + 3_600,
-                updatedAt: observedAt,
-              });
+              },
             },
-          },
-          new Date(),
-        );
-        if (closing.captured > 0 || closing.failed > 0)
-          process.stdout.write(
-            `${JSON.stringify({ event: "closing-lines-capture", ...closing })}\n`,
+            new Date(),
           );
+          if (closing.captured > 0 || closing.failed > 0)
+            process.stdout.write(
+              `${JSON.stringify({ event: "closing-lines-capture", ...closing })}\n`,
+            );
+        } catch (error) {
+          const reason = classifyOddsControlPlaneFailure(error);
+          if (isRetryableOddsStorageFailure(reason)) throw error;
+          process.stdout.write(
+            `${JSON.stringify({
+              event: "closing-lines-capture-failed",
+              reason,
+            })}\n`,
+          );
+        }
+        const boards = await materializeBoards({
+          games: boardGames,
+          splits: new DynamoBettingSplitRepository(client, tableName),
+          put: (item) => boardGateway.put(item),
+          now: new Date(),
+          scheduleListings,
+        });
+        process.stdout.write(
+          `${JSON.stringify({ event: "board-materialization", ...boards })}\n`,
+        );
       } catch (error) {
+        const reason = classifyOddsControlPlaneFailure(error);
+        if (isRetryableOddsStorageFailure(reason)) throw error;
         process.stdout.write(
           `${JSON.stringify({
-            event: "closing-lines-capture-failed",
-            errorName: error instanceof Error ? error.name : "unknown",
-            errorMessage:
-              error instanceof Error ? error.message.slice(0, 200) : "unknown",
+            event: "board-materialization-failed",
+            reason,
           })}\n`,
         );
       }
-      const boards = await materializeBoards({
-        games: boardGames,
-        splits: new DynamoBettingSplitRepository(client, tableName),
-        put: (item) => boardGateway.put(item),
-        now: new Date(),
-        scheduleListings,
+    };
+    if (!invocation.focused) {
+      await materializeDefaultBoards();
+      let fastLaneStorageFailure:
+        { readonly reason: string; readonly retryAt?: string } | undefined;
+      await runLiveOddsFastLane({
+        budgetMs: Number(process.env["FTE_FAST_LANE_BUDGET_MS"] ?? "0"),
+        pauseMs: Number(process.env["FTE_FAST_LANE_PAUSE_MS"] ?? "10000"),
+        runPass: () =>
+          runProductionOddsControlPlane({
+            ...common,
+            splits: new DynamoBettingSplitRepository(client, tableName),
+          }),
+        materialize: materializeDefaultBoards,
+        onRetryableStorageFailure: (decision) => {
+          fastLaneStorageFailure = decision;
+        },
       });
-      process.stdout.write(
-        `${JSON.stringify({ event: "board-materialization", ...boards })}\n`,
-      );
-    } catch (error) {
-      process.stdout.write(
-        `${JSON.stringify({
-          event: "board-materialization-failed",
-          errorName: error instanceof Error ? error.name : "unknown",
-          errorMessage:
-            error instanceof Error ? error.message.slice(0, 200) : "unknown",
-        })}\n`,
-      );
+      if (fastLaneStorageFailure) {
+        if (invocation.sqs) {
+          return retainLiveOddsSqsRetryOwnership(invocation.sqs, {
+            action: invocation.sqs.receiveCount >= 5 ? "exhausted" : "retry",
+            ...fastLaneStorageFailure,
+          });
+        }
+        throw new Error(fastLaneStorageFailure.reason);
+      }
     }
-  };
-  if (!invocation.focused) {
-    await materializeDefaultBoards();
-    await runLiveOddsFastLane({
-      budgetMs: Number(process.env["FTE_FAST_LANE_BUDGET_MS"] ?? "0"),
-      pauseMs: Number(process.env["FTE_FAST_LANE_PAUSE_MS"] ?? "10000"),
-      runPass: () =>
-        runProductionOddsControlPlane({
-          ...common,
-          splits: new DynamoBettingSplitRepository(client, tableName),
-        }),
-      materialize: materializeDefaultBoards,
-    });
-  }
-  if (invocation.sqs) {
-    const retryDecision = liveOddsSummaryRetryDecision(summary);
-    if (retryDecision) {
-      if (invocation.sqs.receiveCount < 5)
-        await extendRetryVisibility(invocation.sqs, retryDecision.retryAt);
-      return {
-        batchItemFailures: [{ itemIdentifier: invocation.sqs.messageId }],
-      };
+    if (invocation.sqs) {
+      const retryDecision = liveOddsSummaryRetryDecision(summary);
+      if (retryDecision) {
+        return retainLiveOddsSqsRetryOwnership(invocation.sqs, {
+          action: invocation.sqs.receiveCount >= 5 ? "exhausted" : "retry",
+          ...retryDecision,
+        });
+      }
+      return { batchItemFailures: [] as readonly never[] };
     }
-    return { batchItemFailures: [] as readonly never[] };
+    return summary;
+  } catch (error) {
+    if (!invocation.sqs) throw error;
+    const decision = liveOddsErrorRetryDecision(
+      error,
+      invocation.sqs.receiveCount,
+    );
+    return retainLiveOddsSqsRetryOwnership(invocation.sqs, decision);
   }
-  return summary;
 };
 
 export const handler = async (event?: unknown) => {

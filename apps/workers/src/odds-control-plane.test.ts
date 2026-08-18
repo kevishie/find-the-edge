@@ -257,6 +257,115 @@ describe("odds collection control plane", () => {
       classifyOddsControlPlaneFailure(new Error("sensitive unknown detail")),
     ).toBe("internal-failure");
   });
+  it("classifies only proven transient DynamoDB failures through bounded wrappers", () => {
+    const named = (name: string) =>
+      Object.assign(new Error("sensitive storage detail"), { name });
+    for (const name of [
+      "ProvisionedThroughputExceededException",
+      "ThrottlingException",
+      "RequestLimitExceeded",
+    ]) {
+      const error = named(name);
+      expect(classifyOddsControlPlaneFailure(error)).toBe("storage-throttled");
+      expect(decideOddsRetry({ error, attempt: 4, now }).action).toBe("retry");
+      expect(decideOddsRetry({ error, attempt: 5, now }).action).toBe(
+        "exhausted",
+      );
+    }
+    for (const name of ["InternalServerError", "ServiceUnavailable"]) {
+      const error = named(name);
+      expect(classifyOddsControlPlaneFailure(error)).toBe(
+        "storage-unavailable",
+      );
+      expect(decideOddsRetry({ error, attempt: 1, now }).class).toBe(
+        "transient",
+      );
+    }
+    expect(
+      classifyOddsControlPlaneFailure(named("TransactionInProgressException")),
+    ).toBe("storage-transaction-in-progress");
+
+    const cancelled = (...codes: string[]) =>
+      Object.assign(named("TransactionCanceledException"), {
+        CancellationReasons: codes.map((Code) => ({ Code })),
+      });
+    expect(
+      classifyOddsControlPlaneFailure(
+        cancelled("None", "ProvisionedThroughputExceeded"),
+      ),
+    ).toBe("storage-throttled");
+    expect(
+      classifyOddsControlPlaneFailure(cancelled("None", "ThrottlingError")),
+    ).toBe("storage-throttled");
+    expect(
+      classifyOddsControlPlaneFailure(cancelled("None", "TransactionConflict")),
+    ).toBe("storage-transaction-in-progress");
+    expect(
+      classifyOddsControlPlaneFailure(cancelled("None", "ValidationError")),
+    ).toBe("storage-validation");
+    expect(
+      classifyOddsControlPlaneFailure(cancelled("None", "AccessDenied")),
+    ).toBe("storage-access-denied");
+    for (const error of [
+      cancelled("None", "ConditionalCheckFailed"),
+      cancelled("None", "UnknownReason"),
+      cancelled("ThrottlingError", "TransactionConflict"),
+      Object.assign(named("TransactionCanceledException"), {
+        CancellationReasons: [],
+      }),
+      named("TransactionCanceledException"),
+    ])
+      expect(classifyOddsControlPlaneFailure(error)).toBe(
+        "storage-transaction-cancelled",
+      );
+
+    const translated = Object.assign(
+      named("FixtureOddsTransactionCanceledError"),
+      { reasons: [{ code: "None" }, { code: "ThrottlingError" }] },
+    );
+    const wrapped = Object.assign(new Error("fixture-odds-storage-failure"), {
+      name: "FixtureOddsStorageError",
+      sourceError: translated,
+    });
+    expect(classifyOddsControlPlaneFailure(wrapped)).toBe("storage-throttled");
+    expect(
+      classifyOddsControlPlaneFailure(
+        new Error("bounded wrapper", {
+          cause: named("ServiceUnavailable"),
+        }),
+      ),
+    ).toBe("storage-unavailable");
+    expect(
+      classifyOddsControlPlaneFailure(
+        new Error("provider boundary wrapper", {
+          cause: named("ThrottlingException"),
+        }),
+      ),
+    ).toBe("storage-throttled");
+    expect(
+      classifyOddsControlPlaneFailure(
+        Object.assign(
+          new Error("outer deterministic wrapper", {
+            cause: named("ThrottlingException"),
+          }),
+          { name: "ValidationException" },
+        ),
+      ),
+    ).toBe("storage-validation");
+    expect(
+      classifyOddsControlPlaneFailure(
+        new Error("unauthorized", { cause: named("ThrottlingException") }),
+      ),
+    ).toBe("unauthorized");
+
+    const cycle = new Error("cycle");
+    Object.assign(cycle, { sourceError: cycle });
+    expect(classifyOddsControlPlaneFailure(cycle)).toBe("internal-failure");
+    let deep: Error = named("ThrottlingException");
+    for (let index = 0; index < 6; index += 1)
+      deep = new Error(`wrapper-${index}`, { cause: deep });
+    expect(classifyOddsControlPlaneFailure(deep)).toBe("internal-failure");
+  });
   it("bounds and redacts unexpected failure diagnostics", () => {
     const error = new Error(
       `Validation failed token=do-not-log ${"x".repeat(300)}`,
