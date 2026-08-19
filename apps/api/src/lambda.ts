@@ -5,6 +5,7 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
   AwsDynamoGateway,
   DynamoIdentityAuthorizationRepository,
+  DynamoAdminAccessRepository,
   DynamoIdentityRepository,
   DynamoEntitlementRepository,
   DynamoGamesRepository,
@@ -32,6 +33,7 @@ import {
   type BoardKey,
 } from "@find-the-edge/database";
 import { impliedProbability } from "@find-the-edge/odds";
+import { identityAuthorizationCapabilities } from "@find-the-edge/domain";
 import {
   approvedDetailSportsbooks,
   approvedSportsbookCollection,
@@ -52,6 +54,7 @@ import { encodeApiResponse } from "./http-compression";
 import {
   authorizationContextFromLambdaRequest,
   authorizationHeaderFromLambdaHeaders,
+  gateAdminAuthorization,
   handlerAuthorizationFields,
   memoizeIdentityAccountLookup,
   shouldResolveOwnedLambdaAuthorization,
@@ -67,6 +70,7 @@ interface LambdaEvent {
     readonly jobId?: string;
     readonly reportId?: string;
     readonly versionNumber?: string;
+    readonly directoryId?: string;
   };
   readonly queryStringParameters?: Record<string, string | undefined>;
   readonly headers?: Record<string, string | undefined>;
@@ -126,6 +130,17 @@ const webOtpHost = ((): string | undefined => {
  */
 const productAccessEnforced =
   process.env["FTE_PRODUCT_ACCESS_ENFORCED"] === "true";
+const adminAccessEnabled = process.env["FTE_ADMIN_ACCESS_ENABLED"] === "true";
+const ownerAccountId = process.env["FTE_OWNER_ACCOUNT_ID"] ?? "";
+const adminBootstrapMode = process.env["FTE_ADMIN_BOOTSTRAP_MODE"];
+if (adminAccessEnabled && !/^account:[a-f0-9]{64}$/.test(ownerAccountId))
+  throw new Error("missing-admin-owner-configuration");
+if (
+  adminAccessEnabled &&
+  adminBootstrapMode !== "fresh" &&
+  adminBootstrapMode !== "verified"
+)
+  throw new Error("missing-admin-bootstrap-mode");
 const sms = createSnsSmsSender(new SNSClient({}));
 /**
  * The route keys billing owns. `POST /billing/webhook` is public — Stripe
@@ -146,12 +161,20 @@ const BILLING_ROUTES: Readonly<
   "POST /billing/checkout": "billing-checkout",
   "POST /billing/portal": "billing-portal",
 };
+const ADMIN_ROUTES = {
+  "GET /admin/users": "admin-users-list",
+  "POST /admin/users/grants": "admin-access-grant",
+  "DELETE /admin/users/{directoryId}/manual-grant": "admin-access-revoke",
+} as const;
 /** Only these mutations need a server-owned elevated-role read. */
 const ELEVATED_AUTHORIZATION_ROUTES = new Set([
   "retrospective-review",
   "experiment-approve",
   "experiment-promote",
   "experiment-rollback",
+  "admin-users-list",
+  "admin-access-grant",
+  "admin-access-revoke",
 ]);
 // Projection readiness is a one-way latch in practice; probing it on every
 // request added a storage read to every page load. A confirmed-ready answer is
@@ -202,8 +225,22 @@ const handleEvent = async (event: LambdaEvent) => {
   const identityRepository = memoizeIdentityAccountLookup(
     new DynamoIdentityRepository(documentClient, tableName),
   );
+  const adminAccessRepository = new DynamoAdminAccessRepository(
+    documentClient,
+    tableName,
+  );
+  const identityAuthorizationRepository =
+    new DynamoIdentityAuthorizationRepository(documentClient, tableName);
+  const entitlementRepository = new DynamoEntitlementRepository(
+    documentClient,
+    tableName,
+  );
+  const adminRoute = Object.hasOwn(ADMIN_ROUTES, event.routeKey ?? "")
+    ? ADMIN_ROUTES[event.routeKey as keyof typeof ADMIN_ROUTES]
+    : undefined;
   const route =
     BILLING_ROUTES[event.routeKey ?? ""] ??
+    adminRoute ??
     (event.routeKey === "POST /auth/otp/request"
       ? "auth-otp-request"
       : event.routeKey === "POST /auth/otp/verify"
@@ -317,6 +354,7 @@ const handleEvent = async (event: LambdaEvent) => {
   const jobId = event.pathParameters?.jobId;
   const reportId = event.pathParameters?.reportId;
   const versionNumber = event.pathParameters?.versionNumber;
+  const directoryId = event.pathParameters?.directoryId;
   const query = event.queryStringParameters;
   const contentType = Object.entries(event.headers ?? {}).find(
     ([key]) => key.toLowerCase() === "content-type",
@@ -377,34 +415,38 @@ const handleEvent = async (event: LambdaEvent) => {
   // The capabilities route has no gateway authorizer by design. Even if an
   // integration test or future gateway accidentally supplies JWT claims,
   // only a verified owned bearer may populate this response.
-  const requestAuthorization = await authorizationContextFromLambdaRequest({
-    ...(event.routeKey ? { routeKey: event.routeKey } : {}),
-    ...(event.headers ? { headers: event.headers } : {}),
-    ...(event.requestContext?.authorizer?.jwt
-      ? { gatewayJwt: event.requestContext.authorizer.jwt }
-      : {}),
-    productRoute,
-    capabilitiesRoute,
-    includeElevatedAuthorization,
-    ...(ownedSessionAuthorization && identity
-      ? {
-          ownedRuntime: {
-            signingKeys: identity.signingKeys,
-            identity: identityRepository,
-            ...(includeElevatedAuthorization
-              ? {
-                  identityAuthorization:
-                    new DynamoIdentityAuthorizationRepository(
-                      documentClient,
-                      tableName,
-                    ),
-                }
-              : {}),
-            now: new Date(),
-          },
-        }
-      : {}),
-  });
+  const resolvedRequestAuthorization =
+    await authorizationContextFromLambdaRequest({
+      ...(event.routeKey ? { routeKey: event.routeKey } : {}),
+      ...(event.headers ? { headers: event.headers } : {}),
+      ...(event.requestContext?.authorizer?.jwt
+        ? { gatewayJwt: event.requestContext.authorizer.jwt }
+        : {}),
+      productRoute,
+      capabilitiesRoute,
+      includeElevatedAuthorization,
+      ...(ownedSessionAuthorization && identity
+        ? {
+            ownedRuntime: {
+              signingKeys: identity.signingKeys,
+              identity: identityRepository,
+              ...(includeElevatedAuthorization
+                ? {
+                    identityAuthorization: identityAuthorizationRepository,
+                  }
+                : {}),
+              now: new Date(),
+            },
+          }
+        : {}),
+    });
+  // The role row may be provisioned before rollout. Until the deployment gate
+  // is explicitly enabled it must not surface navigation authority or make
+  // the admin endpoints callable.
+  const requestAuthorization = gateAdminAuthorization(
+    resolvedRequestAuthorization,
+    adminAccessEnabled,
+  );
   let billingSecrets: BillingSecrets | undefined;
   if (billingRoute && stripeSecretId && webBaseUrl)
     try {
@@ -467,9 +509,16 @@ const handleEvent = async (event: LambdaEvent) => {
           accountPepper: identity.accountPepper,
           signingKeys: identity.signingKeys,
           ...(webOtpHost ? { webOtpHost } : {}),
+          ...(adminAccessEnabled
+            ? {
+                adminAccessEnabled: true,
+                ownerAccountId,
+                adminBootstrapMode: adminBootstrapMode as "fresh" | "verified",
+              }
+            : {}),
         }
       : undefined,
-    new DynamoEntitlementRepository(documentClient, tableName),
+    entitlementRepository,
     // The only place a Stripe network client is constructed, and the only
     // place the secret key is read.
     billingSecrets && identity
@@ -484,11 +533,42 @@ const handleEvent = async (event: LambdaEvent) => {
             secretKey: billingSecrets.secretKey,
           }),
           appBaseUrl: webBaseUrl,
+          ...(adminAccessEnabled
+            ? {
+                additionalAccess: async (accountId: string) => {
+                  const [manual, authorization] = await Promise.allSettled([
+                    adminAccessRepository.getByAccount(accountId),
+                    identityAuthorizationRepository.get(accountId),
+                  ]);
+                  const granted =
+                    (manual.status === "fulfilled" &&
+                      manual.value?.manualGrant?.active === true) ||
+                    (authorization.status === "fulfilled" &&
+                      identityAuthorizationCapabilities(
+                        authorization.value?.roles ?? [],
+                      ).includes("accounts/access:manage"));
+                  if (granted) return true;
+                  if (
+                    manual.status === "rejected" ||
+                    authorization.status === "rejected"
+                  )
+                    throw new Error("access-unavailable");
+                  return false;
+                },
+              }
+            : {}),
         }
       : undefined,
     identity
-      ? { signingKeys: identity.signingKeys, enforced: productAccessEnforced }
+      ? {
+          signingKeys: identity.signingKeys,
+          enforced: productAccessEnforced,
+          adminAccessEnabled,
+        }
       : undefined,
+    adminAccessRepository,
+    identityAuthorizationRepository,
+    identity?.accountPepper,
   )({
     route,
     ...handlerAuthorizationFields(requestAuthorization),
@@ -499,6 +579,7 @@ const handleEvent = async (event: LambdaEvent) => {
     ...(jobId ? { jobId } : {}),
     ...(reportId ? { reportId } : {}),
     ...(versionNumber ? { versionNumber } : {}),
+    ...(directoryId ? { directoryId } : {}),
     ...(idempotencyKey ? { idempotencyKey } : {}),
     ...(event.requestContext?.requestId
       ? { requestId: event.requestContext.requestId }

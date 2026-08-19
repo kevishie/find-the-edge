@@ -11,6 +11,7 @@ export const IDENTITY_AUTHORIZATION_SCHEMA_VERSION =
 export const IDENTITY_AUTHORIZATION_ROLES = [
   "retrospective-reviewer",
   "strategy-promoter",
+  "super-admin",
 ] as const;
 
 export type IdentityAuthorizationRole =
@@ -19,6 +20,7 @@ export type IdentityAuthorizationRole =
 export const IDENTITY_AUTHORIZATION_CAPABILITIES = [
   "events/retrospectives:approve",
   "events/strategies:promote",
+  "accounts/access:manage",
 ] as const;
 
 export type IdentityAuthorizationCapability =
@@ -29,6 +31,7 @@ const CAPABILITY_BY_ROLE: Readonly<
 > = Object.freeze({
   "retrospective-reviewer": "events/retrospectives:approve",
   "strategy-promoter": "events/strategies:promote",
+  "super-admin": "accounts/access:manage",
 });
 
 const OPERATOR_ID = /^operator:[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;

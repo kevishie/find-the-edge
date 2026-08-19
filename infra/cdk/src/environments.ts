@@ -35,6 +35,77 @@ export function resolveProductAccessEnforcement(
   throw new Error("FTE_PRODUCT_ACCESS_ENFORCED must be true or false");
 }
 
+/**
+ * Selects one explicit owner ceremony before admin routes can be synthesized.
+ * A new empty environment uses `freshBootstrap=true`; the configured owner's
+ * first verified login then creates the entire owner aggregate atomically.
+ * An environment containing legacy accounts must instead complete the offline
+ * migration/recovery ceremony and set `bootstrapVerified=true`. Deployed stages
+ * remain disabled when neither fence is deliberately selected.
+ */
+export function resolveAdminAccessConfiguration(input: {
+  readonly enabled: string | undefined;
+  readonly ownerAccountId: string | undefined;
+  readonly bootstrapVerified: string | undefined;
+  readonly freshBootstrap?: string | undefined;
+}): {
+  readonly enabled: boolean;
+  readonly ownerAccountId?: string;
+  readonly bootstrapMode?: "fresh" | "verified";
+} {
+  const enabled =
+    input.enabled === undefined ? false : input.enabled === "true";
+  if (
+    input.enabled !== undefined &&
+    input.enabled !== "true" &&
+    input.enabled !== "false"
+  )
+    throw new Error("FTE_ADMIN_ACCESS_ENABLED must be true or false");
+  if (
+    input.bootstrapVerified !== undefined &&
+    input.bootstrapVerified !== "true" &&
+    input.bootstrapVerified !== "false"
+  )
+    throw new Error("FTE_ADMIN_BOOTSTRAP_VERIFIED must be true or false");
+  if (
+    input.freshBootstrap !== undefined &&
+    input.freshBootstrap !== "true" &&
+    input.freshBootstrap !== "false"
+  )
+    throw new Error("FTE_ADMIN_FRESH_BOOTSTRAP must be true or false");
+  if (
+    input.ownerAccountId !== undefined &&
+    !/^account:[a-f0-9]{64}$/.test(input.ownerAccountId)
+  )
+    throw new Error("FTE_OWNER_ACCOUNT_ID must be an exact account id");
+  if (enabled && !input.ownerAccountId)
+    throw new Error(
+      "FTE_OWNER_ACCOUNT_ID is required when admin access is enabled",
+    );
+  if (input.bootstrapVerified === "true" && input.freshBootstrap === "true")
+    throw new Error("admin bootstrap mode must be fresh or verified, not both");
+  if (
+    enabled &&
+    input.bootstrapVerified !== "true" &&
+    input.freshBootstrap !== "true"
+  )
+    throw new Error(
+      "admin access requires an explicit fresh bootstrap or verified migration",
+    );
+  return {
+    enabled,
+    ...(input.ownerAccountId ? { ownerAccountId: input.ownerAccountId } : {}),
+    ...(enabled
+      ? {
+          bootstrapMode:
+            input.freshBootstrap === "true"
+              ? ("fresh" as const)
+              : ("verified" as const),
+        }
+      : {}),
+  };
+}
+
 const persistentEnvironments = {
   staging: {
     stage: "staging",

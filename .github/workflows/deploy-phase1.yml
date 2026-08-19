@@ -6,6 +6,17 @@ on:
     types: [completed]
     branches: [main, production]
   workflow_dispatch:
+    inputs:
+      admin_access_mode:
+        description: Explicit admin rollout ceremony
+        required: true
+        type: choice
+        default: disabled
+        options: [disabled, fresh, verified]
+      owner_account_id:
+        description: Exact configured owner account ID; required unless disabled
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -23,6 +34,9 @@ jobs:
       branch: ${{ steps.target.outputs.branch }}
       github_environment: ${{ steps.target.outputs.github_environment }}
       product_access_enforced: ${{ steps.target.outputs.product_access_enforced }}
+      admin_access_enabled: ${{ steps.target.outputs.admin_access_enabled }}
+      admin_bootstrap_mode: ${{ steps.target.outputs.admin_bootstrap_mode }}
+      owner_account_id: ${{ steps.target.outputs.owner_account_id }}
       sha: ${{ steps.target.outputs.sha }}
       stage: ${{ steps.target.outputs.stage }}
     steps:
@@ -31,6 +45,8 @@ jobs:
         env:
           BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
           VERIFIED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ADMIN_MODE: ${{ inputs.admin_access_mode || 'disabled' }}
+          OWNER_ACCOUNT_ID: ${{ inputs.owner_account_id || '' }}
         run: |
           case "$BRANCH" in
             main)
@@ -47,6 +63,19 @@ jobs:
           esac
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "sha=$VERIFIED_SHA" >> "$GITHUB_OUTPUT"
+          if [ "$ADMIN_MODE" = disabled ]; then
+            test -z "$OWNER_ACCOUNT_ID"
+            echo "admin_access_enabled=false" >> "$GITHUB_OUTPUT"
+            echo "admin_bootstrap_mode=disabled" >> "$GITHUB_OUTPUT"
+            echo "owner_account_id=" >> "$GITHUB_OUTPUT"
+          else
+            test "${{ github.event_name }}" = workflow_dispatch
+            test "$ADMIN_MODE" = fresh -o "$ADMIN_MODE" = verified
+            [[ "$OWNER_ACCOUNT_ID" =~ ^account:[a-f0-9]{64}$ ]]
+            echo "admin_access_enabled=true" >> "$GITHUB_OUTPUT"
+            echo "admin_bootstrap_mode=$ADMIN_MODE" >> "$GITHUB_OUTPUT"
+            echo "owner_account_id=$OWNER_ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+          fi
 
   deploy:
     name: Deploy ${{ needs.target.outputs.github_environment }} and run live smoke
@@ -73,6 +102,9 @@ jobs:
       - name: Refuse premature product-access cutover
         env:
           FTE_PRODUCT_ACCESS_ENFORCED: ${{ needs.target.outputs.product_access_enforced }}
+          FTE_ADMIN_ACCESS_ENABLED: ${{ needs.target.outputs.admin_access_enabled }}
+          FTE_ADMIN_BOOTSTRAP_MODE: ${{ needs.target.outputs.admin_bootstrap_mode }}
+          FTE_OWNER_ACCOUNT_ID: ${{ needs.target.outputs.owner_account_id }}
         run: test "$FTE_PRODUCT_ACCESS_ENFORCED" = "false"
 
       - name: Check out verified revision
@@ -133,6 +165,9 @@ jobs:
       - name: Verify live product-access setting
         env:
           FTE_AWS_STAGE: ${{ needs.target.outputs.stage }}
+          EXPECTED_ADMIN_ENABLED: ${{ needs.target.outputs.admin_access_enabled }}
+          EXPECTED_ADMIN_MODE: ${{ needs.target.outputs.admin_bootstrap_mode }}
+          EXPECTED_OWNER_ACCOUNT_ID: ${{ needs.target.outputs.owner_account_id }}
         run: |
           stack="FindTheEdge-$FTE_AWS_STAGE-Foundation"
           api_id=$(aws cloudformation describe-stacks --stack-name "$stack" --region us-east-1 --output json | jq -er '.Stacks[0].Outputs | map(select(.OutputKey == "EventsApiId")) | if length == 1 then .[0].OutputValue else error("events-api-binding") end')
@@ -142,3 +177,9 @@ jobs:
           integration_uri=$(aws apigatewayv2 get-integration --api-id "$api_id" --integration-id "$integration_id" --region us-east-1 --query IntegrationUri --output text)
           [[ "$integration_uri" =~ ^arn:aws:lambda:us-east-1:228246988391:function:[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$ ]]
           test "$(aws lambda get-function-configuration --function-name "$integration_uri" --region us-east-1 --query 'Environment.Variables.FTE_PRODUCT_ACCESS_ENFORCED' --output text)" = false
+          config=$(aws lambda get-function-configuration --function-name "$integration_uri" --region us-east-1 --query Environment.Variables --output json)
+          test "$(jq -r .FTE_ADMIN_ACCESS_ENABLED <<<"$config")" = "$EXPECTED_ADMIN_ENABLED"
+          if [ "$EXPECTED_ADMIN_ENABLED" = true ]; then
+            test "$(jq -r .FTE_ADMIN_BOOTSTRAP_MODE <<<"$config")" = "$EXPECTED_ADMIN_MODE"
+            test "$(jq -r .FTE_OWNER_ACCOUNT_ID <<<"$config")" = "$EXPECTED_OWNER_ACCOUNT_ID"
+          fi

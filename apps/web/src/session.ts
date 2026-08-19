@@ -63,6 +63,7 @@ const KNOWN_ROUTES: readonly string[] = [
   "/splits",
   "/watchlist",
   "/performance",
+  "/admin/users",
   "/data-sources",
   "/retrospectives",
   "/experiments",

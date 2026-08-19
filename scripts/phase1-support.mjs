@@ -22,6 +22,29 @@ export function parseProductAccessEnforcement(
   throw new Error("FTE_PRODUCT_ACCESS_ENFORCED must be true or false");
 }
 
+export function parseAdminAccessRollout(environment) {
+  const enabled = environment.FTE_ADMIN_ACCESS_ENABLED ?? "false";
+  if (!["true", "false"].includes(enabled))
+    throw new Error("FTE_ADMIN_ACCESS_ENABLED must be true or false");
+  const mode = environment.FTE_ADMIN_BOOTSTRAP_MODE ?? "disabled";
+  if (!["disabled", "fresh", "verified"].includes(mode))
+    throw new Error(
+      "FTE_ADMIN_BOOTSTRAP_MODE must be disabled, fresh, or verified",
+    );
+  const ownerAccountId = environment.FTE_OWNER_ACCOUNT_ID;
+  if (enabled === "false") {
+    if (mode !== "disabled" || ownerAccountId)
+      throw new Error("disabled admin rollout cannot select an owner or mode");
+    return Object.freeze({ enabled: false, mode: "disabled" });
+  }
+  if (
+    mode === "disabled" ||
+    !/^account:[a-f0-9]{64}$/.test(ownerAccountId ?? "")
+  )
+    throw new Error("enabled admin rollout requires an exact owner and mode");
+  return Object.freeze({ enabled: true, mode, ownerAccountId });
+}
+
 export function safeDevConfig(environment = process.env) {
   return {
     stage: environment.FTE_AWS_STAGE ?? "dev",
@@ -67,6 +90,7 @@ export function safeDeploymentConfig(environment = process.env) {
     throw new Error(
       "FTE_PRODUCT_ACCESS_ENFORCED must remain false until the owned-access cutover is approved",
     );
+  const adminAccess = parseAdminAccessRollout(environment);
   return {
     ...safeDevConfig({
       ...environment,
@@ -80,6 +104,7 @@ export function safeDeploymentConfig(environment = process.env) {
         environment.FTE_COGNITO_LOGOUT_URL ?? target.webOrigin,
     }),
     productAccessEnforced,
+    adminAccess,
     target,
     webCertificateArn:
       environment.FTE_WEB_CERTIFICATE_ARN ??
@@ -703,6 +728,9 @@ export function validateTemplate(template, config) {
     "POST /auth/session/refresh",
     "POST /auth/session/revoke",
     "GET /auth/session/capabilities",
+    "GET /admin/users",
+    "POST /admin/users/grants",
+    "DELETE /admin/users/{directoryId}/manual-grant",
     "POST /billing/webhook",
     "GET /billing/entitlement",
     "POST /billing/checkout",
@@ -736,6 +764,9 @@ export function validateTemplate(template, config) {
           "POST /auth/session/refresh",
           "POST /auth/session/revoke",
           "GET /auth/session/capabilities",
+          "GET /admin/users",
+          "POST /admin/users/grants",
+          "DELETE /admin/users/{directoryId}/manual-grant",
           "POST /billing/webhook",
           "GET /billing/entitlement",
           "POST /billing/checkout",
@@ -792,6 +823,23 @@ export function validateTemplate(template, config) {
   )
     throw new Error(
       "Event API product access enforcement must match the selected deployment setting",
+    );
+  if (
+    apiLambda.Properties?.Environment?.Variables?.FTE_ADMIN_ACCESS_ENABLED !==
+      String(config.adminAccess.enabled) ||
+    (config.adminAccess.enabled &&
+      (apiLambda.Properties?.Environment?.Variables
+        ?.FTE_ADMIN_BOOTSTRAP_MODE !== config.adminAccess.mode ||
+        apiLambda.Properties?.Environment?.Variables?.FTE_OWNER_ACCOUNT_ID !==
+          config.adminAccess.ownerAccountId)) ||
+    (!config.adminAccess.enabled &&
+      (apiLambda.Properties?.Environment?.Variables
+        ?.FTE_ADMIN_BOOTSTRAP_MODE !== undefined ||
+        apiLambda.Properties?.Environment?.Variables?.FTE_OWNER_ACCOUNT_ID !==
+          undefined))
+  )
+    throw new Error(
+      "Admin access must exactly match the explicit disabled, fresh, or verified rollout",
     );
   const seedFunctions = entriesOfType(template, "AWS::Lambda::Function").filter(
     ([, value]) =>

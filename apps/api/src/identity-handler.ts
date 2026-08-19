@@ -1,5 +1,6 @@
 import { randomBytes, randomInt } from "node:crypto";
 import type {
+  AdminAccessRepository,
   IdentityRepository,
   RateLimitDecision,
 } from "@find-the-edge/database";
@@ -68,6 +69,9 @@ export interface IdentityRuntime {
   readonly now?: () => Date;
   readonly generateCode?: () => string;
   readonly generateSalt?: () => string;
+  readonly adminAccessEnabled?: boolean;
+  readonly ownerAccountId?: string;
+  readonly adminBootstrapMode?: "fresh" | "verified";
 }
 
 /**
@@ -222,7 +226,14 @@ const usableSourceIp = (value: string | undefined): string | null =>
     : null;
 
 export const createIdentityHttpHandler =
-  (repository: IdentityRepository, runtime: IdentityRuntime) =>
+  (
+    repository: IdentityRepository,
+    runtime: IdentityRuntime,
+    adminAccess?: Pick<
+      AdminAccessRepository,
+      "assertVerifiedLoginAllowed" | "completeVerifiedLogin"
+    >,
+  ) =>
   async (request: IdentityHttpRequest): Promise<IdentityHttpResult> => {
     const now = (runtime.now?.() ?? new Date()).toISOString();
     const sourceIp = usableSourceIp(request.sourceIp);
@@ -445,14 +456,43 @@ export const createIdentityHttpHandler =
         await repository.recordFailedAttempt(phone, challenge.challengeId);
       return rejected(digest);
     }
+    const accountId = deriveAccountId(phone, runtime.accountPepper);
+    if (runtime.adminAccessEnabled) {
+      if (
+        !adminAccess ||
+        !runtime.ownerAccountId ||
+        !runtime.adminBootstrapMode
+      )
+        throw new Error("admin-access-bootstrap-unavailable");
+      await adminAccess.assertVerifiedLoginAllowed(
+        accountId,
+        runtime.ownerAccountId,
+        runtime.adminBootstrapMode,
+      );
+    }
     // Single use is decided in storage, not here: whoever wins the
     // conditional write is the only caller that gets a token.
     if (!(await repository.consumeChallenge(phone, challenge.challengeId, now)))
       return rejected(digest);
-    const account = await repository.upsertAccount({
-      accountId: deriveAccountId(phone, runtime.accountPepper),
-      now,
-    });
+    let account;
+    if (runtime.adminAccessEnabled) {
+      if (
+        !adminAccess ||
+        !runtime.ownerAccountId ||
+        !runtime.adminBootstrapMode
+      )
+        throw new Error("admin-access-bootstrap-unavailable");
+      account = (
+        await adminAccess.completeVerifiedLogin({
+          accountId,
+          phoneDigest: phoneDigest(phone, runtime.accountPepper),
+          phoneNumber: phone,
+          now,
+          ownerAccountId: runtime.ownerAccountId,
+          bootstrapMode: runtime.adminBootstrapMode,
+        })
+      ).account;
+    } else account = await repository.upsertAccount({ accountId, now });
     const session = createSessionToken({
       accountId: account.accountId,
       tokenVersion: account.tokenVersion,

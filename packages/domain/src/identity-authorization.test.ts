@@ -54,10 +54,11 @@ describe("identity authorization", () => {
     ).toEqual([]);
   });
 
-  it("recognizes only the two closed elevated roles", () => {
+  it("recognizes only the closed elevated roles", () => {
     expect(IDENTITY_AUTHORIZATION_ROLES).toEqual([
       "retrospective-reviewer",
       "strategy-promoter",
+      "super-admin",
     ]);
     for (const role of IDENTITY_AUTHORIZATION_ROLES)
       expect(isIdentityAuthorizationRole(role)).toBe(true);
@@ -77,6 +78,7 @@ describe("identity authorization", () => {
     expect(IDENTITY_AUTHORIZATION_CAPABILITIES).toEqual([
       "events/retrospectives:approve",
       "events/strategies:promote",
+      "accounts/access:manage",
     ]);
     expect(
       identityAuthorizationCapabilities([

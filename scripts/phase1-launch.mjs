@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { buildPhase1Web } from "./build-phase1-web.mjs";
 import { phase1EnvironmentSmoke } from "./phase1-environment-smoke.mjs";
-import { run } from "./phase1-support.mjs";
+import { parseAdminAccessRollout, run } from "./phase1-support.mjs";
 import {
   deploymentEnvironment,
   validateDeploymentBranch,
@@ -135,6 +135,7 @@ export function validateLaunchEnvironment(environment) {
     throw new Error(
       "FTE_PRODUCT_ACCESS_ENFORCED must remain false until the owned-access cutover is approved",
     );
+  parseAdminAccessRollout(environment);
   if (environment.FTE_AWS_STAGE) {
     const target = validateDeploymentBranch(
       environment.FTE_AWS_STAGE,

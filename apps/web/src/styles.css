@@ -836,6 +836,72 @@ main:has(.game-filters) {
   white-space: nowrap;
   border: 0;
 }
+
+.admin-users {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+.admin-users header {
+  margin-bottom: 1.5rem;
+}
+.admin-grant-form {
+  display: grid;
+  gap: 0.5rem;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.admin-grant-form > div {
+  display: flex;
+  gap: 0.75rem;
+}
+.admin-grant-form input {
+  flex: 1;
+  min-width: 0;
+}
+.admin-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.admin-users table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+.admin-users caption {
+  padding: 0.75rem;
+  text-align: left;
+}
+.admin-users th,
+.admin-users td {
+  padding: 0.8rem;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.admin-users th small {
+  display: block;
+  opacity: 0.7;
+  margin-top: 0.25rem;
+}
+.admin-users td span + span {
+  margin-left: 0.5rem;
+}
+.admin-state {
+  text-transform: capitalize;
+}
+@media (max-width: 700px) {
+  .admin-users {
+    padding: 1rem;
+  }
+  .admin-grant-form > div {
+    flex-direction: column;
+  }
+}
 @media (max-width: 760px) {
   .event-explorer-cards {
     grid-template-columns: minmax(0, 1fr);
