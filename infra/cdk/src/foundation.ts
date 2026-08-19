@@ -671,11 +671,15 @@ export class FoundationStack extends Stack {
         reportBatchItemFailures: true,
       }),
     );
+    const stagingProviderSchedule = props.stageName === "staging";
     const liveOddsScheduler = new Rule(this, "LiveOddsScheduler", {
-      enabled: props.schedulerEnabled,
-      // One-minute ticks: games and lines refresh each tick, splits keep
-      // their own five-minute checkpoint inside the control plane.
-      schedule: Schedule.rate(Duration.minutes(1)),
+      enabled: props.schedulerEnabled || stagingProviderSchedule,
+      // Production owns the one-minute live feed. Staging refreshes only
+      // three times per UTC day so the pre-production site remains usable
+      // without recreating the continuous ingestion bill.
+      schedule: stagingProviderSchedule
+        ? Schedule.cron({ minute: "0", hour: "5,13,21" })
+        : Schedule.rate(Duration.minutes(1)),
     });
     liveOddsScheduler.addTarget(
       new SqsQueue(liveOddsQueue, { messageGroupId: "odds-cadence" }),
@@ -748,14 +752,15 @@ export class FoundationStack extends Stack {
         },
       }),
     );
-    const providerLandingScheduled =
-      props.schedulerEnabled && props.stageName === "staging";
+    const providerLandingScheduled = props.stageName === "staging";
     const providerLandingSchedule = new Rule(this, "ProviderLandingSchedule", {
-      // FTE-DQ-001 is staging-gated. Production receives the inert worker and
-      // rollback-safe schema, but cannot begin paid universal acquisition
-      // until FTE-DQ-005 records the staging reconciliation/soak decision.
+      // Universal acquisition remains staging-only and starts fifteen minutes
+      // after Live Odds so the higher-priority path establishes the shared
+      // account window first. Production retains an inert rollback-safe worker.
       enabled: providerLandingScheduled,
-      schedule: Schedule.rate(Duration.minutes(1)),
+      schedule: providerLandingScheduled
+        ? Schedule.cron({ minute: "15", hour: "5,13,21" })
+        : Schedule.rate(Duration.minutes(1)),
     });
     providerLandingSchedule.addTarget(
       new LambdaFunction(providerLanding, {

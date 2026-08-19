@@ -15,6 +15,7 @@ const eventConfig = {
 const expectProviderLandingSchedule = (
   template: Template,
   state: "ENABLED" | "DISABLED",
+  scheduleExpression = "rate(1 minute)",
 ) => {
   const schedules = template.findResources("AWS::Events::Rule");
   const providerLanding = Object.entries(schedules).find(([logicalId]) =>
@@ -23,7 +24,7 @@ const expectProviderLandingSchedule = (
   expect(providerLanding?.[1]).toMatchObject({
     Properties: {
       State: state,
-      ScheduleExpression: "rate(1 minute)",
+      ScheduleExpression: scheduleExpression,
       Targets: [
         {
           RetryPolicy: {
@@ -39,12 +40,18 @@ const expectScheduleState = (
   template: Template,
   logicalName: string,
   state: "ENABLED" | "DISABLED",
+  scheduleExpression?: string,
 ) => {
   const schedules = template.findResources("AWS::Events::Rule");
   const schedule = Object.entries(schedules).find(([logicalId]) =>
     logicalId.includes(logicalName),
   );
-  expect(schedule?.[1]).toMatchObject({ Properties: { State: state } });
+  expect(schedule?.[1]).toMatchObject({
+    Properties: {
+      State: state,
+      ...(scheduleExpression ? { ScheduleExpression: scheduleExpression } : {}),
+    },
+  });
 };
 
 const expectCriticalAlarmBudget = (
@@ -1403,20 +1410,29 @@ describe("foundation CDK app", () => {
     ).toThrow("FTE_WEB_ORIGIN");
   });
 
-  it("keeps staging recurring provider and opportunity ingestion disabled", () => {
+  it("runs staging provider acquisition three times daily while keeping opportunities disabled", () => {
     const { stack } = createFoundationApp({
       stage: "staging",
       ...eventConfig,
       schedulerEnabled: false,
     });
     const template = Template.fromStack(stack);
-    for (const logicalName of [
+    expectScheduleState(
+      template,
       "LiveOddsScheduler",
-      "ProviderLandingSchedule",
+      "ENABLED",
+      "cron(0 5,13,21 * * ? *)",
+    );
+    expectProviderLandingSchedule(
+      template,
+      "ENABLED",
+      "cron(15 5,13,21 * * ? *)",
+    );
+    for (const logicalName of [
       "OpportunityExpirationSchedule",
       "OpportunityGenerationSchedule",
     ])
-      expectScheduleState(template, logicalName, "DISABLED");
+      expectScheduleState(template, logicalName, "DISABLED", "rate(5 minutes)");
     template.hasOutput("LiveOddsIngestionFunctionName", {});
     template.hasOutput("ProviderLandingFunctionName", {});
     template.resourceCountIs("AWS::CloudWatch::Alarm", 4);
@@ -1437,8 +1453,13 @@ describe("foundation CDK app", () => {
       schedulerEnabled: true,
     });
     const template = Template.fromStack(stack);
-    expectScheduleState(template, "LiveOddsScheduler", "ENABLED");
-    expectScheduleState(template, "ProviderLandingSchedule", "DISABLED");
+    expectScheduleState(
+      template,
+      "LiveOddsScheduler",
+      "ENABLED",
+      "rate(1 minute)",
+    );
+    expectProviderLandingSchedule(template, "DISABLED", "rate(1 minute)");
     expectScheduleState(template, "OpportunityExpirationSchedule", "ENABLED");
     expectScheduleState(template, "OpportunityGenerationSchedule", "ENABLED");
     template.resourceCountIs("AWS::CloudWatch::Alarm", 4);

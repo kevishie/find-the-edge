@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  automaticLiveOddsInvocationDisabled,
   assertLiveOddsMaintenanceOwnership,
   boundedLiveOddsInvocationError,
   boundedRetryVisibilitySeconds,
@@ -17,27 +16,25 @@ import {
 import { SharpApiError } from "@find-the-edge/providers";
 
 describe("live odds Lambda invocation", () => {
-  it("acknowledges queued staging cadence work while preserving manual invocation", () => {
-    const queued = parseLiveOddsInvocation({
-      Records: [
-        {
-          eventSource: "aws:sqs",
-          messageId: "scheduled-1",
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    });
-    expect(automaticLiveOddsInvocationDisabled("staging", queued)).toBe(true);
+  it("accepts staging cadence and manual invocation shapes", () => {
     expect(
-      automaticLiveOddsInvocationDisabled(
-        "staging",
-        parseLiveOddsInvocation(undefined),
-      ),
-    ).toBe(false);
-    expect(automaticLiveOddsInvocationDisabled("prod", queued)).toBe(false);
+      parseLiveOddsInvocation({
+        Records: [
+          {
+            eventSource: "aws:sqs",
+            messageId: "scheduled-1",
+            attributes: { ApproximateReceiveCount: "1" },
+          },
+        ],
+      }),
+    ).toMatchObject({
+      forceRefresh: false,
+      sqs: { messageId: "scheduled-1", receiveCount: 1 },
+    });
+    expect(parseLiveOddsInvocation(undefined)).toEqual({ forceRefresh: false });
   });
 
-  it("acknowledges a real staging SQS invocation before AWS configuration", async () => {
+  it("routes a real staging SQS invocation through normal configuration validation", async () => {
     const originalStage = process.env["FTE_AWS_STAGE"];
     const originalTable = process.env["FTE_EVENT_TABLE"];
     const originalSecret = process.env["FTE_SHARP_API_SECRET_ID"];

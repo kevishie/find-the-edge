@@ -3,8 +3,8 @@ import { MemoryOddsControlPlaneStore } from "@find-the-edge/database";
 import { SharpApiError } from "@find-the-edge/providers";
 
 import {
-  automaticProviderLandingInvocationDisabled,
   createProviderLandingMetricSink,
+  handler,
   parseProviderLandingSecret,
   providerLandingTerminalReason,
   recoverProviderLandingAccountWindow,
@@ -17,20 +17,28 @@ afterEach(() => {
 });
 
 describe("provider landing Lambda boundary", () => {
-  it("drops scheduled staging retries while preserving direct manual runs", () => {
-    const scheduled = {
-      source: "aws.events",
-      "detail-type": "Scheduled Event",
-    };
-    expect(
-      automaticProviderLandingInvocationDisabled("staging", scheduled),
-    ).toBe(true);
-    expect(automaticProviderLandingInvocationDisabled("staging", {})).toBe(
-      false,
-    );
-    expect(automaticProviderLandingInvocationDisabled("prod", scheduled)).toBe(
-      false,
-    );
+  it("routes scheduled staging acquisition through normal configuration validation", async () => {
+    const originalTable = process.env["FTE_EVENT_TABLE"];
+    const originalSecret = process.env["FTE_SHARP_API_SECRET_ID"];
+    const originalStage = process.env["FTE_AWS_STAGE"];
+    try {
+      delete process.env["FTE_EVENT_TABLE"];
+      delete process.env["FTE_SHARP_API_SECRET_ID"];
+      process.env["FTE_AWS_STAGE"] = "staging";
+      await expect(
+        handler({ source: "aws.events", "detail-type": "Scheduled Event" }, {
+          getRemainingTimeInMillis: () => 840_000,
+        } as never),
+      ).resolves.toEqual({ terminal: true, reason: "configuration" });
+    } finally {
+      if (originalTable === undefined) delete process.env["FTE_EVENT_TABLE"];
+      else process.env["FTE_EVENT_TABLE"] = originalTable;
+      if (originalSecret === undefined)
+        delete process.env["FTE_SHARP_API_SECRET_ID"];
+      else process.env["FTE_SHARP_API_SECRET_ID"] = originalSecret;
+      if (originalStage === undefined) delete process.env["FTE_AWS_STAGE"];
+      else process.env["FTE_AWS_STAGE"] = originalStage;
+    }
   });
 
   it("accepts the existing plain and JSON SharpAPI secret shapes", () => {

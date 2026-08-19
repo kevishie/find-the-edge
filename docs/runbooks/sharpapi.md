@@ -52,8 +52,9 @@ SharpAPI captures each sportsbook independently and retains those captures for
 Eastern calendar days, reserves each request against the same authoritative
 account rate window used by live odds, and caps work per invocation. A `200`
 response with `books: {}`, a non-final book, 429, or retryable 503 leaves prior
-evidence unchanged and is retried on a later one-minute scheduling opportunity.
-The one-minute trigger is an opportunity, not a completion guarantee.
+evidence unchanged and is retried on a later scheduling opportunity. Production
+has one-minute opportunities; staging has its next three-daily window or a
+deliberate manual canary. A trigger is an opportunity, not a completion guarantee.
 
 Each finalized book is stored once under the canonical event. Later responses
 may add newly finalized books but cannot rewrite a prior source capture. A
@@ -83,11 +84,11 @@ sport-only request so a partial plan can never publish as complete. A catalog
 sport requires no Events request only when both the sport and all of its valid
 league rows report zero event and live counters; any positive counter remains
 active. Odds use the provider-wide `/odds`
-cursor chain. The one-minute worker cadence is a continuation-liveness control:
-reserved concurrency remains one, completed streams return without paid calls,
-and incomplete opaque cursors receive another scheduling opportunity without
-waiting for the fifteen-minute catalog refresh. Cursor age must still be
-verified from checkpoint timestamps during staging reconciliation. The
+cursor chain. Reserved concurrency remains one, completed streams return without
+paid calls, and incomplete opaque cursors resume from durable checkpoints.
+Staging automatically supplies three opportunities per UTC day at 05:15, 13:15,
+and 21:15, with direct invocation retained for release canaries. Cursor age must
+still be verified from checkpoint timestamps during staging reconciliation. The
 worker never accepts a configured
 sport or league allowlist, live-state filter, or market filter. A new provider
 sport, league, market, or book must land without a code or configuration change
@@ -178,8 +179,9 @@ number representation. Provider timestamps are calendar-valid RFC 3339/ISO
 generations from collapsing through the runtime `Date` representation. An unsafe number or timestamp quarantines
 only its row; it never rejects a batch containing valid siblings.
 
-The worker is invoked every minute, while catalog refresh remains internally due
-every fifteen minutes. Completed streams make no paid call. If a stream-local
+The staging worker is invoked three times per UTC day, while catalog refresh
+remains internally due every fifteen minutes once an invocation begins.
+Completed streams make no paid call. If a stream-local
 filter rejection is paused and the newly completed catalog changes its frozen
 event plan, the inactive event sweep restarts immediately with that plan;
 unchanged bad filters remain paused and alert instead of hot-looping. Event offsets and odds cursors are
@@ -212,11 +214,11 @@ authority. Catalog records write in checkpointed chunks and stop at the Lambda
 safety deadline; replay validates the durable prefix count and cannot skip rows
 or publish a partial catalog.
 
-The isolated worker is triggered every minute with reserved concurrency one;
-the Lambda retains its fourteen-minute execution budget and sixty-second
-checkpoint/write safety reserve. The one-minute trigger is an operational
-continuation opportunity, not proof of a provider cursor lifetime: responders
-must compare actual invocation starts and checkpoint updates for backlog.
+The isolated staging worker is triggered at 05:15, 13:15, and 21:15 UTC with
+reserved concurrency one; the Lambda retains its fourteen-minute execution
+budget and sixty-second checkpoint/write safety reserve. A trigger is an
+operational continuation opportunity, not proof of a provider cursor lifetime:
+responders must compare actual invocation starts and checkpoint updates for backlog.
 Events and odds take one page each in a fair, serialized round robin. Before a
 paid request, the landing worker atomically reserves against the same
 account-level SharpAPI health row used by live odds. Landing is lower priority:
@@ -271,23 +273,21 @@ CloudWatch Logs, embedded metrics, and custom metrics are intentionally
 disabled. Four standard staging alarms cover sustained Live Odds and Provider
 Landing Lambda errors or DLQ depth; operational detail remains durable in
 DynamoDB checkpoints, account health records, quarantine rows, and DLQs.
-Universal acquisition is now manual-only in staging. The Provider Landing
+Universal acquisition runs three times daily in staging. The Provider Landing
 function, queues, checkpoints, quarantine evidence, DLQ, secret binding, and
-stack outputs remain deployed so an operator can run a bounded validation after
-an ingest change without paying for continuous staging collection.
-Already queued Live Odds cadence messages and accepted Provider Landing
-scheduled retries are acknowledged by the staging workers without secret reads
-or provider calls. Direct operator invocation is intentionally not fenced and
-continues through the normal quota, checkpoint, and idempotency controls.
+stack outputs remain deployed so an operator can also run a bounded validation
+after an ingest change without paying for continuous staging collection.
+Scheduled and direct staging invocations continue through the normal quota,
+checkpoint, idempotency, retry, and terminal-failure controls.
 Configuration, entitlement, and authorization failures mark the shared account
 health terminal; the scheduled delivery then completes without two identical
 blind retries. Unexpected Lambda/storage failures retain bounded asynchronous
 retries and page only after two of three five-minute periods breach. The
-recurring Provider Landing schedule is disabled in every persistent stage until
-a separate promotion decision. Staging also disables recurring Live Odds and
-opportunity maintenance; production retains the aggressive Live Odds and
-opportunity cadence. Stage-aware synth and preflight checks reject attempts to
-turn staging recurrence on or production Live Odds recurrence off.
+recurring Provider Landing schedule remains disabled in production until a
+separate promotion decision. Staging uses the staggered three-daily provider
+cadence while keeping opportunity maintenance disabled; production retains the
+aggressive Live Odds and opportunity cadence. Stage-aware synth and preflight
+checks reject any expression, state, or target that contradicts this contract.
 
 Staging verification resolves `ProviderLandingFunctionName` from the exact stack,
 invokes it only with the deployed SharpAPI secret binding, then strongly reads

@@ -35,8 +35,8 @@ test("recurring-rule validation binds the exact retained function and schedule",
       Rule: {
         Type: "AWS::Events::Rule",
         Properties: {
-          State: "DISABLED",
-          ScheduleExpression: "rate(1 minute)",
+          State: "ENABLED",
+          ScheduleExpression: "cron(15 5,13,21 * * ? *)",
           Targets: [
             { Arn: { "Fn::GetAtt": ["ProviderLandingWorker", "Arn"] } },
           ],
@@ -51,8 +51,8 @@ test("recurring-rule validation binds the exact retained function and schedule",
   };
   const expected = {
     outputName: "ProviderLandingFunctionName",
-    scheduleExpression: "rate(1 minute)",
-    expectedState: "DISABLED",
+    scheduleExpression: "cron(15 5,13,21 * * ? *)",
+    expectedState: "ENABLED",
     stage: "staging",
   };
   assert.doesNotThrow(() => validateRecurringRuleBinding(template, expected));
@@ -61,7 +61,19 @@ test("recurring-rule validation binds the exact retained function and schedule",
   decoy.Resources.Rule.Properties.Targets[0].Arn["Fn::GetAtt"][0] = "Decoy";
   assert.throws(
     () => validateRecurringRuleBinding(decoy, expected),
-    /exactly one DISABLED/,
+    /exactly one ENABLED/,
+  );
+  const wrongCadence = structuredClone(template);
+  wrongCadence.Resources.Rule.Properties.ScheduleExpression = "rate(1 minute)";
+  assert.throws(
+    () => validateRecurringRuleBinding(wrongCadence, expected),
+    /exactly one ENABLED/,
+  );
+  const wrongState = structuredClone(template);
+  wrongState.Resources.Rule.Properties.State = "DISABLED";
+  assert.throws(
+    () => validateRecurringRuleBinding(wrongState, expected),
+    /exactly one ENABLED/,
   );
   const missingOutput = structuredClone(template);
   delete missingOutput.Outputs.ProviderLandingFunctionName;
@@ -83,7 +95,7 @@ test("recurring-rule validation binds the exact retained function and schedule",
   });
   assert.throws(
     () => validateRecurringRuleBinding(fanout, expected),
-    /exactly one DISABLED/,
+    /exactly one ENABLED/,
   );
 });
 

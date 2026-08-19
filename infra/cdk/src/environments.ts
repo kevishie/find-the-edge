@@ -14,7 +14,7 @@ export interface DeploymentEnvironment {
   apiOrigin?: string;
 }
 
-/** Persistent-stage cost policy: only production runs the recurring data plane. */
+/** Production-only aggressive/dependent recurrence; staging provider cron is fixed in CDK. */
 export function recurringDataPlaneEnabled(stage: DeploymentStage): boolean {
   return stage === "prod";
 }

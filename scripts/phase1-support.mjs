@@ -908,21 +908,26 @@ export function validateTemplate(template, config) {
       )
       .map((value) => value[0]),
   );
+  const expectedLiveSchedule =
+    selectedStage === "staging" ? "cron(0 5,13,21 * * ? *)" : "rate(1 minute)";
   const liveRules = entriesOfType(template, "AWS::Events::Rule").filter(
-    ([, value]) =>
-      value.Properties?.ScheduleExpression === "rate(1 minute)" &&
-      value.Properties?.Targets?.some((target) =>
+    ([, value]) => {
+      const targets = value.Properties?.Targets;
+      return (
+        value.Properties?.ScheduleExpression === expectedLiveSchedule &&
+        Array.isArray(targets) &&
+        targets.length === 1 &&
         [...liveQueueIds].some((queueId) =>
-          isGetAtt(target.Arn, queueId, "Arn"),
-        ),
-      ),
+          isGetAtt(targets[0]?.Arn, queueId, "Arn"),
+        )
+      );
+    },
   );
   if (liveRules.length !== 1)
     throw new Error(
-      "Live odds ingestion must have one 1-minute rule feeding its control-plane queue",
+      `Live odds ingestion must have one ${expectedLiveSchedule} rule feeding only its control-plane queue`,
     );
-  const expectedLiveState =
-    selectedStage === "staging" ? "DISABLED" : "ENABLED";
+  const expectedLiveState = "ENABLED";
   if (liveRules[0][1].Properties?.State !== expectedLiveState)
     throw new Error(
       `Live odds ingestion rule must be ${expectedLiveState} for ${selectedStage}`,
@@ -932,7 +937,13 @@ export function validateTemplate(template, config) {
       ? "ENABLED"
       : "DISABLED";
     for (const [outputName, scheduleExpression, expectedState] of [
-      ["ProviderLandingFunctionName", "rate(1 minute)", "DISABLED"],
+      [
+        "ProviderLandingFunctionName",
+        selectedStage === "staging"
+          ? "cron(15 5,13,21 * * ? *)"
+          : "rate(1 minute)",
+        selectedStage === "staging" ? "ENABLED" : "DISABLED",
+      ],
       [
         "OpportunityExpirationFunctionName",
         "rate(5 minutes)",

@@ -110,7 +110,7 @@ cleanup in `docs/cloudwatch-shutdown.md`.
 
 ## Live ingestion, quota, and cadence
 
-The stack output `LiveOddsIngestionFunctionName` is the safe manual trigger. Invoke it once after the SharpAPI secret exists. Production's one-minute EventBridge tick enqueues one FIFO control-plane command; policy—not the tick—decides whether each league is due. Staging has no automatic Live Odds, Provider Landing, opportunity-generation, or opportunity-expiration ticks: operators invoke the retained functions explicitly when validating an ingest release. Exhausted commands enter the dedicated odds DLQ and alarm without blocking another league.
+The stack output `LiveOddsIngestionFunctionName` is the safe manual trigger. Invoke it once after the SharpAPI secret exists. Production's one-minute EventBridge tick enqueues one FIFO control-plane command; policy—not the tick—decides whether each league is due. Staging refreshes Live Odds at 05:00, 13:00, and 21:00 UTC and starts Provider Landing fifteen minutes after each window. Staging opportunity-generation and opportunity-expiration ticks remain disabled; operators may still invoke either retained provider function explicitly when validating an ingest release. Exhausted commands enter the dedicated odds DLQ and alarm without blocking another league.
 
 ```sh
 export AWS_ACCOUNT_ID=228246988391
@@ -128,7 +128,7 @@ Normal MLB/MLS odds refresh hourly. Inside 90 minutes of first pitch, MLB refres
 
 The versioned control-plane policy keeps a 100-request SharpAPI reserve. Schedule discovery has its own explicit request-cost/reserve policy and fails closed with a bounded reason when SharpAPI is unavailable. Every physical request is reserved before execution, and its redacted outcome, quota cost, sealed normalized page, cursor, gap evidence, provider-and-league health and league checkpoint are durable. An unsealed paid response remains ambiguous behind a five-minute reconciliation lease; it is not automatically recalled during that lease. A retry consumes a sealed normalized page before making another paid call.
 
-Manual refresh is only a scheduler hint. It does not bypass provider activation, cadence/quota decisions, cooldown, exact canonical mappings, scheduled/pregame fences or immutable history. In staging it is the normal ingest-validation path; resolve `LiveOddsIngestionFunctionName` or `ProviderLandingFunctionName` from the deployed stack and invoke only the intended function. Missing, partial, stale, suspended, closed and unsupported evidence is stored as an explicit gap rather than inferred.
+Manual refresh is only a scheduler hint. It does not bypass provider activation, cadence/quota decisions, cooldown, exact canonical mappings, scheduled/pregame fences or immutable history. In staging it supplements the three daily automatic windows for ingest validation; resolve `LiveOddsIngestionFunctionName` or `ProviderLandingFunctionName` from the deployed stack and invoke only the intended function. Missing, partial, stale, suspended, closed and unsupported evidence is stored as an explicit gap rather than inferred.
 
 ### Guarded development feed reset
 
