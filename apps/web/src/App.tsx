@@ -3336,16 +3336,34 @@ function SignInRoute() {
   const { returnUrl } = useSearch({ from: "/login" });
   const router = useRouter();
   return (
-    <Suspense fallback={<p role="status">Loading sign-in…</p>}>
+    <Suspense
+      fallback={
+        <main className="sign-in-page">
+          <SignInHomeLink />
+          <p role="status">Loading sign-in…</p>
+        </main>
+      }
+    >
       <SignInScreen
         client={useContext(GamesClientContext)}
         store={useContext(SessionContext)}
         from={returnUrl}
+        homeLink={<SignInHomeLink />}
         // The form is replaced rather than pushed: going back from where the
         // reader landed must not return them to a spent code.
         onSignedIn={(path) => router.history.replace(path)}
       />
     </Suspense>
+  );
+}
+
+function SignInHomeLink() {
+  return (
+    <Link to="/" className="sign-in-back" aria-label="Back to home">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="m15 18-6-6 6-6" />
+      </svg>
+    </Link>
   );
 }
 const signInRoute = createRoute({

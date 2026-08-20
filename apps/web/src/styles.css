@@ -6813,10 +6813,14 @@ footer {
 
 /* Our own sign-in (FTE-071): one column on a phone, centred on a desktop. */
 .sign-in-page {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
+  max-width: none;
   min-height: 100vh;
+  margin: 0;
   padding: 24px 16px;
   background:
     radial-gradient(
@@ -6825,6 +6829,59 @@ footer {
       transparent 28rem
     ),
     #09080d;
+}
+.sign-in-back {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid #302b39;
+  border-radius: 10px;
+  color: #c4b5fd;
+  background: rgba(14, 13, 19, 0.88);
+  text-decoration: none;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background 0.15s ease;
+}
+.sign-in-back svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sign-in-back:hover {
+  border-color: #8b5cf6;
+  color: #f3f1f8;
+  background: rgba(124, 58, 237, 0.18);
+}
+.sign-in-back:focus-visible {
+  outline: 2px solid #c4b5fd;
+  outline-offset: 3px;
+}
+@media (max-width: 560px) {
+  .sign-in-back {
+    top: 16px;
+    left: 16px;
+  }
+}
+@media (max-height: 600px) {
+  .sign-in-page {
+    align-items: flex-start;
+    padding-top: 84px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sign-in-back {
+    transition: none;
+  }
 }
 .sign-in-card {
   width: 100%;
