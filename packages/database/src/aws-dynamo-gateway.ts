@@ -38,41 +38,57 @@ export class AwsDynamoGateway implements DynamoGateway {
     keys: readonly { readonly pk: string; readonly sk: string }[],
     options?: { readonly consistentRead?: boolean },
   ) {
+    // Dynamo rejects a BatchGetItem request containing the same key twice.
+    // Callers build these lists from projections, where overlapping inputs
+    // are legitimate, so make the transport boundary idempotent.
+    const uniqueKeys = [
+      ...new Map(keys.map((key) => [`${key.pk}\u0000${key.sk}`, key])).values(),
+    ];
     const chunks: (readonly { readonly pk: string; readonly sk: string }[])[] =
       [];
-    for (let offset = 0; offset < keys.length; offset += 100)
-      chunks.push(keys.slice(offset, offset + 100));
-    // Chunks are independent, so a request that fans out to hundreds of keys
-    // pays one round trip rather than one per hundred.
-    const responses = await Promise.all(
-      chunks.map(async (chunk) => {
-        const items: DynamoItem[] = [];
-        let pending = chunk;
-        for (let attempt = 0; pending.length && attempt < 3; attempt++) {
-          const result = await this.client.send(
-            new BatchGetCommand({
-              RequestItems: {
-                [this.tableName]: {
-                  Keys: [...pending],
-                  ConsistentRead: options?.consistentRead ?? true,
-                  ProjectionExpression: "pk, sk, #value, expiresAt",
-                  ExpressionAttributeNames: { "#value": "value" },
-                },
+    for (let offset = 0; offset < uniqueKeys.length; offset += 100)
+      chunks.push(uniqueKeys.slice(offset, offset + 100));
+    const readChunk = async (chunk: (typeof chunks)[number]) => {
+      const items: DynamoItem[] = [];
+      let pending = chunk;
+      for (let attempt = 0; pending.length && attempt < 5; attempt++) {
+        if (attempt > 0)
+          await new Promise((resolve) =>
+            setTimeout(resolve, 10 * 2 ** (attempt - 1)),
+          );
+        const result = await this.client.send(
+          new BatchGetCommand({
+            RequestItems: {
+              [this.tableName]: {
+                Keys: [...pending],
+                ConsistentRead: options?.consistentRead ?? true,
+                ProjectionExpression: "pk, sk, #value, expiresAt",
+                ExpressionAttributeNames: { "#value": "value" },
               },
-            }),
-          );
-          items.push(
-            ...((result.Responses?.[this.tableName] ?? []) as DynamoItem[]),
-          );
-          pending = (result.UnprocessedKeys?.[this.tableName]?.Keys ?? []) as {
-            pk: string;
-            sk: string;
-          }[];
-        }
-        if (pending.length) throw new Error("dynamo-batch-get-incomplete");
-        return items;
-      }),
-    );
+            },
+          }),
+        );
+        items.push(
+          ...((result.Responses?.[this.tableName] ?? []) as DynamoItem[]),
+        );
+        pending = (result.UnprocessedKeys?.[this.tableName]?.Keys ?? []) as {
+          pk: string;
+          sk: string;
+        }[];
+      }
+      if (pending.length) throw new Error("dynamo-batch-get-incomplete");
+      return items;
+    };
+    // A large games page can contain hundreds of odds keys. Keep independent
+    // chunks concurrent without firing an unbounded read burst at one table.
+    const responses: DynamoItem[][] = [];
+    const concurrency = 2;
+    for (let offset = 0; offset < chunks.length; offset += concurrency)
+      responses.push(
+        ...(await Promise.all(
+          chunks.slice(offset, offset + concurrency).map(readChunk),
+        )),
+      );
     return responses.flat();
   }
   async queryUpTo(pk: string, limit: number) {
