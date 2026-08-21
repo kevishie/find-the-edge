@@ -102,6 +102,7 @@ async function openEntitledExplorer(page: Page) {
   // signed-out test below still proves the live login boundary.
   let entitlementChecks = 0;
   let watchlistChecks = 0;
+  let capabilityChecks = 0;
   const corsHeaders = {
     "access-control-allow-origin": webOrigin,
     "access-control-allow-methods": "GET, OPTIONS",
@@ -109,6 +110,39 @@ async function openEntitledExplorer(page: Page) {
     "cache-control": "no-store",
     vary: "origin",
   };
+  await page.route(`${apiBase}/auth/session/capabilities`, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: corsHeaders });
+      return;
+    }
+    if (route.request().method() !== "GET") {
+      await route.fulfill({ status: 405, headers: corsHeaders });
+      return;
+    }
+    if (
+      route.request().headers()["authorization"] !==
+      `Bearer ${fixtureSession.token}`
+    ) {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        headers: corsHeaders,
+        body: JSON.stringify({ error: "unauthorized" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: corsHeaders,
+      body: JSON.stringify({
+        schemaVersion: "owned-session-capabilities-v1",
+        accountId: fixtureSession.accountId,
+        capabilities: [],
+      }),
+    });
+    capabilityChecks += 1;
+  });
   await page.route(`${apiBase}/billing/entitlement`, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers: corsHeaders });
@@ -198,6 +232,10 @@ async function openEntitledExplorer(page: Page) {
   // this request proves the hosted asset under test is the cutover bundle and
   // that its exact bearer reached the account-owned transport boundary.
   await expect.poll(() => watchlistChecks).toBeGreaterThan(0);
+  // The admin navigation probes server-owned capabilities. The synthetic
+  // session must exercise that boundary without being rejected by staging
+  // before the provider-board assertions can run.
+  await expect.poll(() => capabilityChecks).toBeGreaterThan(0);
 }
 
 test("real hosted bundle loads provider MLB and MLS games by day", async ({
