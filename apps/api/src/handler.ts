@@ -241,13 +241,29 @@ const boardResponseCache = createSplitLookupCache<{
   expiresAt: ({ body, enforceKickoffExpiry }) => {
     if (!enforceKickoffExpiry) return null;
     const inspection = inspectBoardBody(body.body);
-    return inspection ? inspection.earliestUnsafeKickoff : 0;
+    if (!inspection) return 0;
+    const now = Date.now();
+    if (
+      inspection.earliestUnsafeKickoff === null ||
+      inspection.earliestUnsafeKickoff > now
+    )
+      return inspection.earliestUnsafeKickoff;
+    // A mixed slate can contain an already-started event whose odds have
+    // correctly become unavailable plus later events whose pregame prices
+    // remain safe. Reloading at the first kickoff is enough; the next priced
+    // game's kickoff is the page's next actual safety boundary.
+    return inspection.earliestPregamePriceKickoff !== null &&
+      inspection.earliestPregamePriceKickoff > now
+      ? inspection.earliestPregamePriceKickoff
+      : inspection.earliestUnsafeKickoff;
   },
   safeAfterExpiry: ({ body, enforceKickoffExpiry }) => {
     if (!enforceKickoffExpiry) return true;
     const inspection = inspectBoardBody(body.body);
     return (
-      inspection !== null && inspection.earliestPregamePriceKickoff === null
+      inspection !== null &&
+      (inspection.earliestPregamePriceKickoff === null ||
+        inspection.earliestPregamePriceKickoff > Date.now())
     );
   },
 });

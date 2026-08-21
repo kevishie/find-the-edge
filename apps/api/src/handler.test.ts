@@ -1899,6 +1899,72 @@ describe("event API", () => {
       }
     },
   );
+
+  it("serves a mixed slate after an unavailable game's kickoff", async () => {
+    vi.useFakeTimers();
+    const now = Date.parse("2026-08-08T12:05:00.000Z");
+    vi.setSystemTime(now);
+    try {
+      const event = (id: string, startsAt: number, available: boolean) => ({
+        id,
+        version: 1,
+        sportKey: "mlb",
+        leagueKey: "mlb",
+        status: "scheduled" as const,
+        startsAt: new Date(startsAt).toISOString(),
+        participants: [
+          { id: `${id}-away`, label: "Away" },
+          { id: `${id}-home`, label: "Home" },
+        ],
+        freshness: new Date(now - 60_000).toISOString(),
+        odds: available
+          ? {
+              state: "available" as const,
+              source: "pregame-snapshot" as const,
+              selections: [],
+            }
+          : { state: "unavailable" as const },
+        metadata: {
+          freshness: { state: "current", evidenceAt: null },
+          availability: available ? "available" : "unavailable",
+          evaluatedAt: new Date(now).toISOString(),
+        },
+      });
+      const list = vi.fn(() =>
+        Promise.resolve({
+          items: [
+            event("event:mlb:started", now - 300_000, false),
+            event("event:mlb:later", now + 3_600_000, true),
+          ],
+          nextCursor: null,
+          projectionState: "ready" as const,
+          evaluationState: "complete" as const,
+          hasMoreUnknown: false,
+          snapshotAt: new Date(now).toISOString(),
+          freshness: null,
+          unavailableReason: null,
+        }),
+      );
+      const handler = createEventHandler(repository, {
+        list,
+      } as unknown as GamesRepository);
+      const request = {
+        route: "games" as const,
+        query: { sport: "mlb", status: "scheduled", day: "2026-08-08" },
+      };
+
+      await expect(handler(request)).resolves.toMatchObject({
+        statusCode: 200,
+      });
+      await expect(handler(request)).resolves.toMatchObject({
+        statusCode: 200,
+      });
+      expect(list).toHaveBeenCalledTimes(1);
+    } finally {
+      clearHandlerCaches();
+      vi.useRealTimers();
+    }
+  });
   it("accepts every games lifecycle but keeps splits scheduled-only", async () => {
     let reads = 0;
     const games = {
