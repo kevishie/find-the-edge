@@ -907,6 +907,26 @@ const key = (kind: string, id: string) => ({
   pk: `ODDS_CONTROL#${kind}#${id}`,
   sk: "CURRENT",
 });
+
+const isConditionalQuotaReservationLoss = (error: unknown) => {
+  if (!(error instanceof Error)) return false;
+  if (error.name === "ConditionalCheckFailedException") return true;
+  if (error.name !== "TransactionCanceledException") return false;
+  const reasons = (error as unknown as Record<string, unknown>)[
+    "CancellationReasons"
+  ];
+  if (!Array.isArray(reasons) || reasons.length === 0) return false;
+  const codes = reasons.map((reason) => {
+    if (!reason || typeof reason !== "object") return undefined;
+    const code = (reason as Record<string, unknown>)["Code"];
+    return typeof code === "string" ? code : undefined;
+  });
+  return (
+    codes.some((code) => code === "ConditionalCheckFailed") &&
+    codes.every((code) => code === "None" || code === "ConditionalCheckFailed")
+  );
+};
+
 export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
   constructor(
     private readonly client: DynamoDBDocumentClient,
@@ -1105,14 +1125,7 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
         );
         return true;
       } catch (error) {
-        if (
-          error instanceof Error &&
-          [
-            "ConditionalCheckFailedException",
-            "TransactionCanceledException",
-          ].includes(error.name)
-        )
-          return false;
+        if (isConditionalQuotaReservationLoss(error)) return false;
         throw error;
       }
     }
@@ -1160,14 +1173,7 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       );
       return true;
     } catch (error) {
-      if (
-        error instanceof Error &&
-        [
-          "TransactionCanceledException",
-          "ConditionalCheckFailedException",
-        ].includes(error.name)
-      )
-        return false;
+      if (isConditionalQuotaReservationLoss(error)) return false;
       throw error;
     }
   }

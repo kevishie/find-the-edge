@@ -15,6 +15,7 @@ const eventConfig = {
 const expectProviderLandingSchedule = (
   template: Template,
   state: "ENABLED" | "DISABLED",
+  scheduleExpression = "rate(1 minute)",
 ) => {
   const schedules = template.findResources("AWS::Events::Rule");
   const providerLanding = Object.entries(schedules).find(([logicalId]) =>
@@ -23,7 +24,7 @@ const expectProviderLandingSchedule = (
   expect(providerLanding?.[1]).toMatchObject({
     Properties: {
       State: state,
-      ScheduleExpression: "rate(1 minute)",
+      ScheduleExpression: scheduleExpression,
       Targets: [
         {
           RetryPolicy: {
@@ -31,6 +32,24 @@ const expectProviderLandingSchedule = (
           },
         },
       ],
+    },
+  });
+};
+
+const expectScheduleState = (
+  template: Template,
+  logicalName: string,
+  state: "ENABLED" | "DISABLED",
+  scheduleExpression?: string,
+) => {
+  const schedules = template.findResources("AWS::Events::Rule");
+  const schedule = Object.entries(schedules).find(([logicalId]) =>
+    logicalId.includes(logicalName),
+  );
+  expect(schedule?.[1]).toMatchObject({
+    Properties: {
+      State: state,
+      ...(scheduleExpression ? { ScheduleExpression: scheduleExpression } : {}),
     },
   });
 };
@@ -1396,16 +1415,40 @@ describe("foundation CDK app", () => {
     ).toThrow("FTE_WEB_ORIGIN");
   });
 
-  it("enables scheduling only by config with the capped staging alarm set", () => {
+  it("runs staging provider acquisition three times daily while keeping opportunities disabled", () => {
     const { stack } = createFoundationApp({
       stage: "staging",
       ...eventConfig,
-      schedulerEnabled: true,
+      schedulerEnabled: false,
     });
     const template = Template.fromStack(stack);
-    template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
+    expectScheduleState(
+      template,
+      "LiveOddsScheduler",
+      "ENABLED",
+      "cron(0 5,13,21 * * ? *)",
+    );
+    expectProviderLandingSchedule(
+      template,
+      "ENABLED",
+      "cron(15 5,13,21 * * ? *)",
+    );
+    for (const logicalName of [
+      "OpportunityExpirationSchedule",
+      "OpportunityGenerationSchedule",
+    ])
+      expectScheduleState(template, logicalName, "DISABLED", "rate(5 minutes)");
+    template.hasOutput("LiveOddsIngestionFunctionName", {});
+    template.hasOutput("ProviderLandingFunctionName", {});
     template.resourceCountIs("AWS::CloudWatch::Alarm", 4);
     template.resourceCountIs("AWS::Logs::LogGroup", 0);
+    expect(() =>
+      createFoundationApp({
+        stage: "staging",
+        ...eventConfig,
+        schedulerEnabled: true,
+      }),
+    ).toThrow(/scheduling must be false/);
   });
 
   it("keeps universal provider acquisition inert in production until the staging gate is promoted", () => {
@@ -1415,10 +1458,22 @@ describe("foundation CDK app", () => {
       schedulerEnabled: true,
     });
     const template = Template.fromStack(stack);
-    template.hasResourceProperties("AWS::Events::Rule", {
-      State: "DISABLED",
-      ScheduleExpression: "rate(1 minute)",
-    });
+    expectScheduleState(
+      template,
+      "LiveOddsScheduler",
+      "ENABLED",
+      "rate(1 minute)",
+    );
+    expectProviderLandingSchedule(template, "DISABLED", "rate(1 minute)");
+    expectScheduleState(template, "OpportunityExpirationSchedule", "ENABLED");
+    expectScheduleState(template, "OpportunityGenerationSchedule", "ENABLED");
     template.resourceCountIs("AWS::CloudWatch::Alarm", 4);
+    expect(() =>
+      createFoundationApp({
+        stage: "prod",
+        ...eventConfig,
+        schedulerEnabled: false,
+      }),
+    ).toThrow(/scheduling must be true/);
   });
 });

@@ -202,8 +202,7 @@ export const recoverProviderLandingAccountWindow = async (input: {
   return "unavailable" as const;
 };
 
-export const handler = async (event: unknown, context: Context) => {
-  void event;
+export const handler = async (_event: unknown, context: Context) => {
   const tableName = process.env["FTE_EVENT_TABLE"];
   const secretId = process.env["FTE_SHARP_API_SECRET_ID"];
   const stage = process.env["FTE_AWS_STAGE"];

@@ -14,6 +14,28 @@ export interface DeploymentEnvironment {
   apiOrigin?: string;
 }
 
+/** Production-only aggressive/dependent recurrence; staging provider cron is fixed in CDK. */
+export function recurringDataPlaneEnabled(stage: DeploymentStage): boolean {
+  return stage === "prod";
+}
+
+export function resolveRecurringDataPlaneEnabled(
+  stage: DeploymentStage,
+  value: string | undefined,
+): boolean {
+  if (value !== undefined && value !== "true" && value !== "false")
+    throw new Error("FTE_UPCOMING_SCHEDULER_ENABLED must be true or false");
+  if (stage === "staging" || stage === "prod") {
+    const expected = recurringDataPlaneEnabled(stage);
+    if (value !== undefined && (value === "true") !== expected)
+      throw new Error(
+        `FTE_UPCOMING_SCHEDULER_ENABLED must be ${String(expected)} for ${stage}`,
+      );
+    return expected;
+  }
+  return value === "true";
+}
+
 export function resolveProductAccessEnforcement(
   stage: DeploymentStage,
   value: string | undefined,

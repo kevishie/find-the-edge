@@ -271,8 +271,55 @@ const SAFE_STORAGE_FAILURES = new Map<string, string>([
   ["InternalServerError", "storage-unavailable"],
   ["ServiceUnavailable", "storage-unavailable"],
 ]);
-export const classifyOddsControlPlaneFailure = (error: unknown) => {
-  if (!(error instanceof Error)) return "internal-failure";
+
+const TRANSACTION_NONE = "None";
+const transactionCancellationReason = (error: Error) => {
+  if (
+    error.name !== "TransactionCanceledException" &&
+    error.name !== "FixtureOddsTransactionCanceledError"
+  )
+    return undefined;
+  const errorRecord = error as unknown as Record<string, unknown>;
+  const awsReasons = errorRecord["CancellationReasons"];
+  const translatedReasons = errorRecord["reasons"];
+  const reasons = Array.isArray(awsReasons)
+    ? awsReasons
+    : Array.isArray(translatedReasons)
+      ? translatedReasons
+      : undefined;
+  if (!reasons) return "storage-transaction-cancelled";
+  const codes = reasons.map((reason) => {
+    if (!reason || typeof reason !== "object") return undefined;
+    const reasonRecord = reason as Record<string, unknown>;
+    const code = reasonRecord["Code"] ?? reasonRecord["code"];
+    return typeof code === "string" ? code : undefined;
+  });
+  if (
+    codes.length === 0 ||
+    codes.some((code) => code === undefined) ||
+    codes.every((code) => code === TRANSACTION_NONE)
+  )
+    return "storage-transaction-cancelled";
+  const material = codes.filter((code) => code !== TRANSACTION_NONE);
+  if (
+    material.every(
+      (code) =>
+        code === "ProvisionedThroughputExceeded" || code === "ThrottlingError",
+    )
+  )
+    return "storage-throttled";
+  if (material.every((code) => code === "TransactionConflict"))
+    return "storage-transaction-in-progress";
+  if (material.every((code) => code === "ValidationError"))
+    return "storage-validation";
+  if (material.every((code) => code === "AccessDenied"))
+    return "storage-access-denied";
+  return "storage-transaction-cancelled";
+};
+
+const classifySingleOddsControlPlaneFailure = (error: Error) => {
+  const transactionFailure = transactionCancellationReason(error);
+  if (transactionFailure) return transactionFailure;
   const storageFailure = SAFE_STORAGE_FAILURES.get(error.name);
   if (storageFailure) return storageFailure;
   if (error.message === "run-owned") return "provider-recovering";
@@ -285,7 +332,28 @@ export const classifyOddsControlPlaneFailure = (error: unknown) => {
   if (error.message.includes("pagination")) return "pagination-invalid";
   if (error.message.includes("mapping")) return "mapping-quarantine";
   if (error.message.includes("provider")) return "provider-error";
-  return "internal-failure";
+  return undefined;
+};
+
+export const classifyOddsControlPlaneFailure = (error: unknown) => {
+  const pending: unknown[] = [error];
+  const seen = new Set<unknown>();
+  let fallback: string | undefined;
+  let visited = 0;
+  while (pending.length > 0 && visited < 6) {
+    const current = pending.shift();
+    if (!(current instanceof Error) || seen.has(current)) continue;
+    seen.add(current);
+    visited += 1;
+    const classified = classifySingleOddsControlPlaneFailure(current);
+    if (classified && classified !== "provider-error") return classified;
+    fallback ??= classified;
+    const sourceError = (current as unknown as Record<string, unknown>)[
+      "sourceError"
+    ];
+    pending.push(sourceError, current.cause);
+  }
+  return fallback ?? "internal-failure";
 };
 
 const sanitizedDiagnosticText = (value: string, fallback: string) => {
@@ -341,7 +409,15 @@ const TRANSIENT_FAILURES = new Set([
   "provider-cooldown",
   "quota-reserve",
   "conflict-metric-pending",
+  "storage-throttled",
+  "storage-transaction-in-progress",
+  "storage-unavailable",
 ]);
+
+export const isRetryableOddsStorageFailure = (reason: string) =>
+  reason === "storage-throttled" ||
+  reason === "storage-transaction-in-progress" ||
+  reason === "storage-unavailable";
 const TERMINAL_FAILURES = new Set([
   "unauthorized",
   "not-entitled",

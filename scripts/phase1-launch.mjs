@@ -7,6 +7,7 @@ import { phase1EnvironmentSmoke } from "./phase1-environment-smoke.mjs";
 import { parseAdminAccessRollout, run } from "./phase1-support.mjs";
 import {
   deploymentEnvironment,
+  recurringDataPlaneEnabled,
   validateDeploymentBranch,
 } from "./environment-contract.mjs";
 
@@ -141,6 +142,16 @@ export function validateLaunchEnvironment(environment) {
       environment.FTE_AWS_STAGE,
       environment.FTE_DEPLOY_BRANCH,
     );
+    const expectedSchedulerEnabled = String(
+      recurringDataPlaneEnabled(target.stage),
+    );
+    if (
+      environment.FTE_UPCOMING_SCHEDULER_ENABLED !== undefined &&
+      environment.FTE_UPCOMING_SCHEDULER_ENABLED !== expectedSchedulerEnabled
+    )
+      throw new Error(
+        `FTE_UPCOMING_SCHEDULER_ENABLED must be ${expectedSchedulerEnabled} for ${target.stage}`,
+      );
     if (!/^[0-9a-f]{40}$/.test(environment.FTE_RELEASE_SHA ?? ""))
       throw new Error(
         "FTE_RELEASE_SHA must identify the exact verified commit",
@@ -164,6 +175,10 @@ export function selectLaunchTarget(environment) {
   activeLaunchTarget = target;
   LAUNCH_STACK = target.stack;
   return target;
+}
+
+export function launchSchedulerEnabled(target) {
+  return target.stage === "dev" || recurringDataPlaneEnabled(target.stage);
 }
 
 function verifyIdentity(environment) {
@@ -1542,7 +1557,7 @@ export async function phase1Launch(environment = process.env) {
     CDK_DEFAULT_REGION: LAUNCH_REGION,
     FTE_AWS_STAGE: target.stage,
     FTE_FIXTURE_ODDS_SEED_ENABLED: "false",
-    FTE_UPCOMING_SCHEDULER_ENABLED: "true",
+    FTE_UPCOMING_SCHEDULER_ENABLED: String(launchSchedulerEnabled(target)),
   };
   run("pnpm", ["--filter", "@find-the-edge/infra-cdk", "build"], {
     env: deployEnvironment,

@@ -1,5 +1,6 @@
 import { createFoundationApp } from "./foundation.js";
 import {
+  resolveRecurringDataPlaneEnabled,
   resolveEnvironment,
   resolveProductAccessEnforcement,
   resolveAdminAccessConfiguration,
@@ -58,12 +59,10 @@ const rawPaperPickSchedulerEnabled =
   process.env["FTE_PAPER_PICK_SCHEDULER_ENABLED"];
 const rawPaperPickGenerationMinutes =
   process.env["FTE_PAPER_PICK_GENERATION_MINUTES"];
-if (
-  rawSchedulerEnabled !== undefined &&
-  rawSchedulerEnabled !== "true" &&
-  rawSchedulerEnabled !== "false"
-)
-  throw new Error("FTE_UPCOMING_SCHEDULER_ENABLED must be true or false");
+const schedulerEnabled = resolveRecurringDataPlaneEnabled(
+  deploymentEnvironment.stage,
+  rawSchedulerEnabled,
+);
 if (
   rawFixtureOddsSeedEnabled !== undefined &&
   rawFixtureOddsSeedEnabled !== "true" &&
@@ -101,7 +100,7 @@ const { app } = createFoundationApp({
         apiCertificateArn: process.env["FTE_API_CERTIFICATE_ARN"] ?? "",
       }
     : {}),
-  schedulerEnabled: rawSchedulerEnabled === "true",
+  schedulerEnabled,
   fixtureOddsSeedEnabled: rawFixtureOddsSeedEnabled === "true",
   productAccessEnforced,
   adminAccessEnabled: adminAccess.enabled,

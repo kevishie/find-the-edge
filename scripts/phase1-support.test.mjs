@@ -12,8 +12,93 @@ import {
   safeDeploymentConfig,
   safeDevConfig,
   validateSafeDevConfig,
+  validateSafeDeploymentConfig,
+  validateRecurringRuleBinding,
   validateTemplate,
 } from "./phase1-support.mjs";
+
+test("recurring-rule validation binds the exact retained function and schedule", () => {
+  const template = {
+    Resources: {
+      ProviderLandingWorker: {
+        Type: "AWS::Lambda::Function",
+        Properties: {
+          Environment: {
+            Variables: {
+              FTE_AWS_STAGE: "staging",
+              FTE_EVENT_TABLE: { Ref: "Table" },
+              FTE_SHARP_API_SECRET_ID: { Ref: "Secret" },
+            },
+          },
+        },
+      },
+      Decoy: { Type: "AWS::Lambda::Function", Properties: {} },
+      Rule: {
+        Type: "AWS::Events::Rule",
+        Properties: {
+          State: "ENABLED",
+          ScheduleExpression: "cron(15 5,13,21 * * ? *)",
+          Targets: [
+            { Arn: { "Fn::GetAtt": ["ProviderLandingWorker", "Arn"] } },
+          ],
+        },
+      },
+    },
+    Outputs: {
+      ProviderLandingFunctionName: {
+        Value: { Ref: "ProviderLandingWorker" },
+      },
+    },
+  };
+  const expected = {
+    outputName: "ProviderLandingFunctionName",
+    scheduleExpression: "cron(15 5,13,21 * * ? *)",
+    expectedState: "ENABLED",
+    stage: "staging",
+  };
+  assert.doesNotThrow(() => validateRecurringRuleBinding(template, expected));
+
+  const decoy = structuredClone(template);
+  decoy.Resources.Rule.Properties.Targets[0].Arn["Fn::GetAtt"][0] = "Decoy";
+  assert.throws(
+    () => validateRecurringRuleBinding(decoy, expected),
+    /exactly one ENABLED/,
+  );
+  const wrongCadence = structuredClone(template);
+  wrongCadence.Resources.Rule.Properties.ScheduleExpression = "rate(1 minute)";
+  assert.throws(
+    () => validateRecurringRuleBinding(wrongCadence, expected),
+    /exactly one ENABLED/,
+  );
+  const wrongState = structuredClone(template);
+  wrongState.Resources.Rule.Properties.State = "DISABLED";
+  assert.throws(
+    () => validateRecurringRuleBinding(wrongState, expected),
+    /exactly one ENABLED/,
+  );
+  const missingOutput = structuredClone(template);
+  delete missingOutput.Outputs.ProviderLandingFunctionName;
+  assert.throws(
+    () => validateRecurringRuleBinding(missingOutput, expected),
+    /retained Lambda function/,
+  );
+  const jointlyRetargeted = structuredClone(template);
+  jointlyRetargeted.Outputs.ProviderLandingFunctionName.Value.Ref = "Decoy";
+  jointlyRetargeted.Resources.Rule.Properties.Targets[0].Arn["Fn::GetAtt"][0] =
+    "Decoy";
+  assert.throws(
+    () => validateRecurringRuleBinding(jointlyRetargeted, expected),
+    /exact retained worker/,
+  );
+  const fanout = structuredClone(template);
+  fanout.Resources.Rule.Properties.Targets.push({
+    Arn: { "Fn::GetAtt": ["Decoy", "Arn"] },
+  });
+  assert.throws(
+    () => validateRecurringRuleBinding(fanout, expected),
+    /exactly one ENABLED/,
+  );
+});
 
 test("failed commands report their own diagnostics without leaking credentials", () => {
   assert.equal(
@@ -61,12 +146,36 @@ test("product access enforcement accepts only exact boolean strings", () => {
 
 test("protected deployment config requires its explicit enforcement value", () => {
   assert.throws(() => safeDeploymentConfig({}), /required/);
-  assert.equal(
-    safeDeploymentConfig({
-      FTE_AWS_STAGE: "staging",
-      FTE_PRODUCT_ACCESS_ENFORCED: "false",
-    }).productAccessEnforced,
-    false,
+  const stagingConfig = safeDeploymentConfig({
+    FTE_AWS_STAGE: "staging",
+    FTE_PRODUCT_ACCESS_ENFORCED: "false",
+  });
+  assert.equal(stagingConfig.productAccessEnforced, false);
+  assert.equal(stagingConfig.schedulerEnabled, false);
+  assert.doesNotThrow(() => validateSafeDeploymentConfig(stagingConfig));
+  const prodConfig = safeDeploymentConfig({
+    FTE_AWS_STAGE: "prod",
+    FTE_PRODUCT_ACCESS_ENFORCED: "false",
+  });
+  assert.equal(prodConfig.schedulerEnabled, true);
+  assert.doesNotThrow(() => validateSafeDeploymentConfig(prodConfig));
+  assert.throws(
+    () =>
+      safeDeploymentConfig({
+        FTE_AWS_STAGE: "staging",
+        FTE_PRODUCT_ACCESS_ENFORCED: "false",
+        FTE_UPCOMING_SCHEDULER_ENABLED: "true",
+      }),
+    /must be false for staging/,
+  );
+  assert.throws(
+    () =>
+      safeDeploymentConfig({
+        FTE_AWS_STAGE: "prod",
+        FTE_PRODUCT_ACCESS_ENFORCED: "false",
+        FTE_UPCOMING_SCHEDULER_ENABLED: "false",
+      }),
+    /must be true for prod/,
   );
   assert.throws(
     () =>
@@ -939,6 +1048,7 @@ function validTemplate() {
         },
       },
       LiveOddsIngestionFunctionName: { Value: { Ref: "Seed" } },
+      ProviderLandingFunctionName: { Value: { Ref: "Seed" } },
       SharpApiSecretName: { Value: "find-the-edge/dev/sharpapi" },
       WebOrigin: { Value: webOrigin },
       WebDistributionId: { Value: { Ref: "Distribution" } },

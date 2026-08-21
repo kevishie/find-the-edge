@@ -7,6 +7,7 @@ import {
   validateSafeDeploymentConfig,
   validateTemplate,
 } from "./phase1-support.mjs";
+import { recurringDataPlaneEnabled } from "./environment-contract.mjs";
 
 export async function phase1Preflight(environment = process.env) {
   const config = safeDeploymentConfig(environment);
@@ -37,7 +38,9 @@ export async function phase1Preflight(environment = process.env) {
     FTE_FIXTURE_ODDS_SEED_ENABLED: "false",
     FTE_PRODUCT_ACCESS_ENFORCED: String(config.productAccessEnforced),
     FTE_ADMIN_ACCESS_ENABLED: String(config.adminAccess.enabled),
-    FTE_UPCOMING_SCHEDULER_ENABLED: "true",
+    FTE_UPCOMING_SCHEDULER_ENABLED: String(
+      recurringDataPlaneEnabled(config.stage),
+    ),
     CDK_DEFAULT_ACCOUNT: "228246988391",
     CDK_DEFAULT_REGION: "us-east-1",
   };
