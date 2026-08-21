@@ -22,6 +22,7 @@ import {
   authorizationContextFromLambdaRequest,
   authorizationContextFromGateway,
   ELEVATED_OWNED_ROUTE_KEYS,
+  gateAdminAuthorization,
   handlerAuthorizationFields,
   isOwnedSessionAuthorization,
   memoizeIdentityAccountLookup,
@@ -67,6 +68,29 @@ const identityOf = (
   account: Awaited<ReturnType<IdentityRepository["getAccount"]>>,
 ): Pick<IdentityRepository, "getAccount"> => ({
   getAccount: vi.fn().mockResolvedValue(account),
+});
+
+describe("admin rollout authorization gate", () => {
+  const elevated = {
+    subject: ACCOUNT_ID,
+    scopes: ["events/events:read", "accounts/access:manage"],
+    reviewerAuthorized: false,
+    strategyPromoterAuthorized: false,
+    adminAuthorized: true as const,
+  };
+
+  it("keeps a provisioned owner inert while disabled", () => {
+    expect(gateAdminAuthorization(elevated, false)).toEqual({
+      subject: ACCOUNT_ID,
+      scopes: ["events/events:read"],
+      reviewerAuthorized: false,
+      strategyPromoterAuthorized: false,
+    });
+  });
+
+  it("preserves owner authority only after explicit enablement", () => {
+    expect(gateAdminAuthorization(elevated, true)).toBe(elevated);
+  });
 });
 
 const resolve = (

@@ -20,6 +20,7 @@ export interface HandlerAuthorizationContext {
   readonly scopes?: readonly string[];
   readonly reviewerAuthorized: boolean;
   readonly strategyPromoterAuthorized: boolean;
+  readonly adminAuthorized?: true;
 }
 
 /** Product scopes an ordinary signed-in account owns. Elevated workflow
@@ -58,6 +59,9 @@ export const ELEVATED_OWNED_ROUTE_KEYS = Object.freeze([
   "POST /strategy-experiments/{eventId}/approve",
   "POST /strategy-experiments/{eventId}/promote",
   "POST /strategy-experiments/{eventId}/rollback",
+  "GET /admin/users",
+  "POST /admin/users/grants",
+  "DELETE /admin/users/{directoryId}/manual-grant",
 ] as const);
 
 const ordinaryOwnedRouteKeys = new Set<string>(ORDINARY_OWNED_ROUTE_KEYS);
@@ -149,7 +153,31 @@ export const handlerAuthorizationFields = (
   ...(authorization.scopes ? { scopes: authorization.scopes } : {}),
   reviewerAuthorized: authorization.reviewerAuthorized,
   strategyPromoterAuthorized: authorization.strategyPromoterAuthorized,
+  ...(authorization.adminAuthorized ? { adminAuthorized: true as const } : {}),
 });
+
+/** Keep a provisioned owner row inert until the deployment rollout gate is
+ * explicitly enabled. This also hides the capability from browser navigation. */
+export const gateAdminAuthorization = (
+  authorization: HandlerAuthorizationContext,
+  enabled: boolean,
+): HandlerAuthorizationContext =>
+  enabled
+    ? authorization
+    : {
+        ...(authorization.subject ? { subject: authorization.subject } : {}),
+        ...(authorization.scopes
+          ? {
+              scopes: Object.freeze(
+                authorization.scopes.filter(
+                  (scope) => scope !== "accounts/access:manage",
+                ),
+              ),
+            }
+          : {}),
+        reviewerAuthorized: authorization.reviewerAuthorized,
+        strategyPromoterAuthorized: authorization.strategyPromoterAuthorized,
+      };
 
 /** Preserve the legacy Cognito projection as a rollback seam. This function
  * is intentionally claim-aware; every detached owned-session route is
@@ -324,5 +352,8 @@ export async function resolveOwnedSessionAuthorization(
     strategyPromoterAuthorized: elevatedScopes.includes(
       IDENTITY_AUTHORIZATION_CAPABILITIES[1],
     ),
+    ...(elevatedScopes.includes("accounts/access:manage")
+      ? { adminAuthorized: true as const }
+      : {}),
   };
 }

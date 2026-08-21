@@ -288,6 +288,7 @@ export interface AuthSessionDto {
 export const OWNED_SESSION_CAPABILITIES = [
   "events/retrospectives:approve",
   "events/strategies:promote",
+  "accounts/access:manage",
 ] as const;
 export type OwnedSessionCapability =
   (typeof OWNED_SESSION_CAPABILITIES)[number];
@@ -297,6 +298,30 @@ export interface OwnedSessionCapabilitiesDto {
   readonly schemaVersion: "owned-session-capabilities-v1";
   readonly accountId: string;
   readonly capabilities: readonly OwnedSessionCapability[];
+}
+
+export interface AdminUserDirectoryItemDto {
+  readonly schemaVersion: "admin-user-v1";
+  readonly directoryId: string;
+  readonly accountId: string | null;
+  readonly phoneHint: string;
+  readonly displayReference: string;
+  readonly lifecycle: "pending" | "active";
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly manualGrant: { readonly active: boolean; readonly version: number };
+  readonly access: {
+    readonly superAdmin: boolean;
+    readonly stripe: "active" | "inactive" | "unavailable";
+    readonly effective: "granted" | "denied" | "unavailable";
+    readonly sources: readonly ("super_admin" | "stripe" | "manual")[];
+  };
+}
+
+export interface AdminUserDirectoryPageDto {
+  readonly schemaVersion: "admin-user-directory-page-v1";
+  readonly items: readonly AdminUserDirectoryItemDto[];
+  readonly cursor: string | null;
 }
 
 /** The two plans this product sells. A name, never a price. */
@@ -471,6 +496,21 @@ export interface GamesClient {
   getSessionCapabilities?(
     signal: AbortSignal,
   ): Promise<OwnedSessionCapabilitiesDto>;
+  listAdminUsers?(
+    cursor: string | null,
+    signal: AbortSignal,
+  ): Promise<AdminUserDirectoryPageDto>;
+  grantAdminUserAccess?(
+    phone: string,
+    idempotencyKey: string,
+    signal: AbortSignal,
+  ): Promise<AdminUserDirectoryItemDto>;
+  revokeAdminUserAccess?(
+    directoryId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+    signal: AbortSignal,
+  ): Promise<AdminUserDirectoryItemDto>;
   /** Retires the token server-side. Signing out must end it, not forget it. */
   revokeSession?(token: string, signal: AbortSignal): Promise<void>;
   entitlement?(token: string, signal: AbortSignal): Promise<EntitlementDto>;
@@ -3603,6 +3643,178 @@ const scoutReportRequest = async <T>({
 
 const WATCHLIST_REQUEST_TIMEOUT_MS = 10_000;
 
+const invalidAdminResponse = () =>
+  new GamesClientError("invalid-response", "The admin response was invalid.");
+
+export function parseAdminUser(value: unknown): AdminUserDirectoryItemDto {
+  if (
+    !plain(value) ||
+    !exact(value, [
+      "schemaVersion",
+      "directoryId",
+      "accountId",
+      "phoneHint",
+      "displayReference",
+      "lifecycle",
+      "createdAt",
+      "updatedAt",
+      "manualGrant",
+      "access",
+    ]) ||
+    value["schemaVersion"] !== "admin-user-v1" ||
+    !boundedString(value["directoryId"], 64) ||
+    !/^directory:[a-f0-9]{32}$/.test(value["directoryId"]) ||
+    !(value["accountId"] === null || isAccountId(value["accountId"])) ||
+    typeof value["phoneHint"] !== "string" ||
+    !/^\*\*[0-9]{2}$/.test(value["phoneHint"]) ||
+    !boundedString(value["displayReference"], 96) ||
+    !["pending", "active"].includes(value["lifecycle"] as string) ||
+    typeof value["createdAt"] !== "string" ||
+    new Date(value["createdAt"]).toISOString() !== value["createdAt"] ||
+    typeof value["updatedAt"] !== "string" ||
+    new Date(value["updatedAt"]).toISOString() !== value["updatedAt"] ||
+    !plain(value["manualGrant"]) ||
+    !exact(value["manualGrant"], ["active", "version"]) ||
+    typeof value["manualGrant"]["active"] !== "boolean" ||
+    !Number.isSafeInteger(value["manualGrant"]["version"]) ||
+    Number(value["manualGrant"]["version"]) < 0 ||
+    !plain(value["access"]) ||
+    !exact(value["access"], ["superAdmin", "stripe", "effective", "sources"]) ||
+    typeof value["access"]["superAdmin"] !== "boolean" ||
+    !["active", "inactive", "unavailable"].includes(
+      value["access"]["stripe"] as string,
+    ) ||
+    !["granted", "denied", "unavailable"].includes(
+      value["access"]["effective"] as string,
+    ) ||
+    !Array.isArray(value["access"]["sources"])
+  )
+    throw invalidAdminResponse();
+  const sourceOrder = ["super_admin", "stripe", "manual"] as const;
+  const sources = value["access"]["sources"] as unknown[];
+  const lifecycle = value["lifecycle"] as "pending" | "active";
+  const accountId = value["accountId"];
+  const manualActive = value["manualGrant"]["active"];
+  const manualVersion = Number(value["manualGrant"]["version"]);
+  const superAdmin = value["access"]["superAdmin"];
+  const stripe = value["access"]["stripe"] as
+    "active" | "inactive" | "unavailable";
+  const expectedSources = sourceOrder.filter(
+    (source) =>
+      (source === "super_admin" && superAdmin) ||
+      (source === "stripe" && stripe === "active") ||
+      (source === "manual" && manualActive),
+  );
+  const expectedEffective =
+    expectedSources.length > 0
+      ? "granted"
+      : stripe === "unavailable"
+        ? "unavailable"
+        : "denied";
+  const canonical = sourceOrder.filter((source) => sources.includes(source));
+  if (
+    canonical.length !== sources.length ||
+    sources.some((source, index) => source !== canonical[index]) ||
+    JSON.stringify(canonical) !== JSON.stringify(expectedSources) ||
+    value["access"]["effective"] !== expectedEffective ||
+    (lifecycle === "pending") !== (accountId === null) ||
+    (superAdmin && accountId === null) ||
+    (manualActive && manualVersion < 1) ||
+    Date.parse(value["updatedAt"]) < Date.parse(value["createdAt"])
+  )
+    throw invalidAdminResponse();
+  return Object.freeze({
+    ...(value as unknown as AdminUserDirectoryItemDto),
+    manualGrant: Object.freeze({
+      ...(value["manualGrant"] as AdminUserDirectoryItemDto["manualGrant"]),
+    }),
+    access: Object.freeze({
+      ...(value["access"] as AdminUserDirectoryItemDto["access"]),
+      sources: Object.freeze([...canonical]),
+    }),
+  });
+}
+
+export function parseAdminUsersPage(value: unknown): AdminUserDirectoryPageDto {
+  if (
+    !plain(value) ||
+    !exact(value, ["schemaVersion", "items", "cursor"]) ||
+    value["schemaVersion"] !== "admin-user-directory-page-v1" ||
+    !Array.isArray(value["items"]) ||
+    !(value["cursor"] === null || boundedString(value["cursor"], 2048))
+  )
+    throw invalidAdminResponse();
+  return Object.freeze({
+    schemaVersion: "admin-user-directory-page-v1",
+    items: Object.freeze(value["items"].map(parseAdminUser)),
+    cursor: value["cursor"],
+  });
+}
+
+const adminHttpError = (response: Response) =>
+  response.status === 401
+    ? new GamesClientError("authentication", "The session has ended.")
+    : response.status === 403
+      ? new GamesClientError("forbidden", "Super-admin access is required.")
+      : response.status === 409
+        ? new GamesClientError(
+            "conflict",
+            "This access record changed. Refresh and try again.",
+          )
+        : response.status === 400
+          ? new GamesClientError(
+              "invalid-request",
+              "The admin request was invalid.",
+            )
+          : new GamesClientError(
+              "request-failed",
+              "Admin access is temporarily unavailable.",
+            );
+
+const adminRequest = async <T>(input: {
+  readonly apiBase: string;
+  readonly session: OwnedSessionTransport;
+  readonly fetcher: typeof fetch;
+  readonly path: string;
+  readonly method: "GET" | "POST" | "DELETE";
+  readonly signal: AbortSignal;
+  readonly idempotencyKey?: string;
+  readonly body?: Readonly<Record<string, unknown>>;
+  readonly parse: (value: unknown) => T;
+}): Promise<T> => {
+  const requestSignal = AbortSignal.any([
+    input.signal,
+    AbortSignal.timeout(10_000),
+  ]);
+  const { response, authorization } = await ownedOrdinaryFetch(
+    input.fetcher,
+    input.session,
+    `${input.apiBase}${input.path}`,
+    {
+      method: input.method,
+      credentials: "omit",
+      cache: "no-store",
+      signal: requestSignal,
+      headers: {
+        ...(input.body ? { "content-type": "application/json" } : {}),
+        ...(input.idempotencyKey
+          ? { "idempotency-key": input.idempotencyKey }
+          : {}),
+      },
+      ...(input.body ? { body: JSON.stringify(input.body) } : {}),
+    },
+  );
+  return completeOwnedRequest(
+    input.session,
+    authorization,
+    requestSignal,
+    async () => {
+      if (response.status !== 200) throw adminHttpError(response);
+      return input.parse(await response.json().catch(() => null));
+    },
+  );
+};
+
 const watchlistUnavailable = () =>
   new GamesClientError(
     "request-failed",
@@ -4003,6 +4215,86 @@ export function createGamesClient(
       },
       async getSessionCapabilities(signal) {
         return (await loadOwnedSessionCapabilities(signal)).projection;
+      },
+      async listAdminUsers(cursor, signal) {
+        if (cursor !== null && (cursor.length < 1 || cursor.length > 2_048))
+          throw new GamesClientError(
+            "invalid-request",
+            "The page cursor was invalid.",
+          );
+        return adminRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          path: `/admin/users?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+          method: "GET",
+          signal,
+          parse: parseAdminUsersPage,
+        });
+      },
+      async grantAdminUserAccess(phone, idempotencyKey, signal) {
+        if (
+          !isE164(phone) ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(idempotencyKey)
+        )
+          throw new GamesClientError(
+            "invalid-request",
+            "Enter a valid E.164 phone number.",
+          );
+        return adminRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          path: "/admin/users/grants",
+          method: "POST",
+          signal,
+          idempotencyKey,
+          body: { phoneNumber: phone },
+          parse: (value) => {
+            if (
+              !plain(value) ||
+              !exact(value, ["schemaVersion", "user"]) ||
+              value["schemaVersion"] !== "admin-manual-access-result-v1"
+            )
+              throw invalidAdminResponse();
+            return parseAdminUser(value["user"]);
+          },
+        });
+      },
+      async revokeAdminUserAccess(
+        directoryId,
+        expectedVersion,
+        idempotencyKey,
+        signal,
+      ) {
+        if (
+          !/^directory:[a-f0-9]{32}$/.test(directoryId) ||
+          !Number.isSafeInteger(expectedVersion) ||
+          expectedVersion < 1 ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(idempotencyKey)
+        )
+          throw new GamesClientError(
+            "invalid-request",
+            "The access record was invalid.",
+          );
+        return adminRequest({
+          apiBase: bootstrap.value.config.apiBase,
+          session: ownedSessionTransport,
+          fetcher,
+          path: `/admin/users/${encodeURIComponent(directoryId)}/manual-grant?version=${expectedVersion}`,
+          method: "DELETE",
+          signal,
+          idempotencyKey,
+          parse: (value) => {
+            if (
+              !plain(value) ||
+              !exact(value, ["schemaVersion", "user"]) ||
+              value["schemaVersion"] !== "admin-manual-access-result-v1"
+            )
+              throw invalidAdminResponse();
+            return parseAdminUser(value["user"]);
+          },
+        });
       },
       async entitlement(token, signal) {
         return authRequest({

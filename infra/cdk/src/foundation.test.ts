@@ -700,7 +700,7 @@ describe("foundation CDK app", () => {
     template.hasResourceProperties("AWS::CloudFront::Function", {
       AutoPublish: true,
       FunctionCode:
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/admin/users' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
     });
     expect(rendered).not.toContain("CustomErrorResponses");
     template.hasResourceProperties("Custom::AWS", {
@@ -1303,6 +1303,7 @@ describe("foundation CDK app", () => {
     const indexes = table?.Properties?.["GlobalSecondaryIndexes"] as
       { IndexName: string }[] | undefined;
     expect(indexes?.map(({ IndexName }) => IndexName).sort()).toEqual([
+      "admin-directory-v1",
       "opportunity-active-v1",
       "opportunity-rank-v1",
     ]);
@@ -1319,7 +1320,11 @@ describe("foundation CDK app", () => {
           | undefined;
         return policy?.Statement ?? [];
       });
-    for (const indexName of ["opportunity-active-v1", "opportunity-rank-v1"]) {
+    for (const indexName of [
+      "admin-directory-v1",
+      "opportunity-active-v1",
+      "opportunity-rank-v1",
+    ]) {
       const consumers = statements.filter((statement) =>
         JSON.stringify(statement.Resource).includes(`"/index/${indexName}"`),
       );

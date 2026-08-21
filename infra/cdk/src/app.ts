@@ -3,6 +3,7 @@ import {
   resolveRecurringDataPlaneEnabled,
   resolveEnvironment,
   resolveProductAccessEnforcement,
+  resolveAdminAccessConfiguration,
 } from "./environments.js";
 
 const launchAccount = "228246988391";
@@ -26,6 +27,32 @@ const productAccessEnforced = resolveProductAccessEnforcement(
   deploymentEnvironment.stage,
   process.env["FTE_PRODUCT_ACCESS_ENFORCED"],
 );
+const adminRolloutMode = process.env["FTE_ADMIN_BOOTSTRAP_MODE"];
+if (
+  adminRolloutMode !== undefined &&
+  !["disabled", "fresh", "verified"].includes(adminRolloutMode)
+)
+  throw new Error(
+    "FTE_ADMIN_BOOTSTRAP_MODE must be disabled, fresh, or verified",
+  );
+const adminAccess = resolveAdminAccessConfiguration({
+  enabled: process.env["FTE_ADMIN_ACCESS_ENABLED"],
+  ownerAccountId: process.env["FTE_OWNER_ACCOUNT_ID"] || undefined,
+  bootstrapVerified:
+    process.env["FTE_ADMIN_BOOTSTRAP_VERIFIED"] ??
+    (adminRolloutMode === "verified"
+      ? "true"
+      : adminRolloutMode
+        ? "false"
+        : undefined),
+  freshBootstrap:
+    process.env["FTE_ADMIN_FRESH_BOOTSTRAP"] ??
+    (adminRolloutMode === "fresh"
+      ? "true"
+      : adminRolloutMode
+        ? "false"
+        : undefined),
+});
 const rawSchedulerEnabled = process.env["FTE_UPCOMING_SCHEDULER_ENABLED"];
 const rawFixtureOddsSeedEnabled = process.env["FTE_FIXTURE_ODDS_SEED_ENABLED"];
 const rawPaperPickSchedulerEnabled =
@@ -76,6 +103,13 @@ const { app } = createFoundationApp({
   schedulerEnabled,
   fixtureOddsSeedEnabled: rawFixtureOddsSeedEnabled === "true",
   productAccessEnforced,
+  adminAccessEnabled: adminAccess.enabled,
+  ...(adminAccess.bootstrapMode
+    ? { adminBootstrapMode: adminAccess.bootstrapMode }
+    : {}),
+  ...(adminAccess.ownerAccountId
+    ? { ownerAccountId: adminAccess.ownerAccountId }
+    : {}),
   paperPickSchedulerEnabled: rawPaperPickSchedulerEnabled === "true",
   paperPickGenerationMinutes,
   ...(process.env["FTE_EVENT_CURSOR_SECRET_ARN"]

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MemoryAdminAccessRepository,
   MemoryIdentityRepository,
+  type AdminAccessRepository,
   type EventRepository,
   type IdentityRepository,
 } from "@find-the-edge/database";
@@ -68,6 +70,7 @@ interface Harness {
 const build = (
   overrides: Partial<IdentityRuntime> = {},
   repository: IdentityRepository = new MemoryIdentityRepository(),
+  adminAccess?: AdminAccessRepository,
 ): Harness => {
   const sms = new FakeSmsSender();
   const logs: Record<string, unknown>[] = [];
@@ -103,6 +106,10 @@ const build = (
     undefined,
     repository,
     runtime,
+    undefined,
+    undefined,
+    undefined,
+    adminAccess,
   );
   return {
     call: async (request) => {
@@ -329,6 +336,64 @@ describe("POST /auth/otp/verify", () => {
     expect(JSON.stringify(response.body)).not.toContain("907531");
     const account = await harness.repository.getAccount(body.accountId);
     expect(account?.lastSignedInAt).toBe(later(30_000));
+  });
+
+  it("creates the configured owner before allowing any other first account", async () => {
+    const repository = new MemoryIdentityRepository();
+    const adminAccess = new MemoryAdminAccessRepository(repository);
+    const accountPepper = "account-pepper-value-0123456789ab";
+    const ownerAccountId = deriveAccountId(PHONE, accountPepper);
+    const harness = build(
+      {
+        adminAccessEnabled: true,
+        ownerAccountId,
+        adminBootstrapMode: "fresh",
+      },
+      repository,
+      adminAccess,
+    );
+
+    await harness.call(requestOtp(OTHER_PHONE));
+    expect(
+      (await harness.call(verifyOtp(OTHER_PHONE, harness.lastCode())))
+        .statusCode,
+    ).toBe(500);
+    expect(
+      await repository.getAccount(deriveAccountId(OTHER_PHONE, accountPepper)),
+    ).toBeNull();
+
+    await harness.call(requestOtp(PHONE));
+    expect(
+      (await harness.call(verifyOtp(PHONE, harness.lastCode()))).statusCode,
+    ).toBe(200);
+    expect(await repository.getAccount(ownerAccountId)).not.toBeNull();
+
+    expect(
+      (await harness.call(verifyOtp(OTHER_PHONE, "907531"))).statusCode,
+    ).toBe(200);
+    expect(
+      await repository.getAccount(deriveAccountId(OTHER_PHONE, accountPepper)),
+    ).not.toBeNull();
+  });
+
+  it("never bootstraps a missing owner aggregate in verified mode", async () => {
+    const repository = new MemoryIdentityRepository();
+    const accountPepper = "account-pepper-value-0123456789ab";
+    const ownerAccountId = deriveAccountId(PHONE, accountPepper);
+    const harness = build(
+      {
+        adminAccessEnabled: true,
+        ownerAccountId,
+        adminBootstrapMode: "verified",
+      },
+      repository,
+      new MemoryAdminAccessRepository(repository),
+    );
+    await harness.call(requestOtp(PHONE));
+    expect(
+      (await harness.call(verifyOtp(PHONE, harness.lastCode()))).statusCode,
+    ).toBe(500);
+    expect(await repository.getAccount(ownerAccountId)).toBeNull();
   });
 
   it("never issues twice for one code", async () => {

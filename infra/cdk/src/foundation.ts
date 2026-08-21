@@ -129,6 +129,9 @@ export interface FoundationConfig {
   cursorSecretArn?: string;
   fixtureOddsSeedEnabled?: boolean;
   productAccessEnforced: boolean;
+  adminAccessEnabled?: boolean;
+  ownerAccountId?: string;
+  adminBootstrapMode?: "fresh" | "verified";
   webOrigin?: string;
   criticalAlarmEmail?: string;
 }
@@ -147,6 +150,9 @@ interface FoundationStackProps extends StackProps {
   fixtureOddsSeedEnabled: boolean;
   /** FTE-073. Required so persistent deployments cannot silently default. */
   productAccessEnforced: boolean;
+  adminAccessEnabled: boolean;
+  ownerAccountId?: string;
+  adminBootstrapMode?: "fresh" | "verified";
   criticalAlarmEmail?: string;
 }
 
@@ -173,6 +179,12 @@ export class FoundationStack extends Stack {
       partitionKey: { name: "activePk", type: AttributeType.STRING },
       sortKey: { name: "activeSk", type: AttributeType.STRING },
       projectionType: ProjectionType.KEYS_ONLY,
+    });
+    table.addGlobalSecondaryIndex({
+      indexName: "admin-directory-v1",
+      partitionKey: { name: "directoryPk", type: AttributeType.STRING },
+      sortKey: { name: "directorySk", type: AttributeType.STRING },
+      projectionType: ProjectionType.ALL,
     });
     table.addGlobalSecondaryIndex({
       indexName: "opportunity-rank-v1",
@@ -471,7 +483,7 @@ export class FoundationStack extends Stack {
     const webAssetOrigin = S3BucketOrigin.withOriginAccessControl(assets);
     const spaNavigation = new CloudFrontFunction(this, "WebSpaNavigation", {
       code: FunctionCode.fromInline(
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/admin/users' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
       ),
     });
     const webCertificate = props.webCertificateArn
@@ -1418,6 +1430,13 @@ export class FoundationStack extends Stack {
         // an unbilled stage refuses everyone, including us. Turning it on is
         // this one string.
         FTE_PRODUCT_ACCESS_ENFORCED: String(props.productAccessEnforced),
+        FTE_ADMIN_ACCESS_ENABLED: String(props.adminAccessEnabled),
+        ...(props.adminBootstrapMode
+          ? { FTE_ADMIN_BOOTSTRAP_MODE: props.adminBootstrapMode }
+          : {}),
+        ...(props.ownerAccountId
+          ? { FTE_OWNER_ACCOUNT_ID: props.ownerAccountId }
+          : {}),
       },
       bundling: { minify: true, sourceMap: true },
     });
@@ -1437,7 +1456,10 @@ export class FoundationStack extends Stack {
     eventApi.addToRolePolicy(
       new PolicyStatement({
         actions: ["dynamodb:Query"],
-        resources: [`${table.tableArn}/index/opportunity-rank-v1`],
+        resources: [
+          `${table.tableArn}/index/opportunity-rank-v1`,
+          `${table.tableArn}/index/admin-directory-v1`,
+        ],
       }),
     );
     // Removing a watchlist entry is the only delete the request path performs,
@@ -1532,6 +1554,21 @@ export class FoundationStack extends Stack {
     api.addRoutes({
       path: "/auth/session/capabilities",
       methods: [HttpMethod.GET],
+      integration,
+    });
+    api.addRoutes({
+      path: "/admin/users",
+      methods: [HttpMethod.GET],
+      integration,
+    });
+    api.addRoutes({
+      path: "/admin/users/grants",
+      methods: [HttpMethod.POST],
+      integration,
+    });
+    api.addRoutes({
+      path: "/admin/users/{directoryId}/manual-grant",
+      methods: [HttpMethod.DELETE],
       integration,
     });
     // Billing carries no gateway authorizer either, for two different
@@ -1894,6 +1931,18 @@ export function createFoundationApp(config: FoundationConfig): {
   if (typeof config.productAccessEnforced !== "boolean")
     throw new Error("product access enforcement must be an explicit boolean");
   if (
+    config.adminAccessEnabled &&
+    !/^account:[a-f0-9]{64}$/.test(config.ownerAccountId ?? "")
+  )
+    throw new Error(
+      "admin access requires an exact configured owner account id",
+    );
+  if (
+    config.adminAccessEnabled &&
+    !["fresh", "verified"].includes(config.adminBootstrapMode ?? "")
+  )
+    throw new Error("admin access requires an explicit bootstrap mode");
+  if (
     config.criticalAlarmEmail &&
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(config.criticalAlarmEmail)
   )
@@ -1969,6 +2018,13 @@ export function createFoundationApp(config: FoundationConfig): {
       cursorSecretArn: config.cursorSecretArn,
       fixtureOddsSeedEnabled: config.fixtureOddsSeedEnabled ?? false,
       productAccessEnforced: config.productAccessEnforced,
+      adminAccessEnabled: config.adminAccessEnabled ?? false,
+      ...(config.adminBootstrapMode
+        ? { adminBootstrapMode: config.adminBootstrapMode }
+        : {}),
+      ...(config.ownerAccountId
+        ? { ownerAccountId: config.ownerAccountId }
+        : {}),
       ...(config.criticalAlarmEmail
         ? { criticalAlarmEmail: config.criticalAlarmEmail }
         : {}),

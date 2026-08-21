@@ -56,6 +56,7 @@ import {
   type OddsHistoryDto,
   type RetrospectiveDto,
   type WatchlistEntryDto,
+  type OwnedSessionCapabilitiesDto,
 } from "./api";
 import {
   accountHint,
@@ -219,6 +220,7 @@ const GameDetail = lazy(() => import("./game-detail"));
 const Watchlist = lazy(() =>
   import("./watchlist").then((module) => ({ default: module.Watchlist })),
 );
+const AdminUsers = lazy(() => import("./admin-users"));
 const PerformanceDashboard = lazy(() => import("./performance"));
 const RetrospectivesList = lazy(() =>
   import("./retrospectives").then((module) => ({
@@ -601,6 +603,16 @@ export interface UiGamesClient {
   revokeSession?: NonNullable<import("./api").GamesClient["revokeSession"]>;
   startCheckout?: NonNullable<import("./api").GamesClient["startCheckout"]>;
   entitlement?: NonNullable<import("./api").GamesClient["entitlement"]>;
+  getSessionCapabilities?: NonNullable<
+    import("./api").GamesClient["getSessionCapabilities"]
+  >;
+  listAdminUsers?: NonNullable<import("./api").GamesClient["listAdminUsers"]>;
+  grantAdminUserAccess?: NonNullable<
+    import("./api").GamesClient["grantAdminUserAccess"]
+  >;
+  revokeAdminUserAccess?: NonNullable<
+    import("./api").GamesClient["revokeAdminUserAccess"]
+  >;
 }
 export interface StrategyExperimentDto {
   readonly experimentId: string;
@@ -918,8 +930,10 @@ export function useWatchlistControl(
 
 function GlassNav({
   eventsSearch,
+  showAdmin,
 }: {
   readonly eventsSearch: Record<string, unknown>;
+  readonly showAdmin: boolean;
 }) {
   // Apple-glass behavior: the bar condenses while the page scrolls and
   // springs back to full size the moment scrolling rests.
@@ -987,6 +1001,18 @@ function GlassNav({
         </span>
         <span className="glass-label">Scanner</span>
       </Link>
+      {showAdmin && (
+        <Link
+          to="/admin/users"
+          className="glass-tab"
+          activeProps={{ className: "glass-tab active" }}
+        >
+          <span className="glass-icon" aria-hidden="true">
+            ⚙
+          </span>
+          <span className="glass-label">Admin</span>
+        </Link>
+      )}
     </nav>
   );
 }
@@ -1049,6 +1075,28 @@ function SessionBadge({ collapsed }: { readonly collapsed: boolean }) {
 }
 
 function AppShell() {
+  const client = useContext(GamesClientContext);
+  const session = useSession(useContext(SessionContext));
+  const [adminAccountId, setAdminAccountId] = useState<string | null>(null);
+  const showAdmin = session !== null && session.accountId === adminAccountId;
+  useEffect(() => {
+    const controller = new AbortController();
+    if (client.ok && client.value.getSessionCapabilities)
+      void client.value
+        .getSessionCapabilities(controller.signal)
+        .then((value) => {
+          if (!controller.signal.aborted)
+            setAdminAccountId(
+              value.capabilities.includes("accounts/access:manage")
+                ? value.accountId
+                : null,
+            );
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setAdminAccountId(null);
+        });
+    return () => controller.abort();
+  }, [client, session?.accountId]);
   const [navCollapsed, setNavCollapsed] = useState(() => {
     try {
       return window.localStorage.getItem("fte.navCollapsed") === "1";
@@ -1166,6 +1214,20 @@ function AppShell() {
               Scanner
             </span>
           </Link>
+          {showAdmin && (
+            <Link
+              to="/admin/users"
+              activeProps={{ className: "active" }}
+              title="Admin users"
+            >
+              <span className="nav-icon" aria-hidden="true">
+                ⚙
+              </span>
+              <span className={navCollapsed ? "sr-only" : "nav-label"}>
+                Admin
+              </span>
+            </Link>
+          )}
         </nav>
         <SessionBadge collapsed={navCollapsed} />
       </aside>
@@ -1193,7 +1255,7 @@ function AppShell() {
           )}
         </svg>
       </button>
-      <GlassNav eventsSearch={eventsSearch} />
+      <GlassNav eventsSearch={eventsSearch} showAdmin={showAdmin} />
       <main>
         <Outlet />
         <footer>
@@ -3202,6 +3264,7 @@ function RootLayout() {
 const rootRoute = createRootRouteWithContext<{
   readonly session: SessionStore;
   readonly resolveEntitlement?: UiGamesClient["entitlement"];
+  readonly resolveCapabilities?: UiGamesClient["getSessionCapabilities"];
 }>()({
   beforeLoad: ({ context, location, abortController }) =>
     requireEntitledSession(
@@ -3273,16 +3336,34 @@ function SignInRoute() {
   const { returnUrl } = useSearch({ from: "/login" });
   const router = useRouter();
   return (
-    <Suspense fallback={<p role="status">Loading sign-in…</p>}>
+    <Suspense
+      fallback={
+        <main className="sign-in-page">
+          <SignInHomeLink />
+          <p role="status">Loading sign-in…</p>
+        </main>
+      }
+    >
       <SignInScreen
         client={useContext(GamesClientContext)}
         store={useContext(SessionContext)}
         from={returnUrl}
+        homeLink={<SignInHomeLink />}
         // The form is replaced rather than pushed: going back from where the
         // reader landed must not return them to a spent code.
         onSignedIn={(path) => router.history.replace(path)}
       />
     </Suspense>
+  );
+}
+
+function SignInHomeLink() {
+  return (
+    <Link to="/" className="sign-in-back" aria-label="Back to home">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="m15 18-6-6 6-6" />
+      </svg>
+    </Link>
   );
 }
 const signInRoute = createRoute({
@@ -3387,6 +3468,35 @@ const watchlistRoute = createRoute({
   beforeLoad: ({ context, location }) =>
     requireSession(context.session, location.pathname, location.searchStr),
   component: WatchlistRoute,
+});
+function AdminUsersRoute() {
+  const client = useContext(GamesClientContext);
+  return (
+    <Suspense fallback={<p role="status">Loading admin users…</p>}>
+      <AdminUsers client={client.ok ? client.value : null} />
+    </Suspense>
+  );
+}
+const adminUsersRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/admin/users",
+  beforeLoad: async ({ context, location, abortController }) => {
+    requireSession(context.session, location.pathname, location.searchStr);
+    if (!context.resolveCapabilities)
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: "/dashboard", replace: true });
+    let projection: OwnedSessionCapabilitiesDto;
+    try {
+      projection = await context.resolveCapabilities(abortController.signal);
+    } catch {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: "/dashboard", replace: true });
+    }
+    if (!projection.capabilities.includes("accounts/access:manage"))
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: "/dashboard", replace: true });
+  },
+  component: AdminUsersRoute,
 });
 const performanceRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -3575,6 +3685,7 @@ const routeTree = rootRoute.addChildren([
   scoutReportRoute,
   splitsRoute,
   watchlistRoute,
+  adminUsersRoute,
   performanceRoute,
   dataSourcesRoute,
   retrospectivesRoute,
@@ -3610,10 +3721,17 @@ export function App({
   const client = gamesClient ?? defaultGamesClient;
   const resolveEntitlement =
     routeEntitlement ?? (client.ok ? client.value.entitlement : undefined);
+  const resolveCapabilities = client.ok
+    ? client.value.getSessionCapabilities
+    : undefined;
   const [router] = useState(() =>
     createRouter({
       routeTree,
-      context: { session: sessionStore, resolveEntitlement },
+      context: {
+        session: sessionStore,
+        resolveEntitlement,
+        resolveCapabilities,
+      },
       ...(initialPath
         ? {
             history: createMemoryHistory({

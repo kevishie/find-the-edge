@@ -250,8 +250,24 @@ it("never returns the reader to another origin", async () => {
   await vi.waitFor(() => {
     expect(onSignedIn).toHaveBeenCalledWith("/events");
   });
-  // Nothing on this screen points off the origin either.
+  // This component has no navigation of its own; the route supplies the
+  // on-origin home link around it.
   expect(screen.queryByRole("link")).not.toBeInTheDocument();
+});
+
+it("returns from sign-in to the root landing page instead of the return URL", async () => {
+  render(
+    <App initialPath="/login?returnUrl=%2Fsplits" sessionStore={store()} />,
+  );
+
+  const backHome = await screen.findByRole("link", { name: "Back to home" });
+  expect(backHome).toHaveAttribute("href", "/");
+  fireEvent.click(backHome);
+
+  expect(
+    await screen.findByRole("heading", { name: /Stop shopping lines/i }),
+  ).toBeVisible();
+  expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
 });
 
 it("says only that the code did not work and stores nothing", async () => {

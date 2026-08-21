@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   checksums,
   failureDetail,
+  parseAdminAccessRollout,
   parseProductAccessEnforcement,
   safeDeploymentConfig,
   safeDevConfig,
@@ -186,6 +187,33 @@ test("protected deployment config requires its explicit enforcement value", () =
   );
 });
 
+test("admin rollout defaults disabled and requires an exact fresh or verified ceremony", () => {
+  assert.deepEqual(parseAdminAccessRollout({}), {
+    enabled: false,
+    mode: "disabled",
+  });
+  const ownerAccountId = `account:${"a".repeat(64)}`;
+  for (const mode of ["fresh", "verified"])
+    assert.deepEqual(
+      parseAdminAccessRollout({
+        FTE_ADMIN_ACCESS_ENABLED: "true",
+        FTE_ADMIN_BOOTSTRAP_MODE: mode,
+        FTE_OWNER_ACCOUNT_ID: ownerAccountId,
+      }),
+      { enabled: true, mode, ownerAccountId },
+    );
+  assert.throws(() =>
+    parseAdminAccessRollout({ FTE_ADMIN_ACCESS_ENABLED: "true" }),
+  );
+  assert.throws(() =>
+    parseAdminAccessRollout({
+      FTE_ADMIN_ACCESS_ENABLED: "false",
+      FTE_ADMIN_BOOTSTRAP_MODE: "verified",
+      FTE_OWNER_ACCOUNT_ID: ownerAccountId,
+    }),
+  );
+});
+
 test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs", () => {
   const base = safeDevConfig({});
   for (const change of [
@@ -220,7 +248,7 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
 
 function validTemplate() {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/admin/users' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const webOrigin = {
     "Fn::Join": [
       "",
@@ -812,6 +840,12 @@ function validTemplate() {
           ["AuthSessionRefreshRoute", "POST /auth/session/refresh"],
           ["AuthSessionRevokeRoute", "POST /auth/session/revoke"],
           ["AuthSessionCapabilitiesRoute", "GET /auth/session/capabilities"],
+          ["AdminUsersRoute", "GET /admin/users"],
+          ["AdminGrantRoute", "POST /admin/users/grants"],
+          [
+            "AdminRevokeRoute",
+            "DELETE /admin/users/{directoryId}/manual-grant",
+          ],
           ["BillingWebhookRoute", "POST /billing/webhook"],
           ["BillingEntitlementRoute", "GET /billing/entitlement"],
           ["BillingCheckoutRoute", "POST /billing/checkout"],
@@ -865,7 +899,10 @@ function validTemplate() {
         Properties: {
           Role: { "Fn::GetAtt": ["ApiRole", "Arn"] },
           Environment: {
-            Variables: { FTE_PRODUCT_ACCESS_ENFORCED: "false" },
+            Variables: {
+              FTE_PRODUCT_ACCESS_ENFORCED: "false",
+              FTE_ADMIN_ACCESS_ENABLED: "false",
+            },
           },
         },
       },
@@ -1056,6 +1093,7 @@ const templateConfig = {
   issuer: "https://issuer.example.com",
   audience: "audience",
   productAccessEnforced: false,
+  adminAccess: { enabled: false, mode: "disabled" },
 };
 
 test("template validation structurally binds public reads, outputs, and scoped IAM", () => {
@@ -1539,6 +1577,26 @@ test("template validation binds product access to the shared API Lambda", () => 
         productAccessEnforced: undefined,
       }),
     /explicit boolean/i,
+  );
+});
+
+test("template validation admits only the explicitly selected admin rollout", () => {
+  const enabled = validTemplate();
+  const ownerAccountId = `account:${"a".repeat(64)}`;
+  Object.assign(enabled.Resources.ApiLambda.Properties.Environment.Variables, {
+    FTE_ADMIN_ACCESS_ENABLED: "true",
+    FTE_ADMIN_BOOTSTRAP_MODE: "verified",
+    FTE_OWNER_ACCOUNT_ID: ownerAccountId,
+  });
+  assert.doesNotThrow(() =>
+    validateTemplate(enabled, {
+      ...templateConfig,
+      adminAccess: { enabled: true, mode: "verified", ownerAccountId },
+    }),
+  );
+  assert.throws(
+    () => validateTemplate(enabled, templateConfig),
+    /admin access/i,
   );
 });
 

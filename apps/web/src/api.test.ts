@@ -11,11 +11,76 @@ import {
   isCanonicalEventStatus,
   OWNED_SESSION_CAPABILITIES,
   parseOwnedSessionCapabilities,
+  parseAdminUser,
+  parseAdminUsersPage,
   parsePublicScoutingJob,
   type GamesClient,
   type OwnedSessionTransport,
 } from "./api";
 import type { RuntimeBootstrap } from "./runtime-config";
+
+const adminUser = {
+  schemaVersion: "admin-user-v1",
+  directoryId: `directory:${"a".repeat(32)}`,
+  accountId: null,
+  phoneHint: "**21",
+  displayReference: "User aaaaaa · **21",
+  lifecycle: "pending",
+  createdAt: "2026-08-19T12:00:00.000Z",
+  updatedAt: "2026-08-19T12:00:00.000Z",
+  manualGrant: { active: true, version: 1 },
+  access: {
+    superAdmin: false,
+    stripe: "inactive",
+    effective: "granted",
+    sources: ["manual"],
+  },
+};
+
+describe("admin access parsers", () => {
+  it("accepts exact canonical pages and rejects PII/extra fields", () => {
+    expect(
+      parseAdminUsersPage({
+        schemaVersion: "admin-user-directory-page-v1",
+        items: [adminUser],
+        cursor: null,
+      }).items[0],
+    ).toEqual(parseAdminUser(adminUser));
+    expect(() =>
+      parseAdminUser({ ...adminUser, phoneNumber: "+15557654321" }),
+    ).toThrow(/admin response/i);
+    expect(() =>
+      parseAdminUser({
+        ...adminUser,
+        access: { ...adminUser.access, sources: ["manual", "stripe"] },
+      }),
+    ).toThrow(/admin response/i);
+  });
+
+  it("rejects incoherent lifecycle, access-source, and timestamp projections", () => {
+    for (const invalid of [
+      { ...adminUser, lifecycle: "active" },
+      { ...adminUser, accountId: `account:${"b".repeat(64)}` },
+      {
+        ...adminUser,
+        updatedAt: "2026-08-18T12:00:00.000Z",
+      },
+      {
+        ...adminUser,
+        manualGrant: { active: false, version: 1 },
+      },
+      {
+        ...adminUser,
+        access: { ...adminUser.access, effective: "denied" },
+      },
+      {
+        ...adminUser,
+        access: { ...adminUser.access, superAdmin: true },
+      },
+    ])
+      expect(() => parseAdminUser(invalid)).toThrow(/admin response/i);
+  });
+});
 
 const payload = {
   items: [

@@ -21,6 +21,8 @@ import {
   type WatchlistRepository,
   type IdentityRepository,
   type EntitlementRepository,
+  type AdminAccessRepository,
+  type IdentityAuthorizationRepository,
   attachSplits,
   boardCounts,
   inspectBoardBody,
@@ -71,6 +73,7 @@ import {
   type ProductAccessDenial,
   type ProductAccessRuntime,
 } from "./product-access";
+import { createAdminHttpHandler } from "./admin-handler";
 
 export interface ApiRequest {
   readonly route:
@@ -116,6 +119,9 @@ export interface ApiRequest {
     // This lets the browser discover server-owned capabilities without
     // depending on Cognito claims during the authorizer migration.
     | "auth-session-capabilities"
+    | "admin-users-list"
+    | "admin-access-grant"
+    | "admin-access-revoke"
     // Public by design: Stripe calls this one, and it authenticates itself
     // with a signature over the raw body rather than with a token.
     | "billing-webhook"
@@ -153,6 +159,8 @@ export interface ApiRequest {
   readonly body?: string;
   readonly reviewerAuthorized?: boolean;
   readonly strategyPromoterAuthorized?: boolean;
+  readonly adminAuthorized?: boolean;
+  readonly directoryId?: string;
   /** Raw `Authorization` header, read only by the session-refresh route. */
   readonly authorization?: string;
   /** Gateway-observed source address, used only as a rate-limit subject. */
@@ -233,13 +241,29 @@ const boardResponseCache = createSplitLookupCache<{
   expiresAt: ({ body, enforceKickoffExpiry }) => {
     if (!enforceKickoffExpiry) return null;
     const inspection = inspectBoardBody(body.body);
-    return inspection ? inspection.earliestUnsafeKickoff : 0;
+    if (!inspection) return 0;
+    const now = Date.now();
+    if (
+      inspection.earliestUnsafeKickoff === null ||
+      inspection.earliestUnsafeKickoff > now
+    )
+      return inspection.earliestUnsafeKickoff;
+    // A mixed slate can contain an already-started event whose odds have
+    // correctly become unavailable plus later events whose pregame prices
+    // remain safe. Reloading at the first kickoff is enough; the next priced
+    // game's kickoff is the page's next actual safety boundary.
+    return inspection.earliestPregamePriceKickoff !== null &&
+      inspection.earliestPregamePriceKickoff > now
+      ? inspection.earliestPregamePriceKickoff
+      : inspection.earliestUnsafeKickoff;
   },
   safeAfterExpiry: ({ body, enforceKickoffExpiry }) => {
     if (!enforceKickoffExpiry) return true;
     const inspection = inspectBoardBody(body.body);
     return (
-      inspection !== null && inspection.earliestPregamePriceKickoff === null
+      inspection !== null &&
+      (inspection.earliestPregamePriceKickoff === null ||
+        inspection.earliestPregamePriceKickoff > Date.now())
     );
   },
 });
@@ -354,6 +378,9 @@ export const createEventHandler =
     entitlementRepository?: EntitlementRepository,
     billingRuntime?: BillingRuntime,
     productAccessRuntime?: ProductAccessRuntime,
+    adminAccessRepository?: AdminAccessRepository,
+    identityAuthorizationRepository?: IdentityAuthorizationRepository,
+    adminAccountPepper?: string,
   ) =>
   async (request: ApiRequest): Promise<ApiResponse> => {
     const gamesRepository =
@@ -452,6 +479,7 @@ export const createEventHandler =
         const result = await createIdentityHttpHandler(
           identityRepository,
           identityRuntime,
+          adminAccessRepository,
         )({
           route: request.route,
           ...(request.method ? { method: request.method } : {}),
@@ -500,13 +528,47 @@ export const createEventHandler =
             request.scopes?.includes(capability) &&
             (capability === "events/retrospectives:approve"
               ? request.reviewerAuthorized
-              : request.strategyPromoterAuthorized),
+              : capability === "events/strategies:promote"
+                ? request.strategyPromoterAuthorized
+                : request.adminAuthorized),
         );
         return response(200, {
           schemaVersion: "owned-session-capabilities-v1",
           accountId: request.subject,
           capabilities,
         });
+      }
+      if (request.route.startsWith("admin-")) {
+        if (
+          !adminAccessRepository ||
+          !identityAuthorizationRepository ||
+          !entitlementRepository ||
+          !adminAccountPepper
+        )
+          return response((status = 503), {
+            error: "admin-access-unavailable",
+          });
+        const result = await createAdminHttpHandler(
+          adminAccessRepository,
+          entitlementRepository,
+          identityAuthorizationRepository,
+          adminAccountPepper,
+        )({
+          route: request.route as
+            "admin-users-list" | "admin-access-grant" | "admin-access-revoke",
+          method: request.method ?? "GET",
+          ...(request.subject ? { subject: request.subject } : {}),
+          adminAuthorized: request.adminAuthorized === true,
+          ...(request.directoryId ? { directoryId: request.directoryId } : {}),
+          ...(request.idempotencyKey
+            ? { idempotencyKey: request.idempotencyKey }
+            : {}),
+          ...(request.contentType ? { contentType: request.contentType } : {}),
+          ...(request.body === undefined ? {} : { body: request.body }),
+          ...(request.query ? { query: request.query } : {}),
+        });
+        status = result.statusCode;
+        return result;
       }
       // FTE-073. Every remaining route serves the paid product, so the
       // entitlement decision happens here, once, before any of them run. It
@@ -519,6 +581,8 @@ export const createEventHandler =
           identityRepository,
           entitlementRepository,
           new Date(started),
+          adminAccessRepository,
+          identityAuthorizationRepository,
         );
         if (!decision.allowed) {
           productAccessDenial = decision.denial;

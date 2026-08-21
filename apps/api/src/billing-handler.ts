@@ -56,6 +56,11 @@ export interface BillingRuntime {
   /** Origin the checkout and portal flows return to. Server-configured; a
    * client-supplied return URL would be an open redirect. */
   readonly appBaseUrl: string;
+  /** Independent non-Stripe access sources, resolved server-side. */
+  readonly additionalAccess?: (
+    accountId: string,
+    now: string,
+  ) => Promise<boolean>;
   readonly trialDays?: number;
   /** Absent means this stage sells only the monthly plan. */
   readonly annualPriceId?: string;
@@ -305,20 +310,37 @@ export const createBillingHttpHandler =
     const accountId = account.accountId;
     if (request.route === "billing-entitlement") {
       if (request.method !== "GET" || request.body) return unauthorized;
-      const record = await entitlements.get(accountId);
-      const view = entitlementView(record, now);
+      const [stripeResult, additionalResult] = await Promise.allSettled([
+        entitlements.get(accountId),
+        runtime.additionalAccess
+          ? runtime.additionalAccess(accountId, now)
+          : Promise.resolve(false),
+      ]);
+      const stripeView =
+        stripeResult.status === "fulfilled"
+          ? entitlementView(stripeResult.value, now)
+          : null;
+      const additionalAccess =
+        additionalResult.status === "fulfilled" && additionalResult.value;
+      if (
+        !stripeView?.hasAccess &&
+        !additionalAccess &&
+        (stripeResult.status === "rejected" ||
+          additionalResult.status === "rejected")
+      )
+        throw new Error("access-unavailable");
       // Deliberately only these three fields. A Stripe customer or
       // subscription id in a browser response is an identifier for somebody
       // else's system, and this product has no reason to hand one out.
       return {
         response: response(200, {
           schemaVersion: "billing-entitlement-v1",
-          state: view.state,
-          accessUntil: view.accessUntil,
-          hasAccess: view.hasAccess,
+          state: stripeView?.state ?? "none",
+          accessUntil: stripeView?.accessUntil ?? null,
+          hasAccess: stripeView?.hasAccess === true || additionalAccess,
         }),
         observation: observation("entitlement", {
-          state: view.state,
+          state: stripeView?.state ?? "none",
           accountId,
         }),
       };

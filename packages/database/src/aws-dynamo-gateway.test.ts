@@ -6,6 +6,60 @@ import {
   DynamoTransactionConflict,
 } from "./dynamodb-event-ingestion";
 describe("Dynamo gateway", () => {
+  it("deduplicates and bounds parallel batch reads", async () => {
+    let active = 0;
+    let peak = 0;
+    const send = vi.fn(async (_command: unknown) => {
+      void _command;
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      return {};
+    });
+    const gateway = new AwsDynamoGateway(
+      { send } as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+    const keys = Array.from({ length: 205 }, (_, index) => ({
+      pk: `pk-${index}`,
+      sk: "CURRENT",
+    }));
+
+    await gateway.batchGet([...keys, keys[0]!, keys[204]!]);
+
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(peak).toBe(2);
+    const requested = send.mock.calls.flatMap(([command]) => {
+      const typed = command as {
+        input: { RequestItems: { table: { Keys: unknown[] } } };
+      };
+      return typed.input.RequestItems.table.Keys;
+    });
+    expect(requested).toHaveLength(205);
+  });
+
+  it("retries unprocessed batch keys", async () => {
+    const key = { pk: "pk", sk: "CURRENT" };
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({
+        UnprocessedKeys: { table: { Keys: [key] } },
+      })
+      .mockResolvedValueOnce({
+        Responses: { table: [{ ...key, value: {} }] },
+      });
+    const gateway = new AwsDynamoGateway(
+      { send } as unknown as DynamoDBDocumentClient,
+      "table",
+    );
+
+    await expect(gateway.batchGet([key])).resolves.toEqual([
+      { ...key, value: {} },
+    ]);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
   it("paginates strongly consistent primary queries", async () => {
     const send = vi
       .fn()

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  resolveAdminAccessConfiguration,
   resolveEnvironment,
   resolveProductAccessEnforcement,
   resolveRecurringDataPlaneEnabled,
@@ -94,5 +95,61 @@ describe("deployment environment contract", () => {
     expect(() => resolveRecurringDataPlaneEnabled("local", "TRUE")).toThrow(
       /true or false/,
     );
+  });
+
+  it("keeps admin rollout disabled until owner bootstrap is verified", () => {
+    const owner = `account:${"a".repeat(64)}`;
+    expect(
+      resolveAdminAccessConfiguration({
+        enabled: undefined,
+        ownerAccountId: undefined,
+        bootstrapVerified: undefined,
+      }),
+    ).toEqual({ enabled: false });
+    expect(() =>
+      resolveAdminAccessConfiguration({
+        enabled: "true",
+        ownerAccountId: owner,
+        bootstrapVerified: undefined,
+      }),
+    ).toThrow(/fresh bootstrap or verified migration/i);
+    expect(
+      resolveAdminAccessConfiguration({
+        enabled: "true",
+        ownerAccountId: owner,
+        bootstrapVerified: "true",
+      }),
+    ).toEqual({
+      enabled: true,
+      ownerAccountId: owner,
+      bootstrapMode: "verified",
+    });
+    expect(
+      resolveAdminAccessConfiguration({
+        enabled: "true",
+        ownerAccountId: owner,
+        bootstrapVerified: "false",
+        freshBootstrap: "true",
+      }),
+    ).toEqual({
+      enabled: true,
+      ownerAccountId: owner,
+      bootstrapMode: "fresh",
+    });
+    expect(() =>
+      resolveAdminAccessConfiguration({
+        enabled: "true",
+        ownerAccountId: owner,
+        bootstrapVerified: "true",
+        freshBootstrap: "true",
+      }),
+    ).toThrow(/fresh or verified/);
+    expect(() =>
+      resolveAdminAccessConfiguration({
+        enabled: "false",
+        ownerAccountId: owner,
+        bootstrapVerified: "yes",
+      }),
+    ).toThrow(/BOOTSTRAP_VERIFIED must be true or false/);
   });
 });
