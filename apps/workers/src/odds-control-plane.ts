@@ -45,26 +45,6 @@ const putContinuationCas = async (
   throw new Error("continuation-transition-conflict");
 };
 
-/**
- * Whether any page of this run carries an evidence-intent marker, read from
- * the durable page ledger rather than from the run row's self-reported flag.
- * The ambiguous write sets that flag from a local variable, so trusting it
- * would tell us evidence was committed when nothing was.
- */
-const sealedEvidenceIntent = async (
-  store: OddsControlPlaneStore,
-  runId: string,
-): Promise<boolean> => {
-  let token: string | undefined = "start";
-  for (let guard = 0; token && guard < 100; guard += 1) {
-    const page = await store.getPage(runId, token);
-    if (!page) return false;
-    if (page.evidenceIntentAt !== undefined) return true;
-    token = page.nextPageToken;
-  }
-  return false;
-};
-
 const clearOwnedContinuation = async (
   store: OddsControlPlaneStore,
   leagueKey: string,
@@ -162,36 +142,7 @@ export interface OddsControlPlaneMetrics {
   ): void;
 }
 export const embeddedOddsControlPlaneMetrics: OddsControlPlaneMetrics = {
-  emit(name, value, dimensions) {
-    if (!/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(name) || !Number.isFinite(value))
-      throw new Error("odds-metric-invalid");
-    const bounded = Object.fromEntries(
-      Object.entries(dimensions)
-        .filter(
-          ([key, item]) =>
-            /^[A-Za-z][A-Za-z0-9]{0,31}$/.test(key) &&
-            item.length > 0 &&
-            item.length <= 128,
-        )
-        .slice(0, 8),
-    );
-    process.stdout.write(
-      `${JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/OddsControlPlane",
-              Dimensions: [Object.keys(bounded)],
-              Metrics: [{ Name: name, Unit: "Count" }],
-            },
-          ],
-        },
-        ...bounded,
-        [name]: value,
-      })}\n`,
-    );
-  },
+  emit() {},
 };
 export interface OddsLeagueRunResult {
   readonly leagueKey: string;
@@ -320,8 +271,55 @@ const SAFE_STORAGE_FAILURES = new Map<string, string>([
   ["InternalServerError", "storage-unavailable"],
   ["ServiceUnavailable", "storage-unavailable"],
 ]);
-export const classifyOddsControlPlaneFailure = (error: unknown) => {
-  if (!(error instanceof Error)) return "internal-failure";
+
+const TRANSACTION_NONE = "None";
+const transactionCancellationReason = (error: Error) => {
+  if (
+    error.name !== "TransactionCanceledException" &&
+    error.name !== "FixtureOddsTransactionCanceledError"
+  )
+    return undefined;
+  const errorRecord = error as unknown as Record<string, unknown>;
+  const awsReasons = errorRecord["CancellationReasons"];
+  const translatedReasons = errorRecord["reasons"];
+  const reasons = Array.isArray(awsReasons)
+    ? awsReasons
+    : Array.isArray(translatedReasons)
+      ? translatedReasons
+      : undefined;
+  if (!reasons) return "storage-transaction-cancelled";
+  const codes = reasons.map((reason) => {
+    if (!reason || typeof reason !== "object") return undefined;
+    const reasonRecord = reason as Record<string, unknown>;
+    const code = reasonRecord["Code"] ?? reasonRecord["code"];
+    return typeof code === "string" ? code : undefined;
+  });
+  if (
+    codes.length === 0 ||
+    codes.some((code) => code === undefined) ||
+    codes.every((code) => code === TRANSACTION_NONE)
+  )
+    return "storage-transaction-cancelled";
+  const material = codes.filter((code) => code !== TRANSACTION_NONE);
+  if (
+    material.every(
+      (code) =>
+        code === "ProvisionedThroughputExceeded" || code === "ThrottlingError",
+    )
+  )
+    return "storage-throttled";
+  if (material.every((code) => code === "TransactionConflict"))
+    return "storage-transaction-in-progress";
+  if (material.every((code) => code === "ValidationError"))
+    return "storage-validation";
+  if (material.every((code) => code === "AccessDenied"))
+    return "storage-access-denied";
+  return "storage-transaction-cancelled";
+};
+
+const classifySingleOddsControlPlaneFailure = (error: Error) => {
+  const transactionFailure = transactionCancellationReason(error);
+  if (transactionFailure) return transactionFailure;
   const storageFailure = SAFE_STORAGE_FAILURES.get(error.name);
   if (storageFailure) return storageFailure;
   if (error.message === "run-owned") return "provider-recovering";
@@ -334,7 +332,28 @@ export const classifyOddsControlPlaneFailure = (error: unknown) => {
   if (error.message.includes("pagination")) return "pagination-invalid";
   if (error.message.includes("mapping")) return "mapping-quarantine";
   if (error.message.includes("provider")) return "provider-error";
-  return "internal-failure";
+  return undefined;
+};
+
+export const classifyOddsControlPlaneFailure = (error: unknown) => {
+  const pending: unknown[] = [error];
+  const seen = new Set<unknown>();
+  let fallback: string | undefined;
+  let visited = 0;
+  while (pending.length > 0 && visited < 6) {
+    const current = pending.shift();
+    if (!(current instanceof Error) || seen.has(current)) continue;
+    seen.add(current);
+    visited += 1;
+    const classified = classifySingleOddsControlPlaneFailure(current);
+    if (classified && classified !== "provider-error") return classified;
+    fallback ??= classified;
+    const sourceError = (current as unknown as Record<string, unknown>)[
+      "sourceError"
+    ];
+    pending.push(sourceError, current.cause);
+  }
+  return fallback ?? "internal-failure";
 };
 
 const sanitizedDiagnosticText = (value: string, fallback: string) => {
@@ -390,7 +409,15 @@ const TRANSIENT_FAILURES = new Set([
   "provider-cooldown",
   "quota-reserve",
   "conflict-metric-pending",
+  "storage-throttled",
+  "storage-transaction-in-progress",
+  "storage-unavailable",
 ]);
+
+export const isRetryableOddsStorageFailure = (reason: string) =>
+  reason === "storage-throttled" ||
+  reason === "storage-transaction-in-progress" ||
+  reason === "storage-unavailable";
 const TERMINAL_FAILURES = new Set([
   "unauthorized",
   "not-entitled",
@@ -682,21 +709,19 @@ export async function runOddsLeague(input: {
   //
   // The ceiling is that exit, and it deliberately does the same thing the
   // operator did rather than anything cleverer. Below it, nothing changes.
+  // A prior committed page does not make an ambiguous *later* dispatch
+  // resumable: no sealed page exists for the unknown response. Keeping the
+  // continuation in that case permanently fenced MLB in staging for two
+  // days. The old run and its immutable evidence remain auditable; after the
+  // bounded uncertainty window, a new run starts at page one and the storage
+  // layer's deterministic identities make already-committed evidence replay
+  // safe.
   if (continuation?.ambiguousUntil) {
     const ambiguousFor =
       clock().getTime() - Date.parse(continuation.ambiguousUntil);
-    // Evidence beyond recall is checked against the PAGE ledger, not against
-    // the continuation's own flag: the ambiguous write sets that flag from a
-    // local variable, which is exactly what put MLS out of reach of the age
-    // ceiling that already existed.
-    const ledgerEvidence = await sealedEvidenceIntent(
-      store,
-      continuation.runId,
-    );
     if (
       Number.isFinite(ambiguousFor) &&
-      ambiguousFor > ODDS_AMBIGUITY_MAX_AGE_MS &&
-      !ledgerEvidence
+      ambiguousFor > ODDS_AMBIGUITY_MAX_AGE_MS
     ) {
       // The lease was renewed strictly before the ambiguity was written and
       // both are five-minute windows, so a lapsed ambiguity implies a lapsed

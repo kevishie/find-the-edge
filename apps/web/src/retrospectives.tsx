@@ -1,8 +1,9 @@
 // The retrospective review screens load on demand.
-import { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { type RetrospectiveDto } from "./api";
 import { GamesClientContext } from "./App";
+import { SessionContext, useSession } from "./session";
 export function RetrospectivesList() {
   const client = useContext(GamesClientContext),
     [state, setState] = useState<{
@@ -100,20 +101,32 @@ export function RetrospectivesList() {
 export function RetrospectiveDetail() {
   const { versionId } = useParams({ from: "/retrospectives/$versionId" }),
     client = useContext(GamesClientContext),
+    session = useSession(useContext(SessionContext)),
+    sessionKey =
+      session === null ? null : `${session.accountId}\u0000${session.token}`,
     [state, setState] = useState<{
       loading: boolean;
       item: RetrospectiveDto | null;
       versions: readonly RetrospectiveDto[];
       error: string | null;
     }>({ loading: true, item: null, versions: [], error: null }),
-    [canReview, setCanReview] = useState(false),
+    [reviewAuthority, setReviewAuthority] = useState<{
+      readonly client: unknown;
+      readonly sessionKey: string | null;
+      readonly allowed: boolean;
+    }>({ client: null, sessionKey: null, allowed: false }),
     [reviewAction, setReviewAction] = useState<
       "approve" | "reject" | "request-changes"
     >("request-changes"),
     [reviewNote, setReviewNote] = useState(""),
     [reviewConfirmed, setReviewConfirmed] = useState(false),
     [reviewStatus, setReviewStatus] = useState<string | null>(null),
-    [reviewBusy, setReviewBusy] = useState(false);
+    [reviewBusy, setReviewBusy] = useState(false),
+    reviewController = useRef<AbortController | null>(null),
+    canReview =
+      reviewAuthority.client === client &&
+      reviewAuthority.sessionKey === sessionKey &&
+      reviewAuthority.allowed === true;
   useEffect(() => {
     const controller = new AbortController();
     if (!client.ok || !client.value.getRetrospective) {
@@ -153,11 +166,30 @@ export function RetrospectiveDetail() {
                 : "This retrospective is temporarily unavailable.",
           });
       });
-    void client.value.canReviewRetrospectives?.().then((allowed) => {
-      if (!controller.signal.aborted) setCanReview(allowed);
-    });
     return () => controller.abort();
   }, [client, versionId]);
+  useEffect(() => {
+    const controller = new AbortController();
+    if (client.ok && sessionKey !== null)
+      void client.value
+        .canReviewRetrospectives?.(controller.signal)
+        .then((allowed) => {
+          if (!controller.signal.aborted)
+            setReviewAuthority({ client, sessionKey, allowed });
+        })
+        .catch(() => {
+          if (!controller.signal.aborted)
+            setReviewAuthority({ client, sessionKey, allowed: false });
+        });
+    return () => controller.abort();
+  }, [client, sessionKey]);
+  useEffect(
+    () => () => {
+      reviewController.current?.abort();
+      reviewController.current = null;
+    },
+    [sessionKey],
+  );
   if (state.loading)
     return (
       <section className="performance-state">
@@ -179,7 +211,9 @@ export function RetrospectiveDetail() {
       reviewBusy
     )
       return;
+    reviewController.current?.abort();
     const controller = new AbortController();
+    reviewController.current = controller;
     setReviewBusy(true);
     setReviewStatus(null);
     try {
@@ -204,6 +238,7 @@ export function RetrospectiveDetail() {
         "Review saved. The immutable audit history has been refreshed.",
       );
     } catch (error) {
+      if (controller.signal.aborted) return;
       if (
         (error as { code?: string }).code === "conflict" &&
         client.value.getRetrospective
@@ -229,7 +264,9 @@ export function RetrospectiveDetail() {
             : "The review could not be saved.",
         );
     } finally {
-      setReviewBusy(false);
+      if (!controller.signal.aborted) setReviewBusy(false);
+      if (reviewController.current === controller)
+        reviewController.current = null;
     }
   };
   return (

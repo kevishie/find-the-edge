@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { recurringDataPlaneEnabled } from "./environment-contract.mjs";
 import {
   assertRetainedResourcesSafe,
   assertDeployedTemplateMatches,
@@ -20,6 +21,7 @@ import {
   releaseSnapshotArguments,
   resolveExistingStackSummary,
   planReleaseRollback,
+  launchSchedulerEnabled,
   validateStackOutputs,
   validateLaunchEnvironment,
   selectLaunchTarget,
@@ -34,7 +36,16 @@ const valid = {
   FTE_PHASE1_USERNAME: "operator@example.com",
   FTE_EVENT_CURSOR_SECRET_ARN:
     "arn:aws:secretsmanager:us-east-1:228246988391:secret:cursor",
+  FTE_PRODUCT_ACCESS_ENFORCED: "false",
 };
+test("protected launches enable recurrence only for production", () => {
+  assert.equal(recurringDataPlaneEnabled("staging"), false);
+  assert.equal(recurringDataPlaneEnabled("prod"), true);
+  assert.throws(() => recurringDataPlaneEnabled("dev"), /staging or prod/);
+  assert.equal(launchSchedulerEnabled({ stage: "dev" }), true);
+  assert.equal(launchSchedulerEnabled({ stage: "staging" }), false);
+  assert.equal(launchSchedulerEnabled({ stage: "prod" }), true);
+});
 test("launch requires explicit opt-in and exact account/region", () => {
   assert.doesNotThrow(() => validateLaunchEnvironment(valid));
   assert.throws(
@@ -59,12 +70,21 @@ test("launch binds verified branches, stages, certificates, and release provenan
     FTE_AWS_STAGE: "staging",
     FTE_DEPLOY_BRANCH: "main",
     FTE_RELEASE_SHA: "0123456789abcdef0123456789abcdef01234567",
+    FTE_PRODUCT_ACCESS_ENFORCED: "false",
     FTE_WEB_CERTIFICATE_ARN: certificate,
     FTE_API_CERTIFICATE_ARN: certificate,
   };
   assert.equal(
     selectLaunchTarget(staging).stack,
     "FindTheEdge-staging-Foundation",
+  );
+  assert.throws(
+    () =>
+      validateLaunchEnvironment({
+        ...staging,
+        FTE_UPCOMING_SCHEDULER_ENABLED: "true",
+      }),
+    /must be false for staging/,
   );
   assert.throws(
     () =>
@@ -77,6 +97,24 @@ test("launch binds verified branches, stages, certificates, and release provenan
   assert.throws(
     () => validateLaunchEnvironment({ ...staging, FTE_RELEASE_SHA: "latest" }),
     /verified commit/,
+  );
+  for (const value of [undefined, "", "1", "TRUE", " false", "false "]) {
+    assert.throws(
+      () =>
+        validateLaunchEnvironment({
+          ...staging,
+          FTE_PRODUCT_ACCESS_ENFORCED: value,
+        }),
+      /PRODUCT_ACCESS_ENFORCED/,
+    );
+  }
+  assert.throws(
+    () =>
+      validateLaunchEnvironment({
+        ...staging,
+        FTE_PRODUCT_ACCESS_ENFORCED: "true",
+      }),
+    /cutover/,
   );
   assert.throws(
     () =>
@@ -143,36 +181,67 @@ test("drift polling is bounded and requires a final in-sync result", async () =>
     /did not complete/,
   );
 });
-test("drift guard permits only AWS API log ARN normalization", () => {
-  const actual =
-    "arn:aws:logs:us-east-1:228246988391:log-group:FindTheEdge-dev-Foundation-EventApiAccessLogs-abc";
-  const benign = {
+test("drift guard permits only the exact legacy API log ARN mismatch", () => {
+  const drift = {
     ResourceType: "AWS::ApiGatewayV2::Stage",
     StackResourceDriftStatus: "MODIFIED",
     PropertyDifferences: [
       {
-        PropertyPath: "/AccessLogSettings/DestinationArn",
+        PropertyPath: "/DefaultRouteSettings/ThrottlingBurstLimit",
         DifferenceType: "NOT_EQUAL",
-        ExpectedValue: `${actual}:*`,
-        ActualValue: actual,
+        ExpectedValue: "100",
+        ActualValue: "50",
       },
     ],
   };
-  assert.doesNotThrow(() => assertStackResourceDriftsSafe([benign]));
-  for (const drift of [
-    { ...benign, ResourceType: "AWS::DynamoDB::Table" },
-    { ...benign, StackResourceDriftStatus: "DELETED" },
-    {
-      ...benign,
-      PropertyDifferences: [
-        { ...benign.PropertyDifferences[0], ActualValue: `${actual}-other` },
-      ],
-    },
-  ])
+  assert.doesNotThrow(() => assertStackResourceDriftsSafe([]));
+  assert.throws(
+    () => assertStackResourceDriftsSafe([drift]),
+    /unresolved resource drift/,
+  );
+  const actualValue =
+    "arn:aws:logs:us-east-1:228246988391:log-group:FindTheEdge-dev-Foundation-EventApiAccessLogsABC123";
+  assert.doesNotThrow(() =>
+    assertStackResourceDriftsSafe([
+      {
+        ResourceType: "AWS::ApiGatewayV2::Stage",
+        StackResourceDriftStatus: "MODIFIED",
+        PropertyDifferences: [
+          {
+            PropertyPath: "/AccessLogSettings/DestinationArn",
+            DifferenceType: "NOT_EQUAL",
+            ExpectedValue: `${actualValue}:*`,
+            ActualValue: actualValue,
+          },
+        ],
+      },
+    ]),
+  );
+  for (const mutation of [
+    { PropertyPath: "/AccessLogSettings/Format" },
+    { DifferenceType: "ADD" },
+    { ExpectedValue: actualValue },
+    { ActualValue: actualValue.replace("FindTheEdge-dev", "Other") },
+  ]) {
+    const difference = {
+      PropertyPath: "/AccessLogSettings/DestinationArn",
+      DifferenceType: "NOT_EQUAL",
+      ExpectedValue: `${actualValue}:*`,
+      ActualValue: actualValue,
+      ...mutation,
+    };
     assert.throws(
-      () => assertStackResourceDriftsSafe([drift]),
+      () =>
+        assertStackResourceDriftsSafe([
+          {
+            ResourceType: "AWS::ApiGatewayV2::Stage",
+            StackResourceDriftStatus: "MODIFIED",
+            PropertyDifferences: [difference],
+          },
+        ]),
       /unresolved resource drift/,
     );
+  }
 });
 test("first launch safely distinguishes no stack from the exact active stack", () => {
   assert.equal(resolveExistingStackSummary([]), undefined);
@@ -384,7 +453,38 @@ test("launch blocks destructive retained-table diffs", () => {
       /retained|exactly/i,
     );
 });
-test("launch protects every retained S3, Cognito, and log resource", () => {
+test("retained guard permits only the two legacy retained log-group removals", () => {
+  const retainedLog = {
+    Type: "AWS::Logs::LogGroup",
+    Properties: { RetentionInDays: 30 },
+    DeletionPolicy: "Retain",
+    UpdateReplacePolicy: "Retain",
+  };
+  for (const logicalId of [
+    "ScoutingWorkflowLogs1234ABCD",
+    "EventApiAccessLogsABCDEF12",
+  ])
+    assert.doesNotThrow(() =>
+      assertRetainedResourcesSafe(
+        { Resources: { [logicalId]: retainedLog } },
+        { Resources: {} },
+      ),
+    );
+  for (const logicalId of [
+    "OpportunityExpirationLogs1234ABCD",
+    "EventApiAccessLogs",
+    "EventApiAccessLogs1234ZZZZ",
+  ])
+    assert.throws(
+      () =>
+        assertRetainedResourcesSafe(
+          { Resources: { [logicalId]: retainedLog } },
+          { Resources: {} },
+        ),
+      /removed/,
+    );
+});
+test("launch protects every retained S3 and Cognito resource", () => {
   const resources = {
     Bucket: {
       Type: "AWS::S3::Bucket",
@@ -398,12 +498,6 @@ test("launch protects every retained S3, Cognito, and log resource", () => {
       DeletionPolicy: "Retain",
       UpdateReplacePolicy: "Retain",
     },
-    Logs: {
-      Type: "AWS::Logs::LogGroup",
-      Properties: { LogGroupName: "logs" },
-      DeletionPolicy: "Retain",
-      UpdateReplacePolicy: "Retain",
-    },
   };
   assert.doesNotThrow(() =>
     assertRetainedResourcesSafe(
@@ -414,7 +508,6 @@ test("launch protects every retained S3, Cognito, and log resource", () => {
   for (const [id, property, value] of [
     ["Bucket", "BucketName", "other"],
     ["Pool", "UsernameAttributes", ["phone_number"]],
-    ["Logs", "LogGroupName", "other"],
   ]) {
     const proposed = structuredClone(resources);
     proposed[id].Properties[property] = value;
@@ -562,27 +655,9 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
       DeletionPolicy: "Retain",
       UpdateReplacePolicy: "Retain",
     },
-    Logs: {
-      Type: "AWS::Logs::LogGroup",
-      Properties: {
-        RetentionInDays: 30,
-        KmsKeyId: "key-1",
-        DataProtectionPolicy: { Name: "protect" },
-        FieldIndexPolicies: [{ Fields: ["requestId"] }],
-        ResourcePolicyDocument: { Version: "2012-10-17" },
-        LogGroupClass: "STANDARD",
-      },
-      DeletionPolicy: "Retain",
-      UpdateReplacePolicy: "Retain",
-    },
   };
   const upgraded = structuredClone(resources);
   upgraded.Table.Properties.Tags = [{ Key: "new", Value: "tag" }];
-  upgraded.Table.Properties.ContributorInsightsSpecification = {
-    Enabled: true,
-  };
-  upgraded.Table.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
-    { Enabled: true };
   upgraded.Table.Properties.PointInTimeRecoverySpecification.RecoveryPeriodInDays = 35;
   upgraded.Table.Properties.AttributeDefinitions.push(
     { AttributeName: "newPk", AttributeType: "S" },
@@ -599,7 +674,6 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
   upgraded.Bucket.Properties.LifecycleConfiguration = { Rules: [] };
   upgraded.Pool.Properties.Policies.PasswordPolicy.MinimumLength = 16;
   upgraded.Pool.Properties.Tags = { owner: "security" };
-  upgraded.Logs.Properties.RetentionInDays = 365;
   assert.doesNotThrow(() =>
     assertRetainedResourcesSafe(
       { Resources: resources },
@@ -620,10 +694,6 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
     (copy) =>
       (copy.Table.Properties.GlobalSecondaryIndexes[0].Projection.ProjectionType =
         "ALL"),
-    (copy) =>
-      (copy.Table.Properties.ContributorInsightsSpecification = {
-        Enabled: false,
-      }),
     (copy) => delete copy.Table.Properties.TimeToLiveSpecification,
     (copy) => delete copy.Table.Properties.StreamSpecification,
     (copy) => delete copy.Table.Properties.ResourcePolicy,
@@ -656,12 +726,6 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
     (copy) => delete copy.Pool.Properties.DeviceConfiguration,
     (copy) => delete copy.Pool.Properties.UserAttributeUpdateSettings,
     (copy) => delete copy.Pool.Properties.LambdaConfig,
-    (copy) => (copy.Logs.Properties.RetentionInDays = 7),
-    (copy) => (copy.Logs.Properties.KmsKeyId = "key-2"),
-    (copy) => (copy.Logs.Properties.DataProtectionPolicy.Name = "other"),
-    (copy) => delete copy.Logs.Properties.FieldIndexPolicies,
-    (copy) => delete copy.Logs.Properties.ResourcePolicyDocument,
-    (copy) => (copy.Logs.Properties.LogGroupClass = "INFREQUENT_ACCESS"),
   ]) {
     const weakened = structuredClone(resources);
     mutate(weakened);
@@ -672,19 +736,6 @@ test("retained guard allows monotonic upgrades and rejects conditions or securit
       ),
     );
   }
-  const deployedWithInsights = structuredClone(upgraded);
-  const insightsRemoved = structuredClone(upgraded);
-  delete insightsRemoved.Table.Properties.ContributorInsightsSpecification;
-  delete insightsRemoved.Table.Properties.GlobalSecondaryIndexes[0]
-    .ContributorInsightsSpecification;
-  assert.throws(
-    () =>
-      assertRetainedResourcesSafe(
-        { Resources: deployedWithInsights },
-        { Resources: insightsRemoved },
-      ),
-    /protected properties/,
-  );
 });
 
 test("retained guard permits only GSI-backed additive attribute definitions", () => {
@@ -769,9 +820,6 @@ test("retained guard permits only GSI-backed additive attribute definitions", ()
     (copy) =>
       (copy.Properties.GlobalSecondaryIndexes[0].Projection.ProjectionType =
         "ALL"),
-    (copy) =>
-      (copy.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
-        { Enabled: false }),
   ]) {
     const unsafe = structuredClone(upgraded);
     mutate(unsafe);
@@ -851,13 +899,6 @@ test("GSI stage planning deterministically leaves only one index for the final d
   );
   assert.equal(
     planDynamoGsiDeploymentStages(stages[0].template, target).length,
-    0,
-  );
-  const insightsTarget = structuredClone(existing);
-  insightsTarget.Resources.EventIngestionTable.Properties.GlobalSecondaryIndexes[0].ContributorInsightsSpecification =
-    { Enabled: true };
-  assert.equal(
-    planDynamoGsiDeploymentStages(existing, insightsTarget).length,
     0,
   );
 });

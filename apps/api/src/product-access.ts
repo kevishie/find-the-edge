@@ -1,10 +1,14 @@
 import {
+  composeProductAccess,
   hasProductAccess,
+  identityAuthorizationCapabilities,
   verifySessionToken,
   type SessionKeyRing,
 } from "@find-the-edge/domain";
 import type {
   EntitlementRepository,
+  AdminAccessRepository,
+  IdentityAuthorizationRepository,
   IdentityRepository,
 } from "@find-the-edge/database";
 
@@ -38,6 +42,9 @@ const OPEN_ROUTES = new Set([
   "billing-checkout",
   "billing-portal",
   "provider-status",
+  "admin-users-list",
+  "admin-access-grant",
+  "admin-access-revoke",
 ]);
 
 export const requiresProductAccess = (route: string): boolean =>
@@ -48,7 +55,8 @@ export const requiresProductAccess = (route: string): boolean =>
  * the paywall's entire vocabulary: the client picks between "sign in" and
  * "subscribe" from this and nothing else.
  */
-export type ProductAccessDenial = "unauthenticated" | "not-entitled";
+export type ProductAccessDenial =
+  "unauthenticated" | "not-entitled" | "access-unavailable";
 
 export type ProductAccessDecision =
   | { readonly allowed: true; readonly accountId?: string }
@@ -77,6 +85,7 @@ export interface ProductAccessRuntime {
    * it.
    */
   readonly enforced: boolean;
+  readonly adminAccessEnabled?: boolean;
 }
 
 /**
@@ -99,6 +108,8 @@ export async function decideProductAccess(
   identity: IdentityRepository,
   entitlements: EntitlementRepository,
   now: Date,
+  adminAccess?: Pick<AdminAccessRepository, "getByAccount">,
+  identityAuthorization?: Pick<IdentityAuthorizationRepository, "get">,
 ): Promise<ProductAccessDecision> {
   if (!runtime.enforced || !requiresProductAccess(request.route))
     return { allowed: true };
@@ -114,14 +125,57 @@ export async function decideProductAccess(
   const account = await identity.getAccount(verified.payload.accountId);
   if (!account || account.tokenVersion !== verified.payload.tokenVersion)
     return { allowed: false, denial: "unauthenticated" };
-  const record = await entitlements.get(account.accountId);
-  if (!hasProductAccess(record, now.toISOString()))
+  if (!runtime.adminAccessEnabled) {
+    const record = await entitlements.get(account.accountId);
+    if (hasProductAccess(record, now.toISOString()))
+      return { allowed: true, accountId: account.accountId };
     return {
       allowed: false,
       denial: "not-entitled",
       accountId: account.accountId,
     };
-  return { allowed: true, accountId: account.accountId };
+  }
+  if (!adminAccess || !identityAuthorization)
+    return {
+      allowed: false,
+      denial: "access-unavailable",
+      accountId: account.accountId,
+    };
+  const [stripeResult, manualResult, authorizationResult] =
+    await Promise.allSettled([
+      entitlements.get(account.accountId),
+      adminAccess.getByAccount(account.accountId),
+      identityAuthorization.get(account.accountId),
+    ]);
+  const manual =
+    manualResult.status === "fulfilled" &&
+    manualResult.value?.manualGrant?.active === true;
+  const superAdmin =
+    authorizationResult.status === "fulfilled" &&
+    identityAuthorizationCapabilities(
+      authorizationResult.value?.roles ?? [],
+    ).includes("accounts/access:manage");
+  const stripe =
+    stripeResult.status === "rejected"
+      ? "unavailable"
+      : hasProductAccess(stripeResult.value, now.toISOString())
+        ? "active"
+        : "inactive";
+  const access = composeProductAccess({ superAdmin, stripe, manual });
+  if (access.outcome === "granted")
+    return { allowed: true, accountId: account.accountId };
+  const sourceUnavailable =
+    stripeResult.status === "rejected" ||
+    manualResult.status === "rejected" ||
+    authorizationResult.status === "rejected";
+  return {
+    allowed: false,
+    denial:
+      access.outcome === "unavailable" || sourceUnavailable
+        ? "access-unavailable"
+        : "not-entitled",
+    accountId: account.accountId,
+  };
 }
 
 /**
@@ -129,10 +183,15 @@ export async function decideProductAccess(
  * account has not paid". Collapsing them would leave the browser guessing
  * between a sign-in form and a subscribe button.
  */
-export const denialStatus = (denial: ProductAccessDenial): 401 | 402 =>
-  denial === "unauthenticated" ? 401 : 402;
+export const denialStatus = (denial: ProductAccessDenial): 401 | 402 | 503 =>
+  denial === "unauthenticated" ? 401 : denial === "not-entitled" ? 402 : 503;
 
 export const denialBody = (denial: ProductAccessDenial) => ({
-  error: denial === "unauthenticated" ? "unauthorized" : "payment-required",
+  error:
+    denial === "unauthenticated"
+      ? "unauthorized"
+      : denial === "not-entitled"
+        ? "payment-required"
+        : "access-unavailable",
   reason: denial,
 });

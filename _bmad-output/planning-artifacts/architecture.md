@@ -10,6 +10,18 @@ sources:
 
 # System Architecture: FIND THE EDGE
 
+## 0D. Binding Universal Provider Acquisition Amendment (2026-08-14)
+
+This amendment supersedes every collection rule below that makes a configured sport, league, module maturity, product strategy, or UI route a prerequisite for acquiring data from the entitled provider. SharpAPI's discoverable catalog is the source of truth for acquisition coverage.
+
+- Collection and product support are separate layers. The acquisition layer continuously discovers and lands every provider sport, league, event, and entitled unfiltered odds record. Sport modules and strategies govern normalization, calculation, recommendation, and display only.
+- The provider collection boundary has no hand-maintained sport or league allowlist. New catalog entries flow into the landing layer without a deploy.
+- Provider-wide page walks use durable cursor/offset checkpoints, bounded per-invocation work, idempotent writes, exact reconciliation totals, and an explicit terminal sweep. An incomplete walk is never reported as fresh or complete.
+- A row the product cannot normalize is stored as a bounded generic source record or quarantine outcome with safe identity, field inventory, provenance, and reason. One row never fails or hides valid siblings.
+- Verbatim paid response bodies remain ephemeral unless written licensing approval authorizes archival. The generic landing schema retains the source fields needed for event identity/lifecycle and odds market/selection/price reconstruction; credentials and commercial terms never enter records or logs.
+- Existing canonical event, immutable odds, pricing, and UI projections are downstream consumers. They may lag in sport coverage, but their maturity cannot narrow acquisition.
+- Release health requires catalog, page, row, freshness, and quarantine reconciliation. Partial coverage is degraded even when at least one game or price exists.
+
 ## 0. Binding Multi-Sport Amendment (2026-07-26)
 
 This section supersedes any soccer-first or MLB-specific architectural constraint elsewhere in this artifact. Soccer and MLB may be delivery priorities, but neither is the core domain. FIND THE EDGE is a sport-agnostic betting intelligence platform whose sport behavior is supplied by registered, versioned modules.

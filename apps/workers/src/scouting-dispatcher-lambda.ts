@@ -36,24 +36,7 @@ type StartExecutionClient = {
 };
 
 const metrics: ScoutingDispatcherMetricSink = {
-  emit(name) {
-    console.log(
-      JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/Scouting",
-              Dimensions: [["Component"]],
-              Metrics: [{ Name: name, Unit: "Count" }],
-            },
-          ],
-        },
-        Component: "dispatcher",
-        [name]: 1,
-      }),
-    );
-  },
+  emit() {},
 };
 
 const executionName = (body: string) => `scout-${sha256Hex(body)}`;

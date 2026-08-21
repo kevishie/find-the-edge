@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MemoryEntitlementRepository,
   MemoryIdentityRepository,
@@ -524,6 +524,44 @@ describe("GET /billing/entitlement", () => {
       hasAccess: false,
     });
     expect(await test.entitlements.get(ACCOUNT_ID)).toBeNull();
+  });
+
+  it("lets either settled positive source survive the other source outage", async () => {
+    const manual = harness({
+      additionalAccess: vi.fn().mockResolvedValue(true),
+    });
+    const manualToken = await signIn(manual);
+    vi.spyOn(manual.entitlements, "get").mockRejectedValue(
+      new Error("stripe-store-offline"),
+    );
+    expect(
+      await manual.call(authed("billing-entitlement", manualToken)),
+    ).toMatchObject({
+      statusCode: 200,
+      body: { state: "none", hasAccess: true },
+    });
+
+    const stripe = harness({
+      additionalAccess: vi
+        .fn()
+        .mockRejectedValue(new Error("admin-store-offline")),
+    });
+    await linked(stripe);
+    const stripeToken = await signIn(stripe);
+    await stripe.call(
+      webhook(
+        subscriptionBody({
+          id: "evt_sourcecompose01",
+          status: "active",
+        }),
+      ),
+    );
+    expect(
+      await stripe.call(authed("billing-entitlement", stripeToken)),
+    ).toMatchObject({
+      statusCode: 200,
+      body: { state: "active", hasAccess: true },
+    });
   });
 
   it("refuses an absent, foreign, expired, or revoked token", async () => {

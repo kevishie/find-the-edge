@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components -- the phone
    normalizer is shared with the route and its tests. */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
   GamesClientError,
@@ -110,11 +110,13 @@ export function SignIn({
   client,
   store,
   from,
+  homeLink,
   onSignedIn,
 }: {
   readonly client: SignInClientResult;
   readonly store: SessionStore;
   readonly from?: string;
+  readonly homeLink?: ReactNode;
   readonly onSignedIn: (path: string) => void;
 }) {
   const [step, setStep] = useState<Step>({ kind: "phone" });
@@ -246,6 +248,7 @@ export function SignIn({
 
   return (
     <main className="sign-in-page">
+      {homeLink}
       <section className="sign-in-card" aria-labelledby="sign-in-heading">
         <p className="eyebrow">FIND THE EDGE</p>
         <h1 id="sign-in-heading">Sign in</h1>

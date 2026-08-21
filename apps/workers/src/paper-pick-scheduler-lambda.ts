@@ -48,21 +48,6 @@ export function createPaperPickSchedulerHandler(
     const result = await scheduler.generate(scheduledFor);
     emit(
       JSON.stringify({
-        _aws: {
-          Timestamp: now().getTime(),
-          CloudWatchMetrics: [
-            {
-              Namespace: "FindTheEdge/PaperPicks",
-              Dimensions: [["Mode"]],
-              Metrics: [
-                { Name: "Runs", Unit: "Count" },
-                { Name: "Terminals", Unit: "Count" },
-                { Name: "Limits", Unit: "Count" },
-                { Name: "Failures", Unit: "Count" },
-              ],
-            },
-          ],
-        },
         Mode: "controlled",
         Runs: result.runIds.length,
         Terminals: result.terminal,

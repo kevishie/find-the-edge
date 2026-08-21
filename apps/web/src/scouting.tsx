@@ -5,7 +5,13 @@ import type {
   ScoutingFailureCode,
 } from "@find-the-edge/domain";
 
-import { GamesClientError, isScoutingJobId, type GamesClient } from "./api";
+import {
+  GamesClientError,
+  isRequestCancellation,
+  isScoutingJobId,
+  type GamesClient,
+} from "./api";
+import { useSession, useSessionStore } from "./session";
 
 const ACTIVE_POLL_MS = 2_500;
 const MAX_POLL_MS = 15_000;
@@ -23,19 +29,24 @@ export type ScoutingClientResult =
 
 const storageKey = (
   action: "create" | "retry",
+  accountId: string,
   identity: string,
   stateVersion?: number,
 ) =>
-  `fte.scouting.${action}.${encodeURIComponent(identity)}${
+  `fte.scouting.${action}.${encodeURIComponent(accountId)}.${encodeURIComponent(identity)}${
     stateVersion === undefined ? "" : `.${String(stateVersion)}`
   }`;
 
-const createResumeKey = (eventId: string) =>
-  `fte.scouting.resume.create.${encodeURIComponent(eventId)}`;
+const createResumeKey = (accountId: string, eventId: string) =>
+  `fte.scouting.resume.create.${encodeURIComponent(accountId)}.${encodeURIComponent(eventId)}`;
 
-const setCreateResume = (eventId: string, pending: boolean): boolean => {
+const setCreateResume = (
+  accountId: string,
+  eventId: string,
+  pending: boolean,
+): boolean => {
   try {
-    const key = createResumeKey(eventId);
+    const key = createResumeKey(accountId, eventId);
     if (pending) sessionStorage.setItem(key, "1");
     else sessionStorage.removeItem(key);
     return !pending || sessionStorage.getItem(key) === "1";
@@ -44,12 +55,10 @@ const setCreateResume = (eventId: string, pending: boolean): boolean => {
   }
 };
 
-const consumeCreateResume = (eventId: string): boolean => {
+const hasCreateResume = (accountId: string, eventId: string): boolean => {
   try {
-    const key = createResumeKey(eventId);
-    if (sessionStorage.getItem(key) !== "1") return false;
-    sessionStorage.removeItem(key);
-    return true;
+    const key = createResumeKey(accountId, eventId);
+    return sessionStorage.getItem(key) === "1";
   } catch {
     return false;
   }
@@ -67,6 +76,7 @@ const randomActionKey = (): string => {
 // eslint-disable-next-line react-refresh/only-export-components
 export const persistentScoutingActionKey = (
   action: "create" | "retry",
+  accountId: string,
   identity: string,
   stateVersion?: number,
 ): {
@@ -74,7 +84,7 @@ export const persistentScoutingActionKey = (
   readonly persisted: boolean;
   readonly clear: () => void;
 } => {
-  const name = storageKey(action, identity, stateVersion);
+  const name = storageKey(action, accountId, identity, stateVersion);
   let prior: string | null = null;
   try {
     prior = sessionStorage.getItem(name);
@@ -130,17 +140,27 @@ export function ScoutEventButton({
   readonly disabledReason: string;
   readonly client: ScoutingClientResult;
 }) {
+  const sessionStore = useSessionStore();
+  const session = useSession(sessionStore);
+  const sessionKey = session
+    ? `${session.accountId}\u0000${session.token}`
+    : "signed-out";
+  const accountId = session?.accountId ?? "signed-out";
   const navigate = useNavigate();
   const reasonId = useId();
   const errorId = useId();
-  const pending = useRef(false);
+  const pendingOwner = useRef<string | null>(null);
   const mounted = useRef(true);
   const mutationController = useRef<AbortController | null>(null);
-  const pendingAction = useRef<ReturnType<
-    typeof persistentScoutingActionKey
-  > | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const pendingAction = useRef<{
+    readonly accountId: string;
+    readonly action: ReturnType<typeof persistentScoutingActionKey>;
+  } | null>(null);
+  const [actionView, setActionView] = useState<{
+    readonly ownerKey: string;
+    readonly busy: boolean;
+    readonly error: string | null;
+  }>({ ownerKey: sessionKey, busy: false, error: null });
 
   useEffect(() => {
     mounted.current = true;
@@ -150,36 +170,55 @@ export function ScoutEventButton({
     };
   }, []);
 
+  useEffect(() => () => mutationController.current?.abort(), [sessionKey]);
+
   const start = useCallback(
     async (resuming = false) => {
       if (
         !mounted.current ||
-        pending.current ||
+        pendingOwner.current === sessionKey ||
         !eligible ||
         !client.ok ||
-        !client.value.createScoutingJob
+        !client.value.createScoutingJob ||
+        !session
       )
         return;
-      pending.current = true;
-      setBusy(true);
-      setError(null);
+      mutationController.current?.abort();
+      pendingOwner.current = sessionKey;
+      setActionView({ ownerKey: sessionKey, busy: true, error: null });
       const action =
-        pendingAction.current ?? persistentScoutingActionKey("create", eventId);
-      pendingAction.current = action;
-      if (!action.persisted) {
-        setError(
-          "Scouting cannot start while secure session storage is unavailable.",
+        pendingAction.current?.accountId === accountId
+          ? pendingAction.current.action
+          : persistentScoutingActionKey("create", accountId, eventId);
+      pendingAction.current = { accountId, action };
+      const isCurrentOwner = () => {
+        const current = sessionStore.getSnapshot();
+        return (
+          mounted.current &&
+          current?.accountId === accountId &&
+          current.token === session.token
         );
-        pending.current = false;
-        setBusy(false);
+      };
+      if (!action.persisted) {
+        if (isCurrentOwner())
+          setActionView({
+            ownerKey: sessionKey,
+            busy: false,
+            error:
+              "Scouting cannot start while secure session storage is unavailable.",
+          });
+        if (pendingOwner.current === sessionKey) pendingOwner.current = null;
         return;
       }
-      if (!resuming && !setCreateResume(eventId, true)) {
-        setError(
-          "Scouting cannot start while secure session storage is unavailable.",
-        );
-        pending.current = false;
-        setBusy(false);
+      if (!resuming && !setCreateResume(accountId, eventId, true)) {
+        if (isCurrentOwner())
+          setActionView({
+            ownerKey: sessionKey,
+            busy: false,
+            error:
+              "Scouting cannot start while secure session storage is unavailable.",
+          });
+        if (pendingOwner.current === sessionKey) pendingOwner.current = null;
         return;
       }
       const controller = new AbortController();
@@ -190,56 +229,99 @@ export function ScoutEventButton({
           action.key,
           controller.signal,
         );
-        if (!mounted.current) return;
-        setCreateResume(eventId, false);
+        if (!isCurrentOwner()) return;
+        setCreateResume(accountId, eventId, false);
         action.clear();
-        pendingAction.current = null;
+        if (pendingAction.current?.action === action)
+          pendingAction.current = null;
         await navigate({
           to: "/scout-jobs/$jobId",
           params: { jobId: job.jobId },
         });
       } catch (failure) {
-        setCreateResume(eventId, false);
-        if (mounted.current && !controller.signal.aborted)
-          setError(createErrorMessage(failure));
+        if (isRequestCancellation(failure)) return;
+        setCreateResume(accountId, eventId, false);
+        if (isCurrentOwner() && !controller.signal.aborted)
+          setActionView({
+            ownerKey: sessionKey,
+            busy: true,
+            error: createErrorMessage(failure),
+          });
       } finally {
-        pending.current = false;
+        const ownsPending = pendingOwner.current === sessionKey;
+        if (ownsPending) pendingOwner.current = null;
         if (mutationController.current === controller)
           mutationController.current = null;
-        if (mounted.current) setBusy(false);
+        if (ownsPending && isCurrentOwner())
+          setActionView((current) =>
+            current.ownerKey === sessionKey
+              ? { ...current, busy: false }
+              : current,
+          );
       }
     },
-    [client, eligible, eventId, navigate],
+    [
+      accountId,
+      client,
+      eligible,
+      eventId,
+      navigate,
+      session,
+      sessionKey,
+      sessionStore,
+    ],
   );
 
   useEffect(() => {
-    const resume = consumeCreateResume(eventId);
-    if (resume && eligible && client.ok && client.value.createScoutingJob)
-      queueMicrotask(() => void start(true));
-  }, [client, eligible, eventId, start]);
+    let active = true;
+    if (hasCreateResume(accountId, eventId)) {
+      if (eligible && client.ok && client.value.createScoutingJob)
+        queueMicrotask(() => {
+          if (!active) return;
+          const current = sessionStore.getSnapshot();
+          const currentKey = current
+            ? `${current.accountId}\u0000${current.token}`
+            : "signed-out";
+          if (current?.accountId !== accountId || currentKey !== sessionKey)
+            return;
+          void start(true);
+        });
+      else setCreateResume(accountId, eventId, false);
+    }
+    return () => {
+      active = false;
+    };
+  }, [accountId, client, eligible, eventId, sessionKey, sessionStore, start]);
 
   const unavailable = !client.ok || !client.value.createScoutingJob;
   const reason = unavailable
     ? "Scouting is unavailable in this environment."
     : disabledReason;
+  const visibleAction =
+    actionView.ownerKey === sessionKey
+      ? actionView
+      : { ownerKey: sessionKey, busy: false, error: null };
   return (
     <span className="scout-action">
       <button
         type="button"
-        disabled={!eligible || unavailable || busy}
+        disabled={!eligible || unavailable || visibleAction.busy}
         aria-describedby={
-          [!eligible || unavailable ? reasonId : null, error ? errorId : null]
+          [
+            !eligible || unavailable ? reasonId : null,
+            visibleAction.error ? errorId : null,
+          ]
             .filter(Boolean)
             .join(" ") || undefined
         }
         onClick={() => void start()}
       >
-        {busy ? "Opening scouting…" : "Scout"}
+        {visibleAction.busy ? "Opening scouting…" : "Scout"}
       </button>
       {(!eligible || unavailable) && <small id={reasonId}>{reason}</small>}
-      {error && (
+      {visibleAction.error && (
         <small id={errorId} className="scout-action-error" role="alert">
-          {error}
+          {visibleAction.error}
         </small>
       )}
     </span>
@@ -360,6 +442,7 @@ const preservesJobIdentityAndChronology = (
   incoming.updatedAt >= prior.updatedAt;
 
 interface ProgressView {
+  readonly ownerKey: string;
   readonly loading: boolean;
   readonly job: PublicScoutingJob | null;
   readonly fatal: string | null;
@@ -367,13 +450,18 @@ interface ProgressView {
   readonly announcement: string;
 }
 
-const emptyProgress: ProgressView = {
+const emptyProgress = {
   loading: true,
   job: null,
   fatal: null,
   refreshError: null,
   announcement: "",
-};
+} as const;
+
+const loadingProgress = (ownerKey: string): ProgressView => ({
+  ...emptyProgress,
+  ownerKey,
+});
 
 export function ScoutingProgress({
   jobId,
@@ -382,36 +470,50 @@ export function ScoutingProgress({
   readonly jobId: string;
   readonly client: ScoutingClientResult;
 }) {
+  const sessionStore = useSessionStore();
+  const session = useSession(sessionStore);
+  const sessionKey = session
+    ? `${session.accountId}\u0000${session.token}`
+    : "signed-out";
+  const accountId = session?.accountId ?? "signed-out";
   const latest = useRef<PublicScoutingJob | null>(null);
+  const latestOwner = useRef(sessionKey);
+  const latestAccount = useRef(accountId);
   const heading = useRef<HTMLHeadingElement>(null);
-  const retryPending = useRef(false);
+  const retryPendingOwner = useRef<string | null>(null);
   const mounted = useRef(true);
   const mutationController = useRef<AbortController | null>(null);
-  const retryAction = useRef<ReturnType<
-    typeof persistentScoutingActionKey
-  > | null>(null);
+  const retryAction = useRef<{
+    readonly accountId: string;
+    readonly action: ReturnType<typeof persistentScoutingActionKey>;
+  } | null>(null);
   const [view, setView] = useState<ProgressView>(() =>
     !isScoutingJobId(jobId)
       ? {
           ...emptyProgress,
+          ownerKey: sessionKey,
           loading: false,
           fatal: "This scouting job address is invalid.",
         }
       : !client.ok || !client.value.getScoutingJob
         ? {
             ...emptyProgress,
+            ownerKey: sessionKey,
             loading: false,
             fatal: "Scouting progress is unavailable in this environment.",
           }
-        : emptyProgress,
+        : loadingProgress(sessionKey),
   );
   const [visible, setVisible] = useState(
     () =>
       typeof document === "undefined" || document.visibilityState !== "hidden",
   );
   const [refreshGeneration, setRefreshGeneration] = useState(0);
-  const [retryBusy, setRetryBusy] = useState(false);
-  const [retryError, setRetryError] = useState<string | null>(null);
+  const [retryView, setRetryView] = useState<{
+    readonly ownerKey: string;
+    readonly busy: boolean;
+    readonly error: string | null;
+  }>({ ownerKey: sessionKey, busy: false, error: null });
 
   useEffect(() => {
     mounted.current = true;
@@ -420,6 +522,16 @@ export function ScoutingProgress({
       mutationController.current?.abort();
     };
   }, []);
+
+  useEffect(() => () => mutationController.current?.abort(), [sessionKey]);
+
+  useEffect(() => {
+    const pending = retryAction.current;
+    if (pending && pending.accountId !== accountId) {
+      pending.action.clear();
+      retryAction.current = null;
+    }
+  }, [accountId]);
 
   useEffect(() => {
     const update = () => setVisible(document.visibilityState !== "hidden");
@@ -430,7 +542,7 @@ export function ScoutingProgress({
   const applyJob = useCallback(
     (incoming: PublicScoutingJob): boolean => {
       if (incoming.jobId !== jobId) return false;
-      const prior = latest.current;
+      const prior = latestAccount.current === accountId ? latest.current : null;
       if (prior && incoming.stateVersion < prior.stateVersion) return false;
       if (
         prior &&
@@ -440,23 +552,48 @@ export function ScoutingProgress({
       ) {
         setView((current) => ({
           ...current,
+          ownerKey: sessionKey,
           refreshError: "The latest scouting update could not be verified.",
+        }));
+        setRetryView((current) => ({
+          ownerKey: sessionKey,
+          busy: current.ownerKey === sessionKey && current.busy,
+          error: null,
         }));
         return false;
       }
       if (prior && incoming.stateVersion === prior.stateVersion) {
-        setView((current) => ({ ...current, refreshError: null }));
-        setRetryError(null);
+        setView({
+          ownerKey: sessionKey,
+          loading: false,
+          job: incoming,
+          fatal: null,
+          refreshError: null,
+          announcement: "",
+        });
+        setRetryView((current) => ({
+          ownerKey: sessionKey,
+          busy: current.ownerKey === sessionKey && current.busy,
+          error: null,
+        }));
+        latestOwner.current = sessionKey;
         return true;
       }
       if (prior && incoming.stateVersion > prior.stateVersion) {
-        retryAction.current?.clear();
+        retryAction.current?.action.clear();
         retryAction.current = null;
       }
       latest.current = incoming;
-      setRetryError(null);
+      latestOwner.current = sessionKey;
+      latestAccount.current = accountId;
+      setRetryView((current) => ({
+        ownerKey: sessionKey,
+        busy: current.ownerKey === sessionKey && current.busy,
+        error: null,
+      }));
       const presentation = jobPresentation(incoming);
       setView({
+        ownerKey: sessionKey,
         loading: false,
         job: incoming,
         fatal: null,
@@ -466,8 +603,25 @@ export function ScoutingProgress({
       });
       return true;
     },
-    [jobId],
+    [accountId, jobId, sessionKey],
   );
+
+  useEffect(() => {
+    if (!isScoutingJobId(jobId) || !client.ok || !client.value.getScoutingJob)
+      return;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      if (latestAccount.current !== accountId) latest.current = null;
+      latestAccount.current = accountId;
+      latestOwner.current = sessionKey;
+      setRetryView({ ownerKey: sessionKey, busy: false, error: null });
+      setView(loadingProgress(sessionKey));
+    });
+    return () => {
+      active = false;
+    };
+  }, [accountId, client, jobId, sessionKey]);
 
   useEffect(() => {
     if (!isScoutingJobId(jobId) || !client.ok || !client.value.getScoutingJob)
@@ -487,14 +641,20 @@ export function ScoutingProgress({
         if (stopped) return;
         failures = 0;
         applyJob(job);
-        const current = latest.current;
+        const current =
+          latestOwner.current === sessionKey ? latest.current : null;
         if (
           current &&
           (current.status === "queued" || current.status === "in_progress")
         )
           timer = setTimeout(() => void load(), ACTIVE_POLL_MS);
       } catch (error) {
-        if (stopped || controller.signal.aborted) return;
+        if (
+          stopped ||
+          controller.signal.aborted ||
+          isRequestCancellation(error)
+        )
+          return;
         const known = clientError(error);
         if (
           known?.code === "authentication" ||
@@ -502,17 +662,21 @@ export function ScoutingProgress({
           known?.code === "not-found"
         ) {
           latest.current = null;
-          setRetryError(null);
+          latestOwner.current = sessionKey;
+          latestAccount.current = accountId;
+          setRetryView({ ownerKey: sessionKey, busy: false, error: null });
           setView({
             ...emptyProgress,
+            ownerKey: sessionKey,
             loading: false,
             fatal: initialErrorMessage(error),
           });
           return;
         }
-        if (!latest.current) {
+        if (latestOwner.current !== sessionKey || !latest.current) {
           setView({
             ...emptyProgress,
+            ownerKey: sessionKey,
             loading: false,
             fatal: initialErrorMessage(error),
           });
@@ -521,6 +685,7 @@ export function ScoutingProgress({
         failures += 1;
         setView((current) => ({
           ...current,
+          ownerKey: sessionKey,
           refreshError:
             "The latest status could not be refreshed. Confirmed progress is still shown.",
         }));
@@ -532,18 +697,29 @@ export function ScoutingProgress({
           );
       }
     };
-    void load();
+    queueMicrotask(() => {
+      if (stopped) return;
+      void load();
+    });
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
       controller?.abort();
     };
-  }, [applyJob, client, jobId, refreshGeneration, visible]);
+  }, [
+    accountId,
+    applyJob,
+    client,
+    jobId,
+    refreshGeneration,
+    sessionKey,
+    visible,
+  ]);
 
   const retry = async () => {
-    const job = latest.current;
+    const job = latestOwner.current === sessionKey ? latest.current : null;
     if (
-      retryPending.current ||
+      retryPendingOwner.current === sessionKey ||
       !client.ok ||
       !client.value.retryScoutingJob ||
       !job ||
@@ -551,19 +727,28 @@ export function ScoutingProgress({
       job.failure?.retryable !== true
     )
       return;
-    retryPending.current = true;
-    setRetryBusy(true);
-    setRetryError(null);
+    mutationController.current?.abort();
+    retryPendingOwner.current = sessionKey;
+    setRetryView({ ownerKey: sessionKey, busy: true, error: null });
     const action =
-      retryAction.current ??
-      persistentScoutingActionKey("retry", job.jobId, job.stateVersion);
-    retryAction.current = action;
+      retryAction.current?.accountId === accountId
+        ? retryAction.current.action
+        : persistentScoutingActionKey(
+            "retry",
+            accountId,
+            job.jobId,
+            job.stateVersion,
+          );
+    retryAction.current = { accountId, action };
     if (!action.persisted) {
-      setRetryError(
-        "Retry is unavailable while secure session storage is unavailable.",
-      );
-      retryPending.current = false;
-      setRetryBusy(false);
+      setRetryView({
+        ownerKey: sessionKey,
+        busy: false,
+        error:
+          "Retry is unavailable while secure session storage is unavailable.",
+      });
+      if (retryPendingOwner.current === sessionKey)
+        retryPendingOwner.current = null;
       return;
     }
     const controller = new AbortController();
@@ -577,41 +762,68 @@ export function ScoutingProgress({
       );
       if (!mounted.current || !applyJob(next)) return;
       action.clear();
-      retryAction.current = null;
+      if (retryAction.current?.action === action) retryAction.current = null;
       heading.current?.focus();
       setRefreshGeneration((value) => value + 1);
     } catch (error) {
-      if (!mounted.current || controller.signal.aborted) return;
+      if (
+        !mounted.current ||
+        controller.signal.aborted ||
+        isRequestCancellation(error)
+      )
+        return;
       const known = clientError(error);
       if (known?.code === "conflict" || known?.code === "retry-limit") {
-        setRetryError(
-          "Checking the latest scouting status before another action.",
-        );
+        setRetryView({
+          ownerKey: sessionKey,
+          busy: true,
+          error: "Checking the latest scouting status before another action.",
+        });
         setRefreshGeneration((value) => value + 1);
       } else {
-        setRetryError(
-          "The retry outcome is not yet known. Try again to safely reconcile it.",
-        );
+        setRetryView({
+          ownerKey: sessionKey,
+          busy: true,
+          error:
+            "The retry outcome is not yet known. Try again to safely reconcile it.",
+        });
       }
     } finally {
-      retryPending.current = false;
+      const ownsPending = retryPendingOwner.current === sessionKey;
+      if (ownsPending) retryPendingOwner.current = null;
       if (mutationController.current === controller)
         mutationController.current = null;
-      if (mounted.current) setRetryBusy(false);
+      if (mounted.current && ownsPending)
+        setRetryView((current) =>
+          current.ownerKey === sessionKey
+            ? { ...current, busy: false }
+            : current,
+        );
     }
   };
 
-  if (view.loading)
+  const sessionBoundProgress =
+    isScoutingJobId(jobId) && client.ok && !!client.value.getScoutingJob;
+  const visibleView =
+    !sessionBoundProgress || view.ownerKey === sessionKey
+      ? view
+      : loadingProgress(sessionKey);
+  const visibleRetry =
+    retryView.ownerKey === sessionKey
+      ? retryView
+      : { ownerKey: sessionKey, busy: false, error: null };
+
+  if (visibleView.loading)
     return (
       <section className="scouting-progress-state" role="status">
         <p>Loading scouting progress…</p>
       </section>
     );
-  if (view.fatal)
+  if (visibleView.fatal)
     return (
       <section className="scouting-progress-state error" role="alert">
         <h1>Scouting progress unavailable</h1>
-        <p>{view.fatal}</p>
+        <p>{visibleView.fatal}</p>
         {client.ok && client.value.getScoutingJob && isScoutingJobId(jobId) && (
           <button
             type="button"
@@ -622,15 +834,15 @@ export function ScoutingProgress({
         )}
       </section>
     );
-  if (!view.job) return null;
-  const presentation = jobPresentation(view.job);
+  if (!visibleView.job) return null;
+  const presentation = jobPresentation(visibleView.job);
   const retryAllowed =
-    view.job.status === "failed_retryable" &&
-    view.job.failure?.retryable === true;
+    visibleView.job.status === "failed_retryable" &&
+    visibleView.job.failure?.retryable === true;
   return (
     <article className={`scouting-progress ${presentation.tone}`}>
       <span className="sr-only" aria-live="polite" aria-atomic="true">
-        {view.announcement}
+        {visibleView.announcement}
       </span>
       <header>
         <div>
@@ -650,20 +862,20 @@ export function ScoutingProgress({
       >
         <div>
           <span>Attempt</span>
-          <strong>{view.job.attemptNumber} of 3</strong>
+          <strong>{visibleView.job.attemptNumber} of 3</strong>
         </div>
         <div>
           <span>Last update</span>
           <strong>
-            <time dateTime={view.job.updatedAt}>
-              {new Date(view.job.updatedAt).toLocaleString()}
+            <time dateTime={visibleView.job.updatedAt}>
+              {new Date(visibleView.job.updatedAt).toLocaleString()}
             </time>
           </strong>
         </div>
       </section>
-      {view.refreshError && (
+      {visibleView.refreshError && (
         <section className="scouting-reconnect" role="alert">
-          <p>{view.refreshError}</p>
+          <p>{visibleView.refreshError}</p>
           <button
             type="button"
             onClick={() => setRefreshGeneration((value) => value + 1)}
@@ -672,18 +884,18 @@ export function ScoutingProgress({
           </button>
         </section>
       )}
-      {retryError && (
+      {visibleRetry.error && (
         <p className="scouting-retry-error" role="alert">
-          {retryError}
+          {visibleRetry.error}
         </p>
       )}
       <div className="scouting-progress-actions">
-        {view.job.status === "completed" && (
+        {visibleView.job.status === "completed" && (
           // The progress record does not say whether a report was stored, so
           // the link is always offered and the report screen states the truth.
           <a
             className="detail-link"
-            href={`/scout-jobs/${encodeURIComponent(view.job.jobId)}/report`}
+            href={`/scout-jobs/${encodeURIComponent(visibleView.job.jobId)}/report`}
           >
             View report
           </a>
@@ -691,15 +903,15 @@ export function ScoutingProgress({
         {retryAllowed && (
           <button
             type="button"
-            disabled={retryBusy}
+            disabled={visibleRetry.busy}
             onClick={() => void retry()}
           >
-            {retryBusy ? "Retrying…" : "Retry scouting"}
+            {visibleRetry.busy ? "Retrying…" : "Retry scouting"}
           </button>
         )}
         <a
           className="detail-link"
-          href={`/events/${encodeURIComponent(view.job.eventId)}`}
+          href={`/events/${encodeURIComponent(visibleView.job.eventId)}`}
         >
           View game
         </a>

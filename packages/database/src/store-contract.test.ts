@@ -360,6 +360,48 @@ function pendingOutbox(
 
 function contract(name: string, create: () => EventIngestionStore) {
   describe(`${name} event-ingestion contract`, () => {
+    it("reverse-resolves the original exact source mapping for backfill", async () => {
+      const store = create();
+      const backfillBootstrap = {
+        ...bootstrap,
+        id: "event:mlb%3Amlb:one" as EntityId,
+        canonicalKey: "one",
+      };
+      await store.bootstrapCanonicalEvent(backfillBootstrap, observedAt);
+      const source = {
+        providerId: "sharpapi",
+        providerEventId: backfillBootstrap.canonicalKey,
+        sportKey: backfillBootstrap.sportKey,
+        leagueKey: backfillBootstrap.leagueKey,
+        normalizedIdentity: backfillBootstrap.normalizedIdentity,
+        startsAt: backfillBootstrap.startsAt,
+        status: backfillBootstrap.status,
+        participantLabels: backfillBootstrap.participantLabels,
+        revision: {
+          providerId: "sharpapi",
+          authorityRank: 101,
+          updatedAt: observedAt,
+          sequence: 1,
+          token: "source-1",
+        },
+        observedAt,
+      } as const;
+      await store.ingestEvent(source);
+      await expect(
+        store.resolveCanonicalSourceBinding(backfillBootstrap.id, "sharpapi"),
+      ).resolves.toMatchObject({
+        canonicalEventId: backfillBootstrap.id,
+        providerEventId: backfillBootstrap.canonicalKey,
+        bindingKind: "source",
+      });
+      await expect(
+        store.resolveCanonicalSourceBinding(
+          backfillBootstrap.id,
+          "other-provider",
+        ),
+      ).resolves.toBeNull();
+    });
+
     it("does not churn the canonical version for fresher identical schedules", async () => {
       const store = create();
       await store.bootstrapCanonicalEvent(bootstrap, observedAt);

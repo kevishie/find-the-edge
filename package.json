@@ -13,7 +13,12 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "generate:web-runtime-config": "node scripts/generate-web-runtime-config.mjs",
-    "ingestion-cost:baseline": "node scripts/ingestion-cost-attribution.mjs",
+    "game-state:spike": "node scripts/game-state-spike.mjs",
+    "game-state:truth": "node scripts/game-state-truth.mjs analyze",
+    "game-state:truth:init": "node scripts/game-state-truth.mjs initialize",
+    "identity-authorization:provision": "node scripts/identity-authorization-provision.mjs",
+    "admin-access:provision": "node scripts/admin-access-provision.mjs",
+    "test:admin-access-provision": "node --test scripts/admin-access-provision.test.mjs",
     "phase1:preflight": "node scripts/phase1-preflight.mjs",
     "phase1:bundle": "node scripts/build-phase1-web.mjs",
     "phase1:smoke": "node scripts/phase1-environment-smoke.mjs",
@@ -23,11 +28,13 @@
     "lint": "eslint . --max-warnings 0",
     "synth": "pnpm --filter @find-the-edge/infra-cdk synth",
     "test": "turbo run test",
+    "test:identity-authorization-provision": "node --test scripts/identity-authorization-provision.test.mjs scripts/deployment-workflow.test.mjs scripts/phase1-reset-feed.test.mjs",
     "test:phase1-reset-feed": "node --test scripts/phase1-reset-feed.test.mjs",
     "test:e2e": "playwright test",
+    "test:game-state-spike": "node --test scripts/game-state-spike.test.mjs scripts/game-state-truth.test.mjs",
     "typecheck": "turbo run typecheck",
     "typecheck:tools": "tsc -p tsconfig.json",
-    "check": "pnpm format:check && pnpm lint && pnpm boundaries && pnpm typecheck && pnpm typecheck:tools && pnpm test && pnpm build && pnpm test:e2e"
+    "check": "pnpm format:check && pnpm lint && pnpm boundaries && pnpm typecheck && pnpm typecheck:tools && pnpm test:game-state-spike && pnpm test && pnpm build && pnpm test:e2e"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",

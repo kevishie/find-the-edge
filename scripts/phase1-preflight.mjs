@@ -7,6 +7,7 @@ import {
   validateSafeDeploymentConfig,
   validateTemplate,
 } from "./phase1-support.mjs";
+import { recurringDataPlaneEnabled } from "./environment-contract.mjs";
 
 export async function phase1Preflight(environment = process.env) {
   const config = safeDeploymentConfig(environment);
@@ -35,10 +36,29 @@ export async function phase1Preflight(environment = process.env) {
     FTE_API_CERTIFICATE_ARN: config.apiCertificateArn,
     FTE_WEB_ORIGIN: config.webOrigin,
     FTE_FIXTURE_ODDS_SEED_ENABLED: "false",
-    FTE_UPCOMING_SCHEDULER_ENABLED: "true",
+    FTE_PRODUCT_ACCESS_ENFORCED: String(config.productAccessEnforced),
+    FTE_ADMIN_ACCESS_ENABLED: String(config.adminAccess.enabled),
+    FTE_UPCOMING_SCHEDULER_ENABLED: String(
+      recurringDataPlaneEnabled(config.stage),
+    ),
     CDK_DEFAULT_ACCOUNT: "228246988391",
     CDK_DEFAULT_REGION: "us-east-1",
   };
+  // The protected workflow carries one human-facing mode. Remove any raw CDK
+  // bootstrap variables inherited from the runner, then derive the mutually
+  // exclusive inputs so a disabled run cannot accidentally retain an owner.
+  delete synthEnvironment.FTE_ADMIN_BOOTSTRAP_MODE;
+  delete synthEnvironment.FTE_OWNER_ACCOUNT_ID;
+  delete synthEnvironment.FTE_ADMIN_FRESH_BOOTSTRAP;
+  delete synthEnvironment.FTE_ADMIN_BOOTSTRAP_VERIFIED;
+  if (config.adminAccess.enabled)
+    Object.assign(synthEnvironment, {
+      FTE_OWNER_ACCOUNT_ID: config.adminAccess.ownerAccountId,
+      FTE_ADMIN_FRESH_BOOTSTRAP: String(config.adminAccess.mode === "fresh"),
+      FTE_ADMIN_BOOTSTRAP_VERIFIED: String(
+        config.adminAccess.mode === "verified",
+      ),
+    });
   run("pnpm", ["--filter", "@find-the-edge/infra-cdk", "synth"], {
     env: synthEnvironment,
   });

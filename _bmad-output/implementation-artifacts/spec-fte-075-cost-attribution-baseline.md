@@ -76,4 +76,4 @@ context:
 
 ## Implementation Status
 
-The repository-completable measurement machinery is implemented and passes the full project check. FTE-075 remains `in-progress`: production currently reports Contributor Insights disabled, so the final baseline cannot exist until this change follows the reviewed deployment path and both CloudWatch/Contributor Insights and Cost Explorer have a closed, settled window.
+The measurement machinery is implemented and deployed. On 2026-08-14, both staging and production reported Contributor Insights enabled and emitted stage-scoped capacity metrics. Collection began after 01:15 UTC, so no fully instrumented UTC day has closed yet; the earlier `[2026-08-13, 2026-08-14)` billing period also still reports `Estimated=true`. FTE-075 remains `in-progress` until a later closed window has complete metrics and Cost Explorer settles it.

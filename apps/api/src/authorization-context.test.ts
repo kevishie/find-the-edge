@@ -11,13 +11,28 @@ import type {
   IdentityRepository,
 } from "@find-the-edge/database";
 import {
+  MemoryScoutingJobRepository,
+  MemoryScoutingReportRepository,
+  MemoryWatchlistRepository,
+  type EventRepository,
+  type RetrospectiveRepository,
+  type StrategyExperimentRepository,
+} from "@find-the-edge/database";
+import {
+  authorizationContextFromLambdaRequest,
   authorizationContextFromGateway,
+  ELEVATED_OWNED_ROUTE_KEYS,
+  gateAdminAuthorization,
+  handlerAuthorizationFields,
   isOwnedSessionAuthorization,
   memoizeIdentityAccountLookup,
+  ORDINARY_OWNED_ROUTE_KEYS,
   OWNED_SESSION_SCOPES,
   resolveOwnedSessionAuthorization,
 } from "./authorization-context";
 import { withEventApiLambdaBoundary } from "./lambda-boundary";
+import { createEventHandler } from "./handler";
+import { createScoutingHttpHandler } from "./scouting-handler";
 
 const NOW = new Date("2026-08-13T21:00:00.000Z");
 const ACCOUNT_ID = `account:${"ab12cd34".repeat(8)}`;
@@ -55,6 +70,29 @@ const identityOf = (
   getAccount: vi.fn().mockResolvedValue(account),
 });
 
+describe("admin rollout authorization gate", () => {
+  const elevated = {
+    subject: ACCOUNT_ID,
+    scopes: ["events/events:read", "accounts/access:manage"],
+    reviewerAuthorized: false,
+    strategyPromoterAuthorized: false,
+    adminAuthorized: true as const,
+  };
+
+  it("keeps a provisioned owner inert while disabled", () => {
+    expect(gateAdminAuthorization(elevated, false)).toEqual({
+      subject: ACCOUNT_ID,
+      scopes: ["events/events:read"],
+      reviewerAuthorized: false,
+      strategyPromoterAuthorized: false,
+    });
+  });
+
+  it("preserves owner authority only after explicit enablement", () => {
+    expect(gateAdminAuthorization(elevated, true)).toBe(elevated);
+  });
+});
+
 const resolve = (
   authorization: string,
   identity: Pick<IdentityRepository, "getAccount"> = identityOf(ACCOUNT),
@@ -76,6 +114,488 @@ const resolve = (
       : {}),
     now: NOW,
   });
+
+describe("Lambda request authorization adapter", () => {
+  const adapter = (
+    routeKey: (typeof ORDINARY_OWNED_ROUTE_KEYS)[number],
+    authorization: string | undefined,
+    identity: Pick<IdentityRepository, "getAccount">,
+  ) =>
+    authorizationContextFromLambdaRequest({
+      routeKey,
+      ...(authorization ? { headers: { AUTHORIZATION: authorization } } : {}),
+      // A stale synthetic gateway context must never authorize a detached
+      // ordinary route.
+      gatewayJwt: {
+        claims: { sub: "legacy-cognito-user" },
+        scopes: ["events/events:read"],
+      },
+      productRoute: true,
+      capabilitiesRoute: false,
+      includeElevatedAuthorization: false,
+      ownedRuntime: { signingKeys: RING, identity, now: NOW },
+    });
+
+  it.each(ORDINARY_OWNED_ROUTE_KEYS)(
+    "projects raw owned authority into the handler input for %s",
+    async (routeKey) => {
+      const identity = identityOf(ACCOUNT);
+      const context = await adapter(routeKey, `Bearer ${session()}`, identity);
+      expect(handlerAuthorizationFields(context)).toEqual({
+        subject: ACCOUNT_ID,
+        scopes: OWNED_SESSION_SCOPES,
+        reviewerAuthorized: false,
+        strategyPromoterAuthorized: false,
+      });
+      expect(identity.getAccount).toHaveBeenCalledOnce();
+    },
+  );
+
+  const otherAccountId = `account:${"cd34ef56".repeat(8)}`;
+  const foreignAccountToken = createSessionToken({
+    accountId: otherAccountId,
+    tokenVersion: 1,
+    now: NOW.toISOString(),
+    key: CURRENT_KEY,
+  }).token;
+
+  const invokeActualProtectedHandler = async (
+    routeKey: (typeof ORDINARY_OWNED_ROUTE_KEYS)[number],
+    fields: ReturnType<typeof handlerAuthorizationFields>,
+  ) => {
+    const listEvents = vi.fn(() =>
+      Promise.resolve({
+        items: [],
+        nextCursor: null,
+        projectionState: "ready" as const,
+        evaluationState: "complete" as const,
+        hasMoreUnknown: false,
+        snapshotAt: NOW.toISOString(),
+        freshness: null,
+        unavailableReason: null,
+      }),
+    );
+    const detailEvent = vi.fn(() =>
+      Promise.resolve({
+        projectionState: "ready" as const,
+        item: null,
+        unavailableReason: null,
+      }),
+    );
+    const events: EventRepository = {
+      list: listEvents,
+      detail: detailEvent,
+    };
+    const calls: ReturnType<typeof vi.fn>[] = [listEvents, detailEvent];
+    if (routeKey === "GET /events") {
+      const log: (entry: Readonly<Record<string, unknown>>) => void = () =>
+        undefined;
+      const response = await createEventHandler(
+        events,
+        log,
+      )({
+        route: "list",
+        method: "GET",
+        ...fields,
+      });
+      return { response, calls };
+    }
+    if (
+      routeKey === "POST /events/{eventId}/scout" ||
+      routeKey === "GET /scout-jobs/{jobId}" ||
+      routeKey === "POST /scout-jobs/{jobId}/retry"
+    ) {
+      const jobs = new MemoryScoutingJobRepository();
+      calls.push(
+        vi.spyOn(jobs, "getCreateReplay"),
+        vi.spyOn(jobs, "createJob"),
+        vi.spyOn(jobs, "getJobForRequester"),
+        vi.spyOn(jobs, "retryJob"),
+      );
+      const request =
+        routeKey === "POST /events/{eventId}/scout"
+          ? {
+              route: "scout-create" as const,
+              method: "POST" as const,
+              eventId: "event:mlb:fixture-1",
+              idempotencyKey: "request-1",
+              contentType: "application/json",
+              body: "{}",
+            }
+          : routeKey === "GET /scout-jobs/{jobId}"
+            ? {
+                route: "scout-status" as const,
+                method: "GET" as const,
+                jobId: `scout-job:${"a".repeat(64)}`,
+              }
+            : {
+                route: "scout-retry" as const,
+                method: "POST" as const,
+                jobId: `scout-job:${"a".repeat(64)}`,
+                idempotencyKey: "request-1",
+                contentType: "application/json",
+                body: JSON.stringify({ expectedStateVersion: 1 }),
+              };
+      const response = await createScoutingHttpHandler(
+        events,
+        jobs,
+      )({
+        ...request,
+        ...fields,
+      });
+      return { response, calls };
+    }
+    if (routeKey.startsWith("GET /scout-")) {
+      const reports = new MemoryScoutingReportRepository();
+      calls.push(
+        vi.spyOn(reports, "getByJobBinding"),
+        vi.spyOn(reports, "getHead"),
+        vi.spyOn(reports, "getVersion"),
+        vi.spyOn(reports, "listVersions"),
+      );
+      const handler = createEventHandler(
+        events,
+        undefined,
+        vi.fn(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        reports,
+      );
+      const request =
+        routeKey === "GET /scout-jobs/{jobId}/report"
+          ? {
+              route: "scout-report-by-job" as const,
+              method: "GET" as const,
+              jobId: `scout-job:${"a".repeat(64)}`,
+            }
+          : routeKey === "GET /scout-reports/{reportId}/versions"
+            ? {
+                route: "scout-report-versions" as const,
+                method: "GET" as const,
+                reportId: `scout-report:${"b".repeat(64)}`,
+              }
+            : {
+                route: "scout-report-version" as const,
+                method: "GET" as const,
+                reportId: `scout-report:${"b".repeat(64)}`,
+                versionNumber: "1",
+              };
+      const response = await handler({ ...request, ...fields });
+      return { response, calls };
+    }
+    const watchlist = new MemoryWatchlistRepository();
+    calls.push(
+      vi.spyOn(watchlist, "list"),
+      vi.spyOn(watchlist, "add"),
+      vi.spyOn(watchlist, "remove"),
+    );
+    const handler = createEventHandler(
+      events,
+      undefined,
+      vi.fn(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      watchlist,
+    );
+    const request =
+      routeKey === "GET /watchlist"
+        ? { route: "watchlist-list" as const, method: "GET" as const }
+        : routeKey === "POST /watchlist"
+          ? {
+              route: "watchlist-add" as const,
+              method: "POST" as const,
+              contentType: "application/json",
+              body: JSON.stringify({ eventId: "event:mlb:fixture-1" }),
+            }
+          : {
+              route: "watchlist-remove" as const,
+              method: "DELETE" as const,
+              eventId: "event:mlb:fixture-1",
+            };
+    const response = await handler({ ...request, ...fields });
+    return { response, calls };
+  };
+  const invalidRequests = [
+    {
+      label: "absent",
+      authorization: undefined,
+      account: ACCOUNT,
+      identityRead: false,
+    },
+    {
+      label: "malformed",
+      authorization: "Bearer fte1.invalid",
+      account: ACCOUNT,
+      identityRead: false,
+    },
+    {
+      label: "revoked",
+      authorization: `Bearer ${session({ tokenVersion: 2 })}`,
+      account: ACCOUNT,
+      identityRead: true,
+    },
+    {
+      label: "foreign",
+      authorization: `Bearer ${foreignAccountToken}`,
+      account: null,
+      identityRead: true,
+    },
+  ] as const;
+
+  it.each(
+    ORDINARY_OWNED_ROUTE_KEYS.flatMap((routeKey) =>
+      invalidRequests.map((request) => ({ routeKey, ...request })),
+    ),
+  )(
+    "keeps $label authority out of $routeKey handler and protected storage",
+    async ({ routeKey, authorization, account, identityRead }) => {
+      const identity = identityOf(account);
+      const context = await adapter(routeKey, authorization, identity);
+      const handlerInput = handlerAuthorizationFields(context);
+      expect(handlerInput).toEqual({
+        reviewerAuthorized: false,
+        strategyPromoterAuthorized: false,
+      });
+      const { response, calls } = await invokeActualProtectedHandler(
+        routeKey,
+        handlerInput,
+      );
+      expect(response.statusCode).toBe(401);
+      for (const repositoryCall of calls)
+        expect(repositoryCall).not.toHaveBeenCalled();
+      expect(identity.getAccount).toHaveBeenCalledTimes(identityRead ? 1 : 0);
+    },
+  );
+});
+
+describe("elevated owned Lambda authorization boundary", () => {
+  const elevatedAdapter = (
+    routeKey: (typeof ELEVATED_OWNED_ROUTE_KEYS)[number],
+    authorization: string | undefined,
+    roles: readonly ("retrospective-reviewer" | "strategy-promoter")[],
+  ) =>
+    authorizationContextFromLambdaRequest({
+      routeKey,
+      ...(authorization ? { headers: { authorization } } : {}),
+      // Detached methods must ignore stale or synthetic Gateway authority.
+      gatewayJwt: {
+        claims: {
+          sub: "legacy-cognito-user",
+          "cognito:groups": [
+            "fte-retrospective-reviewers",
+            "fte-strategy-promoters",
+          ],
+        },
+        scopes: ["events/retrospectives:approve", "events/strategies:promote"],
+      },
+      productRoute: true,
+      capabilitiesRoute: false,
+      includeElevatedAuthorization: true,
+      ownedRuntime: {
+        signingKeys: RING,
+        identity: identityOf(ACCOUNT),
+        identityAuthorization: {
+          get: vi.fn().mockResolvedValue(
+            createIdentityAuthorization({
+              accountId: ACCOUNT_ID,
+              roles,
+              updatedAt: NOW.toISOString(),
+              operatorId: "operator:test",
+            }),
+          ),
+        },
+        now: NOW,
+      },
+    });
+
+  const events: EventRepository = {
+    list: vi.fn(),
+    detail: vi.fn(),
+  };
+  const review = vi.fn().mockResolvedValue({
+    version: {
+      versionId: `retrospective-version:${"a".repeat(64)}`,
+      state: "approved",
+      stateVersion: 2,
+    },
+    decision: {
+      decisionId: `retrospective-decision:${"b".repeat(64)}`,
+      versionId: `retrospective-version:${"a".repeat(64)}`,
+      fromState: "draft",
+      toState: "approved",
+      reasonCode: "approve",
+      decidedAt: NOW.toISOString(),
+    },
+  });
+  const retrospectiveRepository = {
+    review,
+  } as unknown as RetrospectiveRepository;
+  const approve = vi.fn().mockResolvedValue({ experiment: {}, decision: {} });
+  const activate = vi.fn().mockResolvedValue({});
+  const strategyRepository = {
+    approve,
+    activate,
+  } as unknown as StrategyExperimentRepository;
+  const handler = createEventHandler(
+    events,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    retrospectiveRepository,
+    strategyRepository,
+  );
+
+  const requestFor = (
+    routeKey: (typeof ELEVATED_OWNED_ROUTE_KEYS)[number],
+    fields: ReturnType<typeof handlerAuthorizationFields>,
+  ) => {
+    if (routeKey === "POST /retrospectives/{eventId}/review")
+      return handler({
+        route: "retrospective-review",
+        eventId: `retrospective-version:${"a".repeat(64)}`,
+        method: "POST",
+        contentType: "application/json",
+        query: {},
+        body: JSON.stringify({
+          reasonCode: "approve",
+          idempotencyKey: "owned-review",
+          expectedState: "draft",
+          expectedStateVersion: 1,
+        }),
+        ...fields,
+      });
+    const action = routeKey.endsWith("/approve")
+      ? "experiment-approve"
+      : routeKey.endsWith("/promote")
+        ? "experiment-promote"
+        : "experiment-rollback";
+    return handler({
+      route: action,
+      eventId: `strategy-experiment:${"c".repeat(64)}`,
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify(
+        action === "experiment-approve"
+          ? {
+              reason: "Evidence verified",
+              idempotencyKey: "owned-approve",
+              expectedStateVersion: 1,
+              expectedDigest: "d".repeat(64),
+              artifactDigest: "e".repeat(64),
+            }
+          : {
+              strategyId: "strategy:test",
+              artifactVersion: "1.0.0",
+              artifactDigest: "e".repeat(64),
+              effectiveAt: "2099-01-01T00:00:00.000Z",
+              reason: "Evidence verified",
+              idempotencyKey: `owned-${action}`,
+              expectedActivationId: null,
+            },
+      ),
+      ...fields,
+    });
+  };
+
+  it.each(ELEVATED_OWNED_ROUTE_KEYS)(
+    "drives the actual %s handler with only the matching server role",
+    async (routeKey) => {
+      review.mockClear();
+      approve.mockClear();
+      activate.mockClear();
+      const requiredRole = routeKey.includes("retrospectives")
+        ? "retrospective-reviewer"
+        : "strategy-promoter";
+      const context = await elevatedAdapter(routeKey, `Bearer ${session()}`, [
+        requiredRole,
+      ]);
+      const response = await requestFor(
+        routeKey,
+        handlerAuthorizationFields(context),
+      );
+      expect(response.statusCode).toBe(200);
+      expect(
+        review.mock.calls.length +
+          approve.mock.calls.length +
+          activate.mock.calls.length,
+      ).toBe(1);
+    },
+  );
+
+  it.each(ELEVATED_OWNED_ROUTE_KEYS)(
+    "rejects missing and wrong-role authority before %s repository mutation",
+    async (routeKey) => {
+      const cases: readonly {
+        readonly authorization?: string;
+        readonly roles: readonly (
+          "retrospective-reviewer" | "strategy-promoter"
+        )[];
+        readonly expectedStatus: number;
+      }[] = [
+        {
+          roles: ["retrospective-reviewer", "strategy-promoter"],
+          expectedStatus: 401,
+        },
+        {
+          authorization: "Bearer fte1.invalid",
+          roles: ["retrospective-reviewer", "strategy-promoter"],
+          expectedStatus: 401,
+        },
+        {
+          authorization: `Bearer ${session({ tokenVersion: 2 })}`,
+          roles: ["retrospective-reviewer", "strategy-promoter"],
+          expectedStatus: 401,
+        },
+        {
+          authorization: `Bearer ${session()}`,
+          roles: [],
+          expectedStatus: 403,
+        },
+        {
+          authorization: `Bearer ${session()}`,
+          roles: routeKey.includes("retrospectives")
+            ? ["strategy-promoter"]
+            : ["retrospective-reviewer"],
+          expectedStatus: 403,
+        },
+      ];
+      for (const { authorization, roles, expectedStatus } of cases) {
+        review.mockClear();
+        approve.mockClear();
+        activate.mockClear();
+        const context = await elevatedAdapter(routeKey, authorization, roles);
+        const response = await requestFor(
+          routeKey,
+          handlerAuthorizationFields(context),
+        );
+        expect(response.statusCode).toBe(expectedStatus);
+        expect(review).not.toHaveBeenCalled();
+        expect(approve).not.toHaveBeenCalled();
+        expect(activate).not.toHaveBeenCalled();
+      }
+    },
+  );
+});
 
 describe("owned session authorization", () => {
   it("projects a live stored account into ordinary product permissions", async () => {

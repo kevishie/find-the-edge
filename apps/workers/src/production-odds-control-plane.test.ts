@@ -210,6 +210,64 @@ describe("production odds control-plane composition", () => {
     );
   });
 
+  it("hands the exact accepted schedule binding to closing capture storage", async () => {
+    const closingLines = { bind: vi.fn().mockResolvedValue("updated") };
+    await runProductionOddsControlPlane({
+      events: new MemoryEventIngestionStore(),
+      odds: { persist: vi.fn() },
+      splits: {
+        persist: vi.fn(),
+        current: vi.fn(),
+        listCurrent: vi.fn(),
+        persistGap: vi.fn(),
+      },
+      closingLines,
+      control: new MemoryOddsControlPlaneStore(),
+      sharpApiKey: "sharp-key",
+      now,
+      clock: () => now,
+      fetchSharpSchedule: vi.fn((league: SharpApiLeague) =>
+        Promise.resolve({
+          events:
+            league.leagueKey === "mlb"
+              ? [
+                  {
+                    providerEventId: "provider-event-1",
+                    providerEventUuid: "uuid-event-1",
+                    awayTeam: "Boston Red Sox",
+                    homeTeam: "New York Yankees",
+                    awayClubKey: "bos",
+                    homeClubKey: "nyy",
+                    startsAt: "2026-08-03T20:00:00.000Z" as IsoTimestamp,
+                    status: "scheduled" as const,
+                  },
+                ]
+              : [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+      ),
+      fetchSharpOdds: vi
+        .fn()
+        .mockResolvedValue({ events: [], hasMore: false, retrievedAt: at }),
+      fetchSharpAccount: vi.fn().mockResolvedValue({
+        tier: "pro",
+        features: [],
+        requestsPerMinute: 300,
+        maxBooks: 25,
+        streamingEnabled: false,
+      }),
+    });
+    expect(closingLines.bind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerEventId: "provider-event-1",
+        providerId: "sharpapi",
+        sportKey: "mlb",
+        leagueKey: "mlb",
+      }),
+    );
+  });
+
   it("preserves SharpAPI account and splits rejection diagnostics", async () => {
     const run = async (capability: "account" | "splits") => {
       const control = new MemoryOddsControlPlaneStore();
@@ -311,6 +369,131 @@ describe("production odds control-plane composition", () => {
       );
       if (capability === "splits")
         expect(metrics.emit).toHaveBeenCalledWith("OddsSplitFailure", 1, {});
+    }
+  });
+
+  it("propagates transient account and split storage failures after bookkeeping", async () => {
+    const run = (capability: "account" | "splits") => {
+      const storageError = Object.assign(
+        new Error(`sensitive ${capability} storage detail`),
+        { name: "ServiceUnavailable" },
+      );
+      const control = new MemoryOddsControlPlaneStore();
+      const result = runProductionOddsControlPlane({
+        events: new MemoryEventIngestionStore(),
+        odds: { persist: vi.fn() },
+        splits: {
+          persist: vi.fn(),
+          current: vi.fn(),
+          listCurrent: vi.fn(),
+          persistGap: vi.fn(),
+        },
+        control,
+        sharpApiKey: "sharp-key",
+        now,
+        fetchSharpSchedule: vi.fn().mockResolvedValue({
+          events: [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+        fetchSharpOdds: vi.fn().mockResolvedValue({
+          events: [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+        fetchSharpAccount:
+          capability === "account"
+            ? vi.fn().mockRejectedValue(storageError)
+            : vi.fn().mockResolvedValue({
+                tier: "pro",
+                features: ["splits"],
+                requestsPerMinute: 300,
+                maxBooks: 25,
+                streamingEnabled: false,
+              }),
+        ...(capability === "splits"
+          ? { fetchSharpSplits: vi.fn().mockRejectedValue(storageError) }
+          : {}),
+      });
+      return { result, storageError, control };
+    };
+
+    for (const capability of ["account", "splits"] as const) {
+      const { result, storageError, control } = run(capability);
+      await expect(result).rejects.toBe(storageError);
+      expect(
+        [...control.health.values()].find((health) =>
+          health.healthKey?.endsWith(`:${capability}`),
+        ),
+      ).toMatchObject({ failureReason: "storage-unavailable" });
+    }
+  });
+
+  it("does not let failed account or split bookkeeping replace the transient source error", async () => {
+    for (const capability of ["account", "splits"] as const) {
+      const storageError = Object.assign(
+        new Error(`sensitive ${capability} storage detail`),
+        { name: "ThrottlingException" },
+      );
+      const bookkeepingError = Object.assign(
+        new Error("deterministic bookkeeping conflict"),
+        { name: "ValidationException" },
+      );
+      let sourceFailed = false;
+      const memory = new MemoryOddsControlPlaneStore();
+      const control = new Proxy(memory, {
+        get(target, property) {
+          if (property === "getHealth")
+            return (key: string) =>
+              sourceFailed && key.endsWith(`:${capability}`)
+                ? Promise.reject(bookkeepingError)
+                : target.getHealth(key);
+          const value = Reflect.get(target, property, target) as unknown;
+          return typeof value === "function"
+            ? (...args: unknown[]) =>
+                Reflect.apply(value, target, args) as unknown
+            : value;
+        },
+      });
+      const fail = () => {
+        sourceFailed = true;
+        return Promise.reject(storageError);
+      };
+      const result = runProductionOddsControlPlane({
+        events: new MemoryEventIngestionStore(),
+        odds: { persist: vi.fn() },
+        splits: {
+          persist: vi.fn(),
+          current: vi.fn(),
+          listCurrent: vi.fn(),
+          persistGap: vi.fn(),
+        },
+        control,
+        sharpApiKey: "sharp-key",
+        now,
+        fetchSharpSchedule: vi.fn().mockResolvedValue({
+          events: [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+        fetchSharpOdds: vi.fn().mockResolvedValue({
+          events: [],
+          hasMore: false,
+          retrievedAt: at,
+        }),
+        fetchSharpAccount:
+          capability === "account"
+            ? fail
+            : vi.fn().mockResolvedValue({
+                tier: "pro",
+                features: ["splits"],
+                requestsPerMinute: 300,
+                maxBooks: 25,
+                streamingEnabled: false,
+              }),
+        ...(capability === "splits" ? { fetchSharpSplits: fail } : {}),
+      });
+      await expect(result).rejects.toBe(storageError);
     }
   });
 
@@ -1188,6 +1371,15 @@ describe("production odds control-plane composition", () => {
     expect(capabilityFailure(new Error("secret mapping detail"))).toBe(
       "mapping-quarantine",
     );
+    const wrappedStorage = new Error("bounded capability wrapper", {
+      cause: Object.assign(new Error("sensitive storage detail"), {
+        name: "ServiceUnavailable",
+      }),
+    });
+    expect(capabilityFailure(wrappedStorage)).toBe("storage-unavailable");
+    expect(scheduleCapabilityFailure(wrappedStorage, "health-read")).toBe(
+      "provider-error-storage-unavailable",
+    );
     for (const [reason, expected] of [
       ["run-owned", "provider-recovering"],
       ["schedule-attempt-reservation-conflict", "transition-conflict"],
@@ -1273,7 +1465,7 @@ describe("production odds control-plane composition", () => {
         `provider-error-${reason}`,
       );
       expect(scheduleCapabilityFailure(error, "schedule-fetch")).toBe(
-        "provider-error-schedule-fetch",
+        `provider-error-${reason}`,
       );
     }
     for (const reason of [
@@ -1303,6 +1495,92 @@ describe("production odds control-plane composition", () => {
     expect(
       scheduleCapabilityFailure(new Error("unknown"), "raw-secret" as never),
     ).toBe("provider-error-initialize");
+  });
+  it("propagates transient schedule storage failures after bounded bookkeeping", async () => {
+    const storageError = Object.assign(new Error("sensitive storage detail"), {
+      name: "ThrottlingException",
+    });
+    const memory = new MemoryOddsControlPlaneStore();
+    const control = new Proxy(memory, {
+      get(target, property) {
+        if (property === "getCheckpoint")
+          return (key: string) =>
+            key.startsWith("schedule:")
+              ? Promise.reject(storageError)
+              : target.getCheckpoint(key);
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === "function"
+          ? (...args: unknown[]) =>
+              Reflect.apply(value, target, args) as unknown
+          : value;
+      },
+    });
+    await expect(
+      runProductionOddsControlPlane({
+        events: new MemoryEventIngestionStore(),
+        odds: { persist: vi.fn() },
+        splits: {
+          persist: vi.fn(),
+          current: vi.fn(),
+          listCurrent: vi.fn(),
+          persistGap: vi.fn(),
+        },
+        control,
+        sharpApiKey: "sharp-key",
+        now,
+      }),
+    ).rejects.toBe(storageError);
+    expect(await memory.getHealth("sharpapi:mlb:schedule")).toMatchObject({
+      failureReason: "storage-throttled",
+    });
+  });
+  it("does not let failed schedule bookkeeping replace the transient source error", async () => {
+    const storageError = Object.assign(new Error("sensitive storage detail"), {
+      name: "ThrottlingException",
+    });
+    const bookkeepingError = Object.assign(
+      new Error("deterministic bookkeeping conflict"),
+      { name: "ValidationException" },
+    );
+    let sourceFailed = false;
+    const memory = new MemoryOddsControlPlaneStore();
+    const control = new Proxy(memory, {
+      get(target, property) {
+        if (property === "getCheckpoint")
+          return (key: string) => {
+            if (key.startsWith("schedule:")) {
+              sourceFailed = true;
+              return Promise.reject(storageError);
+            }
+            return target.getCheckpoint(key);
+          };
+        if (property === "getHealth")
+          return (key: string) =>
+            sourceFailed && key.endsWith(":schedule")
+              ? Promise.reject(bookkeepingError)
+              : target.getHealth(key);
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === "function"
+          ? (...args: unknown[]) =>
+              Reflect.apply(value, target, args) as unknown
+          : value;
+      },
+    });
+    await expect(
+      runProductionOddsControlPlane({
+        events: new MemoryEventIngestionStore(),
+        odds: { persist: vi.fn() },
+        splits: {
+          persist: vi.fn(),
+          current: vi.fn(),
+          listCurrent: vi.fn(),
+          persistGap: vi.fn(),
+        },
+        control,
+        sharpApiKey: "sharp-key",
+        now,
+      }),
+    ).rejects.toBe(storageError);
   });
   it("creates per-book market gaps and preserves provider source states", () => {
     const states = [

@@ -267,7 +267,7 @@ describe("PaperGradingService", () => {
       "sport-grading-unsupported",
     );
   });
-  it("emits the exact bounded EMF metrics used by grading alarms", () => {
+  it("retains bounded failure audits without embedded metrics", () => {
     const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
     embeddedPaperGradingTelemetry.emit({
       discovered: 1,
@@ -291,10 +291,8 @@ describe("PaperGradingService", () => {
       ],
     });
     const rendered = write.mock.calls.map(([value]) => String(value)).join("");
-    expect(rendered).toContain('"Namespace":"FindTheEdge/PaperGrading"');
-    expect(rendered).toContain('"PaperGradingFailed":4');
-    expect(rendered).toContain('"PaperGradingUnresolved":3');
-    expect(rendered).toContain('"PaperGradingRegraded":2');
+    expect(rendered).not.toContain('"_aws"');
+    expect(rendered).not.toContain('"PaperGradingFailed"');
     expect(rendered).toContain('"event":"PaperGradingFailure"');
     expect(rendered).toContain(`"paperBetId":"paper-bet:${"a".repeat(64)}"`);
     expect(rendered).not.toContain("stack");

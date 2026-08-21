@@ -64,19 +64,14 @@ it("clears prior partial evidence when a later successful run is complete", () =
   expect(recovered.lastSuccessfulAt).toBe("2026-08-03T11:59:00.000Z");
 });
 
-it("publishes bounded EMF dimensions instead of an empty dimension set", () => {
+it("does not publish embedded metrics", () => {
   const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
   embeddedOddsControlPlaneMetrics.emit("OddsSnapshotCreated", 1, {
     provider: "sharpapi",
     league: "mlb",
     reason: "created",
   });
-  const payload = JSON.parse(String(write.mock.calls[0]?.[0])) as {
-    _aws: { CloudWatchMetrics: { Dimensions: string[][] }[] };
-  };
-  expect(payload._aws.CloudWatchMetrics[0]?.Dimensions).toEqual([
-    ["provider", "league", "reason"],
-  ]);
+  expect(write).not.toHaveBeenCalled();
   write.mockRestore();
 });
 // The generic control-plane retains explicit failover behavior for reusable
@@ -261,6 +256,115 @@ describe("odds collection control plane", () => {
     expect(
       classifyOddsControlPlaneFailure(new Error("sensitive unknown detail")),
     ).toBe("internal-failure");
+  });
+  it("classifies only proven transient DynamoDB failures through bounded wrappers", () => {
+    const named = (name: string) =>
+      Object.assign(new Error("sensitive storage detail"), { name });
+    for (const name of [
+      "ProvisionedThroughputExceededException",
+      "ThrottlingException",
+      "RequestLimitExceeded",
+    ]) {
+      const error = named(name);
+      expect(classifyOddsControlPlaneFailure(error)).toBe("storage-throttled");
+      expect(decideOddsRetry({ error, attempt: 4, now }).action).toBe("retry");
+      expect(decideOddsRetry({ error, attempt: 5, now }).action).toBe(
+        "exhausted",
+      );
+    }
+    for (const name of ["InternalServerError", "ServiceUnavailable"]) {
+      const error = named(name);
+      expect(classifyOddsControlPlaneFailure(error)).toBe(
+        "storage-unavailable",
+      );
+      expect(decideOddsRetry({ error, attempt: 1, now }).class).toBe(
+        "transient",
+      );
+    }
+    expect(
+      classifyOddsControlPlaneFailure(named("TransactionInProgressException")),
+    ).toBe("storage-transaction-in-progress");
+
+    const cancelled = (...codes: string[]) =>
+      Object.assign(named("TransactionCanceledException"), {
+        CancellationReasons: codes.map((Code) => ({ Code })),
+      });
+    expect(
+      classifyOddsControlPlaneFailure(
+        cancelled("None", "ProvisionedThroughputExceeded"),
+      ),
+    ).toBe("storage-throttled");
+    expect(
+      classifyOddsControlPlaneFailure(cancelled("None", "ThrottlingError")),
+    ).toBe("storage-throttled");
+    expect(
+      classifyOddsControlPlaneFailure(cancelled("None", "TransactionConflict")),
+    ).toBe("storage-transaction-in-progress");
+    expect(
+      classifyOddsControlPlaneFailure(cancelled("None", "ValidationError")),
+    ).toBe("storage-validation");
+    expect(
+      classifyOddsControlPlaneFailure(cancelled("None", "AccessDenied")),
+    ).toBe("storage-access-denied");
+    for (const error of [
+      cancelled("None", "ConditionalCheckFailed"),
+      cancelled("None", "UnknownReason"),
+      cancelled("ThrottlingError", "TransactionConflict"),
+      Object.assign(named("TransactionCanceledException"), {
+        CancellationReasons: [],
+      }),
+      named("TransactionCanceledException"),
+    ])
+      expect(classifyOddsControlPlaneFailure(error)).toBe(
+        "storage-transaction-cancelled",
+      );
+
+    const translated = Object.assign(
+      named("FixtureOddsTransactionCanceledError"),
+      { reasons: [{ code: "None" }, { code: "ThrottlingError" }] },
+    );
+    const wrapped = Object.assign(new Error("fixture-odds-storage-failure"), {
+      name: "FixtureOddsStorageError",
+      sourceError: translated,
+    });
+    expect(classifyOddsControlPlaneFailure(wrapped)).toBe("storage-throttled");
+    expect(
+      classifyOddsControlPlaneFailure(
+        new Error("bounded wrapper", {
+          cause: named("ServiceUnavailable"),
+        }),
+      ),
+    ).toBe("storage-unavailable");
+    expect(
+      classifyOddsControlPlaneFailure(
+        new Error("provider boundary wrapper", {
+          cause: named("ThrottlingException"),
+        }),
+      ),
+    ).toBe("storage-throttled");
+    expect(
+      classifyOddsControlPlaneFailure(
+        Object.assign(
+          new Error("outer deterministic wrapper", {
+            cause: named("ThrottlingException"),
+          }),
+          { name: "ValidationException" },
+        ),
+      ),
+    ).toBe("storage-validation");
+    expect(
+      classifyOddsControlPlaneFailure(
+        new Error("unauthorized", { cause: named("ThrottlingException") }),
+      ),
+    ).toBe("unauthorized");
+
+    const cycle = new Error("cycle");
+    Object.assign(cycle, { sourceError: cycle });
+    expect(classifyOddsControlPlaneFailure(cycle)).toBe("internal-failure");
+    let deep: Error = named("ThrottlingException");
+    for (let index = 0; index < 6; index += 1)
+      deep = new Error(`wrapper-${index}`, { cause: deep });
+    expect(classifyOddsControlPlaneFailure(deep)).toBe("internal-failure");
   });
   it("bounds and redacts unexpected failure diagnostics", () => {
     const error = new Error(
@@ -541,15 +645,16 @@ describe("odds collection control plane", () => {
       fenced: true,
     },
     {
-      name: "keeps fencing when the ledger shows evidence beyond recall",
+      name: "unwedges after a later ambiguous dispatch even when an earlier page committed",
       minutesAgo: 90,
       intent: true,
-      fenced: true,
+      fenced: false,
     },
   ])("ambiguity ceiling: $name", async ({ minutesAgo, intent, fenced }) => {
-    // MLS answered provider-request-ambiguous on every pass for eleven hours
-    // because the fence had no exit; an operator deleting the row was the
-    // only way out. The ceiling automates exactly that, and only that.
+    // A later ambiguous request has no sealed response to replay. Earlier
+    // committed pages remain immutable audit evidence, but they must not keep
+    // the league fenced forever; a fresh run safely reconciles deterministic
+    // identities after the bounded uncertainty window.
     const store = new MemoryOddsControlPlaneStore();
     const runId = "mlb:sharpapi:ambiguous-run";
     const stamped = new Date(now.getTime() - minutesAgo * 60_000).toISOString();

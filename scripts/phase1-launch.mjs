@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { buildPhase1Web } from "./build-phase1-web.mjs";
 import { phase1EnvironmentSmoke } from "./phase1-environment-smoke.mjs";
-import { run } from "./phase1-support.mjs";
+import { parseAdminAccessRollout, run } from "./phase1-support.mjs";
 import {
   deploymentEnvironment,
+  recurringDataPlaneEnabled,
   validateDeploymentBranch,
 } from "./environment-contract.mjs";
 
@@ -40,11 +41,18 @@ function same(left, right) {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
-function permitsContributorInsightsUpgrade(before, after) {
+function permitsRetainedLogGroupRemoval(logicalId, resource) {
+  return (
+    resource.Type === "AWS::Logs::LogGroup" &&
+    /^(ScoutingWorkflowLogs|EventApiAccessLogs)[A-F0-9]{8}$/.test(logicalId)
+  );
+}
+
+function permitsContributorInsightsRemoval(before, after) {
   return (
     same(before, after) ||
-    ((before === undefined || same(before, { Enabled: false })) &&
-      same(after, { Enabled: true }))
+    (same(before, { Enabled: true }) &&
+      (after === undefined || same(after, { Enabled: false })))
   );
 }
 
@@ -55,7 +63,7 @@ function preservesDynamoIndexIdentity(before, after) {
     after;
   return (
     same(oldIdentity, nextIdentity) &&
-    permitsContributorInsightsUpgrade(oldInsights, nextInsights)
+    permitsContributorInsightsRemoval(oldInsights, nextInsights)
   );
 }
 
@@ -124,11 +132,26 @@ export function validateLaunchEnvironment(environment) {
     throw new Error(
       "The cursor secret must belong to the authorized account and region",
     );
+  if (environment.FTE_PRODUCT_ACCESS_ENFORCED !== "false")
+    throw new Error(
+      "FTE_PRODUCT_ACCESS_ENFORCED must remain false until the owned-access cutover is approved",
+    );
+  parseAdminAccessRollout(environment);
   if (environment.FTE_AWS_STAGE) {
     const target = validateDeploymentBranch(
       environment.FTE_AWS_STAGE,
       environment.FTE_DEPLOY_BRANCH,
     );
+    const expectedSchedulerEnabled = String(
+      recurringDataPlaneEnabled(target.stage),
+    );
+    if (
+      environment.FTE_UPCOMING_SCHEDULER_ENABLED !== undefined &&
+      environment.FTE_UPCOMING_SCHEDULER_ENABLED !== expectedSchedulerEnabled
+    )
+      throw new Error(
+        `FTE_UPCOMING_SCHEDULER_ENABLED must be ${expectedSchedulerEnabled} for ${target.stage}`,
+      );
     if (!/^[0-9a-f]{40}$/.test(environment.FTE_RELEASE_SHA ?? ""))
       throw new Error(
         "FTE_RELEASE_SHA must identify the exact verified commit",
@@ -152,6 +175,10 @@ export function selectLaunchTarget(environment) {
   activeLaunchTarget = target;
   LAUNCH_STACK = target.stack;
   return target;
+}
+
+export function launchSchedulerEnabled(target) {
+  return target.stage === "dev" || recurringDataPlaneEnabled(target.stage);
 }
 
 function verifyIdentity(environment) {
@@ -280,6 +307,7 @@ export function assertRetainedResourcesSafe(existing, proposed) {
     throw new Error("Deployed stack has no retained resources to protect");
   for (const [logicalId, resource] of retained) {
     const next = proposed.Resources?.[logicalId];
+    if (!next && permitsRetainedLogGroupRemoval(logicalId, resource)) continue;
     if (
       !next ||
       next.Type !== resource.Type ||
@@ -330,7 +358,7 @@ export function assertRetainedResourcesSafe(existing, proposed) {
               "SSEType",
               "KMSMasterKeyId",
             ]))) &&
-        permitsContributorInsightsUpgrade(
+        permitsContributorInsightsRemoval(
           before.ContributorInsightsSpecification,
           after.ContributorInsightsSpecification,
         ) &&
@@ -413,21 +441,6 @@ export function assertRetainedResourcesSafe(existing, proposed) {
           "WebAuthnConfiguration",
         ]) &&
         retainsArray(before, after, "AutoVerifiedAttributes");
-    } else if (resource.Type === "AWS::Logs::LogGroup") {
-      safe =
-        requireSame(before, after, [
-          "LogGroupName",
-          "FieldIndexPolicies",
-          "ResourcePolicyDocument",
-          "LogGroupClass",
-        ]) &&
-        (before.RetentionInDays === undefined ||
-          (typeof after.RetentionInDays === "number" &&
-            after.RetentionInDays >= before.RetentionInDays)) &&
-        (before.KmsKeyId === undefined ||
-          same(before.KmsKeyId, after.KmsKeyId)) &&
-        (before.DataProtectionPolicy === undefined ||
-          same(before.DataProtectionPolicy, after.DataProtectionPolicy));
     } else {
       safe = same(before, after);
     }
@@ -1056,6 +1069,7 @@ async function waitForDeployedGsiActive(
 }
 
 export function assertStackResourceDriftsSafe(drifts) {
+  if (drifts.length === 0) return;
   if (
     drifts.length !== 1 ||
     drifts[0].ResourceType !== "AWS::ApiGatewayV2::Stage" ||
@@ -1543,7 +1557,7 @@ export async function phase1Launch(environment = process.env) {
     CDK_DEFAULT_REGION: LAUNCH_REGION,
     FTE_AWS_STAGE: target.stage,
     FTE_FIXTURE_ODDS_SEED_ENABLED: "false",
-    FTE_UPCOMING_SCHEDULER_ENABLED: "true",
+    FTE_UPCOMING_SCHEDULER_ENABLED: String(launchSchedulerEnabled(target)),
   };
   run("pnpm", ["--filter", "@find-the-edge/infra-cdk", "build"], {
     env: deployEnvironment,

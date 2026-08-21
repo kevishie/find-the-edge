@@ -45,7 +45,11 @@ jobs:
         run: pnpm coverage
 
       - name: Synthesize and validate credential-free Phase 1 foundation
-        run: pnpm phase1:preflight
+        env:
+          FTE_PRODUCT_ACCESS_ENFORCED: "false"
+        run: |
+          FTE_AWS_STAGE=staging pnpm phase1:preflight
+          FTE_AWS_STAGE=prod pnpm phase1:preflight
 
   e2e:
     name: Desktop and mobile browser smoke

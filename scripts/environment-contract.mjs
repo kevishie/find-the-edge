@@ -26,6 +26,10 @@ export function deploymentEnvironment(stage) {
   return target;
 }
 
+export function recurringDataPlaneEnabled(stage) {
+  return deploymentEnvironment(stage).stage === "prod";
+}
+
 export function validateDeploymentBranch(stage, branch) {
   const target = deploymentEnvironment(stage);
   if (branch !== target.branch)

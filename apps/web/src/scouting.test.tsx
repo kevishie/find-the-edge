@@ -1,8 +1,15 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PublicScoutingJob } from "@find-the-edge/domain";
 
 import { GamesClientError, type GamesClient } from "./api";
+import { createSessionStore, SessionContext } from "./session";
 import {
   ScoutingProgress,
   persistentScoutingActionKey,
@@ -10,6 +17,8 @@ import {
 } from "./scouting";
 
 const id = `scout-job:${"a".repeat(64)}`;
+const accountId = `account:${"b".repeat(64)}`;
+const otherAccountId = `account:${"c".repeat(64)}`;
 const base: PublicScoutingJob = {
   schemaVersion: 1,
   jobId: id,
@@ -21,6 +30,14 @@ const base: PublicScoutingJob = {
   attemptNumber: 1,
   createdAt: "2026-08-07T13:00:00.000Z",
   updatedAt: "2026-08-07T13:00:00.000Z",
+};
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 };
 
 const client = (
@@ -150,6 +167,74 @@ describe("ScoutingProgress", () => {
     await act(async () => Promise.resolve());
     expect(
       screen.getByRole("heading", { name: "Scouting is in progress" }),
+    ).toBeVisible();
+  });
+
+  it("keeps confirmed progress quiet when a stale poll is cancelled", async () => {
+    vi.useFakeTimers();
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(base)
+      .mockRejectedValueOnce(
+        new DOMException("The signed-in account changed.", "AbortError"),
+      );
+    render(<ScoutingProgress jobId={id} client={client(get)} />);
+    await act(async () => Promise.resolve());
+    await act(async () => vi.advanceTimersByTimeAsync(2_500));
+    expect(
+      screen.getByRole("heading", { name: "Scouting is queued" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
+  });
+
+  it("masks prior-account progress and retry before replacement polling settles", async () => {
+    const store = createSessionStore({ storage: null, refresh: null });
+    store.signIn({
+      token: `fte1.${"first".padEnd(40, "x")}.${"a".repeat(64)}`,
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+      accountId: `account:${"b".repeat(64)}`,
+    });
+    const failed: PublicScoutingJob = {
+      ...base,
+      status: "failed_retryable",
+      stateVersion: 2,
+      failure: { code: "workflow-timeout", retryable: true },
+    };
+    const replacementPoll = deferred<PublicScoutingJob>();
+    const get = vi
+      .fn<NonNullable<GamesClient["getScoutingJob"]>>()
+      .mockResolvedValueOnce(failed)
+      .mockImplementationOnce(() => replacementPoll.promise);
+    const retry = vi.fn<NonNullable<GamesClient["retryScoutingJob"]>>();
+    render(
+      <SessionContext.Provider value={store}>
+        <ScoutingProgress jobId={id} client={client(get, retry)} />
+      </SessionContext.Provider>,
+    );
+    expect(
+      await screen.findByRole("button", { name: "Retry scouting" }),
+    ).toBeVisible();
+
+    act(() => {
+      store.signIn({
+        token: `fte1.${"second".padEnd(40, "x")}.${"c".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"d".repeat(64)}`,
+      });
+    });
+
+    expect(
+      screen.queryByRole("heading", { name: "Scouting could not finish" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry scouting" })).toBeNull();
+    expect(screen.getByText("Loading scouting progress…")).toBeVisible();
+    expect(retry).not.toHaveBeenCalled();
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    replacementPoll.resolve(base);
+    expect(
+      await screen.findByRole("heading", { name: "Scouting is queued" }),
     ).toBeVisible();
   });
 
@@ -324,6 +409,39 @@ describe("ScoutingProgress", () => {
     ).toBeNull();
   });
 
+  it("leaves retry available without an error after stale cancellation", async () => {
+    const failed: PublicScoutingJob = {
+      ...base,
+      status: "failed_retryable",
+      stateVersion: 2,
+      failure: { code: "workflow-timeout", retryable: true },
+    };
+    const retry = vi.fn(() =>
+      Promise.reject(
+        new DOMException("The signed-in account changed.", "AbortError"),
+      ),
+    );
+    render(
+      <ScoutingProgress
+        jobId={id}
+        client={client(
+          vi.fn(() => Promise.resolve(failed)),
+          retry,
+        )}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Retry scouting" }),
+    );
+    await act(async () => Promise.resolve());
+    expect(
+      screen.getByRole("button", { name: "Retry scouting" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText(/retry outcome is not yet known|Checking the latest/i),
+    ).toBeNull();
+  });
+
   it("does not back off-poll a terminal job after reconciliation fails", async () => {
     vi.useFakeTimers();
     const failed: PublicScoutingJob = {
@@ -382,14 +500,92 @@ describe("ScoutingProgress", () => {
     expect(retrySignal?.aborted).toBe(true);
   });
 
-  it("reuses pending action keys across uncertain outcomes until explicitly cleared", () => {
-    const first = persistentScoutingActionKey("create", base.eventId);
-    const second = persistentScoutingActionKey("create", base.eventId);
-    expect(second.key).toBe(first.key);
-    first.clear();
-    expect(persistentScoutingActionKey("create", base.eventId).key).not.toBe(
-      first.key,
+  it("reuses the account-scoped retry key after a same-account token refresh", async () => {
+    const store = createSessionStore({ storage: null, refresh: null });
+    store.signIn({
+      token: `fte1.${"first".padEnd(40, "x")}.${"d".repeat(64)}`,
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+      accountId,
+    });
+    const failed: PublicScoutingJob = {
+      ...base,
+      status: "failed_retryable",
+      stateVersion: 2,
+      failure: { code: "workflow-timeout", retryable: true },
+    };
+    const retried: PublicScoutingJob = {
+      ...base,
+      status: "queued",
+      stateVersion: 3,
+      attemptNumber: 2,
+    };
+    const get = vi.fn(() => Promise.resolve(failed));
+    const keys: string[] = [];
+    const retry = vi
+      .fn<NonNullable<GamesClient["retryScoutingJob"]>>()
+      .mockImplementationOnce((_jobId, _version, key, signal) => {
+        keys.push(key);
+        return new Promise((_, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Session refreshed", "AbortError")),
+            { once: true },
+          );
+        });
+      })
+      .mockImplementationOnce((_jobId, _version, key) => {
+        keys.push(key);
+        return Promise.resolve(retried);
+      });
+    render(
+      <SessionContext.Provider value={store}>
+        <ScoutingProgress jobId={id} client={client(get, retry)} />
+      </SessionContext.Provider>,
     );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Retry scouting" }),
+    );
+    expect(screen.getByRole("button", { name: "Retrying…" })).toBeDisabled();
+
+    act(() => {
+      store.signIn({
+        token: `fte1.${"second".padEnd(40, "x")}.${"e".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId,
+      });
+    });
+
+    expect(screen.queryByRole("button", { name: "Retrying…" })).toBeNull();
+    expect(screen.getByText("Loading scouting progress…")).toBeVisible();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Retry scouting" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Scouting is queued" }),
+    ).toBeVisible();
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("reuses pending action keys across uncertain outcomes until explicitly cleared", () => {
+    const first = persistentScoutingActionKey(
+      "create",
+      accountId,
+      base.eventId,
+    );
+    const second = persistentScoutingActionKey(
+      "create",
+      accountId,
+      base.eventId,
+    );
+    expect(second.key).toBe(first.key);
+    expect(
+      persistentScoutingActionKey("create", otherAccountId, base.eventId).key,
+    ).not.toBe(first.key);
+    first.clear();
+    expect(
+      persistentScoutingActionKey("create", accountId, base.eventId).key,
+    ).not.toBe(first.key);
   });
 
   it("reports when a logical mutation key cannot be persisted", () => {
@@ -398,9 +594,9 @@ describe("ScoutingProgress", () => {
       .mockImplementation(() => {
         throw new DOMException("blocked", "SecurityError");
       });
-    expect(persistentScoutingActionKey("create", base.eventId).persisted).toBe(
-      false,
-    );
+    expect(
+      persistentScoutingActionKey("create", accountId, base.eventId).persisted,
+    ).toBe(false);
     write.mockRestore();
   });
 });

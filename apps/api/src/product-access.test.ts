@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createEntitlement,
   createSessionToken,
+  createIdentityAuthorization,
   type SessionKeyRing,
 } from "@find-the-edge/domain";
 import type {
@@ -126,6 +127,56 @@ describe("which routes are paid", () => {
 });
 
 describe("the access decision", () => {
+  it.each([
+    ["manual", null, true, [], true],
+    ["super admin", null, false, ["super-admin"], true],
+    ["stripe", "active", false, [], true],
+    ["absent", null, false, [], false],
+  ] as const)(
+    "composes the %s source independently",
+    async (_name, stripeState, manual, roles, allowed) => {
+      const authorization = roles.length
+        ? createIdentityAuthorization({
+            accountId: ACCOUNT,
+            roles,
+            updatedAt: NOW.toISOString(),
+            operatorId: "operator:owner",
+          })
+        : null;
+      const decision = await decideProductAccess(
+        { route: "games", authorization: `Bearer ${token()}` },
+        { signingKeys: RING, enforced: true, adminAccessEnabled: true },
+        identityOf({ accountId: ACCOUNT, tokenVersion: 1 }),
+        entitlementsOf(stripeState === "active" ? entitled("active") : null),
+        NOW,
+        {
+          getByAccount: vi.fn().mockResolvedValue({
+            directory: {},
+            manualGrant: manual ? { active: true } : null,
+          }),
+        },
+        { get: vi.fn().mockResolvedValue(authorization) },
+      );
+      expect(decision.allowed).toBe(allowed);
+    },
+  );
+
+  it("grants a verified positive source during another-source outage", async () => {
+    const decision = await decideProductAccess(
+      { route: "games", authorization: `Bearer ${token()}` },
+      { signingKeys: RING, enforced: true, adminAccessEnabled: true },
+      identityOf({ accountId: ACCOUNT, tokenVersion: 1 }),
+      { get: vi.fn().mockRejectedValue(new Error("stripe offline")) } as never,
+      NOW,
+      {
+        getByAccount: vi
+          .fn()
+          .mockResolvedValue({ directory: {}, manualGrant: { active: true } }),
+      },
+      { get: vi.fn().mockRejectedValue(new Error("role offline")) },
+    );
+    expect(decision).toEqual({ allowed: true, accountId: ACCOUNT });
+  });
   it("allows an entitled session and reports the account", async () => {
     for (const state of ["trialing", "active"] as const)
       expect(

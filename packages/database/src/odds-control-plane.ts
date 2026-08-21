@@ -197,6 +197,194 @@ export interface OddsControlPlaneStore {
   putGap(value: OddsEvidenceGap): Promise<boolean>;
 }
 
+/**
+ * Narrow account-window seam for lower-priority provider collectors.
+ *
+ * Live odds and background collectors elect one recovery probe through this
+ * row. Collectors reserve only after an authoritative window exists and merge
+ * response headers without overwriting a concurrent health transition.
+ */
+export interface AccountRateCoordinationStore {
+  getHealth(providerId: string): Promise<OddsProviderHealth | null>;
+  reserveAccountRate(
+    healthKey: string,
+    reserve: number,
+    cost: number,
+    updatedAt: string,
+    expected: {
+      readonly version?: number;
+      readonly limit?: number;
+      readonly resetsAt?: string;
+    },
+  ): Promise<boolean>;
+  claimAccountRateProbe(
+    healthKey: string,
+    requestedAt: string,
+    probeUntil: string,
+  ): Promise<number | null>;
+  completeAccountRateProbe(
+    healthKey: string,
+    expectedProbeUntil: string,
+    expectedClaimVersion: number,
+    observedWindow: NonNullable<OddsProviderHealth["rateWindow"]>,
+    updatedAt: string,
+  ): Promise<boolean>;
+  reconcileAccountRateWindow(
+    healthKey: string,
+    reservedCost: number,
+    actualCost: number,
+    observedWindow: OddsProviderHealth["rateWindow"] | undefined,
+    updatedAt: string,
+  ): Promise<void>;
+  blockAccountRateWindow(
+    healthKey: string,
+    retryAt: string,
+    updatedAt: string,
+  ): Promise<void>;
+  blockAccountTerminal(
+    healthKey: string,
+    reason: AccountRateTerminalReason,
+    updatedAt: string,
+  ): Promise<void>;
+}
+
+export type AccountRateTerminalReason =
+  "configuration" | "not-entitled" | "provider-rejected" | "unauthorized";
+
+const reconciledAccountRateHealth = (
+  old: OddsProviderHealth,
+  reservedCost: number,
+  actualCost: number,
+  observedWindow: OddsProviderHealth["rateWindow"] | undefined,
+  updatedAt: string,
+): OddsProviderHealth => {
+  const localRemaining = old.rateWindow?.remaining ?? old.quotaRemaining;
+  const adjustedRemaining =
+    localRemaining === undefined
+      ? undefined
+      : Math.max(0, localRemaining + reservedCost - actualCost);
+  const observedRemaining = observedWindow?.remaining;
+  const oldReset = old.rateWindow?.resetsAt
+    ? Date.parse(old.rateWindow.resetsAt)
+    : Number.NaN;
+  const observedReset = observedWindow?.resetsAt
+    ? Date.parse(observedWindow.resetsAt)
+    : Number.NaN;
+  const observedStaleWindow =
+    Number.isFinite(observedReset) &&
+    Number.isFinite(oldReset) &&
+    observedReset < oldReset;
+  // A later reset identifier does not prove no other consumer reserved after
+  // this response was observed. Never raise a known local balance from a
+  // response merge. An unknown/reset local balance may still be initialized
+  // by provider truth, which is how the live owner recovers a new window.
+  const remaining = observedStaleWindow
+    ? adjustedRemaining
+    : adjustedRemaining === undefined
+      ? observedRemaining
+      : observedRemaining === undefined
+        ? adjustedRemaining
+        : Math.min(adjustedRemaining, observedRemaining);
+  const nextUpdatedAt =
+    Date.parse(old.updatedAt) > Date.parse(updatedAt)
+      ? old.updatedAt
+      : updatedAt;
+  if (!old.rateWindow && !observedWindow)
+    return {
+      ...old,
+      ...(remaining === undefined ? {} : { quotaRemaining: remaining }),
+      updatedAt: nextUpdatedAt,
+    };
+  const nextWindow = observedStaleWindow
+    ? { ...old.rateWindow }
+    : { ...old.rateWindow, ...observedWindow };
+  if (remaining === undefined) delete nextWindow.remaining;
+  else nextWindow.remaining = remaining;
+  return {
+    ...old,
+    rateWindow: nextWindow,
+    updatedAt: nextUpdatedAt,
+  };
+};
+
+const blockedAccountRateHealth = (
+  old: OddsProviderHealth,
+  retryAt: string,
+  updatedAt: string,
+): OddsProviderHealth => {
+  const oldReset = old.rateWindow?.resetsAt;
+  const resetsAt =
+    oldReset && Date.parse(oldReset) > Date.parse(retryAt) ? oldReset : retryAt;
+  return {
+    ...old,
+    healthy: false,
+    status: "unhealthy",
+    failureClass: "transient",
+    failureReason: "rate-limited",
+    retryAt,
+    cooldownUntil: retryAt,
+    rateWindow: { ...old.rateWindow, remaining: 0, resetsAt },
+    updatedAt:
+      Date.parse(old.updatedAt) > Date.parse(updatedAt)
+        ? old.updatedAt
+        : updatedAt,
+  };
+};
+
+const recoveredAccountRateHealth = (
+  old: OddsProviderHealth,
+  observedWindow: NonNullable<OddsProviderHealth["rateWindow"]>,
+  updatedAt: string,
+): OddsProviderHealth => {
+  const {
+    cooldownUntil,
+    expiresAt,
+    failureClass,
+    failureReason,
+    failureStage,
+    retryAt,
+    ...durable
+  } = old;
+  void cooldownUntil;
+  void expiresAt;
+  void failureClass;
+  void failureReason;
+  void failureStage;
+  void retryAt;
+  const rateWindow = { ...observedWindow };
+  delete rateWindow.probeUntil;
+  return {
+    ...durable,
+    healthy: true,
+    status: "healthy",
+    consecutiveSuccesses: old.consecutiveSuccesses + 1,
+    rateWindow,
+    updatedAt,
+  };
+};
+
+const blockedAccountTerminalHealth = (
+  old: OddsProviderHealth,
+  reason: AccountRateTerminalReason,
+  updatedAt: string,
+): OddsProviderHealth => {
+  const { cooldownUntil, expiresAt, retryAt, ...durable } = old;
+  void cooldownUntil;
+  void expiresAt;
+  void retryAt;
+  return {
+    ...durable,
+    healthy: false,
+    status: "unhealthy",
+    failureClass: "terminal",
+    failureReason: reason,
+    updatedAt:
+      Date.parse(old.updatedAt) > Date.parse(updatedAt)
+        ? old.updatedAt
+        : updatedAt,
+  };
+};
+
 const clone = <T>(value: T): T => structuredClone(value);
 const replayMaterial = (value: unknown) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
@@ -459,6 +647,119 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
     });
     return true;
   }
+  async reserveAccountRate(
+    k: string,
+    reserve: number,
+    cost: number,
+    updatedAt: string,
+    expected: {
+      readonly version?: number;
+      readonly limit?: number;
+      readonly resetsAt?: string;
+    },
+  ) {
+    let old = this.health.get(k);
+    if (
+      old?.rateWindow?.resetsAt &&
+      Date.parse(old.rateWindow.resetsAt) <= Date.parse(updatedAt)
+    ) {
+      const resetHealth: OddsProviderHealth = {
+        ...old,
+        version: (old.version ?? 0) + 1,
+        rateWindow: resetProviderRateWindow(old.rateWindow),
+        updatedAt,
+      };
+      old = resetHealth;
+      this.health.set(k, resetHealth);
+    }
+    if (
+      old?.version !== expected.version ||
+      old?.rateWindow?.limit !== expected.limit ||
+      old?.rateWindow?.resetsAt !== expected.resetsAt
+    )
+      return false;
+    const remaining = old?.rateWindow?.remaining;
+    if (
+      !old ||
+      !old.healthy ||
+      old.status === "unhealthy" ||
+      old.failureClass === "terminal" ||
+      remaining === undefined ||
+      remaining - cost < reserve
+    )
+      return false;
+    this.health.set(k, {
+      ...old,
+      version: (old.version ?? 0) + 1,
+      rateWindow: { ...old.rateWindow, remaining: remaining - cost },
+      updatedAt,
+    });
+    return true;
+  }
+  async claimAccountRateProbe(
+    k: string,
+    requestedAt: string,
+    probeUntil: string,
+  ) {
+    let old = this.health.get(k);
+    if (
+      old?.rateWindow?.resetsAt &&
+      Date.parse(old.rateWindow.resetsAt) <= Date.parse(requestedAt)
+    ) {
+      const resetHealth: OddsProviderHealth = {
+        ...old,
+        version: (old.version ?? 0) + 1,
+        rateWindow: resetProviderRateWindow(old.rateWindow),
+        updatedAt: requestedAt,
+      };
+      old = resetHealth;
+      this.health.set(k, resetHealth);
+    }
+    if (
+      !old ||
+      old.failureClass === "terminal" ||
+      old.rateWindow?.remaining !== undefined ||
+      [old.cooldownUntil, old.retryAt].some(
+        (candidate) =>
+          candidate && Date.parse(candidate) > Date.parse(requestedAt),
+      ) ||
+      (old.rateWindow?.probeUntil !== undefined &&
+        Date.parse(old.rateWindow.probeUntil) > Date.parse(requestedAt))
+    )
+      return null;
+    const claimedVersion = (old.version ?? 0) + 1;
+    this.health.set(k, {
+      ...old,
+      version: claimedVersion,
+      rateWindow: { ...old.rateWindow, probeUntil },
+      updatedAt: requestedAt,
+    });
+    return claimedVersion;
+  }
+  async completeAccountRateProbe(
+    k: string,
+    expectedProbeUntil: string,
+    expectedClaimVersion: number,
+    observedWindow: NonNullable<OddsProviderHealth["rateWindow"]>,
+    updatedAt: string,
+  ) {
+    const old = this.health.get(k);
+    if (
+      !old ||
+      old.failureClass === "terminal" ||
+      old.version !== expectedClaimVersion ||
+      old.rateWindow?.probeUntil !== expectedProbeUntil ||
+      observedWindow.limit === undefined ||
+      observedWindow.remaining === undefined ||
+      observedWindow.resetsAt === undefined
+    )
+      return false;
+    this.health.set(k, {
+      ...recoveredAccountRateHealth(old, observedWindow, updatedAt),
+      version: (old.version ?? 0) + 1,
+    });
+    return true;
+  }
   async reconcileQuota(
     k: string,
     reserved: number,
@@ -482,6 +783,64 @@ export class MemoryOddsControlPlaneStore implements OddsControlPlaneStore {
           }
         : { quotaRemaining: nextRemaining }),
       updatedAt,
+    });
+  }
+  async reconcileAccountRateWindow(
+    k: string,
+    reservedCost: number,
+    actualCost: number,
+    observedWindow: OddsProviderHealth["rateWindow"] | undefined,
+    updatedAt: string,
+  ) {
+    const old = this.health.get(k);
+    if (!old) throw new Error("account-rate-health-missing");
+    this.health.set(
+      k,
+      clone({
+        ...reconciledAccountRateHealth(
+          old,
+          reservedCost,
+          actualCost,
+          observedWindow,
+          updatedAt,
+        ),
+        version: (old.version ?? 0) + 1,
+      }),
+    );
+  }
+  async blockAccountRateWindow(k: string, retryAt: string, updatedAt: string) {
+    const old = this.health.get(k);
+    if (!old) throw new Error("account-rate-health-missing");
+    if (old.failureClass === "terminal") return;
+    this.health.set(k, {
+      ...blockedAccountRateHealth(old, retryAt, updatedAt),
+      version: (old.version ?? 0) + 1,
+    });
+  }
+  async blockAccountTerminal(
+    k: string,
+    reason: AccountRateTerminalReason,
+    updatedAt: string,
+  ) {
+    const old = this.health.get(k);
+    if (!old) {
+      this.health.set(k, {
+        version: 1,
+        providerId: "sharpapi",
+        healthKey: k,
+        healthy: false,
+        status: "unhealthy",
+        consecutiveSuccesses: 0,
+        failureClass: "terminal",
+        failureReason: reason,
+        updatedAt,
+      });
+      return;
+    }
+    if (old.failureClass === "terminal") return;
+    this.health.set(k, {
+      ...blockedAccountTerminalHealth(old, reason, updatedAt),
+      version: (old.version ?? 0) + 1,
     });
   }
   async getContinuation(k: string) {
@@ -548,6 +907,26 @@ const key = (kind: string, id: string) => ({
   pk: `ODDS_CONTROL#${kind}#${id}`,
   sk: "CURRENT",
 });
+
+const isConditionalQuotaReservationLoss = (error: unknown) => {
+  if (!(error instanceof Error)) return false;
+  if (error.name === "ConditionalCheckFailedException") return true;
+  if (error.name !== "TransactionCanceledException") return false;
+  const reasons = (error as unknown as Record<string, unknown>)[
+    "CancellationReasons"
+  ];
+  if (!Array.isArray(reasons) || reasons.length === 0) return false;
+  const codes = reasons.map((reason) => {
+    if (!reason || typeof reason !== "object") return undefined;
+    const code = (reason as Record<string, unknown>)["Code"];
+    return typeof code === "string" ? code : undefined;
+  });
+  return (
+    codes.some((code) => code === "ConditionalCheckFailed") &&
+    codes.every((code) => code === "None" || code === "ConditionalCheckFailed")
+  );
+};
+
 export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
   constructor(
     private readonly client: DynamoDBDocumentClient,
@@ -746,14 +1125,7 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
         );
         return true;
       } catch (error) {
-        if (
-          error instanceof Error &&
-          [
-            "ConditionalCheckFailedException",
-            "TransactionCanceledException",
-          ].includes(error.name)
-        )
-          return false;
+        if (isConditionalQuotaReservationLoss(error)) return false;
         throw error;
       }
     }
@@ -801,14 +1173,7 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       );
       return true;
     } catch (error) {
-      if (
-        error instanceof Error &&
-        [
-          "TransactionCanceledException",
-          "ConditionalCheckFailedException",
-        ].includes(error.name)
-      )
-        return false;
+      if (isConditionalQuotaReservationLoss(error)) return false;
       throw error;
     }
   }
@@ -1131,6 +1496,207 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
       throw error;
     }
   }
+  async reserveAccountRate(
+    healthKey: string,
+    reserve: number,
+    cost: number,
+    updatedAt: string,
+    expected: {
+      readonly version?: number;
+      readonly limit?: number;
+      readonly resetsAt?: string;
+    },
+  ) {
+    const old = await this.currentRateHealth(healthKey, updatedAt);
+    const rateWindow = old?.rateWindow;
+    const remaining = rateWindow?.remaining;
+    if (
+      !old ||
+      !rateWindow ||
+      old.version !== expected.version ||
+      rateWindow.limit !== expected.limit ||
+      rateWindow.resetsAt !== expected.resetsAt ||
+      !old.healthy ||
+      old.status === "unhealthy" ||
+      old.failureClass === "terminal" ||
+      remaining === undefined
+    )
+      return false;
+    const versionCondition =
+      old.version === undefined
+        ? "attribute_not_exists(#v.#version)"
+        : "#v.#version = :expectedVersion";
+    const resetCondition =
+      rateWindow.resetsAt === undefined
+        ? "attribute_not_exists(#v.#window.#reset)"
+        : "#v.#window.#reset = :expectedReset";
+    const limitCondition =
+      rateWindow.limit === undefined
+        ? "attribute_not_exists(#v.#window.#limit)"
+        : "#v.#window.#limit = :expectedLimit";
+    try {
+      await this.client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: key("HEALTH", healthKey),
+          UpdateExpression:
+            "SET #v.#window.#q = #v.#window.#q - :cost, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one",
+          ConditionExpression: [
+            "attribute_exists(pk)",
+            "#v.#healthy = :healthy",
+            "(attribute_not_exists(#v.#status) OR #v.#status <> :unhealthy)",
+            "(attribute_not_exists(#v.#failure) OR #v.#failure <> :terminal)",
+            "#v.#window.#q = :expectedRemaining",
+            "#v.#window.#q >= :minimum",
+            versionCondition,
+            resetCondition,
+            limitCondition,
+          ].join(" AND "),
+          ExpressionAttributeNames: {
+            "#v": "value",
+            "#window": "rateWindow",
+            "#q": "remaining",
+            "#reset": "resetsAt",
+            "#limit": "limit",
+            "#healthy": "healthy",
+            "#status": "status",
+            "#failure": "failureClass",
+            "#u": "updatedAt",
+            "#version": "version",
+          },
+          ExpressionAttributeValues: {
+            ":cost": cost,
+            ":minimum": reserve + cost,
+            ":expectedRemaining": remaining,
+            ":healthy": true,
+            ":unhealthy": "unhealthy",
+            ":terminal": "terminal",
+            ":updated": updatedAt,
+            ":one": 1,
+            ":zero": 0,
+            ...(old.version === undefined
+              ? {}
+              : { ":expectedVersion": old.version }),
+            ...(rateWindow.resetsAt === undefined
+              ? {}
+              : { ":expectedReset": rateWindow.resetsAt }),
+            ...(rateWindow.limit === undefined
+              ? {}
+              : { ":expectedLimit": rateWindow.limit }),
+          },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.name === "ConditionalCheckFailedException"
+      )
+        return false;
+      throw error;
+    }
+  }
+  async claimAccountRateProbe(
+    healthKey: string,
+    requestedAt: string,
+    probeUntil: string,
+  ) {
+    const old = await this.currentRateHealth(healthKey, requestedAt);
+    if (
+      !old ||
+      old.failureClass === "terminal" ||
+      old.rateWindow?.remaining !== undefined ||
+      [old.cooldownUntil, old.retryAt].some(
+        (candidate) =>
+          candidate && Date.parse(candidate) > Date.parse(requestedAt),
+      )
+    )
+      return null;
+    const versionCondition =
+      old.version === undefined
+        ? "attribute_not_exists(#v.#version)"
+        : "#v.#version = :expectedVersion";
+    try {
+      await this.client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: key("HEALTH", healthKey),
+          UpdateExpression:
+            "SET #v.#window.#probe = :probe, #v.#u = :updated, #v.#version = if_not_exists(#v.#version, :zero) + :one",
+          ConditionExpression: [
+            "attribute_exists(pk)",
+            "(attribute_not_exists(#v.#failure) OR #v.#failure <> :terminal)",
+            "attribute_not_exists(#v.#window.#remaining)",
+            "(attribute_not_exists(#v.#window.#probe) OR #v.#window.#probe <= :updated)",
+            versionCondition,
+          ].join(" AND "),
+          ExpressionAttributeNames: {
+            "#v": "value",
+            "#window": "rateWindow",
+            "#probe": "probeUntil",
+            "#remaining": "remaining",
+            "#failure": "failureClass",
+            "#u": "updatedAt",
+            "#version": "version",
+          },
+          ExpressionAttributeValues: {
+            ":probe": probeUntil,
+            ":updated": requestedAt,
+            ":terminal": "terminal",
+            ":one": 1,
+            ":zero": 0,
+            ...(old.version === undefined
+              ? {}
+              : { ":expectedVersion": old.version }),
+          },
+        }),
+      );
+      return (old.version ?? 0) + 1;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.name === "ConditionalCheckFailedException"
+      )
+        return null;
+      throw error;
+    }
+  }
+  async completeAccountRateProbe(
+    healthKey: string,
+    expectedProbeUntil: string,
+    expectedClaimVersion: number,
+    observedWindow: NonNullable<OddsProviderHealth["rateWindow"]>,
+    updatedAt: string,
+  ) {
+    if (
+      observedWindow.limit === undefined ||
+      observedWindow.remaining === undefined ||
+      observedWindow.resetsAt === undefined
+    )
+      return false;
+    const old = await this.getHealth(healthKey);
+    if (
+      !old ||
+      old.failureClass === "terminal" ||
+      old.version !== expectedClaimVersion ||
+      old.rateWindow?.probeUntil !== expectedProbeUntil
+    )
+      return false;
+    try {
+      await this.putHealth({
+        ...recoveredAccountRateHealth(old, observedWindow, updatedAt),
+        version: expectedClaimVersion,
+      });
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "health-transition-conflict"
+      )
+        return false;
+      throw error;
+    }
+  }
   async reconcileQuota(
     healthKey: string,
     reserved: number,
@@ -1177,6 +1743,100 @@ export class DynamoOddsControlPlaneStore implements OddsControlPlaneStore {
         if (
           !(error instanceof Error) ||
           error.name !== "ConditionalCheckFailedException"
+        )
+          throw error;
+      }
+    }
+    throw new Error("health-transition-conflict");
+  }
+  async reconcileAccountRateWindow(
+    healthKey: string,
+    reservedCost: number,
+    actualCost: number,
+    observedWindow: OddsProviderHealth["rateWindow"] | undefined,
+    updatedAt: string,
+  ) {
+    for (let retry = 0; retry < 8; retry += 1) {
+      const old = await this.getHealth(healthKey);
+      if (!old) throw new Error("account-rate-health-missing");
+      try {
+        await this.putHealth({
+          ...reconciledAccountRateHealth(
+            old,
+            reservedCost,
+            actualCost,
+            observedWindow,
+            updatedAt,
+          ),
+          ...(old.version === undefined ? {} : { version: old.version }),
+        });
+        return;
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "health-transition-conflict"
+        )
+          throw error;
+      }
+    }
+    throw new Error("health-transition-conflict");
+  }
+  async blockAccountRateWindow(
+    healthKey: string,
+    retryAt: string,
+    updatedAt: string,
+  ) {
+    for (let retry = 0; retry < 8; retry += 1) {
+      const old = await this.getHealth(healthKey);
+      if (!old) throw new Error("account-rate-health-missing");
+      if (old.failureClass === "terminal") return;
+      try {
+        await this.putHealth({
+          ...blockedAccountRateHealth(old, retryAt, updatedAt),
+          ...(old.version === undefined ? {} : { version: old.version }),
+        });
+        return;
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "health-transition-conflict"
+        )
+          throw error;
+      }
+    }
+    throw new Error("health-transition-conflict");
+  }
+  async blockAccountTerminal(
+    healthKey: string,
+    reason: AccountRateTerminalReason,
+    updatedAt: string,
+  ) {
+    for (let retry = 0; retry < 8; retry += 1) {
+      const old = await this.getHealth(healthKey);
+      if (old?.failureClass === "terminal") return;
+      try {
+        await this.putHealth(
+          old
+            ? {
+                ...blockedAccountTerminalHealth(old, reason, updatedAt),
+                ...(old.version === undefined ? {} : { version: old.version }),
+              }
+            : {
+                providerId: "sharpapi",
+                healthKey,
+                healthy: false,
+                status: "unhealthy",
+                consecutiveSuccesses: 0,
+                failureClass: "terminal",
+                failureReason: reason,
+                updatedAt,
+              },
+        );
+        return;
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "health-transition-conflict"
         )
           throw error;
       }

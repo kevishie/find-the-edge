@@ -1,5 +1,6 @@
 import type {
   BettingSplitRepository,
+  ClosingLinesRepository,
   EventIngestionStore,
   FixtureOddsIngestInput,
   FixtureOddsPersistResult,
@@ -203,8 +204,10 @@ import {
   persistSharpApiSplitPage,
 } from "./sharp-api-ingestion";
 import {
+  classifyOddsControlPlaneFailure,
   decideOddsRetry,
   healthyOddsProviderState,
+  isRetryableOddsStorageFailure,
   runDueOddsLeagues,
   unhealthyOddsProviderState,
   withPaidLeaseHeartbeat,
@@ -358,6 +361,8 @@ const boundedOddsMappingFailures = new Set([
 ]);
 
 export const capabilityFailure = (error: unknown) => {
+  const storageReason = classifyOddsControlPlaneFailure(error);
+  if (storageReason.startsWith("storage-")) return storageReason;
   const reason = error instanceof Error ? error.message : "provider-error";
   if (reason === "run-owned") return "provider-recovering";
   if (reason === "schedule-attempt-reservation-conflict")
@@ -442,18 +447,6 @@ for (const phase of ["acquisition", "execution", "renewal", "cleanup"])
       `event-reconciliation-${phase}-${storageClass}`,
     );
 
-const boundedScheduleStorageExceptions = new Map<string, string>([
-  ["ValidationException", "storage-validation"],
-  ["ResourceNotFoundException", "storage-resource-missing"],
-  ["ProvisionedThroughputExceededException", "storage-throttled"],
-  ["ThrottlingException", "storage-throttled"],
-  ["RequestLimitExceeded", "storage-throttled"],
-  ["TransactionCanceledException", "storage-transaction-cancelled"],
-  ["TransactionInProgressException", "storage-transaction-in-progress"],
-  ["InternalServerError", "storage-unavailable"],
-  ["ServiceUnavailable", "storage-unavailable"],
-]);
-
 const scheduleFailureStages = [
   "initialize",
   "health-read",
@@ -501,16 +494,13 @@ export const scheduleCapabilityFailure = (
   stage: ScheduleFailureStage,
 ) => {
   const message = error instanceof Error ? error.message : "";
+  const classified = classifyOddsControlPlaneFailure(error);
+  if (classified.startsWith("storage-")) return `provider-error-${classified}`;
   if (
     stage === "event-reconcile" &&
     boundedScheduleInternalFailures.has(message)
   )
     return `provider-error-${message}`;
-  const storageReason =
-    stage === "event-reconcile" && error instanceof Error
-      ? boundedScheduleStorageExceptions.get(error.name)
-      : undefined;
-  if (storageReason) return `provider-error-${storageReason}`;
   const alias = boundedScheduleCapabilityAliases.get(message);
   if (alias) return alias;
   if (boundedScheduleCapabilityFailures.has(message)) return message;
@@ -1342,6 +1332,7 @@ export async function runProductionOddsControlPlane(input: {
   readonly odds: LiveOddsPersister;
   readonly control: OddsControlPlaneStore;
   readonly splits: BettingSplitRepository;
+  readonly closingLines?: Pick<ClosingLinesRepository, "bind">;
   readonly sharpApiKey: string;
   readonly now?: Date;
   readonly forceRefresh?: boolean;
@@ -1679,13 +1670,30 @@ export async function runProductionOddsControlPlane(input: {
           }
           if (!persistedDisposition)
             try {
-              await bindScheduleEvent(
+              const binding = await bindScheduleEvent(
                 input.events,
                 SHARP_API_PROVIDER_ID,
                 sharpLeague,
                 event,
                 page.retrievedAt,
               );
+              if (input.closingLines)
+                await input.closingLines.bind({
+                  canonicalEventId: binding.eventId,
+                  canonicalEventVersion:
+                    (await input.events.resolveExactCanonicalBinding({
+                      providerId: SHARP_API_PROVIDER_ID,
+                      providerEventId: event.providerEventId,
+                      sportKey: sharpLeague.sportKey,
+                      leagueKey: sharpLeague.leagueKey,
+                    }))!.version,
+                  providerId: SHARP_API_PROVIDER_ID,
+                  providerEventId: event.providerEventId,
+                  sportKey: sharpLeague.sportKey,
+                  leagueKey: sharpLeague.leagueKey,
+                  startsAt: event.startsAt,
+                  observedAt: page.retrievedAt,
+                });
               pageDispositions.push({
                 eventIdentityHash: scheduleEventIdentityHash(
                   sharpLeague.leagueKey,
@@ -1958,72 +1966,84 @@ export async function runProductionOddsControlPlane(input: {
       scheduleReady.add(`${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`);
     } catch (error) {
       const reason = scheduleCapabilityFailure(error, scheduleStage);
-      const failureStage =
-        error instanceof SharpApiError ? error.stage : undefined;
-      const scheduleHealthKey = `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`;
-      // Another healthy worker owning this league is coordination, not a
-      // provider outage. Recording it as unhealthy can race the real owner's
-      // successful health write and manufacture a 30-minute SharpAPI cooldown.
-      if (reason !== "provider-recovering")
-        await input.control.putHealth(
-          unhealthyOddsProviderState(
-            await input.control.getHealth(scheduleHealthKey),
-            {
-              providerId: SHARP_API_PROVIDER_ID,
-              healthKey: scheduleHealthKey,
-              now,
-              decision: decideOddsRetry({
-                error:
-                  reason === "stored-event-conflict"
-                    ? new Error(reason)
-                    : error,
-                attempt: 1,
+      const retryableStorageFailure = isRetryableOddsStorageFailure(
+        classifyOddsControlPlaneFailure(error),
+      );
+      try {
+        const failureStage =
+          error instanceof SharpApiError ? error.stage : undefined;
+        const scheduleHealthKey = `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}:schedule`;
+        // Another healthy worker owning this league is coordination, not a
+        // provider outage. Recording it as unhealthy can race the real owner's
+        // successful health write and manufacture a 30-minute SharpAPI cooldown.
+        if (reason !== "provider-recovering")
+          await input.control.putHealth(
+            unhealthyOddsProviderState(
+              await input.control.getHealth(scheduleHealthKey),
+              {
+                providerId: SHARP_API_PROVIDER_ID,
+                healthKey: scheduleHealthKey,
                 now,
-                ...(error instanceof SharpApiError && error.retryAt
-                  ? { providerRetryAt: error.retryAt }
-                  : {}),
-                jitter: () => 0,
-              }),
-              cooldownSeconds: 1_800,
+                decision: decideOddsRetry({
+                  error:
+                    reason === "stored-event-conflict"
+                      ? new Error(reason)
+                      : error,
+                  attempt: 1,
+                  now,
+                  ...(error instanceof SharpApiError && error.retryAt
+                    ? { providerRetryAt: error.retryAt }
+                    : {}),
+                  jitter: () => 0,
+                }),
+                cooldownSeconds: 1_800,
+                ...(failureStage ? { failureStage } : {}),
+              },
+            ),
+          );
+        scheduleFailures.set(sharpLeague.leagueKey, `schedule-${reason}`);
+        if (activeScheduleRunId) {
+          const run = await input.control.getRun(activeScheduleRunId);
+          if (run)
+            await input.control.putRun({
+              ...run,
+              status: "failed",
+              updatedAt: now.toISOString(),
+              failureReason: reason,
               ...(failureStage ? { failureStage } : {}),
-            },
-          ),
-        );
-      scheduleFailures.set(sharpLeague.leagueKey, `schedule-${reason}`);
-      if (activeScheduleRunId) {
-        const run = await input.control.getRun(activeScheduleRunId);
-        if (run)
-          await input.control.putRun({
-            ...run,
-            status: "failed",
-            updatedAt: now.toISOString(),
-            failureReason: reason,
-            ...(failureStage ? { failureStage } : {}),
-            quotaCost: scheduleQuotaCost,
-          });
+              quotaCost: scheduleQuotaCost,
+            });
+        }
+        if (reason === "stored-event-conflict" && activeScheduleRunId)
+          await clearOwned(
+            `schedule:${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
+            activeScheduleRunId,
+          );
+        input.metrics?.emit("OddsScheduleFailure", 1, {
+          league: sharpLeague.leagueKey,
+          provider: SHARP_API_PROVIDER_ID,
+          reason,
+          ...(failureStage ? { failureStage } : {}),
+        });
+        if (
+          !retryableStorageFailure &&
+          reason !== "stored-event-conflict" &&
+          !pendingConflictMetricDelivery &&
+          !contradictoryCommittedScheduleEvidence &&
+          storedScheduleReady.has(
+            `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
+          )
+        ) {
+          sharpScheduleHealthy.add(sharpLeague.leagueKey);
+          scheduleReady.add(
+            `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
+          );
+        }
+      } catch (bookkeepingError) {
+        if (retryableStorageFailure) throw error;
+        throw bookkeepingError;
       }
-      if (reason === "stored-event-conflict" && activeScheduleRunId)
-        await clearOwned(
-          `schedule:${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
-          activeScheduleRunId,
-        );
-      input.metrics?.emit("OddsScheduleFailure", 1, {
-        league: sharpLeague.leagueKey,
-        provider: SHARP_API_PROVIDER_ID,
-        reason,
-        ...(failureStage ? { failureStage } : {}),
-      });
-      if (
-        reason !== "stored-event-conflict" &&
-        !pendingConflictMetricDelivery &&
-        !contradictoryCommittedScheduleEvidence &&
-        storedScheduleReady.has(
-          `${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`,
-        )
-      ) {
-        sharpScheduleHealthy.add(sharpLeague.leagueKey);
-        scheduleReady.add(`${SHARP_API_PROVIDER_ID}:${sharpLeague.leagueKey}`);
-      }
+      if (retryableStorageFailure) throw error;
     }
   }
   const results = await runDueOddsLeagues(
@@ -2671,6 +2691,32 @@ export async function runProductionOddsControlPlane(input: {
         ),
         ...(accountRateWindow ? { rateWindow: accountRateWindow } : {}),
       });
+      const closingHealthKey = `${SHARP_API_PROVIDER_ID}:account:closing`;
+      const existingClosingHealth =
+        await input.control.getHealth(closingHealthKey);
+      if (account.features.includes("closing_line"))
+        await input.control.putHealth(
+          healthyOddsProviderState(existingClosingHealth, {
+            providerId: SHARP_API_PROVIDER_ID,
+            healthKey: closingHealthKey,
+            consecutiveSuccesses: 1,
+            updatedAt: now.toISOString(),
+          }),
+        );
+      else
+        await input.control.putHealth({
+          ...(existingClosingHealth?.version === undefined
+            ? {}
+            : { version: existingClosingHealth.version }),
+          providerId: SHARP_API_PROVIDER_ID,
+          healthKey: closingHealthKey,
+          healthy: false,
+          status: "unhealthy",
+          consecutiveSuccesses: 0,
+          failureClass: "terminal",
+          failureReason: "not-entitled",
+          updatedAt: now.toISOString(),
+        });
       if (!account.features.includes("splits"))
         for (const league of sharpApiLeagues)
           await input.control.putGap({
@@ -3159,52 +3205,60 @@ export async function runProductionOddsControlPlane(input: {
             await clearOwned(continuationKey, runId);
           } catch (error) {
             const reason = capabilityFailure(error);
-            const failureStage =
-              error instanceof SharpApiError ? error.stage : undefined;
-            const splitHealthKey = `${SHARP_API_PROVIDER_ID}:${league.leagueKey}:splits`;
-            await input.control.putHealth(
-              unhealthyOddsProviderState(
-                await input.control.getHealth(splitHealthKey),
-                {
-                  providerId: SHARP_API_PROVIDER_ID,
-                  healthKey: splitHealthKey,
-                  now,
-                  decision: decideOddsRetry({
-                    error,
-                    attempt: 1,
+            const retryableStorageFailure =
+              isRetryableOddsStorageFailure(reason);
+            try {
+              const failureStage =
+                error instanceof SharpApiError ? error.stage : undefined;
+              const splitHealthKey = `${SHARP_API_PROVIDER_ID}:${league.leagueKey}:splits`;
+              await input.control.putHealth(
+                unhealthyOddsProviderState(
+                  await input.control.getHealth(splitHealthKey),
+                  {
+                    providerId: SHARP_API_PROVIDER_ID,
+                    healthKey: splitHealthKey,
                     now,
-                    ...(error instanceof SharpApiError && error.retryAt
-                      ? { providerRetryAt: error.retryAt }
-                      : {}),
-                    jitter: () => 0,
-                  }),
-                  cooldownSeconds: 1_800,
-                  ...(failureStage ? { failureStage } : {}),
-                },
-              ),
-            );
-            input.metrics?.emit("OddsSplitFailure", 1, {
-              league: league.leagueKey,
-              provider: SHARP_API_PROVIDER_ID,
-              reason,
-              ...(failureStage ? { failureStage } : {}),
-            });
-            input.metrics?.emit("OddsSplitFailure", 1, {});
-            const continuation = await input.control.getContinuation(
-              `splits:${league.leagueKey}`,
-            );
-            if (continuation) {
-              const run = await input.control.getRun(continuation.runId);
-              if (run)
-                await input.control.putRun({
-                  ...run,
-                  status: "failed",
-                  updatedAt: now.toISOString(),
-                  failureReason: reason,
-                  ...(failureStage ? { failureStage } : {}),
-                  quotaCost: continuation.quotaCost ?? run.quotaCost,
-                });
+                    decision: decideOddsRetry({
+                      error,
+                      attempt: 1,
+                      now,
+                      ...(error instanceof SharpApiError && error.retryAt
+                        ? { providerRetryAt: error.retryAt }
+                        : {}),
+                      jitter: () => 0,
+                    }),
+                    cooldownSeconds: 1_800,
+                    ...(failureStage ? { failureStage } : {}),
+                  },
+                ),
+              );
+              input.metrics?.emit("OddsSplitFailure", 1, {
+                league: league.leagueKey,
+                provider: SHARP_API_PROVIDER_ID,
+                reason,
+                ...(failureStage ? { failureStage } : {}),
+              });
+              input.metrics?.emit("OddsSplitFailure", 1, {});
+              const continuation = await input.control.getContinuation(
+                `splits:${league.leagueKey}`,
+              );
+              if (continuation) {
+                const run = await input.control.getRun(continuation.runId);
+                if (run)
+                  await input.control.putRun({
+                    ...run,
+                    status: "failed",
+                    updatedAt: now.toISOString(),
+                    failureReason: reason,
+                    ...(failureStage ? { failureStage } : {}),
+                    quotaCost: continuation.quotaCost ?? run.quotaCost,
+                  });
+              }
+            } catch (bookkeepingError) {
+              if (retryableStorageFailure) throw error;
+              throw bookkeepingError;
             }
+            if (retryableStorageFailure) throw error;
           }
         }
       await assertAndRenewOwner(
@@ -3238,49 +3292,56 @@ export async function runProductionOddsControlPlane(input: {
       await clearOwned(splitCheckpointKey, accountRunId);
     } catch (error) {
       const reason = capabilityFailure(error);
-      const failureStage =
-        error instanceof SharpApiError ? error.stage : undefined;
-      const accountHealthKey = `${SHARP_API_PROVIDER_ID}:account:account`;
-      await input.control.putHealth(
-        unhealthyOddsProviderState(
-          await input.control.getHealth(accountHealthKey),
-          {
-            providerId: SHARP_API_PROVIDER_ID,
-            healthKey: accountHealthKey,
-            now,
-            decision: decideOddsRetry({
-              error,
-              attempt: 1,
+      const retryableStorageFailure = isRetryableOddsStorageFailure(reason);
+      try {
+        const failureStage =
+          error instanceof SharpApiError ? error.stage : undefined;
+        const accountHealthKey = `${SHARP_API_PROVIDER_ID}:account:account`;
+        await input.control.putHealth(
+          unhealthyOddsProviderState(
+            await input.control.getHealth(accountHealthKey),
+            {
+              providerId: SHARP_API_PROVIDER_ID,
+              healthKey: accountHealthKey,
               now,
-              ...(error instanceof SharpApiError && error.retryAt
-                ? { providerRetryAt: error.retryAt }
-                : {}),
-              jitter: () => 0,
-            }),
-            cooldownSeconds: 1_800,
+              decision: decideOddsRetry({
+                error,
+                attempt: 1,
+                now,
+                ...(error instanceof SharpApiError && error.retryAt
+                  ? { providerRetryAt: error.retryAt }
+                  : {}),
+                jitter: () => 0,
+              }),
+              cooldownSeconds: 1_800,
+              ...(failureStage ? { failureStage } : {}),
+            },
+          ),
+        );
+        const run = await input.control.getRun(accountRunId);
+        if (run)
+          await input.control.putRun({
+            ...run,
+            status: reason === "quota-reserve" ? "skipped" : "failed",
+            updatedAt: now.toISOString(),
+            ...(reason === "quota-reserve"
+              ? { skipReason: reason }
+              : { failureReason: reason }),
             ...(failureStage ? { failureStage } : {}),
-          },
-        ),
-      );
-      const run = await input.control.getRun(accountRunId);
-      if (run)
-        await input.control.putRun({
-          ...run,
-          status: reason === "quota-reserve" ? "skipped" : "failed",
-          updatedAt: now.toISOString(),
-          ...(reason === "quota-reserve"
-            ? { skipReason: reason }
-            : { failureReason: reason }),
+            quotaCost:
+              (await input.control.getContinuation(splitCheckpointKey))
+                ?.quotaCost ?? run.quotaCost,
+          });
+        input.metrics?.emit("OddsAccountFailure", 1, {
+          provider: SHARP_API_PROVIDER_ID,
+          reason,
           ...(failureStage ? { failureStage } : {}),
-          quotaCost:
-            (await input.control.getContinuation(splitCheckpointKey))
-              ?.quotaCost ?? run.quotaCost,
         });
-      input.metrics?.emit("OddsAccountFailure", 1, {
-        provider: SHARP_API_PROVIDER_ID,
-        reason,
-        ...(failureStage ? { failureStage } : {}),
-      });
+      } catch (bookkeepingError) {
+        if (retryableStorageFailure) throw error;
+        throw bookkeepingError;
+      }
+      if (retryableStorageFailure) throw error;
     }
   }
   return results;

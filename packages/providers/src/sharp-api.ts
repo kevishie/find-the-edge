@@ -1,6 +1,7 @@
 import {
   canonicalMlbParticipantLabel,
   resolveMlbParticipantKey,
+  sha256Hex,
   type IsoTimestamp,
   type OddsNormalizationReason,
   type SportKey,
@@ -125,6 +126,132 @@ export interface SharpApiAccount {
   readonly responseMetadata?: SharpApiResponseMetadata;
 }
 
+export interface SharpApiSourceShapeEvidence {
+  readonly sourceFields?: readonly string[];
+  readonly sourceFieldCount?: number;
+  readonly sourceFieldsTruncated?: true;
+  readonly sourceSchemaHash?: string;
+}
+
+export interface SharpApiCatalogSport extends SharpApiSourceShapeEvidence {
+  readonly providerSportId: string;
+  readonly displayName: string;
+  readonly numericalId?: number;
+  readonly eventCount: number;
+  readonly liveCount: number;
+  readonly providerLeagueIds: readonly string[];
+}
+
+export interface SharpApiCatalogLeague extends SharpApiSourceShapeEvidence {
+  readonly providerLeagueId: string;
+  readonly displayName: string;
+  readonly numericalId?: number;
+  readonly providerSportId: string;
+  readonly eventCount: number;
+  readonly liveCount: number;
+}
+
+export interface SharpApiLandingQuarantine {
+  readonly rowIndex: number;
+  readonly reason:
+    | "invalid-row"
+    | "duplicate-provider-id"
+    | "unrepresentable-filter-id"
+    | "provider-filter-rejected";
+  readonly endpoint: "sports" | "leagues" | "events" | "odds";
+  readonly providerRecordId?: string;
+  readonly providerSportId?: string;
+  readonly sourceFields: readonly string[];
+  readonly sourceFieldCount?: number;
+  readonly sourceFieldsTruncated?: true;
+  readonly sourceSchemaHash?: string;
+  readonly providerCode?: string;
+  readonly httpStatus?: number;
+  readonly requestId?: string;
+}
+
+export interface SharpApiCatalogSnapshot {
+  readonly sports: readonly SharpApiCatalogSport[];
+  readonly leagues: readonly SharpApiCatalogLeague[];
+  readonly quarantines: readonly SharpApiLandingQuarantine[];
+  readonly sourceRows: number;
+  /** Exact provider generation token. SharpAPI emits nanosecond ISO instants;
+   * do not round this before comparing pages from a mutable snapshot. */
+  readonly providerUpdatedAt?: string;
+  readonly retrievedAt: IsoTimestamp;
+  readonly responseMetadata?: SharpApiResponseMetadata;
+}
+
+export interface SharpApiUniversalEvent extends SharpApiSourceShapeEvidence {
+  readonly providerEventId: string;
+  readonly providerEventUuid?: string;
+  readonly externalIds: Readonly<Record<string, string>>;
+  readonly sport: string;
+  readonly league: string;
+  readonly homeParticipant?: string;
+  readonly awayParticipant?: string;
+  readonly startsAt: IsoTimestamp;
+  readonly status: string;
+  readonly isLive: boolean;
+  readonly marketKeys: readonly string[];
+  readonly sportsbookIds: readonly string[];
+  readonly sourceWarnings?: readonly string[];
+}
+
+export interface SharpApiUniversalOddsRecord extends SharpApiSourceShapeEvidence {
+  readonly providerPriceId: string;
+  readonly providerEventId: string;
+  readonly providerEventUuid?: string;
+  readonly externalEventId?: string;
+  readonly sport: string;
+  readonly league: string;
+  readonly sportsbook: string;
+  readonly homeParticipant?: string;
+  readonly awayParticipant?: string;
+  readonly marketType: string;
+  readonly providerMarketId?: string;
+  readonly selection: string;
+  readonly selectionType: string;
+  readonly providerSelectionId?: string;
+  readonly teamSide?: string;
+  readonly line?: number;
+  readonly americanOdds?: number;
+  readonly decimalOdds?: number;
+  readonly impliedProbability?: number;
+  readonly eventStartsAt?: IsoTimestamp;
+  readonly providerTimestamp: IsoTimestamp;
+  readonly isLive: boolean;
+  readonly isActive?: boolean;
+  readonly isMainLine?: boolean;
+  readonly isAlternateLine?: boolean;
+  readonly isPlayerProp?: boolean;
+  readonly isStalePregamePrice?: boolean;
+  readonly isImpossibleScoreline?: boolean;
+  readonly maxBet?: number;
+  readonly volume24h?: number;
+  readonly sourceWarnings?: readonly string[];
+}
+
+export interface SharpApiUniversalPage<T> {
+  readonly records: readonly T[];
+  readonly quarantines: readonly SharpApiLandingQuarantine[];
+  readonly sourceRows: number;
+  readonly hasMore: boolean;
+  readonly requestedOffset?: number;
+  readonly nextOffset?: number;
+  readonly nextCursor?: string;
+  readonly providerTotal?: number;
+  /** Exact provider generation token. See SharpApiCatalogSnapshot. */
+  readonly providerUpdatedAt?: string;
+  readonly retrievedAt: IsoTimestamp;
+  readonly responseMetadata?: SharpApiResponseMetadata;
+}
+
+export interface SharpApiUniversalEventFilter {
+  readonly sport: string;
+  readonly leagues?: readonly string[];
+}
+
 /** Provider-enforced request window. This is deliberately not the customer's
  * subscription quota: SharpAPI's account response currently exposes RPM, not
  * durable monthly credits. Missing headers remain unknown. */
@@ -145,10 +272,35 @@ const boundedHeaderInteger = (value: string | null) => {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 };
 
+const RATE_METADATA_PAST_GRACE_MS = 5 * 60 * 1_000;
+const RATE_METADATA_FUTURE_HORIZON_MS = 24 * 60 * 60 * 1_000;
+
+const boundedRateIsoFromMilliseconds = (value: number, nowMs: number) => {
+  // ECMAScript Date clips outside +/-8.64e15ms. Provider headers are
+  // untrusted, so an otherwise safe integer must not be allowed to throw a
+  // RangeError while handling a response or a 429. SharpAPI rate windows are
+  // minute-scale; retain a five-minute race grace and a conservative 24-hour
+  // operational horizon so corrupt headers cannot create a durable pause.
+  if (
+    !Number.isFinite(value) ||
+    !Number.isFinite(nowMs) ||
+    Math.abs(value) > 8_640_000_000_000_000 ||
+    value < nowMs - RATE_METADATA_PAST_GRACE_MS ||
+    value > nowMs + RATE_METADATA_FUTURE_HORIZON_MS
+  )
+    return undefined;
+  try {
+    return new Date(value).toISOString() as IsoTimestamp;
+  } catch {
+    return undefined;
+  }
+};
+
 export const parseSharpApiResponseMetadata = (
   headers: Headers,
   now = new Date(),
 ): SharpApiResponseMetadata => {
+  const nowMs = now.getTime();
   const limit = boundedHeaderInteger(
     headers.get("x-ratelimit-limit") ?? headers.get("ratelimit-limit"),
   );
@@ -165,28 +317,26 @@ export const parseSharpApiResponseMetadata = (
         : Number.NaN
       : resetNumber > 10_000_000_000
         ? resetNumber
-        : resetNumber > now.getTime() / 2_000
+        : resetNumber > nowMs / 2_000
           ? resetNumber * 1_000
-          : now.getTime() + resetNumber * 1_000;
+          : nowMs + resetNumber * 1_000;
   const retryAfter = headers.get("retry-after");
   const retrySeconds = boundedHeaderInteger(retryAfter);
   const retryMs =
     retrySeconds !== undefined
-      ? now.getTime() + retrySeconds * 1_000
+      ? nowMs + retrySeconds * 1_000
       : retryAfter
         ? Date.parse(retryAfter)
         : Number.NaN;
+  const resetsAt = boundedRateIsoFromMilliseconds(resetMs, nowMs);
+  const retryAt = boundedRateIsoFromMilliseconds(retryMs, nowMs);
   return {
     rateWindow: {
       ...(limit === undefined ? {} : { limit }),
       ...(remaining === undefined ? {} : { remaining }),
-      ...(Number.isFinite(resetMs)
-        ? { resetsAt: new Date(resetMs).toISOString() as IsoTimestamp }
-        : {}),
+      ...(resetsAt ? { resetsAt } : {}),
     },
-    ...(Number.isFinite(retryMs)
-      ? { retryAt: new Date(retryMs).toISOString() as IsoTimestamp }
-      : {}),
+    ...(retryAt ? { retryAt } : {}),
   };
 };
 
@@ -412,31 +562,272 @@ export class SharpApiError extends Error {
     readonly retryable = false,
     readonly retryAt?: IsoTimestamp,
     readonly stage?: string,
+    /** Stable SharpAPI error-envelope code. Never match the prose message. */
+    readonly providerCode?: string,
+    readonly httpStatus?: number,
+    /** Bounded provider trace identifier documented for support requests. */
+    readonly requestId?: string,
   ) {
     super(code);
   }
 }
 
+const wellFormedUtf16 = (value: string) => {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false;
+  }
+  return true;
+};
+
 const canonical = (value: unknown, maximum = 256): value is string =>
   typeof value === "string" &&
   value.length > 0 &&
   value.length <= maximum &&
-  value === value.trim();
+  value === value.trim() &&
+  wellFormedUtf16(value);
+const encodedBytes = (value: string) =>
+  new TextEncoder().encode(value).byteLength;
+const encodedKeyComponent = (value: string) => {
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+};
+const storageKeyComponent = (
+  value: unknown,
+  maximumCharacters: number,
+): value is string => {
+  if (!canonical(value, maximumCharacters)) return false;
+  if (
+    [...value].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || (code >= 127 && code <= 159);
+    })
+  )
+    return false;
+  return encodedKeyComponent(value) !== undefined;
+};
+const landingKeyFits = (
+  prefix: string,
+  components: readonly string[],
+  maximumBytes: number,
+) => {
+  const encoded = components.map(encodedKeyComponent);
+  return (
+    encoded.every((value): value is string => value !== undefined) &&
+    encodedBytes(`${prefix}${encoded.join("#")}`) <= maximumBytes
+  );
+};
+const LANDING_SLOT_PREFIX = "SLOT#0#";
+const landingSportFits = (
+  sport: unknown,
+  kind: "event" | "odds",
+): sport is string =>
+  storageKeyComponent(sport, 64) &&
+  landingKeyFits(
+    `PROVIDER_LANDING#SHARPAPI#${kind === "event" ? "EVENT" : "ODDS"}#`,
+    [sport],
+    2_048,
+  );
+const landingRecordIdFits = (recordId: unknown, prefix: string) =>
+  storageKeyComponent(recordId, 512) &&
+  landingKeyFits(`${LANDING_SLOT_PREFIX}${prefix}`, [recordId], 1_024);
 const finite = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
-const integer = (value: unknown): value is number =>
-  finite(value) && Number.isInteger(value);
-const instant = (value: unknown): value is IsoTimestamp =>
-  canonical(value, 40) && Number.isFinite(Date.parse(value));
+const safeInteger = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value);
+const providerInstant = (value: unknown): value is IsoTimestamp => {
+  if (!canonical(value, 40)) return false;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+      value,
+    );
+  if (!match) return false;
+  const [, year, month, day, hour, minute, second, zoneHour, zoneMinute] =
+    match;
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  const leapYear = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  const offsetHour = zoneHour === undefined ? 0 : Number(zoneHour);
+  const offsetMinute = zoneMinute === undefined ? 0 : Number(zoneMinute);
+  return (
+    m >= 1 &&
+    m <= 12 &&
+    d >= 1 &&
+    d <= daysInMonth[m - 1]! &&
+    Number(hour) <= 23 &&
+    Number(minute) <= 59 &&
+    (second === undefined || Number(second) <= 59) &&
+    offsetHour <= 14 &&
+    offsetMinute <= 59 &&
+    (offsetHour < 14 || offsetMinute === 0) &&
+    Number.isFinite(Date.parse(value))
+  );
+};
+const instant = providerInstant;
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 const iso = (value: string) => new Date(value).toISOString() as IsoTimestamp;
 const MAX_RESPONSE_BYTES = 10_000_000;
+const MAX_CATALOG_ROWS = 50_000;
+const UNIVERSAL_EVENTS_PAGE_LIMIT = 200;
+const UNIVERSAL_EVENTS_MAX_OFFSET = 5_000;
+// SharpAPI permits up to 200 Odds rows, but the unfiltered staging response at
+// that maximum exceeded the bounded request timeout. A 25-row opaque-cursor
+// page is provider-supported and completed with materially better throughput.
+const UNIVERSAL_ODDS_PAGE_LIMIT = 25;
+const MAX_LANDING_VALUE_BYTES = 300_000;
+const MAX_SOURCE_FIELDS = 64;
+const MAX_SOURCE_VALUE_NODES = 100_000;
+const UNSAFE_DYNAMO_NUMBER = Symbol("unsafe-dynamo-number");
+
+const decimalLexemeIdentity = (source: string) => {
+  const match = /^-?(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(source);
+  if (!match) return undefined;
+  const integerDigits = match[1]!;
+  const digits = `${integerDigits}${match[2] ?? ""}`;
+  const firstSignificant = digits.search(/[1-9]/);
+  if (firstSignificant === -1) return "0";
+  let lastSignificant = digits.length - 1;
+  while (digits[lastSignificant] === "0") lastSignificant -= 1;
+  const explicitExponent = Number(match[3] ?? "0");
+  if (!Number.isFinite(explicitExponent)) return undefined;
+  const scientificExponent =
+    explicitExponent + integerDigits.length - firstSignificant - 1;
+  return `${source.startsWith("-") ? "-" : ""}${digits.slice(
+    firstSignificant,
+    lastSignificant + 1,
+  )}e${scientificExponent}`;
+};
+
+/** DynamoDB accepts at most 38 significant digits and non-zero magnitudes
+ * from 1E-130 through 9.999...E+125. Validate the source token before
+ * JavaScript can round an over-precise provider value into an apparently safe
+ * Number. Trailing zeroes do not increase the stored value's precision. */
+const dynamoNumberLexemeSafe = (source: string) => {
+  const match = /^-?(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(source);
+  if (!match) return false;
+  const integerDigits = match[1]!;
+  const digits = `${integerDigits}${match[2] ?? ""}`;
+  const firstSignificant = digits.search(/[1-9]/);
+  if (firstSignificant === -1) return true;
+  let lastSignificant = digits.length - 1;
+  while (digits[lastSignificant] === "0") lastSignificant -= 1;
+  if (lastSignificant - firstSignificant + 1 > 38) return false;
+
+  const signedExponent = match[3] ?? "0";
+  const exponentNegative = signedExponent.startsWith("-");
+  const exponentDigits = signedExponent.replace(/^[+-]/, "").replace(/^0+/, "");
+  // Any exponent with more than six non-zero digits is far outside the
+  // supported range, even after the bounded mantissa adjustment.
+  if (exponentDigits.length > 6) return false;
+  const explicitExponent =
+    (exponentNegative ? -1 : 1) * Number(exponentDigits || "0");
+  const scientificExponent =
+    explicitExponent + integerDigits.length - firstSignificant - 1;
+  if (scientificExponent < -130 || scientificExponent > 125) return false;
+
+  // The default AWS document marshaller rejects integer Numbers outside the
+  // JavaScript safe range even when DynamoDB itself could represent them.
+  // Refuse those source values before a later batch write can throw.
+  const parsed = Number(source);
+  return (
+    (!Number.isInteger(parsed) || Number.isSafeInteger(parsed)) &&
+    decimalLexemeIdentity(source) === decimalLexemeIdentity(String(parsed))
+  );
+};
+
+const dynamoNumber = (value: unknown): value is number =>
+  finite(value) &&
+  (!Number.isInteger(value) || Number.isSafeInteger(value)) &&
+  dynamoNumberLexemeSafe(String(value));
+
+const providerNumber = (value: unknown): value is number => {
+  if (!dynamoNumber(value)) return false;
+  if (Number.isInteger(value)) return true;
+  const identity = decimalLexemeIdentity(String(value));
+  const significantDigits = identity?.match(/^-?(\d+)e/)?.[1]?.length;
+  // A direct parser caller has no raw JSON token to compare after JavaScript
+  // has rounded it. Fifteen decimal digits are the portable exact-input
+  // guarantee; HTTP callers get the stricter raw-token round-trip check too.
+  return significantDigits !== undefined && significantDigits <= 15;
+};
+
+// Closing-line probability fields are documented as full precision and the
+// live endpoint commonly emits 16-17 significant digits. The HTTP decoder has
+// already rejected lossy source lexemes; direct callers still must supply a
+// finite DynamoDB-marshallable Number.
+const closingNumber = dynamoNumber;
+
+/** Provider rows are untrusted generic JSON. Walk them iteratively so novel
+ * nested values cannot smuggle a DynamoDB-invalid number into landing and so
+ * direct parser callers remain memory-bounded even without the HTTP body cap. */
+const dynamoJsonValueSafe = (input: unknown) => {
+  const pending: unknown[] = [input];
+  const visited = new Set<object>();
+  let visitedValues = 0;
+  while (pending.length > 0) {
+    const value = pending.pop();
+    visitedValues += 1;
+    if (visitedValues > MAX_SOURCE_VALUE_NODES) return false;
+    if (value === UNSAFE_DYNAMO_NUMBER) return false;
+    if (typeof value === "number") {
+      if (!dynamoNumber(value)) return false;
+      continue;
+    }
+    if (
+      value === null ||
+      value === undefined ||
+      typeof value === "string" ||
+      typeof value === "boolean"
+    )
+      continue;
+    if (!Array.isArray(value) && !record(value)) return false;
+    if (visited.has(value)) return false;
+    visited.add(value);
+    const children: readonly unknown[] = Array.isArray(value)
+      ? (value as unknown[])
+      : Object.values(value);
+    if (
+      children.length >
+      MAX_SOURCE_VALUE_NODES - visitedValues - pending.length
+    )
+      return false;
+    for (const child of children) pending.push(child);
+  }
+  return true;
+};
 
 type SharpApiEndpoint =
   | "account"
+  | "sports"
+  | "leagues"
+  | "universal-events"
+  | "universal-odds"
   | "odds"
   | "focused-odds"
+  | "closing-odds"
   | "schedule"
   | "splits"
   | "splits-history";
@@ -510,11 +901,61 @@ const boundedJson = async (
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES)
     throw invalidResponse(endpoint, "content-length");
-  const raw = await response.text();
-  if (new TextEncoder().encode(raw).byteLength > MAX_RESPONSE_BYTES)
-    throw invalidResponse(endpoint, "body-size");
+  let raw = "";
+  if (response.body) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const decode = (chunk?: Uint8Array, stream = false) => {
+      try {
+        return decoder.decode(chunk, { stream });
+      } catch {
+        throw invalidResponse(endpoint, "utf8");
+      }
+    };
+    let bytes = 0;
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw invalidResponse(endpoint, "body-size");
+      }
+      try {
+        raw += decode(chunk.value, true);
+      } catch (error) {
+        await reader.cancel().catch(() => undefined);
+        throw error;
+      }
+    }
+    raw += decode();
+  } else {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > MAX_RESPONSE_BYTES)
+      throw invalidResponse(endpoint, "body-size");
+    try {
+      raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw invalidResponse(endpoint, "utf8");
+    }
+  }
   try {
-    return JSON.parse(raw) as unknown;
+    type JsonParseContext = { readonly source?: string };
+    const parseJsonWithSource = JSON.parse as (
+      text: string,
+      reviver: (
+        key: string,
+        value: unknown,
+        context?: JsonParseContext,
+      ) => unknown,
+    ) => unknown;
+    return parseJsonWithSource(raw, (_key, value, context) =>
+      typeof value === "number" &&
+      typeof context?.source === "string" &&
+      !dynamoNumberLexemeSafe(context.source)
+        ? UNSAFE_DYNAMO_NUMBER
+        : value,
+    );
   } catch {
     throw invalidResponse(endpoint, "json");
   }
@@ -525,15 +966,18 @@ const request = async (
   endpoint: SharpApiEndpoint,
   apiKey: string,
   fetcher: typeof fetch,
+  timeoutMs = 10_000,
 ): Promise<{
   readonly payload: unknown;
   readonly metadata: SharpApiResponseMetadata;
 }> => {
   if (!canonical(apiKey, 512)) throw new SharpApiError("configuration");
+  if (!safeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 30_000)
+    throw new SharpApiError("configuration");
   let response: Response;
   try {
     response = await fetcher(`${SHARP_API_BASE_URL}${path}`, {
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: { accept: "application/json", "X-API-Key": apiKey },
     });
   } catch {
@@ -542,25 +986,108 @@ const request = async (
     throw new SharpApiError("provider-request-ambiguous", false);
   }
   if (!response.ok) {
+    const observedRequestId = response.headers.get("x-request-id");
+    const requestId = storageKeyComponent(observedRequestId, 128)
+      ? observedRequestId
+      : undefined;
     if ([401, 403].includes(response.status)) {
       let body: unknown;
       try {
         body = await boundedJson(response, endpoint);
       } catch {
-        throw new SharpApiError("unauthorized");
+        throw new SharpApiError(
+          "unauthorized",
+          false,
+          undefined,
+          `${endpoint}:http-${response.status}`,
+          undefined,
+          response.status,
+          requestId,
+        );
       }
       const error = record(body) && record(body["error"]) ? body["error"] : {};
+      const providerCode = storageKeyComponent(error["code"], 64)
+        ? error["code"]
+        : undefined;
       if (error["code"] === "tier_restricted")
-        throw new SharpApiError("not-entitled");
-      throw new SharpApiError("unauthorized");
+        throw new SharpApiError(
+          "not-entitled",
+          false,
+          undefined,
+          `${endpoint}:http-${response.status}`,
+          providerCode,
+          response.status,
+          requestId,
+        );
+      throw new SharpApiError(
+        "unauthorized",
+        false,
+        undefined,
+        `${endpoint}:http-${response.status}`,
+        providerCode,
+        response.status,
+        requestId,
+      );
     }
     if (response.status === 429) {
-      const retryAt = parseSharpApiResponseMetadata(response.headers).retryAt;
-      throw new SharpApiError("rate-limited", true, retryAt);
+      const metadata = parseSharpApiResponseMetadata(response.headers);
+      let retryAt = metadata.retryAt ?? metadata.rateWindow.resetsAt;
+      let providerCode: string | undefined;
+      try {
+        const body = await boundedJson(response, endpoint);
+        const error =
+          record(body) && record(body["error"]) ? body["error"] : {};
+        if (storageKeyComponent(error["code"], 64))
+          providerCode = error["code"];
+        if (!retryAt) {
+          const observedAt = Date.now();
+          if (
+            safeInteger(error["retryAfter"]) &&
+            error["retryAfter"] >= 0 &&
+            error["retryAfter"] <= 86_400
+          )
+            retryAt = new Date(
+              observedAt + error["retryAfter"] * 1_000,
+            ).toISOString() as IsoTimestamp;
+          else if (safeInteger(error["retry_after"])) {
+            const candidate = error["retry_after"];
+            if (
+              candidate >= observedAt - 5 * 60_000 &&
+              candidate <= observedAt + 24 * 60 * 60_000
+            )
+              retryAt = new Date(candidate).toISOString() as IsoTimestamp;
+          }
+        }
+      } catch {
+        // A malformed rate-limit body cannot override bounded header truth.
+      }
+      throw new SharpApiError(
+        "rate-limited",
+        true,
+        retryAt,
+        `${endpoint}:http-429`,
+        providerCode,
+        429,
+        requestId,
+      );
+    }
+    let providerCode: string | undefined;
+    try {
+      const body = await boundedJson(response, endpoint);
+      const error = record(body) && record(body["error"]) ? body["error"] : {};
+      if (storageKeyComponent(error["code"], 64)) providerCode = error["code"];
+    } catch {
+      // HTTP status remains authoritative when a proxy/provider sends a
+      // malformed error body. Never inspect or retain the prose message.
     }
     throw new SharpApiError(
       response.status >= 500 ? "provider-unavailable" : "provider-rejected",
       response.status >= 500,
+      undefined,
+      `${endpoint}:http-${response.status}`,
+      providerCode,
+      response.status,
+      requestId,
     );
   }
   return {
@@ -581,8 +1108,8 @@ export function parseSharpApiAccount(input: unknown): SharpApiAccount {
     !Array.isArray(data["features"]) ||
     !data["features"].every((feature) => canonical(feature, 64)) ||
     !record(rate) ||
-    !integer(rate["requests_per_minute"]) ||
-    !integer(rate["max_books"]) ||
+    !safeInteger(rate["requests_per_minute"]) ||
+    !safeInteger(rate["max_books"]) ||
     !record(streaming) ||
     typeof streaming["enabled"] !== "boolean"
   )
@@ -595,6 +1122,705 @@ export function parseSharpApiAccount(input: unknown): SharpApiAccount {
     streamingEnabled: streaming["enabled"],
   };
 }
+
+const sourceValueKind = (value: unknown) =>
+  value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+
+const sourceShapeEvidence = (
+  value: unknown,
+): SharpApiSourceShapeEvidence & {
+  readonly sourceFields: readonly string[];
+  readonly sourceFieldCount: number;
+  readonly sourceSchemaHash: string;
+} => {
+  if (!record(value))
+    return {
+      sourceFields: [],
+      sourceFieldCount: 0,
+      sourceSchemaHash: sha256Hex(
+        JSON.stringify([["$", sourceValueKind(value)]]),
+      ),
+    };
+  const keys = Object.keys(value).sort();
+  const sourceFields = keys
+    .filter((key) => storageKeyComponent(key, 64))
+    .slice(0, MAX_SOURCE_FIELDS);
+  return {
+    sourceFields,
+    sourceFieldCount: keys.length,
+    ...(sourceFields.length === keys.length
+      ? {}
+      : { sourceFieldsTruncated: true as const }),
+    sourceSchemaHash: sha256Hex(
+      JSON.stringify(keys.map((key) => [key, sourceValueKind(value[key])])),
+    ),
+  };
+};
+
+const landingValueFits = (value: Readonly<Record<string, unknown>>) =>
+  dynamoJsonValueSafe(value) &&
+  encodedBytes(JSON.stringify(value)) <= MAX_LANDING_VALUE_BYTES;
+
+const quarantineRow = (
+  value: unknown,
+  rowIndex: number,
+  endpoint: SharpApiLandingQuarantine["endpoint"],
+  reason: SharpApiLandingQuarantine["reason"] = "invalid-row",
+): SharpApiLandingQuarantine => ({
+  rowIndex,
+  reason,
+  endpoint,
+  ...(record(value) && canonical(value["id"], 256)
+    ? { providerRecordId: value["id"] }
+    : {}),
+  ...(record(value) &&
+  storageKeyComponent(value["sport"], 64) &&
+  !value["sport"].includes(",")
+    ? { providerSportId: value["sport"] }
+    : {}),
+  ...sourceShapeEvidence(value),
+});
+
+const nonNegativeInteger = (value: unknown): value is number =>
+  safeInteger(value) && value >= 0;
+
+const boundedStringArray = (
+  value: unknown,
+  maximumItems: number,
+  maximumLength = 256,
+): readonly string[] | undefined =>
+  Array.isArray(value) &&
+  value.length <= maximumItems &&
+  value.every((item) => canonical(item, maximumLength)) &&
+  new Set(value).size === value.length
+    ? [...value]
+    : undefined;
+
+const boundedExternalIds = (
+  value: unknown,
+): Readonly<Record<string, string>> => {
+  if (!record(value)) return {};
+  const entries = Object.entries(value)
+    .filter(
+      (entry): entry is [string, string] =>
+        canonical(entry[0], 64) && canonical(entry[1], 256),
+    )
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(0, 128);
+  return Object.fromEntries(entries);
+};
+
+const sanitizedStringArray = (
+  value: unknown,
+  maximumItems: number,
+  maximumLength = 256,
+) =>
+  Array.isArray(value)
+    ? [
+        ...new Set(
+          value.filter((item): item is string =>
+            canonical(item, maximumLength),
+          ),
+        ),
+      ].slice(0, maximumItems)
+    : [];
+
+const optionalStringWarning = (
+  value: unknown,
+  maximumLength: number,
+  warning: string,
+) =>
+  value !== undefined &&
+  value !== null &&
+  value !== "" &&
+  !canonical(value, maximumLength)
+    ? warning
+    : null;
+
+const catalogEnvelope = (
+  input: unknown,
+  endpoint: Extract<SharpApiEndpoint, "sports" | "leagues">,
+) => {
+  if (!record(input)) throw invalidResponse(endpoint, "envelope");
+  assertProviderEnvelope(input, endpoint);
+  if (!Array.isArray(input["data"]) || input["data"].length > MAX_CATALOG_ROWS)
+    throw invalidResponse(endpoint, "data");
+  if (input["updated_at"] !== undefined && !instant(input["updated_at"]))
+    throw invalidResponse(endpoint, "updated-at");
+  return input;
+};
+
+export function parseSharpApiSportsCatalog(
+  input: unknown,
+  retrievedAt: IsoTimestamp,
+): Omit<SharpApiCatalogSnapshot, "leagues" | "responseMetadata"> {
+  const payload = catalogEnvelope(input, "sports");
+  const sports: SharpApiCatalogSport[] = [];
+  const quarantines: SharpApiLandingQuarantine[] = [];
+  const ids = new Set<string>();
+  (payload["data"] as unknown[]).forEach((value, rowIndex) => {
+    if (!record(value) || !dynamoJsonValueSafe(value)) {
+      quarantines.push(quarantineRow(value, rowIndex, "sports"));
+      return;
+    }
+    const leagues = boundedStringArray(value["leagues"], 5_000, 128);
+    if (
+      !storageKeyComponent(value["id"], 64) ||
+      value["id"].includes(",") ||
+      !landingKeyFits(`${LANDING_SLOT_PREFIX}SPORT#`, [value["id"]], 1_024) ||
+      !canonical(value["name"], 128) ||
+      !nonNegativeInteger(value["event_count"]) ||
+      !nonNegativeInteger(value["live_count"]) ||
+      !leagues ||
+      leagues.some(
+        (league) =>
+          !storageKeyComponent(league, 128) ||
+          !landingKeyFits(
+            `${LANDING_SLOT_PREFIX}LEAGUE#`,
+            [value["id"] as string, league],
+            1_024,
+          ),
+      ) ||
+      (value["numerical_id"] !== undefined &&
+        !nonNegativeInteger(value["numerical_id"]))
+    ) {
+      quarantines.push(quarantineRow(value, rowIndex, "sports"));
+      return;
+    }
+    if (ids.has(value["id"])) {
+      quarantines.push(
+        quarantineRow(value, rowIndex, "sports", "duplicate-provider-id"),
+      );
+      return;
+    }
+    const sport: SharpApiCatalogSport = {
+      providerSportId: value["id"],
+      displayName: value["name"],
+      ...(value["numerical_id"] === undefined
+        ? {}
+        : { numericalId: value["numerical_id"] }),
+      eventCount: value["event_count"],
+      liveCount: value["live_count"],
+      providerLeagueIds: leagues,
+      ...sourceShapeEvidence(value),
+    };
+    if (
+      !landingValueFits(sport as unknown as Readonly<Record<string, unknown>>)
+    ) {
+      quarantines.push(quarantineRow(value, rowIndex, "sports"));
+      return;
+    }
+    ids.add(value["id"]);
+    sports.push(sport);
+  });
+  return {
+    sports,
+    quarantines,
+    sourceRows: (payload["data"] as unknown[]).length,
+    ...(instant(payload["updated_at"])
+      ? { providerUpdatedAt: payload["updated_at"] }
+      : {}),
+    retrievedAt,
+  };
+}
+
+export function parseSharpApiLeaguesCatalog(
+  input: unknown,
+  retrievedAt: IsoTimestamp,
+): Omit<SharpApiCatalogSnapshot, "sports" | "responseMetadata"> {
+  const payload = catalogEnvelope(input, "leagues");
+  const leagues: SharpApiCatalogLeague[] = [];
+  const quarantines: SharpApiLandingQuarantine[] = [];
+  const ids = new Set<string>();
+  (payload["data"] as unknown[]).forEach((value, rowIndex) => {
+    const displayName = record(value)
+      ? canonical(value["display_name"], 256)
+        ? value["display_name"]
+        : canonical(value["name"], 256)
+          ? value["name"]
+          : undefined
+      : undefined;
+    if (
+      !record(value) ||
+      !dynamoJsonValueSafe(value) ||
+      !storageKeyComponent(value["id"], 128) ||
+      !displayName ||
+      !storageKeyComponent(value["sport"], 64) ||
+      value["sport"].includes(",") ||
+      !landingKeyFits(
+        `${LANDING_SLOT_PREFIX}LEAGUE#`,
+        [value["sport"], value["id"]],
+        1_024,
+      ) ||
+      !nonNegativeInteger(value["event_count"]) ||
+      !nonNegativeInteger(value["live_count"]) ||
+      (value["numerical_id"] !== undefined &&
+        !nonNegativeInteger(value["numerical_id"]))
+    ) {
+      quarantines.push(quarantineRow(value, rowIndex, "leagues"));
+      return;
+    }
+    const compoundId = `${value["sport"]}\u0000${value["id"]}`;
+    if (ids.has(compoundId)) {
+      quarantines.push(
+        quarantineRow(value, rowIndex, "leagues", "duplicate-provider-id"),
+      );
+      return;
+    }
+    // SharpAPI documents `league` as a comma-separated filter. A catalog ID
+    // containing a comma cannot be represented as one atomic value after URL
+    // decoding. Preserve bounded quarantine evidence instead of silently
+    // omitting it or accidentally requesting two different leagues.
+    if (value["id"].includes(",")) {
+      quarantines.push(
+        quarantineRow(value, rowIndex, "leagues", "unrepresentable-filter-id"),
+      );
+      return;
+    }
+    const league: SharpApiCatalogLeague = {
+      providerLeagueId: value["id"],
+      displayName,
+      ...(value["numerical_id"] === undefined
+        ? {}
+        : { numericalId: value["numerical_id"] }),
+      providerSportId: value["sport"],
+      eventCount: value["event_count"],
+      liveCount: value["live_count"],
+      ...sourceShapeEvidence(value),
+    };
+    if (
+      !landingValueFits(league as unknown as Readonly<Record<string, unknown>>)
+    ) {
+      quarantines.push(quarantineRow(value, rowIndex, "leagues"));
+      return;
+    }
+    ids.add(compoundId);
+    leagues.push(league);
+  });
+  return {
+    leagues,
+    quarantines,
+    sourceRows: (payload["data"] as unknown[]).length,
+    ...(instant(payload["updated_at"])
+      ? { providerUpdatedAt: payload["updated_at"] }
+      : {}),
+    retrievedAt,
+  };
+}
+
+const universalPageEnvelope = (
+  input: unknown,
+  endpoint: Extract<SharpApiEndpoint, "universal-events" | "universal-odds">,
+) => {
+  if (!record(input)) throw invalidResponse(endpoint, "envelope");
+  assertProviderEnvelope(input, endpoint);
+  const pagination = input["pagination"];
+  const nullEmptyPage =
+    input["data"] === null &&
+    record(pagination) &&
+    pagination["has_more"] === false &&
+    pagination["count"] === 0 &&
+    (pagination["total"] === undefined || pagination["total"] === 0);
+  if (
+    (!Array.isArray(input["data"]) && !nullEmptyPage) ||
+    (Array.isArray(input["data"]) && input["data"].length > 200) ||
+    !record(pagination) ||
+    typeof pagination["has_more"] !== "boolean"
+  )
+    throw invalidResponse(endpoint, "page");
+  if (input["updated_at"] !== undefined && !instant(input["updated_at"]))
+    throw invalidResponse(endpoint, "updated-at");
+  return nullEmptyPage ? { ...input, data: [] } : input;
+};
+
+export function parseSharpApiUniversalEventsPage(
+  input: unknown,
+  retrievedAt: IsoTimestamp,
+  requestedOffset = 0,
+): SharpApiUniversalPage<SharpApiUniversalEvent> {
+  if (!nonNegativeInteger(requestedOffset))
+    throw invalidResponse("universal-events", "requested-offset");
+  const payload = universalPageEnvelope(input, "universal-events");
+  const records: SharpApiUniversalEvent[] = [];
+  const quarantines: SharpApiLandingQuarantine[] = [];
+  const ids = new Set<string>();
+  (payload["data"] as unknown[]).forEach((value, rowIndex) => {
+    if (!record(value) || !dynamoJsonValueSafe(value)) {
+      quarantines.push(quarantineRow(value, rowIndex, "events"));
+      return;
+    }
+    const markets = sanitizedStringArray(value["markets"], 256, 128);
+    const books = sanitizedStringArray(value["books"], 256, 128);
+    const externalIds = boundedExternalIds(value["external_ids"]);
+    if (
+      !storageKeyComponent(value["id"], 256) ||
+      !landingRecordIdFits(value["id"], "EVENT#") ||
+      !landingSportFits(value["sport"], "event") ||
+      !canonical(value["league"], 128) ||
+      !instant(value["start_time"]) ||
+      !canonical(value["status"], 64) ||
+      typeof value["is_live"] !== "boolean"
+    ) {
+      quarantines.push(quarantineRow(value, rowIndex, "events"));
+      return;
+    }
+    if (ids.has(value["id"])) {
+      quarantines.push(
+        quarantineRow(value, rowIndex, "events", "duplicate-provider-id"),
+      );
+      return;
+    }
+    ids.add(value["id"]);
+    const sourceWarnings = [
+      optionalStringWarning(value["uuid"], 128, "uuid-invalid"),
+      optionalStringWarning(
+        value["home_team"],
+        512,
+        "home-participant-invalid",
+      ),
+      optionalStringWarning(
+        value["away_team"],
+        512,
+        "away-participant-invalid",
+      ),
+      !record(value["external_ids"])
+        ? "external-ids-invalid"
+        : Object.entries(value["external_ids"]).some(
+              ([key, item]) => !canonical(key, 64) || !canonical(item, 256),
+            )
+          ? "external-ids-entry-invalid"
+          : Object.keys(value["external_ids"]).length > 128
+            ? "external-ids-truncated"
+            : null,
+      !Array.isArray(value["markets"])
+        ? "markets-invalid"
+        : value["markets"].some((item) => !canonical(item, 128))
+          ? "markets-entry-invalid"
+          : value["markets"].length > 256
+            ? "markets-truncated"
+            : null,
+      !Array.isArray(value["books"])
+        ? "books-invalid"
+        : value["books"].some((item) => !canonical(item, 128))
+          ? "books-entry-invalid"
+          : value["books"].length > 256
+            ? "books-truncated"
+            : null,
+    ].filter((warning): warning is string => warning !== null);
+    const event: SharpApiUniversalEvent = {
+      providerEventId: value["id"],
+      ...(canonical(value["uuid"], 128)
+        ? { providerEventUuid: value["uuid"] }
+        : {}),
+      externalIds,
+      sport: value["sport"],
+      league: value["league"],
+      ...(canonical(value["home_team"], 512)
+        ? { homeParticipant: value["home_team"] }
+        : {}),
+      ...(canonical(value["away_team"], 512)
+        ? { awayParticipant: value["away_team"] }
+        : {}),
+      startsAt: iso(value["start_time"]),
+      status: value["status"],
+      isLive: value["is_live"],
+      marketKeys: markets,
+      sportsbookIds: books,
+      ...(sourceWarnings.length > 0 ? { sourceWarnings } : {}),
+      ...sourceShapeEvidence(value),
+    };
+    if (
+      !landingValueFits(event as unknown as Readonly<Record<string, unknown>>)
+    ) {
+      quarantines.push(quarantineRow(value, rowIndex, "events"));
+      return;
+    }
+    records.push(event);
+  });
+  return universalPagination(
+    payload,
+    records,
+    quarantines,
+    retrievedAt,
+    "offset",
+    requestedOffset,
+  );
+}
+
+export function parseSharpApiUniversalOddsPage(
+  input: unknown,
+  retrievedAt: IsoTimestamp,
+  requestedLimit = 200,
+): SharpApiUniversalPage<SharpApiUniversalOddsRecord> {
+  const payload = universalPageEnvelope(input, "universal-odds");
+  const records: SharpApiUniversalOddsRecord[] = [];
+  const quarantines: SharpApiLandingQuarantine[] = [];
+  const ids = new Set<string>();
+  (payload["data"] as unknown[]).forEach((value, rowIndex) => {
+    const americanOddsValid =
+      record(value) &&
+      safeInteger(value["odds_american"]) &&
+      providerNumber(value["odds_american"]) &&
+      Math.abs(value["odds_american"]) >= 100;
+    const decimalOddsValid =
+      record(value) &&
+      providerNumber(value["odds_decimal"]) &&
+      value["odds_decimal"] > 1;
+    const probabilityValid =
+      record(value) &&
+      providerNumber(value["odds_probability"]) &&
+      value["odds_probability"] > 0 &&
+      value["odds_probability"] <= 1;
+    const priceFieldInvalid =
+      record(value) &&
+      [
+        ["odds_american", americanOddsValid],
+        ["odds_decimal", decimalOddsValid],
+        ["odds_probability", probabilityValid],
+      ].some(
+        ([key, valid]) =>
+          value[key as string] !== undefined &&
+          value[key as string] !== null &&
+          valid !== true,
+      );
+    const lifecycleFieldInvalid =
+      record(value) &&
+      [
+        "is_main_line",
+        "is_alternate_line",
+        "is_player_prop",
+        "is_stale_pregame_price",
+        "is_impossible_scoreline",
+      ].some(
+        (key) => value[key] !== undefined && typeof value[key] !== "boolean",
+      );
+    if (
+      !record(value) ||
+      !dynamoJsonValueSafe(value) ||
+      !storageKeyComponent(value["id"], 256) ||
+      !landingRecordIdFits(value["id"], "PRICE#") ||
+      !canonical(value["event_id"], 256) ||
+      !landingSportFits(value["sport"], "odds") ||
+      !canonical(value["league"], 128) ||
+      !canonical(value["sportsbook"], 128) ||
+      !canonical(value["market_type"], 128) ||
+      !canonical(value["selection"], 512) ||
+      !canonical(value["selection_type"], 128) ||
+      !instant(value["timestamp"]) ||
+      typeof value["is_live"] !== "boolean" ||
+      (value["is_active"] !== undefined &&
+        typeof value["is_active"] !== "boolean") ||
+      (!americanOddsValid && !decimalOddsValid && !probabilityValid) ||
+      priceFieldInvalid ||
+      (value["line"] !== undefined &&
+        value["line"] !== null &&
+        !providerNumber(value["line"])) ||
+      lifecycleFieldInvalid
+    ) {
+      quarantines.push(quarantineRow(value, rowIndex, "odds"));
+      return;
+    }
+    if (ids.has(value["id"])) {
+      quarantines.push(
+        quarantineRow(value, rowIndex, "odds", "duplicate-provider-id"),
+      );
+      return;
+    }
+    ids.add(value["id"]);
+    const optionalNumber = (key: string, target: string) =>
+      providerNumber(value[key]) ? { [target]: value[key] } : {};
+    const optionalBoolean = (key: string, target: string) =>
+      typeof value[key] === "boolean" ? { [target]: value[key] } : {};
+    const numberKeys = ["max_bet", "volume_24h"];
+    const stringKeys = [
+      "event_uuid",
+      "external_event_id",
+      "market_id",
+      "selection_id",
+      "team_side",
+    ];
+    const sourceWarnings = [
+      ...numberKeys
+        .filter(
+          (key) =>
+            value[key] !== undefined &&
+            value[key] !== null &&
+            !providerNumber(value[key]),
+        )
+        .map((key) => `${key}-invalid`),
+      ...stringKeys
+        .filter(
+          (key) =>
+            value[key] !== undefined &&
+            value[key] !== null &&
+            !canonical(value[key], 256),
+        )
+        .map((key) => `${key}-invalid`),
+      optionalStringWarning(
+        value["home_team"],
+        512,
+        "home-participant-invalid",
+      ),
+      optionalStringWarning(
+        value["away_team"],
+        512,
+        "away-participant-invalid",
+      ),
+      value["event_start_time"] !== undefined &&
+      value["event_start_time"] !== null &&
+      value["event_start_time"] !== "" &&
+      !instant(value["event_start_time"])
+        ? "event-start-time-invalid"
+        : null,
+    ].filter((warning): warning is string => warning !== null);
+    const odds: SharpApiUniversalOddsRecord = {
+      providerPriceId: value["id"],
+      providerEventId: value["event_id"],
+      ...(canonical(value["event_uuid"], 128)
+        ? { providerEventUuid: value["event_uuid"] }
+        : {}),
+      ...(canonical(value["external_event_id"], 256)
+        ? { externalEventId: value["external_event_id"] }
+        : {}),
+      sport: value["sport"],
+      league: value["league"],
+      sportsbook: value["sportsbook"],
+      ...(canonical(value["home_team"], 512)
+        ? { homeParticipant: value["home_team"] }
+        : {}),
+      ...(canonical(value["away_team"], 512)
+        ? { awayParticipant: value["away_team"] }
+        : {}),
+      marketType: value["market_type"],
+      ...(canonical(value["market_id"], 256)
+        ? { providerMarketId: value["market_id"] }
+        : {}),
+      selection: value["selection"],
+      selectionType: value["selection_type"],
+      ...(canonical(value["selection_id"], 256)
+        ? { providerSelectionId: value["selection_id"] }
+        : {}),
+      ...(canonical(value["team_side"], 128)
+        ? { teamSide: value["team_side"] }
+        : {}),
+      ...optionalNumber("line", "line"),
+      ...optionalNumber("odds_american", "americanOdds"),
+      ...optionalNumber("odds_decimal", "decimalOdds"),
+      ...optionalNumber("odds_probability", "impliedProbability"),
+      ...(instant(value["event_start_time"])
+        ? { eventStartsAt: iso(value["event_start_time"]) }
+        : {}),
+      providerTimestamp: iso(value["timestamp"]),
+      isLive: value["is_live"],
+      isActive: value["is_active"] !== false,
+      ...optionalBoolean("is_main_line", "isMainLine"),
+      ...optionalBoolean("is_alternate_line", "isAlternateLine"),
+      ...optionalBoolean("is_player_prop", "isPlayerProp"),
+      ...optionalBoolean("is_stale_pregame_price", "isStalePregamePrice"),
+      ...optionalBoolean("is_impossible_scoreline", "isImpossibleScoreline"),
+      ...optionalNumber("max_bet", "maxBet"),
+      ...optionalNumber("volume_24h", "volume24h"),
+      ...(sourceWarnings.length > 0 ? { sourceWarnings } : {}),
+      ...sourceShapeEvidence(value),
+    };
+    if (
+      !landingValueFits(odds as unknown as Readonly<Record<string, unknown>>)
+    ) {
+      quarantines.push(quarantineRow(value, rowIndex, "odds"));
+      return;
+    }
+    records.push(odds);
+  });
+  return universalPagination(
+    payload,
+    records,
+    quarantines,
+    retrievedAt,
+    "cursor",
+    undefined,
+    requestedLimit,
+  );
+}
+
+const universalPagination = <T>(
+  payload: Record<string, unknown>,
+  records: readonly T[],
+  quarantines: readonly SharpApiLandingQuarantine[],
+  retrievedAt: IsoTimestamp,
+  mode: "offset" | "cursor",
+  requestedOffset?: number,
+  expectedLimit = UNIVERSAL_EVENTS_PAGE_LIMIT,
+): SharpApiUniversalPage<T> => {
+  const pagination = payload["pagination"] as Record<string, unknown>;
+  const data = payload["data"] as unknown[];
+  const hasMore = pagination["has_more"] as boolean;
+  const nextOffset = pagination["next_offset"];
+  const nextCursor = pagination["next_cursor"];
+  const endpoint = mode === "offset" ? "universal-events" : "universal-odds";
+  if (!safeInteger(expectedLimit) || expectedLimit < 1 || expectedLimit > 200)
+    throw invalidResponse(endpoint, "requested-limit");
+  const count = pagination["count"];
+  const declaredLimit = pagination["limit"];
+  const declaredOffset = pagination["offset"];
+  const providerTotal = pagination["total"];
+  if (
+    (count !== undefined &&
+      (!nonNegativeInteger(count) || count !== data.length)) ||
+    (declaredLimit !== undefined &&
+      (!nonNegativeInteger(declaredLimit) ||
+        declaredLimit !== expectedLimit)) ||
+    (mode === "offset" &&
+      declaredOffset !== undefined &&
+      (!nonNegativeInteger(declaredOffset) ||
+        declaredOffset !== requestedOffset)) ||
+    (hasMore && data.length === 0)
+  )
+    throw invalidResponse(endpoint, "pagination-coherence");
+  if (
+    (hasMore &&
+      ((mode === "offset" &&
+        (!nonNegativeInteger(nextOffset) ||
+          nextOffset !== (requestedOffset ?? 0) + expectedLimit ||
+          (nextOffset > UNIVERSAL_EVENTS_MAX_OFFSET &&
+            (!nonNegativeInteger(providerTotal) ||
+              providerTotal <=
+                UNIVERSAL_EVENTS_MAX_OFFSET + expectedLimit)))) ||
+        (mode === "cursor" && !storageKeyComponent(nextCursor, 4096)))) ||
+    (!hasMore &&
+      (mode === "offset"
+        ? nextOffset !== null && nextOffset !== undefined
+        : nextCursor !== null && nextCursor !== undefined))
+  )
+    throw invalidResponse(endpoint, "pagination");
+  if (providerTotal !== undefined && !nonNegativeInteger(providerTotal))
+    throw invalidResponse(endpoint, "pagination-total");
+  if (
+    mode === "offset" &&
+    nonNegativeInteger(providerTotal) &&
+    (providerTotal < (requestedOffset ?? 0) + data.length ||
+      (hasMore && providerTotal <= (requestedOffset ?? 0) + data.length) ||
+      (!hasMore && providerTotal !== (requestedOffset ?? 0) + data.length))
+  )
+    throw invalidResponse(endpoint, "pagination-total-coherence");
+  return {
+    records,
+    quarantines,
+    sourceRows: data.length,
+    hasMore,
+    ...(mode === "offset" ? { requestedOffset: requestedOffset ?? 0 } : {}),
+    ...(mode === "offset" && nonNegativeInteger(nextOffset)
+      ? { nextOffset }
+      : {}),
+    ...(mode === "cursor" && storageKeyComponent(nextCursor, 4096)
+      ? { nextCursor }
+      : {}),
+    ...(nonNegativeInteger(providerTotal) ? { providerTotal } : {}),
+    ...(instant(payload["updated_at"])
+      ? { providerUpdatedAt: payload["updated_at"] }
+      : {}),
+    retrievedAt,
+  };
+};
 
 /**
  * Whether a moneyline is two-way or three-way is a property of the MARKET, but
@@ -684,32 +1910,6 @@ const auditId = (value: unknown) =>
     .replace(/[^a-z0-9_-]+/g, "")
     .slice(0, 64) || "unknown";
 
-const providerInstant = (value: unknown): value is IsoTimestamp => {
-  if (typeof value !== "string") return false;
-  const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
-      value,
-    );
-  if (!match) return false;
-  const [, year, month, day, hour, minute, second, zoneHour, zoneMinute] =
-    match;
-  const y = Number(year);
-  const m = Number(month);
-  const d = Number(day);
-  return (
-    m >= 1 &&
-    m <= 12 &&
-    d >= 1 &&
-    d <= new Date(Date.UTC(y, m, 0)).getUTCDate() &&
-    Number(hour) <= 23 &&
-    Number(minute) <= 59 &&
-    Number(second) <= 59 &&
-    (zoneHour === undefined || Number(zoneHour) <= 23) &&
-    (zoneMinute === undefined || Number(zoneMinute) <= 59) &&
-    Number.isFinite(Date.parse(value))
-  );
-};
-
 const teamName = (raw: Record<string, unknown>, side: "away" | "home") => {
   const reference = raw[side];
   if (record(reference) && canonical(reference["name"]))
@@ -744,8 +1944,8 @@ export function parseSharpApiOddsPage(
       terminalCount === 0) &&
     (terminalTotal === null ||
       terminalTotal === undefined ||
-      (integer(terminalTotal) && terminalTotal >= 0)) &&
-    (terminalCount === 0 || (integer(terminalTotal) && terminalTotal >= 0));
+      (safeInteger(terminalTotal) && terminalTotal >= 0)) &&
+    (terminalCount === 0 || (safeInteger(terminalTotal) && terminalTotal >= 0));
   const terminalPagination =
     commonTerminalPagination &&
     (requestKind === "initial" || requestKind === "focused"
@@ -768,14 +1968,14 @@ export function parseSharpApiOddsPage(
     if (
       (count !== null &&
         count !== undefined &&
-        (!integer(count) || count < 0 || count !== data.length)) ||
+        (!safeInteger(count) || count < 0 || count !== data.length)) ||
       (total !== null &&
         total !== undefined &&
-        (!integer(total) || total < data.length)) ||
-      (integer(count) && integer(total) && count > total) ||
+        (!safeInteger(total) || total < data.length)) ||
+      (safeInteger(count) && safeInteger(total) && count > total) ||
       (requestKind !== "cursor" &&
         pagination["has_more"] === false &&
-        integer(total) &&
+        safeInteger(total) &&
         total !== data.length) ||
       (pagination["has_more"] === false &&
         pagination["next_cursor"] !== null &&
@@ -1033,7 +2233,7 @@ export function parseSharpApiOddsPage(
       !canonical(value["market_id"]) ||
       !canonical(value["selection"]) ||
       !canonical(value["selection_id"]) ||
-      !integer(value["odds_american"]) ||
+      !safeInteger(value["odds_american"]) ||
       Math.abs(value["odds_american"]) < 100 ||
       !finite(value["odds_decimal"]) ||
       value["odds_decimal"] <= 1 ||
@@ -1348,13 +2548,13 @@ export function parseSharpApiSchedulePage(
     });
   }
   const next = input["pagination"]["next_offset"];
-  if (next !== null && next !== undefined && (!integer(next) || next < 0))
+  if (next !== null && next !== undefined && (!safeInteger(next) || next < 0))
     throw invalid("pagination-offset");
   return {
     events,
     ...(exclusions.length > 0 ? { exclusions } : {}),
     hasMore: input["pagination"]["has_more"],
-    ...(integer(next) ? { nextOffset: next } : {}),
+    ...(safeInteger(next) ? { nextOffset: next } : {}),
     retrievedAt,
   };
 }
@@ -1452,12 +2652,16 @@ export function parseSharpApiSplitPage(
     };
   });
   const nextOffset = pagination["next_offset"];
-  if (nextOffset !== null && nextOffset !== undefined && !integer(nextOffset))
+  if (
+    nextOffset !== null &&
+    nextOffset !== undefined &&
+    !safeInteger(nextOffset)
+  )
     throw invalid("pagination-offset");
   return {
     items,
     hasMore: pagination["has_more"],
-    ...(integer(nextOffset) ? { nextOffset } : {}),
+    ...(safeInteger(nextOffset) ? { nextOffset } : {}),
     retrievedAt,
   };
 }
@@ -1480,7 +2684,7 @@ export function parseSharpApiSplitHistoryPage(
     throw invalid("data-envelope");
   if (
     meta["event_id"] !== sourceEvent.providerEventId ||
-    !integer(meta["total"]) ||
+    !safeInteger(meta["total"]) ||
     meta["total"] !== data.length ||
     !instant(meta["updated_at"])
   )
@@ -1633,6 +2837,156 @@ export async function fetchSharpApiAccount(
   }
 }
 
+export async function fetchSharpApiCatalog(
+  apiKey: string,
+  fetcher: typeof fetch = fetch,
+): Promise<SharpApiCatalogSnapshot> {
+  const retrievedAt = new Date().toISOString() as IsoTimestamp;
+  try {
+    // These share one provider account/rate window. Keep the catalogue pair
+    // ordered so the second response carries the conservative remaining
+    // allowance and a low balance cannot be overshot by a concurrent request.
+    const sportsResponse = await request(
+      "/sports?include_empty=true",
+      "sports",
+      apiKey,
+      fetcher,
+      20_000,
+    );
+    const leaguesResponse = await request(
+      "/leagues?include_empty=true",
+      "leagues",
+      apiKey,
+      fetcher,
+      20_000,
+    );
+    const sports = parseSharpApiSportsCatalog(
+      sportsResponse.payload,
+      retrievedAt,
+    );
+    const leagues = parseSharpApiLeaguesCatalog(
+      leaguesResponse.payload,
+      retrievedAt,
+    );
+    if (!sports.providerUpdatedAt || !leagues.providerUpdatedAt)
+      throw invalidResponse("leagues", "catalog-generation");
+    return {
+      sports: sports.sports,
+      leagues: leagues.leagues,
+      quarantines: [
+        ...sports.quarantines,
+        ...leagues.quarantines.map((item) => ({
+          ...item,
+          rowIndex: sports.sourceRows + item.rowIndex,
+        })),
+      ],
+      sourceRows: sports.sourceRows + leagues.sourceRows,
+      // SharpAPI documents updated_at as the emission time of each response,
+      // not a cross-endpoint transaction identifier. The ordered /leagues
+      // response is the latest bounded catalog observation. The endpoints are
+      // not transactional, so the worker reconciles their membership union
+      // instead of rejecting a short-lived cross-response mismatch.
+      providerUpdatedAt: leagues.providerUpdatedAt,
+      retrievedAt,
+      responseMetadata: leaguesResponse.metadata,
+    };
+  } catch (error) {
+    if (
+      error instanceof SharpApiError &&
+      error.code === "invalid-response" &&
+      error.stage
+    )
+      throw error;
+    return rethrowInvalidResponseAt(error, "sports");
+  }
+}
+
+export async function fetchSharpApiUniversalEventsPage(
+  apiKey: string,
+  filter: SharpApiUniversalEventFilter,
+  offset = 0,
+  fetcher: typeof fetch = fetch,
+): Promise<SharpApiUniversalPage<SharpApiUniversalEvent>> {
+  const leagues = filter.leagues;
+  if (
+    !nonNegativeInteger(offset) ||
+    offset > UNIVERSAL_EVENTS_MAX_OFFSET ||
+    !storageKeyComponent(filter.sport, 64) ||
+    filter.sport.includes(",") ||
+    (leagues !== undefined &&
+      (!Array.isArray(leagues) ||
+        leagues.length === 0 ||
+        leagues.length > 50 ||
+        new Set(leagues).size !== leagues.length ||
+        leagues.some(
+          (league) => !storageKeyComponent(league, 128) || league.includes(","),
+        )))
+  )
+    throw new SharpApiError("configuration");
+  const query = new URLSearchParams({
+    sport: filter.sport,
+    limit: String(UNIVERSAL_EVENTS_PAGE_LIMIT),
+    offset: String(offset),
+  });
+  if (leagues) query.set("league", leagues.join(","));
+  if (query.toString().length > 4_096) throw new SharpApiError("configuration");
+  const retrievedAt = new Date().toISOString() as IsoTimestamp;
+  try {
+    const { payload, metadata } = await request(
+      `/events?${query.toString()}`,
+      "universal-events",
+      apiKey,
+      fetcher,
+      20_000,
+    );
+    const page = parseSharpApiUniversalEventsPage(payload, retrievedAt, offset);
+    if (!page.providerUpdatedAt)
+      throw invalidResponse("universal-events", "updated-at-missing");
+    return {
+      ...page,
+      responseMetadata: metadata,
+    };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "universal-events");
+  }
+}
+
+export async function fetchSharpApiUniversalOddsPage(
+  apiKey: string,
+  cursor?: string,
+  fetcher: typeof fetch = fetch,
+): Promise<SharpApiUniversalPage<SharpApiUniversalOddsRecord>> {
+  if (cursor !== undefined && !storageKeyComponent(cursor, 4096))
+    throw new SharpApiError("configuration");
+  const query = new URLSearchParams({
+    limit: String(UNIVERSAL_ODDS_PAGE_LIMIT),
+  });
+  if (cursor) query.set("cursor", cursor);
+  const retrievedAt = new Date().toISOString() as IsoTimestamp;
+  try {
+    const { payload, metadata } = await request(
+      `/odds?${query.toString()}`,
+      "universal-odds",
+      apiKey,
+      fetcher,
+      25_000,
+    );
+    const page = parseSharpApiUniversalOddsPage(
+      payload,
+      retrievedAt,
+      UNIVERSAL_ODDS_PAGE_LIMIT,
+    );
+    if (!page.providerUpdatedAt)
+      throw invalidResponse("universal-odds", "updated-at-missing");
+    return {
+      ...page,
+      responseMetadata: metadata,
+    };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "universal-odds");
+  }
+}
+
 /**
  * Every provider catalogue a league's odds may legitimately arrive from: its
  * own, plus any secondary catalogue carrying fixtures it already schedules.
@@ -1710,6 +3064,463 @@ export interface SharpApiOddsRequestMetadata {
 export interface SharpApiOddsOperation {
   readonly page: SharpApiOddsPage;
   readonly request: SharpApiOddsRequestMetadata;
+}
+
+export interface SharpApiClosingPrice {
+  readonly providerMarketType: "moneyline" | "run_line" | "total_runs";
+  readonly marketKey: "moneyline" | "spread" | "total";
+  readonly providerMarketId: string;
+  readonly selectionKey: "away" | "draw" | "home" | "over" | "under";
+  readonly selectionLabel: string;
+  readonly providerSelectionId: string;
+  readonly canonicalKey: string;
+  readonly point?: number;
+  readonly americanOdds: number;
+  readonly decimalOdds: number;
+  readonly impliedProbability: number;
+  readonly noVigProbability?: number;
+  readonly fairCloseDecimal: number;
+  readonly closingProbability: number;
+  readonly sourceUpdatedAt: IsoTimestamp;
+}
+
+export type SharpApiClosingCaptureTrigger =
+  "transition" | "kickoff" | "disappearance" | "evict" | "backfill";
+
+export interface SharpApiClosingBook {
+  /** Canonical FTE sportsbook id. */
+  readonly id: string;
+  /** Exact key used by the provider's `books` map. */
+  readonly providerSportsbookId: string;
+  readonly capturedAt: IsoTimestamp;
+  readonly secondsBeforeKickoff: number;
+  readonly captureTrigger: SharpApiClosingCaptureTrigger;
+  readonly isFinal: boolean;
+  readonly prices: readonly SharpApiClosingPrice[];
+}
+
+export interface SharpApiClosingRejection {
+  readonly reason:
+    | "unknown-bookmaker"
+    | "malformed-book"
+    | "unsupported-market"
+    | "unsupported-selection"
+    | "incomplete-market"
+    | "ambiguous-market";
+  readonly auditId: string;
+  readonly providerSportsbookId?: string;
+}
+
+export interface SharpApiClosingSnapshot {
+  readonly providerEventId: string;
+  readonly sport?: string;
+  readonly league?: string;
+  readonly awayTeam?: string;
+  readonly homeTeam?: string;
+  readonly startsAt?: IsoTimestamp;
+  readonly firstCapturedAt?: IsoTimestamp;
+  readonly books: readonly SharpApiClosingBook[];
+  readonly rejections: readonly SharpApiClosingRejection[];
+  readonly retrievedAt: IsoTimestamp;
+  readonly responseMetadata?: SharpApiResponseMetadata;
+}
+
+const closingMarket = (
+  value: unknown,
+):
+  | Pick<SharpApiClosingPrice, "providerMarketType" | "marketKey">
+  | undefined => {
+  if (value === "moneyline")
+    return { providerMarketType: value, marketKey: "moneyline" };
+  if (value === "run_line")
+    return { providerMarketType: value, marketKey: "spread" };
+  if (value === "total_runs")
+    return { providerMarketType: value, marketKey: "total" };
+  return undefined;
+};
+
+const closingSelection = (
+  value: unknown,
+): SharpApiClosingPrice["selectionKey"] | undefined =>
+  value === "away" ||
+  value === "draw" ||
+  value === "home" ||
+  value === "over" ||
+  value === "under"
+    ? value
+    : undefined;
+
+const coherentClosingMarket = (
+  prices: readonly SharpApiClosingPrice[],
+): readonly SharpApiClosingPrice[] | null => {
+  if (prices.length === 0) return null;
+  const marketKey = prices[0]!.marketKey;
+  if (prices.some((price) => price.marketKey !== marketKey)) return null;
+  const imbalance = (left: SharpApiClosingPrice, right: SharpApiClosingPrice) =>
+    Math.abs(left.impliedProbability - right.impliedProbability);
+  const overround = (left: SharpApiClosingPrice, right: SharpApiClosingPrice) =>
+    Math.abs(left.impliedProbability + right.impliedProbability - 1);
+  const choosePair = (
+    left: readonly SharpApiClosingPrice[],
+    right: readonly SharpApiClosingPrice[],
+    compatible: (a: SharpApiClosingPrice, b: SharpApiClosingPrice) => boolean,
+  ) =>
+    left
+      .flatMap((a) => right.map((b) => [a, b] as const))
+      .filter(
+        ([a, b]) =>
+          compatible(a, b) &&
+          a.providerMarketId === b.providerMarketId &&
+          a.providerSelectionId !== b.providerSelectionId &&
+          a.canonicalKey !== b.canonicalKey,
+      )
+      .sort(
+        ([aLeft, aRight], [bLeft, bRight]) =>
+          imbalance(aLeft, aRight) - imbalance(bLeft, bRight) ||
+          overround(aLeft, aRight) - overround(bLeft, bRight) ||
+          `${aLeft.providerMarketId}\u0000${aLeft.providerSelectionId}\u0000${aRight.providerSelectionId}\u0000${aLeft.canonicalKey}\u0000${aRight.canonicalKey}`.localeCompare(
+            `${bLeft.providerMarketId}\u0000${bLeft.providerSelectionId}\u0000${bRight.providerSelectionId}\u0000${bLeft.canonicalKey}\u0000${bRight.canonicalKey}`,
+          ),
+      )[0] ?? null;
+  if (marketKey === "moneyline") {
+    const byNativeMarket = new Map<string, SharpApiClosingPrice[]>();
+    for (const price of prices) {
+      if (price.point !== undefined) continue;
+      const group = byNativeMarket.get(price.providerMarketId) ?? [];
+      group.push(price);
+      byNativeMarket.set(price.providerMarketId, group);
+    }
+    return (
+      [...byNativeMarket.values()]
+        .filter((group) => {
+          const keys = group.map(({ selectionKey }) => selectionKey).sort();
+          return (
+            new Set(keys).size === keys.length &&
+            new Set(group.map(({ providerSelectionId }) => providerSelectionId))
+              .size === group.length &&
+            new Set(group.map(({ canonicalKey }) => canonicalKey)).size ===
+              group.length &&
+            (keys.join(",") === "away,home" ||
+              keys.join(",") === "away,draw,home")
+          );
+        })
+        .sort((left, right) => {
+          const sides = (group: readonly SharpApiClosingPrice[]) =>
+            [
+              group.find(({ selectionKey }) => selectionKey === "away")!,
+              group.find(({ selectionKey }) => selectionKey === "home")!,
+            ] as const;
+          const [leftAway, leftHome] = sides(left);
+          const [rightAway, rightHome] = sides(right);
+          const identity = (group: readonly SharpApiClosingPrice[]) =>
+            group
+              .map(
+                ({ providerMarketId, canonicalKey }) =>
+                  `${providerMarketId}\u0000${canonicalKey}`,
+              )
+              .sort()
+              .join("\u0001");
+          return (
+            imbalance(leftAway, leftHome) - imbalance(rightAway, rightHome) ||
+            Math.abs(
+              left.reduce(
+                (sum, { impliedProbability }) => sum + impliedProbability,
+                0,
+              ) - 1,
+            ) -
+              Math.abs(
+                right.reduce(
+                  (sum, { impliedProbability }) => sum + impliedProbability,
+                  0,
+                ) - 1,
+              ) ||
+            identity(left).localeCompare(identity(right))
+          );
+        })[0] ?? null
+    );
+  }
+  if (marketKey === "spread") {
+    return choosePair(
+      prices.filter(({ selectionKey }) => selectionKey === "away"),
+      prices.filter(({ selectionKey }) => selectionKey === "home"),
+      (away, home) =>
+        away.point !== undefined &&
+        home.point !== undefined &&
+        Math.abs(away.point + home.point) <= 1e-9,
+    );
+  }
+  return choosePair(
+    prices.filter(({ selectionKey }) => selectionKey === "over"),
+    prices.filter(({ selectionKey }) => selectionKey === "under"),
+    (over, under) =>
+      over.point !== undefined &&
+      under.point !== undefined &&
+      Math.abs(over.point - under.point) <= 1e-9,
+  );
+};
+
+/** Parse the documented `/odds/closing` response without retaining its raw body.
+ * A malformed book is isolated so independently finalized siblings remain usable. */
+export function parseSharpApiClosingLines(
+  input: unknown,
+  expectedProviderEventId: string,
+  retrievedAt: IsoTimestamp,
+): SharpApiClosingSnapshot {
+  const invalid = (stage: string) => invalidResponse("closing-odds", stage);
+  if (!canonical(expectedProviderEventId, 256) || !instant(retrievedAt))
+    throw new SharpApiError("configuration");
+  if (!record(input)) throw invalid("envelope");
+  assertProviderEnvelope(input, "closing-odds");
+  const data = input["data"];
+  if (!record(data) || data["event_id"] !== expectedProviderEventId)
+    throw invalid("identity");
+  const rawBooks = data["books"];
+  if (!record(rawBooks) || Object.keys(rawBooks).length > 100)
+    throw invalid("books-envelope");
+  const bookEntries = Object.entries(rawBooks);
+  const isEmpty = bookEntries.length === 0;
+  const eventFields = [
+    data["sport"],
+    data["league"],
+    data["away_team"],
+    data["home_team"],
+  ];
+  if (
+    !isEmpty &&
+    (eventFields.some((value) => !canonical(value, 256)) ||
+      data["away_team"] === data["home_team"] ||
+      !instant(data["event_start_time"]) ||
+      !instant(data["captured_at"]))
+  )
+    throw invalid("event-shape");
+
+  const books: SharpApiClosingBook[] = [];
+  const rejections: SharpApiClosingRejection[] = [];
+  const reject = (
+    reason: SharpApiClosingRejection["reason"],
+    providerSportsbookId: string | undefined,
+    value: unknown,
+  ) => {
+    if (rejections.length >= 256) return;
+    rejections.push({
+      reason,
+      auditId: auditId(value),
+      ...(providerSportsbookId ? { providerSportsbookId } : {}),
+    });
+  };
+  const triggers = new Set<SharpApiClosingCaptureTrigger>([
+    "transition",
+    "kickoff",
+    "disappearance",
+    "evict",
+    "backfill",
+  ]);
+  let totalRows = 0;
+  for (const [providerSportsbookId, rawBook] of bookEntries) {
+    if (!canonical(providerSportsbookId, 128)) {
+      reject("malformed-book", undefined, providerSportsbookId);
+      continue;
+    }
+    const normalizedBook = normalizeSportsbook(providerSportsbookId);
+    if (normalizedBook.kind === "rejected") {
+      reject("unknown-bookmaker", providerSportsbookId, providerSportsbookId);
+      continue;
+    }
+    if (!record(rawBook) || !Array.isArray(rawBook["odds"])) {
+      reject("malformed-book", providerSportsbookId, providerSportsbookId);
+      continue;
+    }
+    totalRows += rawBook["odds"].length;
+    if (
+      rawBook["odds"].length > 1_000 ||
+      totalRows > 5_000 ||
+      !instant(rawBook["captured_at"]) ||
+      !safeInteger(rawBook["seconds_before_kickoff"]) ||
+      Math.abs(rawBook["seconds_before_kickoff"]) > 7 * 24 * 60 * 60 ||
+      !triggers.has(
+        rawBook["capture_trigger"] as SharpApiClosingCaptureTrigger,
+      ) ||
+      typeof rawBook["is_final"] !== "boolean"
+    ) {
+      reject("malformed-book", providerSportsbookId, providerSportsbookId);
+      continue;
+    }
+    const capturedAt = iso(rawBook["captured_at"]);
+    const byMarket = new Map<string, SharpApiClosingPrice[]>();
+    for (const rawOdd of rawBook["odds"]) {
+      if (!record(rawOdd)) {
+        reject("incomplete-market", providerSportsbookId, "non-record-row");
+        continue;
+      }
+      const normalizedRowBook = canonical(rawOdd["sportsbook"], 128)
+        ? normalizeSportsbook(rawOdd["sportsbook"])
+        : undefined;
+      const marketIdentity = closingMarket(rawOdd["market_type"]);
+      if (!marketIdentity) {
+        reject(
+          "unsupported-market",
+          providerSportsbookId,
+          rawOdd["market_type"],
+        );
+        continue;
+      }
+      const selectionKey = closingSelection(rawOdd["selection_type"]);
+      const compatible =
+        (marketIdentity.marketKey === "moneyline" &&
+          selectionKey !== undefined &&
+          ["away", "draw", "home"].includes(selectionKey)) ||
+        (marketIdentity.marketKey === "spread" &&
+          (selectionKey === "away" || selectionKey === "home")) ||
+        (marketIdentity.marketKey === "total" &&
+          (selectionKey === "over" || selectionKey === "under"));
+      if (!compatible || !selectionKey) {
+        reject(
+          "unsupported-selection",
+          providerSportsbookId,
+          rawOdd["selection_type"],
+        );
+        continue;
+      }
+      const line = rawOdd["line"];
+      const lineValid =
+        marketIdentity.marketKey === "moneyline"
+          ? line === null || line === undefined
+          : closingNumber(line);
+      const noVig = rawOdd["no_vig_probability"];
+      const closingProbability = rawOdd["closing_probability"];
+      const providerFairClose = rawOdd["fair_close_decimal"];
+      const fairCloseDecimal = closingNumber(providerFairClose)
+        ? providerFairClose
+        : closingNumber(closingProbability) && closingProbability > 0
+          ? 1 / closingProbability
+          : undefined;
+      const expectedCanonicalKey = `${expectedProviderEventId}:${marketIdentity.providerMarketType}:${selectionKey}${closingNumber(line) ? `:${String(line)}` : ""}`;
+      if (
+        normalizedRowBook?.kind !== "normalized" ||
+        normalizedRowBook.sportsbook.id !== normalizedBook.sportsbook.id ||
+        !canonical(rawOdd["selection"], 256) ||
+        !canonical(rawOdd["market_id"], 512) ||
+        !canonical(rawOdd["selection_id"], 512) ||
+        !canonical(rawOdd["canonical_key"], 1_024) ||
+        rawOdd["canonical_key"] !== expectedCanonicalKey ||
+        !lineValid ||
+        !safeInteger(rawOdd["odds_american"]) ||
+        Math.abs(rawOdd["odds_american"]) < 100 ||
+        !closingNumber(rawOdd["odds_decimal"]) ||
+        rawOdd["odds_decimal"] <= 1 ||
+        !closingNumber(rawOdd["implied_probability"]) ||
+        rawOdd["implied_probability"] < 0 ||
+        rawOdd["implied_probability"] > 1 ||
+        (noVig !== null &&
+          noVig !== undefined &&
+          (!closingNumber(noVig) || noVig < 0 || noVig > 1)) ||
+        (providerFairClose !== null &&
+          providerFairClose !== undefined &&
+          !closingNumber(providerFairClose)) ||
+        !closingNumber(fairCloseDecimal) ||
+        fairCloseDecimal <= 1 ||
+        !closingNumber(closingProbability) ||
+        closingProbability <= 0 ||
+        closingProbability > 1 ||
+        !instant(rawOdd["source_updated_at"]) ||
+        Date.parse(rawOdd["source_updated_at"]) > Date.parse(capturedAt)
+      ) {
+        reject(
+          "incomplete-market",
+          providerSportsbookId,
+          rawOdd["selection_id"],
+        );
+        continue;
+      }
+      const price: SharpApiClosingPrice = {
+        ...marketIdentity,
+        providerMarketId: rawOdd["market_id"],
+        selectionKey,
+        selectionLabel: rawOdd["selection"],
+        providerSelectionId: rawOdd["selection_id"],
+        canonicalKey: rawOdd["canonical_key"],
+        ...(closingNumber(line) ? { point: line } : {}),
+        americanOdds: rawOdd["odds_american"],
+        decimalOdds: rawOdd["odds_decimal"],
+        impliedProbability: rawOdd["implied_probability"],
+        ...(closingNumber(noVig) ? { noVigProbability: noVig } : {}),
+        fairCloseDecimal,
+        closingProbability,
+        sourceUpdatedAt: iso(rawOdd["source_updated_at"]),
+      };
+      const group = byMarket.get(marketIdentity.providerMarketType) ?? [];
+      group.push(price);
+      byMarket.set(marketIdentity.providerMarketType, group);
+    }
+    const prices: SharpApiClosingPrice[] = [];
+    for (const [providerMarketType, candidates] of byMarket) {
+      const coherent = coherentClosingMarket(candidates);
+      if (coherent) prices.push(...coherent);
+      else
+        reject("incomplete-market", providerSportsbookId, providerMarketType);
+    }
+    books.push({
+      id: normalizedBook.sportsbook.id,
+      providerSportsbookId,
+      capturedAt,
+      secondsBeforeKickoff: rawBook["seconds_before_kickoff"],
+      captureTrigger: rawBook[
+        "capture_trigger"
+      ] as SharpApiClosingCaptureTrigger,
+      isFinal: rawBook["is_final"],
+      prices,
+    });
+  }
+  return {
+    providerEventId: expectedProviderEventId,
+    ...(!isEmpty
+      ? {
+          sport: data["sport"] as string,
+          league: data["league"] as string,
+          awayTeam: data["away_team"] as string,
+          homeTeam: data["home_team"] as string,
+          startsAt: iso(data["event_start_time"] as string),
+          firstCapturedAt: iso(data["captured_at"] as string),
+        }
+      : {}),
+    books,
+    rejections,
+    retrievedAt,
+  };
+}
+
+export async function fetchSharpApiClosingLines(
+  providerEventId: string,
+  apiKey: string,
+  sportsbooks: readonly string[] = [],
+  fetcher: typeof fetch = fetch,
+): Promise<SharpApiClosingSnapshot> {
+  if (
+    !canonical(providerEventId, 256) ||
+    sportsbooks.length > 25 ||
+    sportsbooks.some((book) => !storageKeyComponent(book, 128)) ||
+    new Set(sportsbooks).size !== sportsbooks.length
+  )
+    throw new SharpApiError("configuration");
+  const query = new URLSearchParams({ event_id: providerEventId });
+  if (sportsbooks.length > 0) query.set("sportsbook", sportsbooks.join(","));
+  try {
+    const { payload, metadata } = await request(
+      `/odds/closing?${query.toString()}`,
+      "closing-odds",
+      apiKey,
+      fetcher,
+    );
+    // Evidence-receipt time is response completion, not request initiation.
+    // A provider may finalize a book while this request is in flight.
+    const retrievedAt = new Date().toISOString() as IsoTimestamp;
+    return {
+      ...parseSharpApiClosingLines(payload, providerEventId, retrievedAt),
+      responseMetadata: metadata,
+    };
+  } catch (error) {
+    return rethrowInvalidResponseAt(error, "closing-odds");
+  }
 }
 
 export async function fetchSharpApiFeaturedOdds(

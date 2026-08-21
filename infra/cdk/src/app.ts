@@ -1,5 +1,10 @@
 import { createFoundationApp } from "./foundation.js";
-import { resolveEnvironment } from "./environments.js";
+import {
+  resolveRecurringDataPlaneEnabled,
+  resolveEnvironment,
+  resolveProductAccessEnforcement,
+  resolveAdminAccessConfiguration,
+} from "./environments.js";
 
 const launchAccount = "228246988391";
 const launchRegion = "us-east-1";
@@ -18,18 +23,46 @@ const stage = process.env["FTE_AWS_STAGE"] ?? "local";
 const deploymentEnvironment = resolveEnvironment(stage, {
   allowLegacyDev: process.env["FTE_ALLOW_LEGACY_DEV"] === "1",
 });
+const productAccessEnforced = resolveProductAccessEnforcement(
+  deploymentEnvironment.stage,
+  process.env["FTE_PRODUCT_ACCESS_ENFORCED"],
+);
+const adminRolloutMode = process.env["FTE_ADMIN_BOOTSTRAP_MODE"];
+if (
+  adminRolloutMode !== undefined &&
+  !["disabled", "fresh", "verified"].includes(adminRolloutMode)
+)
+  throw new Error(
+    "FTE_ADMIN_BOOTSTRAP_MODE must be disabled, fresh, or verified",
+  );
+const adminAccess = resolveAdminAccessConfiguration({
+  enabled: process.env["FTE_ADMIN_ACCESS_ENABLED"],
+  ownerAccountId: process.env["FTE_OWNER_ACCOUNT_ID"] || undefined,
+  bootstrapVerified:
+    process.env["FTE_ADMIN_BOOTSTRAP_VERIFIED"] ??
+    (adminRolloutMode === "verified"
+      ? "true"
+      : adminRolloutMode
+        ? "false"
+        : undefined),
+  freshBootstrap:
+    process.env["FTE_ADMIN_FRESH_BOOTSTRAP"] ??
+    (adminRolloutMode === "fresh"
+      ? "true"
+      : adminRolloutMode
+        ? "false"
+        : undefined),
+});
 const rawSchedulerEnabled = process.env["FTE_UPCOMING_SCHEDULER_ENABLED"];
 const rawFixtureOddsSeedEnabled = process.env["FTE_FIXTURE_ODDS_SEED_ENABLED"];
 const rawPaperPickSchedulerEnabled =
   process.env["FTE_PAPER_PICK_SCHEDULER_ENABLED"];
 const rawPaperPickGenerationMinutes =
   process.env["FTE_PAPER_PICK_GENERATION_MINUTES"];
-if (
-  rawSchedulerEnabled !== undefined &&
-  rawSchedulerEnabled !== "true" &&
-  rawSchedulerEnabled !== "false"
-)
-  throw new Error("FTE_UPCOMING_SCHEDULER_ENABLED must be true or false");
+const schedulerEnabled = resolveRecurringDataPlaneEnabled(
+  deploymentEnvironment.stage,
+  rawSchedulerEnabled,
+);
 if (
   rawFixtureOddsSeedEnabled !== undefined &&
   rawFixtureOddsSeedEnabled !== "true" &&
@@ -67,18 +100,23 @@ const { app } = createFoundationApp({
         apiCertificateArn: process.env["FTE_API_CERTIFICATE_ARN"] ?? "",
       }
     : {}),
-  schedulerEnabled: rawSchedulerEnabled === "true",
+  schedulerEnabled,
   fixtureOddsSeedEnabled: rawFixtureOddsSeedEnabled === "true",
+  productAccessEnforced,
+  adminAccessEnabled: adminAccess.enabled,
+  ...(adminAccess.bootstrapMode
+    ? { adminBootstrapMode: adminAccess.bootstrapMode }
+    : {}),
+  ...(adminAccess.ownerAccountId
+    ? { ownerAccountId: adminAccess.ownerAccountId }
+    : {}),
   paperPickSchedulerEnabled: rawPaperPickSchedulerEnabled === "true",
   paperPickGenerationMinutes,
   ...(process.env["FTE_EVENT_CURSOR_SECRET_ARN"]
     ? { cursorSecretArn: process.env["FTE_EVENT_CURSOR_SECRET_ARN"] }
     : {}),
-  ...(process.env["FTE_UPCOMING_ALARM_TOPIC_ARN"]
-    ? { alarmTopicArn: process.env["FTE_UPCOMING_ALARM_TOPIC_ARN"] }
-    : {}),
-  ...(process.env["FTE_ALARM_EMAIL"]
-    ? { alarmEmail: process.env["FTE_ALARM_EMAIL"] }
+  ...(process.env["FTE_CRITICAL_ALARM_EMAIL"]
+    ? { criticalAlarmEmail: process.env["FTE_CRITICAL_ALARM_EMAIL"] }
     : {}),
   account: launchAccount,
   region: launchRegion,

@@ -7,6 +7,7 @@ export * from "./entitlement.js";
 export * from "./fixture-odds.js";
 export * from "./identity.js";
 export * from "./identity-authorization.js";
+export * from "./admin-access.js";
 export * from "./stripe-signature.js";
 export * from "./odds-history.js";
 export * from "./paper-evaluation.js";
@@ -514,6 +515,9 @@ export interface GameDisplayDto extends EventDisplayDto {
     | {
         readonly state: "available";
         readonly selections: readonly GameOddsSelectionDto[];
+        /** Explicit evidence provenance. Optional only for backward-compatible
+         * readers of boards written before canonical closing capture shipped. */
+        readonly source?: "canonical-closing" | "pregame-snapshot";
       }
     | { readonly state: "unavailable" };
 }

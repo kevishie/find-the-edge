@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MemoryAdminAccessRepository,
   MemoryIdentityRepository,
+  type AdminAccessRepository,
   type EventRepository,
   type IdentityRepository,
 } from "@find-the-edge/database";
@@ -68,6 +70,7 @@ interface Harness {
 const build = (
   overrides: Partial<IdentityRuntime> = {},
   repository: IdentityRepository = new MemoryIdentityRepository(),
+  adminAccess?: AdminAccessRepository,
 ): Harness => {
   const sms = new FakeSmsSender();
   const logs: Record<string, unknown>[] = [];
@@ -103,6 +106,10 @@ const build = (
     undefined,
     repository,
     runtime,
+    undefined,
+    undefined,
+    undefined,
+    adminAccess,
   );
   return {
     call: async (request) => {
@@ -329,6 +336,64 @@ describe("POST /auth/otp/verify", () => {
     expect(JSON.stringify(response.body)).not.toContain("907531");
     const account = await harness.repository.getAccount(body.accountId);
     expect(account?.lastSignedInAt).toBe(later(30_000));
+  });
+
+  it("creates the configured owner before allowing any other first account", async () => {
+    const repository = new MemoryIdentityRepository();
+    const adminAccess = new MemoryAdminAccessRepository(repository);
+    const accountPepper = "account-pepper-value-0123456789ab";
+    const ownerAccountId = deriveAccountId(PHONE, accountPepper);
+    const harness = build(
+      {
+        adminAccessEnabled: true,
+        ownerAccountId,
+        adminBootstrapMode: "fresh",
+      },
+      repository,
+      adminAccess,
+    );
+
+    await harness.call(requestOtp(OTHER_PHONE));
+    expect(
+      (await harness.call(verifyOtp(OTHER_PHONE, harness.lastCode())))
+        .statusCode,
+    ).toBe(500);
+    expect(
+      await repository.getAccount(deriveAccountId(OTHER_PHONE, accountPepper)),
+    ).toBeNull();
+
+    await harness.call(requestOtp(PHONE));
+    expect(
+      (await harness.call(verifyOtp(PHONE, harness.lastCode()))).statusCode,
+    ).toBe(200);
+    expect(await repository.getAccount(ownerAccountId)).not.toBeNull();
+
+    expect(
+      (await harness.call(verifyOtp(OTHER_PHONE, "907531"))).statusCode,
+    ).toBe(200);
+    expect(
+      await repository.getAccount(deriveAccountId(OTHER_PHONE, accountPepper)),
+    ).not.toBeNull();
+  });
+
+  it("never bootstraps a missing owner aggregate in verified mode", async () => {
+    const repository = new MemoryIdentityRepository();
+    const accountPepper = "account-pepper-value-0123456789ab";
+    const ownerAccountId = deriveAccountId(PHONE, accountPepper);
+    const harness = build(
+      {
+        adminAccessEnabled: true,
+        ownerAccountId,
+        adminBootstrapMode: "verified",
+      },
+      repository,
+      new MemoryAdminAccessRepository(repository),
+    );
+    await harness.call(requestOtp(PHONE));
+    expect(
+      (await harness.call(verifyOtp(PHONE, harness.lastCode()))).statusCode,
+    ).toBe(500);
+    expect(await repository.getAccount(ownerAccountId)).toBeNull();
   });
 
   it("never issues twice for one code", async () => {
@@ -640,36 +705,26 @@ describe("identity observability", () => {
     expect(identityLogs).toHaveLength(2);
     expect(identityLogs[0]?.["phoneDigest"]).toMatch(/^[a-f0-9]{32}$/);
     expect(identityLogs[1]).toMatchObject({ outcome: "verified" });
-    const metrics = harness.logs.filter((entry) => "_aws" in entry);
-    const names = metrics.flatMap((entry) => {
-      const aws = entry["_aws"] as {
-        CloudWatchMetrics: {
-          Dimensions: string[][];
-          Metrics: { Name: string }[];
-        }[];
-      };
-      expect(aws.CloudWatchMetrics[0]?.Dimensions).toEqual([["Route"]]);
-      return aws.CloudWatchMetrics[0]!.Metrics.map(({ Name }) => Name);
-    });
-    expect(names).toContain("AuthOtpDelivered");
-    expect(names).toContain("AuthOtpVerified");
-    expect(metrics.every((entry) => !("Phone" in entry))).toBe(true);
+    expect(harness.logs.some((entry) => entry["AuthOtpDelivered"] === 1)).toBe(
+      true,
+    );
+    expect(harness.logs.some((entry) => entry["AuthOtpVerified"] === 1)).toBe(
+      true,
+    );
+    expect(harness.logs.every((entry) => !("_aws" in entry))).toBe(true);
+    expect(harness.logs.every((entry) => !("Phone" in entry))).toBe(true);
   });
 
   it("counts rejections, rate limits, and refusals separately", async () => {
     const harness = build();
     await harness.call(verifyOtp(PHONE, "000000"));
     await harness.call({ route: "auth-session-refresh", method: "POST" });
-    const names = harness.logs
-      .filter((entry) => "_aws" in entry)
-      .flatMap((entry) => {
-        const aws = entry["_aws"] as {
-          CloudWatchMetrics: { Metrics: { Name: string }[] }[];
-        };
-        return aws.CloudWatchMetrics[0]!.Metrics.map(({ Name }) => Name);
-      });
-    expect(names).toContain("AuthOtpRejected");
-    expect(names).toContain("AuthUnauthorized");
+    expect(harness.logs.some((entry) => entry["AuthOtpRejected"] === 1)).toBe(
+      true,
+    );
+    expect(harness.logs.some((entry) => entry["AuthUnauthorized"] === 1)).toBe(
+      true,
+    );
   });
 
   it("fails neutrally when the identity service is not configured", async () => {

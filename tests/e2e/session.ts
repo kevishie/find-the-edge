@@ -12,12 +12,22 @@ export const OWNED_ACCOUNT_ID = `account:${"b".repeat(64)}`;
 const OWNED_AUTHORIZATION = `Bearer ${OWNED_SESSION_TOKEN}`;
 
 const isOwnedProductRequest = (request: Request): boolean => {
-  if (
-    request.method() !== "GET" ||
-    !["fetch", "xhr"].includes(request.resourceType())
-  )
-    return false;
+  if (!["fetch", "xhr"].includes(request.resourceType())) return false;
   const path = new URL(request.url()).pathname;
+  if (
+    (request.method() === "GET" &&
+      (path === "/events" ||
+        /^\/scout-jobs\/[^/]+(?:\/report)?$/u.test(path) ||
+        /^\/scout-reports\/[^/]+\/versions(?:\/\d+)?$/u.test(path) ||
+        path === "/watchlist")) ||
+    (request.method() === "POST" &&
+      (/^\/events\/[^/]+\/scout$/u.test(path) ||
+        /^\/scout-jobs\/[^/]+\/retry$/u.test(path) ||
+        path === "/watchlist")) ||
+    (request.method() === "DELETE" && /^\/watchlist\/[^/]+$/u.test(path))
+  )
+    return true;
+  if (request.method() !== "GET") return false;
   return (
     /^\/sports\/[^/]+\/(opportunities|arbitrage|clv)$/u.test(path) ||
     path === "/strategy-experiments" ||
@@ -34,7 +44,7 @@ const isOwnedProductRequest = (request: Request): boolean => {
 
 /**
  * Assert the browser-owned bearer on every ordinary product request while
- * leaving public, billing, OTP, and legacy Cognito request families alone.
+ * leaving public, billing, OTP, and elevated Cognito mutations alone.
  */
 export const observeOwnedProductAuthority = (page: Page): (() => void) => {
   const failures: string[] = [];

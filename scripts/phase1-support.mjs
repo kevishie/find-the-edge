@@ -3,9 +3,50 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { COGNITO_SCOPES } from "./generate-web-runtime-config.mjs";
-import { deploymentEnvironment } from "./environment-contract.mjs";
+import {
+  deploymentEnvironment,
+  recurringDataPlaneEnabled,
+} from "./environment-contract.mjs";
 
 export const projectRoot = resolve(new URL("..", import.meta.url).pathname);
+
+export function parseProductAccessEnforcement(
+  value,
+  { required = false } = {},
+) {
+  if (value === undefined) {
+    if (!required) return false;
+    throw new Error(
+      "FTE_PRODUCT_ACCESS_ENFORCED is required for persistent stages",
+    );
+  }
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error("FTE_PRODUCT_ACCESS_ENFORCED must be true or false");
+}
+
+export function parseAdminAccessRollout(environment) {
+  const enabled = environment.FTE_ADMIN_ACCESS_ENABLED ?? "false";
+  if (!["true", "false"].includes(enabled))
+    throw new Error("FTE_ADMIN_ACCESS_ENABLED must be true or false");
+  const mode = environment.FTE_ADMIN_BOOTSTRAP_MODE ?? "disabled";
+  if (!["disabled", "fresh", "verified"].includes(mode))
+    throw new Error(
+      "FTE_ADMIN_BOOTSTRAP_MODE must be disabled, fresh, or verified",
+    );
+  const ownerAccountId = environment.FTE_OWNER_ACCOUNT_ID;
+  if (enabled === "false") {
+    if (mode !== "disabled" || ownerAccountId)
+      throw new Error("disabled admin rollout cannot select an owner or mode");
+    return Object.freeze({ enabled: false, mode: "disabled" });
+  }
+  if (
+    mode === "disabled" ||
+    !/^account:[a-f0-9]{64}$/.test(ownerAccountId ?? "")
+  )
+    throw new Error("enabled admin rollout requires an exact owner and mode");
+  return Object.freeze({ enabled: true, mode, ownerAccountId });
+}
 
 export function safeDevConfig(environment = process.env) {
   return {
@@ -35,16 +76,38 @@ export function safeDevConfig(environment = process.env) {
     schedulerEnabled:
       environment.FTE_UPCOMING_SCHEDULER_ENABLED === undefined ||
       environment.FTE_UPCOMING_SCHEDULER_ENABLED === "true",
+    productAccessEnforced: parseProductAccessEnforcement(
+      environment.FTE_PRODUCT_ACCESS_ENFORCED,
+    ),
     localMode: environment.FTE_PHASE1_LOCAL_MODE === "1",
   };
 }
 
 export function safeDeploymentConfig(environment = process.env) {
   const target = deploymentEnvironment(environment.FTE_AWS_STAGE ?? "staging");
+  const expectedSchedulerEnabled = recurringDataPlaneEnabled(target.stage);
+  const rawSchedulerEnabled = environment.FTE_UPCOMING_SCHEDULER_ENABLED;
+  if (
+    rawSchedulerEnabled !== undefined &&
+    rawSchedulerEnabled !== String(expectedSchedulerEnabled)
+  )
+    throw new Error(
+      `FTE_UPCOMING_SCHEDULER_ENABLED must be ${String(expectedSchedulerEnabled)} for ${target.stage}`,
+    );
+  const productAccessEnforced = parseProductAccessEnforcement(
+    environment.FTE_PRODUCT_ACCESS_ENFORCED,
+    { required: true },
+  );
+  if (productAccessEnforced)
+    throw new Error(
+      "FTE_PRODUCT_ACCESS_ENFORCED must remain false until the owned-access cutover is approved",
+    );
+  const adminAccess = parseAdminAccessRollout(environment);
   return {
     ...safeDevConfig({
       ...environment,
       FTE_AWS_STAGE: target.stage,
+      FTE_UPCOMING_SCHEDULER_ENABLED: String(expectedSchedulerEnabled),
       FTE_PHASE1_API_BASE: environment.FTE_PHASE1_API_BASE ?? target.apiBase,
       FTE_WEB_ORIGIN: environment.FTE_WEB_ORIGIN ?? target.webOrigin,
       FTE_COGNITO_CALLBACK_URL:
@@ -53,6 +116,8 @@ export function safeDeploymentConfig(environment = process.env) {
       FTE_COGNITO_LOGOUT_URL:
         environment.FTE_COGNITO_LOGOUT_URL ?? target.webOrigin,
     }),
+    productAccessEnforced,
+    adminAccess,
     target,
     webCertificateArn:
       environment.FTE_WEB_CERTIFICATE_ARN ??
@@ -65,7 +130,12 @@ export function safeDeploymentConfig(environment = process.env) {
 
 export function validateSafeDeploymentConfig(config) {
   const target = deploymentEnvironment(config.stage);
-  validateSafeDevConfig({ ...config, stage: "dev" });
+  validateSafeDevConfig({ ...config, stage: "dev", schedulerEnabled: true });
+  const expectedSchedulerEnabled = recurringDataPlaneEnabled(target.stage);
+  if (config.schedulerEnabled !== expectedSchedulerEnabled)
+    throw new Error(
+      `Recurring data-plane scheduling must be ${String(expectedSchedulerEnabled)} for ${target.stage}`,
+    );
   if (
     config.webOrigin !== target.webOrigin ||
     config.apiBase !== target.apiBase ||
@@ -195,6 +265,57 @@ function isGetAtt(value, logicalId, attribute) {
   );
 }
 
+export function validateRecurringRuleBinding(
+  template,
+  { outputName, scheduleExpression, expectedState, stage },
+) {
+  const functionId = template.Outputs?.[outputName]?.Value?.Ref;
+  const functionResource = template.Resources?.[functionId];
+  if (
+    typeof functionId !== "string" ||
+    functionResource?.Type !== "AWS::Lambda::Function"
+  )
+    throw new Error(
+      `${outputName} must reference its retained Lambda function`,
+    );
+  const variables = functionResource.Properties?.Environment?.Variables ?? {};
+  const expectedWorkerIdentity = {
+    ProviderLandingFunctionName:
+      functionId.includes("ProviderLanding") &&
+      variables.FTE_AWS_STAGE === stage &&
+      variables.FTE_EVENT_TABLE !== undefined &&
+      variables.FTE_SHARP_API_SECRET_ID !== undefined &&
+      variables.FTE_SHARP_API_ENABLED === undefined,
+    OpportunityExpirationFunctionName:
+      functionId.includes("OpportunityExpirationWorker") &&
+      variables.FTE_EVENT_TABLE !== undefined &&
+      variables.FTE_OPPORTUNITY_SPORT_KEYS !== undefined,
+    OpportunityGenerationFunctionName:
+      functionId.includes("OpportunityGenerationWorker") &&
+      variables.FTE_EVENT_TABLE !== undefined,
+  }[outputName];
+  if (expectedWorkerIdentity !== true)
+    throw new Error(`${outputName} must reference its exact retained worker`);
+  const matching = entriesOfType(template, "AWS::Events::Rule").filter(
+    ([, value]) => {
+      const targets = value.Properties?.Targets;
+      return (
+        value.Properties?.ScheduleExpression === scheduleExpression &&
+        Array.isArray(targets) &&
+        targets.length === 1 &&
+        isGetAtt(targets[0]?.Arn, functionId, "Arn")
+      );
+    },
+  );
+  if (
+    matching.length !== 1 ||
+    matching[0][1].Properties?.State !== expectedState
+  )
+    throw new Error(
+      `${outputName} must have exactly one ${expectedState} ${scheduleExpression} rule for ${stage}`,
+    );
+}
+
 function exactIntegrationTarget(value, integrationId) {
   return (
     Array.isArray(value?.["Fn::Join"]) &&
@@ -291,7 +412,7 @@ function requireActions(actual, expected, label) {
 export function validateTemplate(template, config) {
   const selectedStage = config.stage ?? "dev";
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/admin/users' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const tables = entriesOfType(template, "AWS::DynamoDB::Table");
   const apis = entriesOfType(template, "AWS::ApiGatewayV2::Api");
   if (tables.length !== 1 || apis.length !== 1)
@@ -624,22 +745,10 @@ export function validateTemplate(template, config) {
   )
     throw new Error("HTTP API CORS configurator IAM must be API-scoped");
   const authorizers = entriesOfType(template, "AWS::ApiGatewayV2::Authorizer");
-  if (
-    authorizers.length !== 1 ||
-    !isRef(authorizers[0][1].Properties?.ApiId, apiId) ||
-    authorizers[0][1].Properties?.AuthorizerType !== "JWT" ||
-    !isGetAtt(
-      authorizers[0][1].Properties?.JwtConfiguration?.Issuer,
-      poolId,
-      "ProviderURL",
-    ) ||
-    JSON.stringify(authorizers[0][1].Properties?.JwtConfiguration?.Audience) !==
-      JSON.stringify([{ Ref: clientId }, { Ref: reviewerClients[0][0] }])
-  )
+  if (authorizers.length !== 0)
     throw new Error(
-      "Internal event listing must keep its exact JWT authorizer",
+      "Owned handler authorization requires zero API Gateway authorizers",
     );
-  const [authorizerId] = authorizers[0];
   const integrations = entriesOfType(
     template,
     "AWS::ApiGatewayV2::Integration",
@@ -688,6 +797,9 @@ export function validateTemplate(template, config) {
     "POST /auth/session/refresh",
     "POST /auth/session/revoke",
     "GET /auth/session/capabilities",
+    "GET /admin/users",
+    "POST /admin/users/grants",
+    "DELETE /admin/users/{directoryId}/manual-grant",
     "POST /billing/webhook",
     "GET /billing/entitlement",
     "POST /billing/checkout",
@@ -700,50 +812,6 @@ export function validateTemplate(template, config) {
     ) !== JSON.stringify([...requiredRouteKeys].sort()) ||
     apiRoutes.some(([, value]) => {
       if (value.Properties?.RouteKey === "$default") return true;
-      if (value.Properties?.RouteKey === "GET /events")
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify(["events/events:read"])
-        );
-      if (
-        value.Properties?.RouteKey === "POST /retrospectives/{eventId}/review"
-      )
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify(["events/retrospectives:approve"])
-        );
-      if (
-        ["approve", "promote", "rollback"].some(
-          (action) =>
-            value.Properties?.RouteKey ===
-            `POST /strategy-experiments/{eventId}/${action}`,
-        )
-      )
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify(["events/strategies:promote"])
-        );
-      // Watchlist rows are per-user data keyed by the token subject, so the
-      // routes must sit behind the JWT authorizer and must carry no scope:
-      // a scope here would be authorization theatre plus a re-consent step.
-      if (
-        [
-          "GET /watchlist",
-          "POST /watchlist",
-          "DELETE /watchlist/{eventId}",
-        ].includes(value.Properties?.RouteKey)
-      )
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          value.Properties?.AuthorizationScopes !== undefined
-        );
       // The identity routes are how a caller obtains a token, so they must
       // stay public: an authorizer here would lock everybody out, and a
       // scope would be meaningless on an unauthenticated request.
@@ -765,6 +833,9 @@ export function validateTemplate(template, config) {
           "POST /auth/session/refresh",
           "POST /auth/session/revoke",
           "GET /auth/session/capabilities",
+          "GET /admin/users",
+          "POST /admin/users/grants",
+          "DELETE /admin/users/{directoryId}/manual-grant",
           "POST /billing/webhook",
           "GET /billing/entitlement",
           "POST /billing/checkout",
@@ -776,26 +847,6 @@ export function validateTemplate(template, config) {
           value.Properties?.AuthorizerId !== undefined ||
           value.Properties?.AuthorizationScopes !== undefined
         );
-      const scoutingScope = [
-        "GET /scout-jobs/{jobId}",
-        "GET /scout-jobs/{jobId}/report",
-        "GET /scout-reports/{reportId}/versions",
-        "GET /scout-reports/{reportId}/versions/{versionNumber}",
-      ].includes(value.Properties?.RouteKey)
-        ? "events/scouting:read"
-        : [
-              "POST /events/{eventId}/scout",
-              "POST /scout-jobs/{jobId}/retry",
-            ].includes(value.Properties?.RouteKey)
-          ? "events/scouting:write"
-          : undefined;
-      if (scoutingScope)
-        return (
-          value.Properties?.AuthorizationType !== "JWT" ||
-          !isRef(value.Properties?.AuthorizerId, authorizerId) ||
-          JSON.stringify(value.Properties?.AuthorizationScopes) !==
-            JSON.stringify([scoutingScope])
-        );
       return (
         value.Properties?.AuthorizationType !== "NONE" ||
         value.Properties?.AuthorizerId !== undefined ||
@@ -804,7 +855,7 @@ export function validateTemplate(template, config) {
     })
   )
     throw new Error(
-      "Public reads must remain public while protected event, scouting, review, and promotion routes remain scoped exactly",
+      "Ordinary and elevated owned routes must remain authorizer-free for handler-owned authorization",
     );
   if (
     apiStages.length !== 1 ||
@@ -830,6 +881,34 @@ export function validateTemplate(template, config) {
   )
     throw new Error(
       "Every intended API route must target the exact shared Lambda integration",
+    );
+  if (typeof config.productAccessEnforced !== "boolean")
+    throw new Error("Product access enforcement must be an explicit boolean");
+  const apiLambda = template.Resources?.[apiLambdaId];
+  if (
+    apiLambda?.Type !== "AWS::Lambda::Function" ||
+    apiLambda.Properties?.Environment?.Variables
+      ?.FTE_PRODUCT_ACCESS_ENFORCED !== String(config.productAccessEnforced)
+  )
+    throw new Error(
+      "Event API product access enforcement must match the selected deployment setting",
+    );
+  if (
+    apiLambda.Properties?.Environment?.Variables?.FTE_ADMIN_ACCESS_ENABLED !==
+      String(config.adminAccess.enabled) ||
+    (config.adminAccess.enabled &&
+      (apiLambda.Properties?.Environment?.Variables
+        ?.FTE_ADMIN_BOOTSTRAP_MODE !== config.adminAccess.mode ||
+        apiLambda.Properties?.Environment?.Variables?.FTE_OWNER_ACCOUNT_ID !==
+          config.adminAccess.ownerAccountId)) ||
+    (!config.adminAccess.enabled &&
+      (apiLambda.Properties?.Environment?.Variables
+        ?.FTE_ADMIN_BOOTSTRAP_MODE !== undefined ||
+        apiLambda.Properties?.Environment?.Variables?.FTE_OWNER_ACCOUNT_ID !==
+          undefined))
+  )
+    throw new Error(
+      "Admin access must exactly match the explicit disabled, fresh, or verified rollout",
     );
   const seedFunctions = entriesOfType(template, "AWS::Lambda::Function").filter(
     ([, value]) =>
@@ -877,20 +956,61 @@ export function validateTemplate(template, config) {
       )
       .map((value) => value[0]),
   );
+  const expectedLiveSchedule =
+    selectedStage === "staging" ? "cron(0 5,13,21 * * ? *)" : "rate(1 minute)";
   const liveRules = entriesOfType(template, "AWS::Events::Rule").filter(
-    ([, value]) =>
-      value.Properties?.ScheduleExpression === "rate(1 minute)" &&
-      value.Properties?.State === "ENABLED" &&
-      value.Properties?.Targets?.some((target) =>
+    ([, value]) => {
+      const targets = value.Properties?.Targets;
+      return (
+        value.Properties?.ScheduleExpression === expectedLiveSchedule &&
+        Array.isArray(targets) &&
+        targets.length === 1 &&
         [...liveQueueIds].some((queueId) =>
-          isGetAtt(target.Arn, queueId, "Arn"),
-        ),
-      ),
+          isGetAtt(targets[0]?.Arn, queueId, "Arn"),
+        )
+      );
+    },
   );
   if (liveRules.length !== 1)
     throw new Error(
-      "Live odds ingestion must have one enabled 1-minute rule feeding its control-plane queue",
+      `Live odds ingestion must have one ${expectedLiveSchedule} rule feeding only its control-plane queue`,
     );
+  const expectedLiveState = "ENABLED";
+  if (liveRules[0][1].Properties?.State !== expectedLiveState)
+    throw new Error(
+      `Live odds ingestion rule must be ${expectedLiveState} for ${selectedStage}`,
+    );
+  if (selectedStage === "staging" || selectedStage === "prod") {
+    const expectedRecurringState = recurringDataPlaneEnabled(selectedStage)
+      ? "ENABLED"
+      : "DISABLED";
+    for (const [outputName, scheduleExpression, expectedState] of [
+      [
+        "ProviderLandingFunctionName",
+        selectedStage === "staging"
+          ? "cron(15 5,13,21 * * ? *)"
+          : "rate(1 minute)",
+        selectedStage === "staging" ? "ENABLED" : "DISABLED",
+      ],
+      [
+        "OpportunityExpirationFunctionName",
+        "rate(5 minutes)",
+        expectedRecurringState,
+      ],
+      [
+        "OpportunityGenerationFunctionName",
+        "rate(5 minutes)",
+        expectedRecurringState,
+      ],
+    ]) {
+      validateRecurringRuleBinding(template, {
+        outputName,
+        scheduleExpression,
+        expectedState,
+        stage: selectedStage,
+      });
+    }
+  }
   const validApiOutput = customDeployment
     ? apiOutput === config.apiBase
     : Array.isArray(apiOutput?.["Fn::Join"]) &&
@@ -916,6 +1036,7 @@ export function validateTemplate(template, config) {
     "ScoutingWriteScope",
     "CognitoCallbackUrl",
     "LiveOddsIngestionFunctionName",
+    "ProviderLandingFunctionName",
     "SharpApiSecretName",
   ])
     if (!template.Outputs?.[outputName]?.Value)

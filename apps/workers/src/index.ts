@@ -14,7 +14,6 @@ export * from "./day-indexed-cohort-member-source";
 export * from "./performance-report";
 export * from "./performance-scheduled-runtime";
 export * from "./production-cohort-member-materializer";
-export * from "./performance-metrics";
 export * from "./retrospective-builder";
 export * from "./walk-forward-experiment";
 export * from "./strategy-promotion";

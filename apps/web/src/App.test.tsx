@@ -48,6 +48,17 @@ const withSession = (store: ReturnType<typeof signedIn>) => {
   return store;
 };
 const activeSession = () => withSession(signedIn());
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+};
+const staleCancellation = () =>
+  new DOMException("The signed-in account changed.", "AbortError");
 
 const entitlement = (hasAccess: boolean) => ({
   schemaVersion: "billing-entitlement-v1" as const,
@@ -450,6 +461,7 @@ beforeEach(() => {
   clearSplitsCache();
   window.localStorage.removeItem("fte.splitsView");
   window.localStorage.removeItem("fte.splits.viz");
+  window.localStorage.removeItem("fte.navCollapsed");
 });
 
 const hex = (value: string) => value.repeat(64);
@@ -522,6 +534,43 @@ const retrospective: RetrospectiveDto = {
   ],
   candidates: [],
   contentDigest: hex("4"),
+};
+
+const strategyExperiment = {
+  experimentId: `strategy-experiment:${hex("5")}`,
+  state: "approved",
+  createdAt: "2026-08-04T12:00:00.000Z",
+  baseline: {
+    strategyId: "find-the-edge",
+    version: "1.0.0",
+    digest: hex("6"),
+  },
+  challenger: {
+    strategyId: "find-the-edge",
+    version: "1.1.0",
+    digest: hex("7"),
+  },
+  gates: [],
+  failureReasons: [],
+  stateVersion: 1,
+  train: {
+    startsAt: "2026-05-01T00:00:00.000Z",
+    endsAt: "2026-05-31T23:59:59.000Z",
+    digest: hex("8"),
+  },
+  tune: {
+    startsAt: "2026-06-01T00:00:00.000Z",
+    endsAt: "2026-06-30T23:59:59.000Z",
+    digest: hex("9"),
+  },
+  holdout: {
+    startsAt: "2026-07-01T00:00:00.000Z",
+    endsAt: "2026-07-31T23:59:59.000Z",
+    digest: hex("a"),
+  },
+  contentDigest: hex("b"),
+  audit: [],
+  active: null,
 };
 
 it("renders retrospective evidence layers and honest read-only controls", async () => {
@@ -604,6 +653,267 @@ it("requires an explicit confirmed reviewer action and refreshes the audit state
     }),
     expect.any(AbortSignal),
   );
+});
+
+it("clears retrospective authority and ignores a stale capability result after an account switch", async () => {
+  const first = deferred<boolean>();
+  const capabilitySignals: AbortSignal[] = [];
+  const canReviewRetrospectives = vi
+    .fn<(signal: AbortSignal) => Promise<boolean>>()
+    .mockImplementationOnce((signal) => {
+      capabilitySignals.push(signal);
+      return first.promise;
+    })
+    .mockImplementationOnce((signal) => {
+      capabilitySignals.push(signal);
+      return Promise.resolve(false);
+    });
+  const store = activeSession();
+  render(
+    <App
+      sessionStore={store}
+      initialPath={`/retrospectives/${retrospective.versionId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getRetrospective: vi.fn(() => Promise.resolve(retrospective)),
+          canReviewRetrospectives,
+        },
+      }}
+    />,
+  );
+  await screen.findByText("What was knowable then");
+  await waitFor(() => expect(canReviewRetrospectives).toHaveBeenCalledOnce());
+  expect(
+    screen.queryByRole("button", { name: "Save human review" }),
+  ).not.toBeInTheDocument();
+
+  act(() => {
+    store.signIn({
+      token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+      accountId: `account:${"d".repeat(64)}`,
+    });
+  });
+  await waitFor(() => expect(canReviewRetrospectives).toHaveBeenCalledTimes(2));
+  expect(capabilitySignals[0]?.aborted).toBe(true);
+
+  await act(async () => {
+    first.resolve(true);
+    await first.promise;
+  });
+  expect(
+    screen.queryByRole("button", { name: "Save human review" }),
+  ).not.toBeInTheDocument();
+});
+
+it("refreshes strategy authority for a replacement token and ignores the stale result", async () => {
+  const first = deferred<boolean>();
+  const capabilitySignals: AbortSignal[] = [];
+  const canManageExperiments = vi
+    .fn<(signal: AbortSignal) => Promise<boolean>>()
+    .mockImplementationOnce((signal) => {
+      capabilitySignals.push(signal);
+      return first.promise;
+    })
+    .mockImplementationOnce((signal) => {
+      capabilitySignals.push(signal);
+      return Promise.resolve(true);
+    });
+  const store = activeSession();
+  render(
+    <App
+      sessionStore={store}
+      initialPath={`/experiments/${strategyExperiment.experimentId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getExperiment: vi.fn(() => Promise.resolve(strategyExperiment)),
+          canManageExperiments,
+        },
+      }}
+    />,
+  );
+  await screen.findByText("Human promotion control");
+  await waitFor(() => expect(canManageExperiments).toHaveBeenCalledOnce());
+  expect(screen.queryByRole("button", { name: "promote" })).toBeNull();
+
+  act(() => {
+    store.signIn({
+      token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+      accountId: `account:${"b".repeat(64)}`,
+    });
+  });
+  await waitFor(() => expect(canManageExperiments).toHaveBeenCalledTimes(2));
+  expect(capabilitySignals[0]?.aborted).toBe(true);
+  expect(await screen.findByRole("button", { name: "promote" })).toBeVisible();
+
+  await act(async () => {
+    first.resolve(false);
+    await first.promise;
+  });
+  expect(screen.getByRole("button", { name: "promote" })).toBeVisible();
+});
+
+it("keeps strategy controls read-only when capability resolution rejects", async () => {
+  const canManageExperiments = vi.fn(() =>
+    Promise.reject(new Error("capabilities unavailable")),
+  );
+  render(
+    <App
+      sessionStore={activeSession()}
+      initialPath={`/experiments/${strategyExperiment.experimentId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getExperiment: vi.fn(() => Promise.resolve(strategyExperiment)),
+          canManageExperiments,
+        },
+      }}
+    />,
+  );
+
+  await screen.findByText("Human promotion control");
+  await waitFor(() => expect(canManageExperiments).toHaveBeenCalledOnce());
+  expect(
+    screen.getByText(/Read-only\. Strategy promoter access is unavailable/),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "approve" })).toBeNull();
+});
+
+it("renders a bounded experiment error instead of remaining in loading", async () => {
+  const getExperiment = vi.fn(() =>
+    Promise.reject(new Error("invalid experiment id")),
+  );
+  render(
+    <App
+      sessionStore={activeSession()}
+      initialPath="/experiments/probe"
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getExperiment,
+          canManageExperiments: vi.fn(() => Promise.resolve(true)),
+        },
+      }}
+    />,
+  );
+
+  expect(
+    await screen.findByText("Strategy experiment evidence is unavailable."),
+  ).toHaveAttribute("role", "alert");
+  expect(
+    screen.queryByText("Loading immutable experiment evidence…"),
+  ).not.toBeInTheDocument();
+});
+
+it("aborts a pending retrospective capability check on unmount", async () => {
+  const pending = deferred<boolean>();
+  const capabilitySignals: AbortSignal[] = [];
+  const canReviewRetrospectives = vi.fn((signal: AbortSignal) => {
+    capabilitySignals.push(signal);
+    return pending.promise;
+  });
+  const rendered = render(
+    <App
+      sessionStore={activeSession()}
+      initialPath={`/retrospectives/${retrospective.versionId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getRetrospective: vi.fn(() => Promise.resolve(retrospective)),
+          canReviewRetrospectives,
+        },
+      }}
+    />,
+  );
+  await waitFor(() => expect(canReviewRetrospectives).toHaveBeenCalledOnce());
+
+  rendered.unmount();
+  expect(capabilitySignals[0]?.aborted).toBe(true);
+  await act(async () => {
+    pending.resolve(true);
+    await pending.promise;
+  });
+});
+
+it("aborts a pending strategy mutation on unmount", async () => {
+  const mutation = deferred<unknown>();
+  const manageExperiment = vi.fn<NonNullable<GamesClient["manageExperiment"]>>(
+    () => mutation.promise,
+  );
+  const rendered = render(
+    <App
+      sessionStore={activeSession()}
+      initialPath={`/experiments/${strategyExperiment.experimentId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getExperiment: vi.fn(() => Promise.resolve(strategyExperiment)),
+          canManageExperiments: vi.fn(() => Promise.resolve(true)),
+          manageExperiment,
+        },
+      }}
+    />,
+  );
+  await screen.findByRole("button", { name: "approve" });
+  fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), {
+    target: { value: "Evidence checked." },
+  });
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "approve" }));
+  await waitFor(() => expect(manageExperiment).toHaveBeenCalledOnce());
+  const signal = manageExperiment.mock.calls[0]?.[3];
+
+  rendered.unmount();
+  expect(signal?.aborted).toBe(true);
+  await act(async () => {
+    mutation.resolve({});
+    await mutation.promise;
+  });
+});
+
+it("aborts a pending retrospective mutation on unmount", async () => {
+  const mutation = deferred<RetrospectiveDto>();
+  const reviewRetrospective = vi.fn<
+    NonNullable<GamesClient["reviewRetrospective"]>
+  >(() => mutation.promise);
+  const rendered = render(
+    <App
+      sessionStore={activeSession()}
+      initialPath={`/retrospectives/${retrospective.versionId}`}
+      gamesClient={{
+        ok: true,
+        value: {
+          list: vi.fn(),
+          getRetrospective: vi.fn(() => Promise.resolve(retrospective)),
+          canReviewRetrospectives: vi.fn(() => Promise.resolve(true)),
+          reviewRetrospective,
+        },
+      }}
+    />,
+  );
+  const save = await screen.findByRole("button", {
+    name: "Save human review",
+  });
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(save);
+  await waitFor(() => expect(reviewRetrospective).toHaveBeenCalledOnce());
+  const signal = reviewRetrospective.mock.calls[0]?.[2];
+
+  rendered.unmount();
+  expect(signal?.aborted).toBe(true);
+  await act(async () => {
+    mutation.resolve(retrospective);
+    await mutation.promise;
+  });
 });
 
 it("shows an honest empty performance state before a frozen report exists", async () => {
@@ -1608,6 +1918,87 @@ const providerPage = (
 });
 
 describe("Shell navigation", () => {
+  it("uses a top-edge icon control and restores the accessible collapsed rail", async () => {
+    const renderShell = () =>
+      render(
+        <App
+          sessionStore={activeSession()}
+          initialPath="/splits"
+          gamesClient={{
+            ok: true,
+            value: {
+              list: vi.fn(),
+              listSplits: vi.fn(() => Promise.resolve(splitsPage())),
+            },
+          }}
+        />,
+      );
+
+    renderShell();
+
+    expect(await screen.findByText("Betting splits")).toBeInTheDocument();
+    const collapse = screen.getByRole("button", {
+      name: "Collapse navigation",
+    });
+    expect(collapse.parentElement).toHaveClass("shell");
+    expect(collapse.previousElementSibling?.tagName).toBe("ASIDE");
+    expect(collapse).toHaveAttribute("aria-controls", "primary-navigation");
+    expect(collapse).toHaveAttribute("aria-pressed", "false");
+    expect(document.querySelector(".nav-footer")).toBeNull();
+
+    fireEvent.click(collapse);
+
+    const expand = screen.getByRole("button", { name: "Expand navigation" });
+    expect(expand).toHaveAttribute("aria-pressed", "true");
+    expect(document.querySelector(".shell")).toHaveClass("nav-collapsed");
+    expect(window.localStorage.getItem("fte.navCollapsed")).toBe("1");
+    const nav = screen.getByRole("navigation", { name: "Primary navigation" });
+    for (const label of ["Events", "Splits", "Watchlist", "Scanner"])
+      expect(within(nav).getByRole("link", { name: label })).toBeVisible();
+    for (const label of within(nav).getAllByText(
+      /^(Events|Splits|Watchlist|Scanner)$/,
+    ))
+      expect(label).toHaveClass("sr-only");
+    expect(within(nav).getByRole("link", { name: "Splits" })).toHaveClass(
+      "active",
+    );
+
+    cleanup();
+    renderShell();
+
+    expect(
+      await screen.findByRole("button", { name: "Expand navigation" }),
+    ).toBeInTheDocument();
+    expect(document.querySelector(".shell")).toHaveClass("nav-collapsed");
+    expect(await screen.findByText("Betting splits")).toBeInTheDocument();
+  });
+
+  it("still collapses when the saved preference cannot be written", async () => {
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation((key) => {
+        if (key === "fte.navCollapsed")
+          throw new DOMException("Storage denied", "SecurityError");
+      });
+    render(
+      <App
+        sessionStore={activeSession()}
+        initialPath="/events"
+        gamesClient={{ ok: true, value: { list: vi.fn() } }}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Collapse navigation" }),
+    );
+
+    expect(document.querySelector(".shell")).toHaveClass("nav-collapsed");
+    expect(
+      screen.getByRole("button", { name: "Expand navigation" }),
+    ).toBeVisible();
+    setItem.mockRestore();
+  });
+
   it("renders the public landing page at the root without terminal chrome", async () => {
     // A signed-out reader is the only one who sees the pitch.
     render(<App sessionStore={signedIn()} initialPath="/" />);
@@ -2142,14 +2533,14 @@ describe("Games", () => {
       createdAt: "2026-08-07T13:00:00.000Z",
       updatedAt: "2026-08-07T13:00:00.000Z",
     };
+    const store = activeSession();
+    const accountId = store.getSnapshot()!.accountId;
+    const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(accountId)}.${encodeURIComponent(game.id)}`;
     const createScoutingJob = vi.fn(() => Promise.resolve(scoutingJob));
-    sessionStorage.setItem(
-      `fte.scouting.resume.create.${encodeURIComponent(game.id)}`,
-      "1",
-    );
+    sessionStorage.setItem(resumeKey, "1");
     render(
       <App
-        sessionStore={activeSession()}
+        sessionStore={store}
         initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
@@ -2165,11 +2556,223 @@ describe("Games", () => {
       await screen.findByRole("heading", { name: "Scouting is queued" }),
     ).toBeVisible();
     expect(createScoutingJob).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem(resumeKey)).toBeNull();
+  });
+
+  it("cancels a queued resume before replacement-account authority can dispatch it", async () => {
+    window.localStorage.setItem("fte.eventView", "cards");
+    const store = activeSession();
+    const priorAccountId = store.getSnapshot()!.accountId;
+    const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(priorAccountId)}.${encodeURIComponent(game.id)}`;
+    const createScoutingJob =
+      vi.fn<NonNullable<GamesClient["createScoutingJob"]>>();
+    const gamesClient = () => ({
+      ok: true as const,
+      value: {
+        list: vi.fn(() => Promise.resolve(page())),
+        createScoutingJob,
+      },
+    });
+    const { rerender } = render(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={gamesClient()}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: "Scout" })).toBeEnabled();
+    sessionStorage.setItem(resumeKey, "1");
+    const queued: VoidFunction[] = [];
+    const microtask = vi
+      .spyOn(globalThis, "queueMicrotask")
+      .mockImplementation((callback) => queued.push(callback));
+    rerender(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={gamesClient()}
+      />,
+    );
+    microtask.mockRestore();
+    expect(queued.length).toBeGreaterThan(0);
+
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"9".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"0".repeat(64)}`,
+      });
+    });
+    act(() => {
+      for (const callback of queued) callback();
+    });
+
+    expect(createScoutingJob).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(resumeKey)).toBe("1");
+  });
+
+  it("does not resume an uncertain create under a replacement account", async () => {
+    window.localStorage.setItem("fte.eventView", "cards");
+    const store = activeSession();
+    const scoutingJob = {
+      schemaVersion: 1 as const,
+      jobId: `scout-job:${"3".repeat(64)}`,
+      eventId: game.id,
+      eventVersion: 1,
+      workflowIntent: "fixture-v1" as const,
+      status: "queued" as const,
+      stateVersion: 1,
+      attemptNumber: 1,
+      createdAt: "2026-08-07T13:00:00.000Z",
+      updatedAt: "2026-08-07T13:00:00.000Z",
+    };
+    const createScoutingJob = vi
+      .fn<NonNullable<GamesClient["createScoutingJob"]>>()
+      .mockImplementationOnce(
+        (_eventId, _key, signal) =>
+          new Promise((_, reject) =>
+            signal.addEventListener(
+              "abort",
+              () =>
+                reject(
+                  new DOMException(
+                    "The signed-in account changed.",
+                    "AbortError",
+                  ),
+                ),
+              { once: true },
+            ),
+          ),
+      )
+      .mockResolvedValueOnce(scoutingJob);
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            createScoutingJob,
+            getScoutingJob: vi.fn(() => Promise.resolve(scoutingJob)),
+          },
+        }}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Scout" }));
     expect(
-      sessionStorage.getItem(
-        `fte.scouting.resume.create.${encodeURIComponent(game.id)}`,
-      ),
+      screen.getByRole("button", { name: "Opening scouting…" }),
+    ).toBeDisabled();
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"4".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"5".repeat(64)}`,
+      });
+    });
+    expect(
+      screen.queryByRole("button", { name: "Opening scouting…" }),
     ).toBeNull();
+    expect(await screen.findByRole("button", { name: "Scout" })).toBeEnabled();
+    expect(createScoutingJob).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/request outcome is not yet known/i)).toBeNull();
+  });
+
+  it("resumes an uncertain create with the same key after same-account token refresh", async () => {
+    window.localStorage.setItem("fte.eventView", "cards");
+    const store = activeSession();
+    const accountId = store.getSnapshot()!.accountId;
+    const scoutingJob = {
+      schemaVersion: 1 as const,
+      jobId: `scout-job:${"3".repeat(64)}`,
+      eventId: game.id,
+      eventVersion: 1,
+      workflowIntent: "fixture-v1" as const,
+      status: "queued" as const,
+      stateVersion: 1,
+      attemptNumber: 1,
+      createdAt: "2026-08-07T13:00:00.000Z",
+      updatedAt: "2026-08-07T13:00:00.000Z",
+    };
+    const keys: string[] = [];
+    const createScoutingJob = vi
+      .fn<NonNullable<GamesClient["createScoutingJob"]>>()
+      .mockImplementationOnce((_eventId, key, signal) => {
+        keys.push(key);
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(staleCancellation()), {
+            once: true,
+          }),
+        );
+      })
+      .mockImplementationOnce((_eventId, key) => {
+        keys.push(key);
+        return Promise.resolve(scoutingJob);
+      });
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            createScoutingJob,
+            getScoutingJob: vi.fn(() => Promise.resolve(scoutingJob)),
+          },
+        }}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Scout" }));
+    act(() => {
+      store.signIn({
+        token: `fte1.${"refreshed".padEnd(40, "x")}.${"6".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId,
+      });
+    });
+    expect(
+      screen.queryByRole("button", { name: "Opening scouting…" }),
+    ).toBeNull();
+    expect(
+      await screen.findByRole("heading", { name: "Scouting is queued" }),
+    ).toBeVisible();
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("masks a prior-session create error immediately on account replacement", async () => {
+    window.localStorage.setItem("fte.eventView", "cards");
+    const store = activeSession();
+    const createScoutingJob = vi.fn(() =>
+      Promise.reject(new GamesClientError("request-failed", "raw")),
+    );
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            createScoutingJob,
+          },
+        }}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Scout" }));
+    expect(
+      await screen.findByText(/request outcome is not yet known/i),
+    ).toBeVisible();
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"7".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"8".repeat(64)}`,
+      });
+    });
+    expect(screen.queryByText(/request outcome is not yet known/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Scout" })).toBeEnabled();
   });
 
   it("disables scouting with explicit lifecycle guidance for nonscheduled events", async () => {
@@ -2178,11 +2781,12 @@ describe("Games", () => {
     window.localStorage.setItem("fte.eventView", "cards");
     const completed = { ...game, status: "completed" as const };
     const createScoutingJob = vi.fn();
-    const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(game.id)}`;
+    const store = activeSession();
+    const resumeKey = `fte.scouting.resume.create.${encodeURIComponent(store.getSnapshot()!.accountId)}.${encodeURIComponent(game.id)}`;
     sessionStorage.setItem(resumeKey, "1");
     render(
       <App
-        sessionStore={activeSession()}
+        sessionStore={store}
         initialPath="/events?day=2026-08-01"
         gamesClient={{
           ok: true,
@@ -2261,6 +2865,60 @@ describe("Games", () => {
     expect(
       screen.queryByRole("heading", { name: "Boston vs New York" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("labels only provider-authored evidence as closing lines after start", async () => {
+    const startedAt = "2026-08-01T11:05:00.000Z";
+    const started = {
+      ...game,
+      startsAt: startedAt,
+      status: "started" as const,
+      odds: { ...game.odds, source: "pregame-snapshot" as const },
+    };
+    const list = vi.fn<GamesClient["list"]>(() =>
+      Promise.resolve({
+        ...page([started]),
+        snapshotAt: "2026-08-01T12:30:00.000Z",
+      }),
+    );
+    const rendered = render(
+      <App
+        sessionStore={activeSession()}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{ ok: true, value: { list } }}
+      />,
+    );
+    expect(await screen.findByText(/closing data unavailable/i)).toBeVisible();
+    expect(screen.queryByText(/closing lines/i)).toBeNull();
+    rendered.unmount();
+
+    render(
+      <App
+        sessionStore={activeSession()}
+        initialPath="/events?day=2026-08-01"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() =>
+              Promise.resolve({
+                ...page([
+                  {
+                    ...started,
+                    odds: {
+                      ...started.odds,
+                      source: "canonical-closing" as const,
+                    },
+                  },
+                ]),
+                snapshotAt: "2026-08-01T12:30:00.000Z",
+              }),
+            ),
+          },
+        }}
+      />,
+    );
+    expect(await screen.findByText(/closing lines/i)).toBeVisible();
+    expect(screen.queryByText(/closing data unavailable/i)).toBeNull();
   });
 
   it("derives the displayed Eastern start instead of trusting API display text", async () => {
@@ -3233,6 +3891,209 @@ describe("events explorer watch toggle", () => {
       }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(listWatchlist).toHaveBeenCalledTimes(1);
+  });
+
+  it("masks a prior account's loaded watchlist before the replacement read settles", async () => {
+    const store = activeSession();
+    const replacementRead = deferred<{
+      readonly schemaVersion: "watchlist-page-v1";
+      readonly items: readonly (typeof watchEntry)[];
+    }>();
+    const addToWatchlist = vi.fn(() => Promise.resolve(watchEntry));
+    const removeFromWatchlist = vi.fn(() => Promise.resolve());
+    const listWatchlist = vi
+      .fn<NonNullable<GamesClient["listWatchlist"]>>()
+      .mockResolvedValueOnce({
+        schemaVersion: "watchlist-page-v1",
+        items: [watchEntry],
+      })
+      .mockImplementationOnce(() => replacementRead.promise);
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist,
+            addToWatchlist,
+            removeFromWatchlist,
+          },
+        }}
+      />,
+    );
+    expect(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeVisible();
+
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"a".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"3".repeat(64)}`,
+      });
+    });
+
+    expect(
+      screen.queryByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeNull();
+    expect(addToWatchlist).not.toHaveBeenCalled();
+    expect(removeFromWatchlist).not.toHaveBeenCalled();
+    expect(listWatchlist).toHaveBeenCalledTimes(2);
+
+    replacementRead.resolve({ schemaVersion: "watchlist-page-v1", items: [] });
+    expect(
+      await screen.findByRole("button", {
+        name: "Add Boston vs New York to watchlist",
+      }),
+    ).toBeVisible();
+  });
+
+  it("replaces an in-flight watchlist read without exposing its stale cancellation", async () => {
+    const store = activeSession();
+    const oldRead = deferred<{
+      readonly schemaVersion: "watchlist-page-v1";
+      readonly items: readonly (typeof watchEntry)[];
+    }>();
+    const listWatchlist = vi
+      .fn<NonNullable<GamesClient["listWatchlist"]>>()
+      .mockImplementationOnce(() => oldRead.promise)
+      .mockResolvedValueOnce({
+        schemaVersion: "watchlist-page-v1",
+        items: [watchEntry],
+      });
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist,
+            addToWatchlist: vi.fn(() => Promise.resolve(watchEntry)),
+            removeFromWatchlist: vi.fn(() => Promise.resolve()),
+          },
+        }}
+      />,
+    );
+    await waitFor(() => expect(listWatchlist).toHaveBeenCalledTimes(1));
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"c".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"d".repeat(64)}`,
+      });
+    });
+    expect(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeVisible();
+    oldRead.reject(staleCancellation());
+    await act(async () => Promise.resolve());
+    expect(
+      screen.getByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeVisible();
+    expect(screen.queryByRole("link", { name: "Sign in to watch" })).toBeNull();
+  });
+
+  it("ignores a stale add cancellation after the account is replaced", async () => {
+    const store = activeSession();
+    const oldAdd = deferred<typeof watchEntry>();
+    const listWatchlist = vi
+      .fn<NonNullable<GamesClient["listWatchlist"]>>()
+      .mockResolvedValue({ schemaVersion: "watchlist-page-v1", items: [] });
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist,
+            addToWatchlist: vi.fn(() => oldAdd.promise),
+            removeFromWatchlist: vi.fn(() => Promise.resolve()),
+          },
+        }}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Add Boston vs New York to watchlist",
+      }),
+    );
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"e".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"f".repeat(64)}`,
+      });
+    });
+    oldAdd.reject(staleCancellation());
+    expect(
+      await screen.findByRole("button", {
+        name: "Add Boston vs New York to watchlist",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("That event could not be added to the watchlist."),
+    ).toBeNull();
+  });
+
+  it("keeps the replacement account's watched row after a stale remove cancellation", async () => {
+    const store = activeSession();
+    const oldRemove = deferred<void>();
+    const listWatchlist = vi
+      .fn<NonNullable<GamesClient["listWatchlist"]>>()
+      .mockResolvedValue({
+        schemaVersion: "watchlist-page-v1",
+        items: [watchEntry],
+      });
+    render(
+      <App
+        sessionStore={store}
+        initialPath="/events"
+        gamesClient={{
+          ok: true,
+          value: {
+            list: vi.fn(() => Promise.resolve(page())),
+            listWatchlist,
+            addToWatchlist: vi.fn(() => Promise.resolve(watchEntry)),
+            removeFromWatchlist: vi.fn(() => oldRemove.promise),
+          },
+        }}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    );
+    act(() => {
+      store.signIn({
+        token: `fte1.${"replacement".padEnd(40, "x")}.${"1".repeat(64)}`,
+        expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        accountId: `account:${"2".repeat(64)}`,
+      });
+    });
+    oldRemove.reject(staleCancellation());
+    expect(
+      await screen.findByRole("button", {
+        name: "Remove Boston vs New York from watchlist",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("That event could not be removed from the watchlist."),
+    ).toBeNull();
   });
 
   it("offers sign-in rather than an error on the public explorer", async () => {

@@ -9,6 +9,107 @@ const eventConfig = {
   cursorSecretArn:
     "arn:aws:secretsmanager:us-east-1:123456789012:secret:event-cursor",
   webOrigin: "https://app.example.com",
+  productAccessEnforced: false,
+};
+
+const expectProviderLandingSchedule = (
+  template: Template,
+  state: "ENABLED" | "DISABLED",
+  scheduleExpression = "rate(1 minute)",
+) => {
+  const schedules = template.findResources("AWS::Events::Rule");
+  const providerLanding = Object.entries(schedules).find(([logicalId]) =>
+    logicalId.includes("ProviderLandingSchedule"),
+  );
+  expect(providerLanding?.[1]).toMatchObject({
+    Properties: {
+      State: state,
+      ScheduleExpression: scheduleExpression,
+      Targets: [
+        {
+          RetryPolicy: {
+            MaximumEventAgeInSeconds: 3_600,
+          },
+        },
+      ],
+    },
+  });
+};
+
+const expectScheduleState = (
+  template: Template,
+  logicalName: string,
+  state: "ENABLED" | "DISABLED",
+  scheduleExpression?: string,
+) => {
+  const schedules = template.findResources("AWS::Events::Rule");
+  const schedule = Object.entries(schedules).find(([logicalId]) =>
+    logicalId.includes(logicalName),
+  );
+  expect(schedule?.[1]).toMatchObject({
+    Properties: {
+      State: state,
+      ...(scheduleExpression ? { ScheduleExpression: scheduleExpression } : {}),
+    },
+  });
+};
+
+const expectCriticalAlarmBudget = (
+  template: Template,
+  expected: readonly {
+    alarmId: string;
+    resourceId: string;
+    dimension: "FunctionName" | "QueueName";
+  }[],
+) => {
+  const resources = template.toJSON().Resources as Record<
+    string,
+    { Type: string; Properties?: Record<string, unknown> }
+  >;
+  const alarms = template.findResources("AWS::CloudWatch::Alarm") as Record<
+    string,
+    { Properties: Record<string, unknown> }
+  >;
+  expect(Object.keys(alarms)).toHaveLength(4);
+  for (const binding of expected) {
+    const alarm = Object.entries(alarms).find(([id]) =>
+      id.startsWith(binding.alarmId),
+    )?.[1];
+    const resourceId = Object.keys(resources).find(
+      (id) =>
+        id.startsWith(binding.resourceId) &&
+        resources[id]?.Type ===
+          (binding.dimension === "FunctionName"
+            ? "AWS::Lambda::Function"
+            : "AWS::SQS::Queue"),
+    );
+    expect(alarm).toBeDefined();
+    expect(resourceId).toBeDefined();
+    expect(JSON.stringify(alarm?.Properties["Dimensions"])).toContain(
+      resourceId,
+    );
+    expect(alarm?.Properties["Dimensions"]).toContainEqual(
+      expect.objectContaining({ Name: binding.dimension }),
+    );
+  }
+  for (const alarm of Object.values(alarms)) {
+    const properties = alarm.Properties;
+    expect(properties).toMatchObject({
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      DatapointsToAlarm: 2,
+      EvaluationPeriods: 3,
+      Period: 300,
+      Threshold: 1,
+      TreatMissingData: "notBreaching",
+    });
+    expect(["AWS/Lambda", "AWS/SQS"]).toContain(properties["Namespace"]);
+    expect(["Errors", "ApproximateNumberOfMessagesVisible"]).toContain(
+      properties["MetricName"],
+    );
+    expect(properties).not.toHaveProperty("Metrics");
+    expect(properties).not.toHaveProperty("OKActions");
+    expect(properties["AlarmActions"]).toHaveLength(1);
+  }
 };
 
 describe("foundation CDK app", () => {
@@ -98,6 +199,86 @@ describe("foundation CDK app", () => {
     ).toThrow(/us-east-1/i);
   });
 
+  it("caps critical monitoring at eight standard alarm metrics across deployed stacks", () => {
+    const staging = Template.fromStack(
+      createFoundationApp({
+        stage: "staging",
+        criticalAlarmEmail: "alerts@example.com",
+        ...eventConfig,
+      }).stack,
+    );
+    expectCriticalAlarmBudget(staging, [
+      {
+        alarmId: "LiveOddsIngestionErrorsAlarm",
+        resourceId: "LiveOddsIngestion",
+        dimension: "FunctionName",
+      },
+      {
+        alarmId: "LiveOddsControlPlaneDlqAlarm",
+        resourceId: "LiveOddsControlPlaneDlq",
+        dimension: "QueueName",
+      },
+      {
+        alarmId: "ProviderLandingErrorsAlarm",
+        resourceId: "ProviderLanding",
+        dimension: "FunctionName",
+      },
+      {
+        alarmId: "ProviderLandingDlqAlarm",
+        resourceId: "ProviderLandingDlq",
+        dimension: "QueueName",
+      },
+    ]);
+    const production = Template.fromStack(
+      createFoundationApp({
+        stage: "prod",
+        criticalAlarmEmail: "alerts@example.com",
+        ...eventConfig,
+      }).stack,
+    );
+    expectCriticalAlarmBudget(production, [
+      {
+        alarmId: "LiveOddsIngestionErrorsAlarm",
+        resourceId: "LiveOddsIngestion",
+        dimension: "FunctionName",
+      },
+      {
+        alarmId: "LiveOddsControlPlaneDlqAlarm",
+        resourceId: "LiveOddsControlPlaneDlq",
+        dimension: "QueueName",
+      },
+      {
+        alarmId: "UpcomingEventsWorkerErrorsAlarm",
+        resourceId: "UpcomingEventsWorker",
+        dimension: "FunctionName",
+      },
+      {
+        alarmId: "UpcomingEventsDlqAlarm",
+        resourceId: "UpcomingEventsDlq",
+        dimension: "QueueName",
+      },
+    ]);
+    staging.resourceCountIs("AWS::Logs::LogGroup", 0);
+    production.resourceCountIs("AWS::Logs::LogGroup", 0);
+    staging.resourceCountIs("AWS::SNS::Topic", 1);
+    production.resourceCountIs("AWS::SNS::Topic", 1);
+  });
+
+  it("keeps non-deployed stages and unconfigured notifications alarm-free", () => {
+    const otherStage = Template.fromStack(
+      createFoundationApp({ stage: "test", ...eventConfig }).stack,
+    );
+    otherStage.resourceCountIs("AWS::CloudWatch::Alarm", 0);
+    otherStage.resourceCountIs("AWS::SNS::Topic", 0);
+    expect(() =>
+      createFoundationApp({
+        stage: "staging",
+        criticalAlarmEmail: "not-an-email",
+        ...eventConfig,
+      }),
+    ).toThrow("FTE_CRITICAL_ALARM_EMAIL");
+  });
+
   it("creates the fixture seed only for explicitly enabled dev", () => {
     const { stack } = createFoundationApp({
       stage: "dev",
@@ -105,7 +286,7 @@ describe("foundation CDK app", () => {
       ...eventConfig,
     });
     const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::Lambda::Function", 16);
+    template.resourceCountIs("AWS::Lambda::Function", 17);
     // The request-path API is CPU-bound, and Lambda scales CPU with memory.
     // Starving it shows up directly as page load time.
     template.hasResourceProperties("AWS::Lambda::Function", {
@@ -117,6 +298,21 @@ describe("foundation CDK app", () => {
         }),
       },
     });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      MemorySize: 1024,
+      Timeout: 840,
+      ReservedConcurrentExecutions: 1,
+      Environment: {
+        Variables: Match.objectLike({
+          FTE_AWS_STAGE: "dev",
+          FTE_EVENT_TABLE: Match.anyValue(),
+          FTE_SHARP_API_SECRET_ID: Match.anyValue(),
+        }),
+      },
+    });
+    expectProviderLandingSchedule(template, "DISABLED");
+    template.hasOutput("ProviderLandingFunctionName", {});
+    template.hasOutput("ProviderLandingDlqUrl", {});
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: {
@@ -146,15 +342,46 @@ describe("foundation CDK app", () => {
     expect(sharpRendered).toContain("dynamodb:DeleteItem");
     expect(sharpRendered).toContain("EVENT_RECONCILIATION#*");
     expect(sharpRendered).toContain("ODDS_CONTROL#CONTINUATION#*");
+    expect(sharpRendered).toContain("dynamodb:BatchWriteItem");
+    expect(sharpRendered).toContain("dynamodb:BatchGetItem");
+    expect(sharpRendered).toContain("PROVIDER_LANDING#SHARPAPI#*");
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: [
+              "dynamodb:GetItem",
+              "dynamodb:PutItem",
+              "dynamodb:UpdateItem",
+            ],
+            Effect: "Allow",
+            Condition: {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "ODDS_CONTROL#HEALTH#sharpapi:account:account",
+                ],
+              },
+            },
+          }),
+        ]),
+      },
+    });
+    template.hasResourceProperties("AWS::Lambda::EventInvokeConfig", {
+      MaximumEventAgeInSeconds: 3600,
+      MaximumRetryAttempts: 2,
+      DestinationConfig: {
+        OnFailure: { Destination: Match.anyValue() },
+      },
+    });
     const liveOddsPolicy = Object.entries(
       template.toJSON().Resources as Record<
         string,
         { Type: string; Properties?: Record<string, unknown> }
       >,
     ).find(
-      ([key, value]) =>
-        key.startsWith("LiveOddsIngestionServiceRoleDefaultPolicy") &&
-        value.Type === "AWS::IAM::Policy",
+      ([, value]) =>
+        value.Type === "AWS::IAM::Policy" &&
+        JSON.stringify(value).includes("EVENT_RECONCILIATION#*"),
     );
     const liveOddsPolicyText = JSON.stringify(liveOddsPolicy?.[1]);
     expect(liveOddsPolicyText).toContain("EVENT_RECONCILIATION#*");
@@ -213,7 +440,7 @@ describe("foundation CDK app", () => {
     );
     const resultPolicy = Object.entries(resources).find(
       ([key, value]) =>
-        key.startsWith("CompletedResultsWorkerServiceRoleDefaultPolicy") &&
+        key.startsWith("CompletedResultsWorkerRoleDefaultPolicy") &&
         value.Type === "AWS::IAM::Policy",
     );
     expect(resultLambda?.[1].Properties?.["ReservedConcurrentExecutions"]).toBe(
@@ -228,15 +455,12 @@ describe("foundation CDK app", () => {
     expect(resultPolicyText).not.toContain("dynamodb:Scan");
     expect(resultPolicyText).not.toContain("secretsmanager");
     expect(rendered).toContain("dynamodb:TransactWriteItems");
-    expect(rendered).toContain("PaperGradingFailuresAlarm");
-    expect(rendered).toContain("PaperGradingUnresolvedAlarm");
-    expect(rendered).toContain("PaperGradingRegradesAlarm");
     expect(rendered).not.toContain("dynamodb:Scan");
   });
 
   it("omits the fixture seed by default and rejects non-dev enablement", () => {
     const { stack } = createFoundationApp({ stage: "prod", ...eventConfig });
-    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 15);
+    Template.fromStack(stack).resourceCountIs("AWS::Lambda::Function", 16);
     expect(() =>
       createFoundationApp({
         stage: "prod",
@@ -246,25 +470,46 @@ describe("foundation CDK app", () => {
     ).toThrow("only be enabled for the dev stage");
   });
 
+  it("carries the explicit product-access setting into the Event API", () => {
+    const { stack } = createFoundationApp({
+      stage: "test",
+      ...eventConfig,
+      productAccessEnforced: true,
+    });
+    const template = Template.fromStack(stack);
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({
+          FTE_PRODUCT_ACCESS_ENFORCED: "true",
+        }),
+      },
+    });
+    expect(() =>
+      createFoundationApp({
+        stage: "test",
+        ...eventConfig,
+        productAccessEnforced: "false" as unknown as boolean,
+      }),
+    ).toThrow(/explicit boolean/i);
+  });
+
   it("synthesizes the full durable ingestion contract", () => {
     const { stack } = createFoundationApp({ stage: "test", ...eventConfig });
     const template = Template.fromStack(stack);
 
     expect(stack.stackName).toBe("FindTheEdge-test-Foundation");
     template.resourceCountIs("AWS::DynamoDB::Table", 1);
-    template.resourceCountIs("AWS::SQS::Queue", 9);
-    template.resourceCountIs("AWS::Lambda::Function", 15);
-    template.resourceCountIs("AWS::Events::Rule", 7);
+    template.resourceCountIs("AWS::SQS::Queue", 10);
+    template.resourceCountIs("AWS::Lambda::Function", 16);
+    template.resourceCountIs("AWS::Events::Rule", 8);
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 2);
     // Live odds tick every minute; opportunity expiration keeps five.
-    template.hasResourceProperties("AWS::Events::Rule", {
-      State: "DISABLED",
-      ScheduleExpression: "rate(1 minute)",
-    });
+    expectProviderLandingSchedule(template, "DISABLED");
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
       ScheduleExpression: "rate(5 minutes)",
     });
+    expectProviderLandingSchedule(template, "DISABLED");
     template.hasResourceProperties("AWS::Events::Rule", {
       State: "DISABLED",
       ScheduleExpression: "cron(0/15 * * * ? *)",
@@ -280,22 +525,12 @@ describe("foundation CDK app", () => {
       },
     });
     const paperResources = JSON.stringify(template.toJSON());
-    expect(paperResources).toContain("FindTheEdge/PaperPicks");
     expect(paperResources).toContain("QueuePaperPickWorkflowFailure");
     expect(paperResources).toContain("aws.states");
     expect(paperResources).not.toContain("replayCommand");
-    expect(paperResources).not.toContain('"DeadLetterConfig"');
+    expect(paperResources).toContain('"DeadLetterConfig"');
+    expect(paperResources).toContain("ProviderLandingDlq");
     expect(paperResources).not.toContain("dynamodb:Scan");
-    for (const alarm of [
-      "OddsCommandOutcomeAlarm",
-      "OddsProviderHealthUnavailableAlarm",
-      "OddsRateWindowBlockedAlarm",
-      "OddsMarketSuspendedAlarm",
-      "OddsPartialEvidenceAlarm",
-      "OddsSplitFailureAlarm",
-      "LiveOddsControlPlaneDlqAlarm",
-    ])
-      expect(paperResources).toContain(alarm);
     template.hasResourceProperties("AWS::Lambda::Function", {
       ReservedConcurrentExecutions: 1,
       Environment: { Variables: { FTE_EVENT_TABLE: Match.anyValue() } },
@@ -310,7 +545,6 @@ describe("foundation CDK app", () => {
     });
     template.hasResourceProperties("AWS::DynamoDB::Table", {
       BillingMode: "PAY_PER_REQUEST",
-      ContributorInsightsSpecification: { Enabled: true },
       StreamSpecification: { StreamViewType: "NEW_IMAGE" },
       PointInTimeRecoverySpecification: {
         PointInTimeRecoveryEnabled: true,
@@ -323,7 +557,6 @@ describe("foundation CDK app", () => {
             { AttributeName: "activeSk", KeyType: "RANGE" },
           ],
           Projection: { ProjectionType: "KEYS_ONLY" },
-          ContributorInsightsSpecification: { Enabled: true },
         }),
         Match.objectLike({
           IndexName: "opportunity-rank-v1",
@@ -332,23 +565,8 @@ describe("foundation CDK app", () => {
             { AttributeName: "rankSk", KeyType: "RANGE" },
           ],
           Projection: { ProjectionType: "KEYS_ONLY" },
-          ContributorInsightsSpecification: { Enabled: true },
         }),
       ]),
-    });
-    expect(JSON.stringify(template.toJSON())).toContain(
-      "OpportunityExpirationFailuresAlarm",
-    );
-    expect(JSON.stringify(template.toJSON())).toContain(
-      "OpportunityStaleActiveAlarm",
-    );
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "StaleActiveCount",
-      Namespace: "FindTheEdge/OpportunityLifecycle",
-      Dimensions: [
-        { Name: "Cause", Value: "sweep" },
-        { Name: "Outcome", Value: "transition" },
-      ],
     });
     template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
       BatchSize: 100,
@@ -418,11 +636,6 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("dynamodb:TransactWriteItems");
     expect(rendered).toContain("sqs:ReceiveMessage");
     expect(rendered).toContain("sqs:SendMessage");
-    expect(rendered).toContain("FindTheEdge/UpcomingEvents");
-    expect(rendered).toContain("FindTheEdge/OddsProjection");
-    expect(rendered).toContain("FixtureOddsProjectionDlqAlarm");
-    expect(rendered).toContain("FixtureOddsProjectionErrorsAlarm");
-    expect(rendered).toContain("FixtureOddsProjectionFailuresAlarm");
     expect(rendered).toContain("dynamodb:GetRecords");
     expect(rendered).toContain("dynamodb:GetShardIterator");
     expect(rendered).toContain("FIXTURE_ODDS#");
@@ -434,9 +647,9 @@ describe("foundation CDK app", () => {
       { Type: string; Properties?: Record<string, unknown> }
     >;
     const projectionPolicy = Object.entries(resources).find(
-      ([key, value]) =>
-        key.startsWith("FixtureOddsProjectionServiceRoleDefaultPolicy") &&
-        value.Type === "AWS::IAM::Policy",
+      ([, value]) =>
+        value.Type === "AWS::IAM::Policy" &&
+        JSON.stringify(value).includes("FIXTURE_ODDS#*"),
     );
     const projectionPolicyText = JSON.stringify(projectionPolicy?.[1]);
     expect(projectionPolicyText).toContain('"Action":"dynamodb:PutItem"');
@@ -483,13 +696,11 @@ describe("foundation CDK app", () => {
         Resource: { "Fn::GetAtt": [expect.any(String), "StreamArn"] },
       },
     ]);
-    expect(rendered).toContain("FailedRecords");
-    expect(rendered).toContain("FindTheEdge/EventApi");
     expect(rendered).toContain("GET /games");
     template.hasResourceProperties("AWS::CloudFront::Function", {
       AutoPublish: true,
       FunctionCode:
-        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
+        "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/admin/users' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}",
     });
     expect(rendered).not.toContain("CustomErrorResponses");
     template.hasResourceProperties("Custom::AWS", {
@@ -501,7 +712,7 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("AllowOrigins");
     expect(rendered).toContain("ExposeHeaders");
     expect(rendered).toContain("location");
-    template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 1);
+    template.resourceCountIs("AWS::ApiGatewayV2::Authorizer", 0);
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "GET /games",
       AuthorizationType: "NONE",
@@ -518,10 +729,6 @@ describe("foundation CDK app", () => {
       RouteKey: "GET /events/{eventId}",
       AuthorizationType: "NONE",
     });
-    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
-      RouteKey: "GET /events",
-      AuthorizationType: "JWT",
-    });
     for (const routeKey of [
       "GET /sports/{sportKey}/opportunities",
       "GET /sports/{sportKey}/opportunities/{opportunityId}",
@@ -530,9 +737,16 @@ describe("foundation CDK app", () => {
         RouteKey: routeKey,
         AuthorizationType: "NONE",
       });
-    // Watchlist rows belong to one user, so the routes are authenticated but
-    // deliberately carry no Cognito scope: the subject is the authorization.
+    // These ten ordinary routes authenticate the owned fte1 session inside
+    // Lambda. None may be partially left on the Cognito authorizer.
     for (const routeKey of [
+      "GET /events",
+      "POST /events/{eventId}/scout",
+      "GET /scout-jobs/{jobId}",
+      "POST /scout-jobs/{jobId}/retry",
+      "GET /scout-jobs/{jobId}/report",
+      "GET /scout-reports/{reportId}/versions",
+      "GET /scout-reports/{reportId}/versions/{versionNumber}",
       "GET /watchlist",
       "POST /watchlist",
       "DELETE /watchlist/{eventId}",
@@ -544,8 +758,9 @@ describe("foundation CDK app", () => {
       );
       expect(matches).toHaveLength(1);
       expect(matches[0]?.Properties).toEqual(
-        expect.objectContaining({ AuthorizationType: "JWT" }),
+        expect.objectContaining({ AuthorizationType: "NONE" }),
       );
+      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
       expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
     // The identity routes are how a caller obtains a token, so they carry no
@@ -575,25 +790,14 @@ describe("foundation CDK app", () => {
       expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
       expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
-    // The owned capabilities projection is additive. The four elevated write
-    // routes remain on their exact Cognito scopes until the later cutover.
-    for (const [routeKey, scope] of [
-      [
-        "POST /retrospectives/{eventId}/review",
-        "events/retrospectives:approve",
-      ],
-      [
-        "POST /strategy-experiments/{eventId}/approve",
-        "events/strategies:promote",
-      ],
-      [
-        "POST /strategy-experiments/{eventId}/promote",
-        "events/strategies:promote",
-      ],
-      [
-        "POST /strategy-experiments/{eventId}/rollback",
-        "events/strategies:promote",
-      ],
+    // These are the final four Cognito-authorized methods to move behind the
+    // Lambda's verified owned-session and server-role boundary. The Cognito
+    // pool, clients, groups, scopes, domain, and outputs remain for rollback.
+    for (const routeKey of [
+      "POST /retrospectives/{eventId}/review",
+      "POST /strategy-experiments/{eventId}/approve",
+      "POST /strategy-experiments/{eventId}/promote",
+      "POST /strategy-experiments/{eventId}/rollback",
     ]) {
       const matches = Object.values(resources).filter(
         (resource) =>
@@ -602,12 +806,10 @@ describe("foundation CDK app", () => {
       );
       expect(matches).toHaveLength(1);
       expect(matches[0]?.Properties).toEqual(
-        expect.objectContaining({
-          AuthorizationType: "JWT",
-          AuthorizationScopes: [scope],
-        }),
+        expect.objectContaining({ AuthorizationType: "NONE" }),
       );
-      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeDefined();
+      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
+      expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
@@ -707,24 +909,14 @@ describe("foundation CDK app", () => {
         ]),
       },
     });
-    expect(rendered).toContain("Caught5xx");
     expect(rendered).toContain("opportunity-rank-v1");
-    expect(rendered).toContain("OpportunityJoinFailure");
-    expect(rendered).toContain("OpportunityStaleRead");
-    expect(rendered).toContain("provider-status");
     expect(rendered).toContain("/data-sources");
     expect(rendered).toContain("/scout-jobs/");
     expect(rendered).toContain("/auth/callback");
-    expect(rendered).toContain("RetrospectiveValidationFailures");
-    expect(rendered).toContain("RetrospectiveReviewConflict");
-    expect(rendered).toContain("RetrospectiveReviewForbidden");
     expect(rendered).not.toContain("dynamodb:Scan");
     template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
       StageName: "test",
       AutoDeploy: true,
-      AccessLogSettings: Match.objectLike({
-        Format: Match.stringLikeRegexp("requestId.*routeKey.*status"),
-      }),
     });
     template.hasOutput("EventsApiEndpoint", {});
     template.hasResourceProperties("AWS::Cognito::UserPool", {
@@ -851,7 +1043,11 @@ describe("foundation CDK app", () => {
     ])
       template.hasOutput(output, {});
     expect(rendered).toContain("events/events:read");
-    template.hasResource("AWS::Logs::LogGroup", { DeletionPolicy: "Retain" });
+    template.resourceCountIs("AWS::Logs::LogGroup", 0);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 0);
+    expect(rendered).not.toContain("AWSLambdaBasicExecutionRole");
+    expect(rendered).not.toContain("logs:");
+    expect(rendered).not.toContain("cloudwatch:");
     expect(rendered).not.toContain('"Action":"sqs:*"');
     expect(rendered).not.toContain('"Action":"dynamodb:*"');
     template.hasResourceProperties("AWS::IAM::Policy", {
@@ -961,9 +1157,7 @@ describe("foundation CDK app", () => {
     );
     expect(
       scoutingStateMachine?.[1].Properties?.["LoggingConfiguration"],
-    ).toEqual(
-      expect.objectContaining({ IncludeExecutionData: false, Level: "ERROR" }),
-    );
+    ).toBeUndefined();
     const workflowDefinition = JSON.stringify(
       scoutingStateMachine?.[1].Properties?.["DefinitionString"],
     );
@@ -988,16 +1182,13 @@ describe("foundation CDK app", () => {
     expect(workflowDefinition).toContain("$.jobId");
     expect(workflowDefinition).toContain("$.attemptId");
 
-    for (const [routeKey, scope] of [
-      ["POST /events/{eventId}/scout", "events/scouting:write"],
-      ["GET /scout-jobs/{jobId}", "events/scouting:read"],
-      ["POST /scout-jobs/{jobId}/retry", "events/scouting:write"],
-      ["GET /scout-jobs/{jobId}/report", "events/scouting:read"],
-      ["GET /scout-reports/{reportId}/versions", "events/scouting:read"],
-      [
-        "GET /scout-reports/{reportId}/versions/{versionNumber}",
-        "events/scouting:read",
-      ],
+    for (const routeKey of [
+      "POST /events/{eventId}/scout",
+      "GET /scout-jobs/{jobId}",
+      "POST /scout-jobs/{jobId}/retry",
+      "GET /scout-jobs/{jobId}/report",
+      "GET /scout-reports/{reportId}/versions",
+      "GET /scout-reports/{reportId}/versions/{versionNumber}",
     ]) {
       const matches = Object.values(resources).filter(
         (resource) =>
@@ -1006,11 +1197,10 @@ describe("foundation CDK app", () => {
       );
       expect(matches).toHaveLength(1);
       expect(matches[0]?.Properties).toEqual(
-        expect.objectContaining({
-          AuthorizationType: "JWT",
-          AuthorizationScopes: [scope],
-        }),
+        expect.objectContaining({ AuthorizationType: "NONE" }),
       );
+      expect(matches[0]?.Properties?.["AuthorizerId"]).toBeUndefined();
+      expect(matches[0]?.Properties?.["AuthorizationScopes"]).toBeUndefined();
     }
     expect(rendered).toContain("scouting:read");
     expect(rendered).toContain("scouting:write");
@@ -1034,18 +1224,19 @@ describe("foundation CDK app", () => {
     expect(rendered).toContain("states:DescribeExecution");
     expect(rendered).toContain("sqs:SendMessage");
     const outboxPolicy = Object.entries(resources).find(
-      ([key, resource]) =>
-        key.startsWith("ScoutingOutboxPublisherServiceRoleDefaultPolicy") &&
-        resource.Type === "AWS::IAM::Policy",
+      ([, resource]) =>
+        resource.Type === "AWS::IAM::Policy" &&
+        JSON.stringify(resource).includes("SCOUT_OUTBOX#*"),
     );
     expect(JSON.stringify(outboxPolicy?.[1])).toContain(
       '"Action":["dynamodb:GetItem","dynamodb:UpdateItem"]',
     );
     expect(JSON.stringify(outboxPolicy?.[1])).toContain("SCOUT_OUTBOX#*");
     const dispatcherPolicy = Object.entries(resources).find(
-      ([key, resource]) =>
-        key.startsWith("ScoutingDispatcherServiceRoleDefaultPolicy") &&
-        resource.Type === "AWS::IAM::Policy",
+      ([, resource]) =>
+        resource.Type === "AWS::IAM::Policy" &&
+        JSON.stringify(resource).includes("states:StartExecution") &&
+        JSON.stringify(resource).includes("dynamodb:TransactWriteItems"),
     );
     expect(JSON.stringify(dispatcherPolicy?.[1])).toContain(
       '"Action":["dynamodb:GetItem","dynamodb:TransactWriteItems"]',
@@ -1058,9 +1249,9 @@ describe("foundation CDK app", () => {
     ])
       expect(JSON.stringify(dispatcherPolicy?.[1])).toContain(leadingKey);
     const workflowWorkerPolicy = Object.entries(resources).find(
-      ([key, resource]) =>
-        key.startsWith("ScoutingWorkflowWorkerServiceRoleDefaultPolicy") &&
-        resource.Type === "AWS::IAM::Policy",
+      ([, resource]) =>
+        resource.Type === "AWS::IAM::Policy" &&
+        JSON.stringify(resource).includes("SCOUT_REPORT#*"),
     );
     expect(JSON.stringify(workflowWorkerPolicy?.[1])).toContain(
       '"Action":["dynamodb:ConditionCheckItem","dynamodb:GetItem","dynamodb:PutItem","dynamodb:TransactWriteItems"]',
@@ -1082,27 +1273,6 @@ describe("foundation CDK app", () => {
       expect(actions).not.toMatch(/"Action":"[^"]*\*/);
       expect(actions).not.toMatch(/"Action":\[[^\]]*"[^"]*\*/);
     }
-    for (const alarm of [
-      "ScoutingOutboxPublisherErrorsAlarm",
-      "ScoutingOutboxFailuresAlarm",
-      "ScoutingOutboxPublisherDlqAlarm",
-      "ScoutingOutboxIteratorAgeAlarm",
-      "ScoutingOutboxLagAlarm",
-      "ScoutingDispatcherErrorsAlarm",
-      "ScoutingDispatchFailuresAlarm",
-      "ScoutingWorkflowWorkerErrorsAlarm",
-      "ScoutingDispatchDlqAlarm",
-      "ScoutingDispatchOldestMessageAlarm",
-      "ScoutingWorkflowFailuresAlarm",
-      "ScoutingWorkflowTimeoutsAlarm",
-    ])
-      expect(rendered).toContain(alarm);
-    for (const route of ["scout-create", "scout-status", "scout-retry"])
-      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-        MetricName: "Caught5xx",
-        Namespace: "FindTheEdge/EventApi",
-        Dimensions: [{ Name: "Route", Value: route }],
-      });
     for (const output of [
       "ScoutingDispatchQueueUrl",
       "ScoutingDispatchDlqUrl",
@@ -1133,6 +1303,7 @@ describe("foundation CDK app", () => {
     const indexes = table?.Properties?.["GlobalSecondaryIndexes"] as
       { IndexName: string }[] | undefined;
     expect(indexes?.map(({ IndexName }) => IndexName).sort()).toEqual([
+      "admin-directory-v1",
       "opportunity-active-v1",
       "opportunity-rank-v1",
     ]);
@@ -1149,7 +1320,11 @@ describe("foundation CDK app", () => {
           | undefined;
         return policy?.Statement ?? [];
       });
-    for (const indexName of ["opportunity-active-v1", "opportunity-rank-v1"]) {
+    for (const indexName of [
+      "admin-directory-v1",
+      "opportunity-active-v1",
+      "opportunity-rank-v1",
+    ]) {
       const consumers = statements.filter((statement) =>
         JSON.stringify(statement.Resource).includes(`"/index/${indexName}"`),
       );
@@ -1173,6 +1348,8 @@ describe("foundation CDK app", () => {
       "EventsApiEndpoint",
       "WebOrigin",
       "LiveOddsIngestionFunctionName",
+      "ProviderLandingFunctionName",
+      "ProviderLandingDlqUrl",
     ])
       expect(rendered.Outputs).toHaveProperty(output);
   });
@@ -1238,78 +1415,65 @@ describe("foundation CDK app", () => {
     ).toThrow("FTE_WEB_ORIGIN");
   });
 
-  it("enables scheduling only by config and wires configured SNS alarm actions", () => {
+  it("runs staging provider acquisition three times daily while keeping opportunities disabled", () => {
     const { stack } = createFoundationApp({
-      stage: "alerts",
+      stage: "staging",
+      ...eventConfig,
+      schedulerEnabled: false,
+    });
+    const template = Template.fromStack(stack);
+    expectScheduleState(
+      template,
+      "LiveOddsScheduler",
+      "ENABLED",
+      "cron(0 5,13,21 * * ? *)",
+    );
+    expectProviderLandingSchedule(
+      template,
+      "ENABLED",
+      "cron(15 5,13,21 * * ? *)",
+    );
+    for (const logicalName of [
+      "OpportunityExpirationSchedule",
+      "OpportunityGenerationSchedule",
+    ])
+      expectScheduleState(template, logicalName, "DISABLED", "rate(5 minutes)");
+    template.hasOutput("LiveOddsIngestionFunctionName", {});
+    template.hasOutput("ProviderLandingFunctionName", {});
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 4);
+    template.resourceCountIs("AWS::Logs::LogGroup", 0);
+    expect(() =>
+      createFoundationApp({
+        stage: "staging",
+        ...eventConfig,
+        schedulerEnabled: true,
+      }),
+    ).toThrow(/scheduling must be false/);
+  });
+
+  it("keeps universal provider acquisition inert in production until the staging gate is promoted", () => {
+    const { stack } = createFoundationApp({
+      stage: "prod",
       ...eventConfig,
       schedulerEnabled: true,
-      alarmTopicArn: "arn:aws:sns:us-east-1:123456789012:fte-alerts",
     });
     const template = Template.fromStack(stack);
-    template.hasResourceProperties("AWS::Events::Rule", { State: "ENABLED" });
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 80);
-    // Every board alarm must carry the dimension its metric is published
-    // with. Declared without one, a CloudWatch alarm watches a metric that is
-    // never emitted and sits OK forever — which is exactly what shipped on
-    // 2026-08-11 while soccer read 0% priced for two hours.
-    for (const sport of ["mlb", "soccer"])
-      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-        MetricName: "UpcomingGamesPricedShare",
-        Dimensions: [{ Name: "sport", Value: sport }],
-        Threshold: 0,
-        ComparisonOperator: "LessThanOrEqualToThreshold",
-      });
-
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmActions: ["arn:aws:sns:us-east-1:123456789012:fte-alerts"],
-    });
-    expect(JSON.stringify(template.toJSON())).toContain(
-      "FindTheEdge/OddsControlPlane",
+    expectScheduleState(
+      template,
+      "LiveOddsScheduler",
+      "ENABLED",
+      "rate(1 minute)",
     );
-  });
-
-  it("subscribes the alarm email and routes every alarm to it", () => {
-    const { stack } = createFoundationApp({
-      stage: "alerts",
-      ...eventConfig,
-      alarmEmail: "kevishie@gmail.com",
-    });
-    const template = Template.fromStack(stack);
-    template.resourceCountIs("AWS::SNS::Topic", 1);
-    template.hasResourceProperties("AWS::SNS::Subscription", {
-      Protocol: "email",
-      Endpoint: "kevishie@gmail.com",
-    });
-    const rendered = template.toJSON() as {
-      Resources: Record<
-        string,
-        { Type: string; Properties?: { AlarmActions?: unknown[] } }
-      >;
-    };
-    const alarms = Object.values(rendered.Resources).filter(
-      ({ Type }) => Type === "AWS::CloudWatch::Alarm",
-    );
-    expect(alarms.length).toBe(80);
-    expect(
-      alarms.every((alarm) => alarm.Properties?.AlarmActions?.length === 1),
-    ).toBe(true);
+    expectProviderLandingSchedule(template, "DISABLED", "rate(1 minute)");
+    expectScheduleState(template, "OpportunityExpirationSchedule", "ENABLED");
+    expectScheduleState(template, "OpportunityGenerationSchedule", "ENABLED");
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 4);
     expect(() =>
       createFoundationApp({
-        stage: "alerts",
+        stage: "prod",
         ...eventConfig,
-        alarmEmail: "not an email",
+        schedulerEnabled: false,
       }),
-    ).toThrow("plain email address");
-  });
-
-  it("rejects an alarm topic outside the configured stack region", () => {
-    expect(() =>
-      createFoundationApp({
-        stage: "alerts",
-        ...eventConfig,
-        region: "us-east-1",
-        alarmTopicArn: "arn:aws:sns:us-west-2:123456789012:fte-alerts",
-      }),
-    ).toThrow("stack region");
+    ).toThrow(/scheduling must be true/);
   });
 });

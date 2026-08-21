@@ -123,7 +123,15 @@ function WatchlistRow({
       );
     if (!evidence)
       return <Unavailable reason="No prices are published for this event." />;
-    if (evidence.started) return <span>Closing lines</span>;
+    if (evidence.started)
+      return (
+        <span>
+          {game.odds.state === "available" &&
+          game.odds.source === "canonical-closing"
+            ? "Closing lines"
+            : "Pregame snapshot"}
+        </span>
+      );
     if (evidence.ageMinutes === null)
       return <Unavailable reason="The board did not report a snapshot time." />;
     const stale = evidence.ageMinutes > 15;

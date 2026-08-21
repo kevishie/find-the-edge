@@ -1,0 +1,2644 @@
+import {
+  type AccountRateCoordinationStore,
+  PROVIDER_LANDING_CHECKPOINT_SCHEMA_VERSION,
+  PROVIDER_LANDING_SCHEMA_VERSION,
+  providerLandingPositionHash,
+  type OddsProviderHealth,
+  type ProviderLandingCheckpoint,
+  type ProviderLandingEventPartition,
+  type ProviderLandingPositionClaimStore,
+  type ProviderLandingRecord,
+  type ProviderLandingStream,
+} from "@find-the-edge/database";
+import {
+  SharpApiError,
+  SharpApiCatalogSnapshot,
+  SharpApiLandingQuarantine,
+  SharpApiResponseMetadata,
+  SharpApiUniversalEvent,
+  SharpApiUniversalOddsRecord,
+  SharpApiUniversalPage,
+} from "@find-the-edge/providers";
+import { createHash } from "node:crypto";
+
+export interface ProviderLandingSource {
+  fetchCatalog(): Promise<SharpApiCatalogSnapshot>;
+  fetchEvents(
+    filter: ProviderLandingEventPartition,
+    offset: number,
+  ): Promise<SharpApiUniversalPage<SharpApiUniversalEvent>>;
+  fetchOdds(
+    cursor?: string,
+  ): Promise<SharpApiUniversalPage<SharpApiUniversalOddsRecord>>;
+}
+
+export interface ProviderLandingStore extends ProviderLandingPositionClaimStore {
+  getCheckpoint(
+    stream: ProviderLandingStream,
+  ): Promise<ProviderLandingCheckpoint | null>;
+  putRecords(records: readonly ProviderLandingRecord[]): Promise<{
+    readonly crossPageDuplicateCount: number;
+    readonly crossPageDuplicateRecordIds: readonly string[];
+  }>;
+  putCheckpoint(
+    checkpoint: ProviderLandingCheckpoint,
+    expectedVersion: number | null,
+  ): Promise<void>;
+}
+
+export interface ProviderLandingMetricSink {
+  emit(
+    metric:
+      | "ProviderLandingPage"
+      | "ProviderLandingRows"
+      | "ProviderLandingSweep"
+      | "ProviderLandingFailure"
+      | "ProviderLandingDiagnostic"
+      | "ProviderLandingTerminalFailure"
+      | "ProviderLandingRecovery"
+      | "ProviderLandingCompletionAgeSeconds"
+      | "ProviderLandingRunAgeSeconds",
+    value: number,
+    dimensions: Readonly<Record<string, string>>,
+  ): void;
+}
+
+export interface ProviderLandingAccountRateAdmission {
+  readonly admitted: boolean;
+  readonly resumeAfter?: string;
+  readonly reason?:
+    | "account-health-unavailable"
+    | "account-provider-unhealthy"
+    | "account-rate-reserve";
+}
+
+export interface ProviderLandingAccountRateCoordinator {
+  reserve(
+    cost: number,
+    requestedAt: Date,
+  ): Promise<ProviderLandingAccountRateAdmission>;
+  reconcile(
+    reservedCost: number,
+    metadata: SharpApiResponseMetadata | undefined,
+    completedAt: Date,
+  ): Promise<void>;
+  rateLimited(retryAt: string, failedAt: Date): Promise<void>;
+  terminal(
+    reason: "configuration" | "not-entitled" | "unauthorized",
+    failedAt: Date,
+  ): Promise<void>;
+}
+
+export interface SharedSharpApiAccountRateCoordinatorOptions {
+  /**
+   * The live odds and landing control planes elect exactly one new-window
+   * probe through the shared health row. The recovery callback either observes
+   * the winner or publishes provider truth before admission retries.
+   */
+  readonly recoverWindow?: () => Promise<void>;
+  readonly now?: () => Date;
+  readonly canRecoverWindow?: () => boolean;
+  readonly canDispatch?: () => boolean;
+}
+
+export interface ProviderLandingRunInput {
+  readonly source: ProviderLandingSource;
+  readonly store: ProviderLandingStore;
+  readonly accountRate?: ProviderLandingAccountRateCoordinator;
+  readonly metrics?: ProviderLandingMetricSink;
+  readonly now?: () => Date;
+  readonly catalogRefreshMs?: number;
+  readonly streamRefreshMs?: number;
+  readonly eventPageBudget?: number;
+  readonly oddsPageBudget?: number;
+  readonly shouldContinue?: () => boolean;
+}
+
+export interface ProviderLandingRunSummary {
+  readonly catalog?: ProviderLandingCheckpoint;
+  readonly events?: ProviderLandingCheckpoint;
+  readonly odds?: ProviderLandingCheckpoint;
+}
+
+const INITIAL_CURSOR = "__initial__";
+const DEFAULT_CATALOG_REFRESH_MS = 15 * 60 * 1_000;
+const DEFAULT_STREAM_REFRESH_MS = 10 * 60 * 1_000;
+const DEFAULT_RATE_PAUSE_MS = 60 * 1_000;
+const ACCOUNT_RATE_RESET_GUARD_MS = 10 * 1_000;
+const NON_RETRYABLE_PAUSE_MS = 24 * 60 * 60 * 1_000;
+const SHARP_API_ACCOUNT_HEALTH_KEY = "sharpapi:account:account";
+const MINIMUM_LANDING_ACCOUNT_RESERVE = 250;
+const LANDING_ACCOUNT_RESERVE_FRACTION = 0.5;
+// Durable position claims retain the exact sweep-wide replay/cycle history.
+// The checkpoint keeps only a small recent diagnostic window so its complete
+// DynamoDB item remains safely below the 400 KiB service limit.
+const MAX_VISITED_POSITION_HASHES = 512;
+const FILTER_RETRY_PAUSE_MS = 15 * 60 * 1_000;
+const CATALOG_WRITE_CHUNK_SIZE = 25;
+const MAX_EVENT_PARTITION_EXPECTED_ROWS = 3_000;
+const MAX_EVENT_PARTITION_LEAGUES = 50;
+const MAX_EVENT_PARTITION_QUERY_LENGTH = 3_800;
+const MAX_ACCESSIBLE_EVENT_PARTITION_ROWS = 5_200;
+const MAX_EVENT_PARTITIONS = 2_048;
+const MAX_EVENT_PLAN_BYTES = 300_000;
+const MAX_EVENT_CHECKPOINT_BYTES = 360_000;
+const SAFE_FAILURE_REASONS = new Set([
+  "unauthorized",
+  "not-entitled",
+  "rate-limited",
+  "provider-request-ambiguous",
+  "provider-unavailable",
+  "provider-rejected",
+  "provider-filter-rejected",
+  "invalid-response",
+  "provider-landing-reconciliation-failed",
+  "provider-landing-pagination-invalid",
+  "provider-landing-pagination-cycle",
+  "provider-landing-total-mismatch",
+  "provider-landing-total-missing",
+  "provider-landing-page-replay-drift",
+  "provider-landing-catalog-empty",
+  "provider-landing-write-exhausted",
+  "provider-landing-account-terminal",
+  "provider-landing-event-partition-too-large",
+  "provider-landing-event-plan-capacity",
+  "provider-landing-event-partition-deferred",
+]);
+
+/** Build a deterministic request plan from SharpAPI's complete reference
+ * catalog. A sport is narrowed by exact league slugs only when those league
+ * rows account for the complete sport denominator. Otherwise it deliberately
+ * falls back to the sport-wide request so a partial league catalog can never
+ * produce a falsely complete Events generation. This
+ * prevents provider-rejected broad sport filters, keeps each offset walk below
+ * the documented ceiling, and prevents same-slug leagues in different sports
+ * from colliding. Catalog rows that cannot be represented in the documented
+ * comma-separated grammar are already quarantined at the provider boundary;
+ * no sport or league allowlist participates in this plan. */
+export const buildSharpApiEventPartitions = (
+  snapshot: Pick<SharpApiCatalogSnapshot, "sports" | "leagues"> &
+    Partial<Pick<SharpApiCatalogSnapshot, "quarantines">>,
+) => {
+  const leagues = new Map(
+    snapshot.leagues.map((league) => [
+      `${league.providerSportId}\u0000${league.providerLeagueId}`,
+      league,
+    ]),
+  );
+  const sports = new Map(
+    snapshot.sports.map((sport) => [sport.providerSportId, sport] as const),
+  );
+  const leagueIdsBySport = new Map<string, Set<string>>();
+  for (const league of snapshot.leagues) {
+    const ids = leagueIdsBySport.get(league.providerSportId) ?? new Set();
+    ids.add(league.providerLeagueId);
+    leagueIdsBySport.set(league.providerSportId, ids);
+  }
+  const forcedSportWide = new Set(
+    (snapshot.quarantines ?? []).flatMap((quarantine) => {
+      if (quarantine.endpoint === "leagues" && quarantine.providerSportId)
+        return [quarantine.providerSportId];
+      return [];
+    }),
+  );
+  const sportIds = new Set([
+    ...sports.keys(),
+    ...leagueIdsBySport.keys(),
+    ...forcedSportWide,
+  ]);
+  const partitions: ProviderLandingEventPartition[] = [];
+  const queryLength = (sport: string, members: readonly string[]) => {
+    const query = new URLSearchParams({ sport });
+    if (members.length > 0) query.set("league", members.join(","));
+    return query.toString().length;
+  };
+  for (const sportId of [...sportIds].sort((left, right) =>
+    left.localeCompare(right),
+  )) {
+    const sport = sports.get(sportId);
+    const catalogLeagueIds = new Set([
+      ...(sport?.providerLeagueIds ?? []),
+      ...(leagueIdsBySport.get(sportId) ?? []),
+    ]);
+    const sportLeagues = [...catalogLeagueIds].map((leagueId) =>
+      leagues.get(`${sportId}\u0000${leagueId}`),
+    );
+    const available = sportLeagues.filter(
+      (league): league is NonNullable<typeof league> => !!league,
+    );
+    const leagueEventCount = available.reduce(
+      (total, league) => total + league.eventCount,
+      0,
+    );
+    const leagueLiveCount = available.reduce(
+      (total, league) => total + league.liveCount,
+      0,
+    );
+    const hasCatalogActivity =
+      forcedSportWide.has(sportId) ||
+      (sport?.eventCount ?? 0) > 0 ||
+      (sport?.liveCount ?? 0) > 0 ||
+      leagueEventCount > 0 ||
+      leagueLiveCount > 0;
+    if (!hasCatalogActivity) continue;
+    const hasMissingLeague = sportLeagues.some((league) => !league);
+    const exactLeagueCoverage =
+      available.length > 0 &&
+      !forcedSportWide.has(sportId) &&
+      !hasMissingLeague &&
+      (!sport ||
+        (leagueEventCount === sport.eventCount &&
+          leagueLiveCount === sport.liveCount));
+    if (!exactLeagueCoverage) {
+      partitions.push({ sport: sportId });
+      continue;
+    }
+    let current: string[] = [];
+    let currentExpectedRows = 0;
+    const flush = () => {
+      if (current.length > 0)
+        partitions.push({ sport: sportId, leagues: current });
+      current = [];
+      currentExpectedRows = 0;
+    };
+    for (const league of available.sort((left, right) =>
+      left.providerLeagueId.localeCompare(right.providerLeagueId),
+    )) {
+      const candidate = [...current, league.providerLeagueId];
+      if (
+        current.length > 0 &&
+        (candidate.length > MAX_EVENT_PARTITION_LEAGUES ||
+          currentExpectedRows + league.eventCount >
+            MAX_EVENT_PARTITION_EXPECTED_ROWS ||
+          queryLength(sportId, candidate) > MAX_EVENT_PARTITION_QUERY_LENGTH)
+      )
+        flush();
+      current.push(league.providerLeagueId);
+      currentExpectedRows += league.eventCount;
+    }
+    flush();
+  }
+  return partitions;
+};
+
+const catalogEventCoverageIdentifiable = (snapshot: SharpApiCatalogSnapshot) =>
+  snapshot.quarantines.every((quarantine) => {
+    if (quarantine.endpoint === "sports") return false;
+    if (quarantine.endpoint === "leagues")
+      return quarantine.providerSportId !== undefined;
+    return true;
+  });
+
+type TerminalSharpApiCode = "configuration" | "not-entitled" | "unauthorized";
+const TERMINAL_SHARP_API_CODES = new Set<TerminalSharpApiCode>([
+  "configuration",
+  "not-entitled",
+  "unauthorized",
+]);
+const terminalSharpApiCode = (
+  code: SharpApiError["code"],
+): code is TerminalSharpApiCode =>
+  TERMINAL_SHARP_API_CODES.has(code as TerminalSharpApiCode);
+const accountGlobalProviderFailure = (error: unknown) =>
+  (error instanceof SharpApiError && terminalSharpApiCode(error.code)) ||
+  (error instanceof Error &&
+    error.message === "provider-landing-account-terminal");
+
+const futureBoundary = (
+  now: Date,
+  ...candidates: readonly (string | undefined)[]
+) => {
+  const latest = candidates
+    .filter(
+      (candidate): candidate is string =>
+        !!candidate && Date.parse(candidate) > now.getTime(),
+    )
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0];
+  return (
+    latest ?? new Date(now.getTime() + DEFAULT_RATE_PAUSE_MS).toISOString()
+  );
+};
+
+const accountHealthIsTerminal = (health: OddsProviderHealth) =>
+  health.failureClass === "terminal" ||
+  ["configuration", "unauthorized", "not-entitled"].includes(
+    health.failureReason ?? "",
+  );
+const accountHealthCanRecover = (health: OddsProviderHealth, now: Date) =>
+  health.failureClass === "transient" &&
+  [health.cooldownUntil, health.retryAt, health.rateWindow?.resetsAt].every(
+    (candidate) => !candidate || Date.parse(candidate) <= now.getTime(),
+  );
+
+/**
+ * Low-priority account admission for universal acquisition. Live odds and
+ * landing share one durable probe lease, while landing spends only after the
+ * elected winner establishes an authoritative account window.
+ */
+export class SharedSharpApiAccountRateCoordinator implements ProviderLandingAccountRateCoordinator {
+  private readonly attemptedRecoveryKeys = new Set<string>();
+  private refreshDispatchBlocked = false;
+
+  constructor(
+    private readonly store: AccountRateCoordinationStore,
+    private readonly options: SharedSharpApiAccountRateCoordinatorOptions = {},
+  ) {}
+
+  private unavailable(
+    requestedAt: Date,
+    health?: OddsProviderHealth | null,
+  ): ProviderLandingAccountRateAdmission {
+    return {
+      admitted: false,
+      reason: "account-health-unavailable",
+      resumeAfter: futureBoundary(
+        requestedAt,
+        health?.cooldownUntil,
+        health?.retryAt,
+        health?.rateWindow?.resetsAt,
+      ),
+    };
+  }
+
+  private async reserveOnce(
+    cost: number,
+    requestedAt: Date,
+  ): Promise<ProviderLandingAccountRateAdmission> {
+    let health = await this.store.getHealth(SHARP_API_ACCOUNT_HEALTH_KEY);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const attemptAt = this.options.now?.() ?? requestedAt;
+      if (!health) return this.unavailable(attemptAt);
+      if (accountHealthIsTerminal(health))
+        throw new Error("provider-landing-account-terminal");
+      if (!health.healthy && accountHealthCanRecover(health, attemptAt))
+        return this.unavailable(attemptAt, health);
+      if (!health.healthy)
+        return {
+          admitted: false,
+          reason: "account-provider-unhealthy",
+          resumeAfter: futureBoundary(
+            attemptAt,
+            health.cooldownUntil,
+            health.retryAt,
+            health.rateWindow?.resetsAt,
+          ),
+        };
+      const remaining = health.rateWindow?.remaining ?? health.quotaRemaining;
+      if (remaining === undefined) return this.unavailable(attemptAt, health);
+      const resetsAt = health.rateWindow?.resetsAt;
+      if (
+        resetsAt &&
+        Date.parse(resetsAt) <=
+          attemptAt.getTime() + ACCOUNT_RATE_RESET_GUARD_MS
+      )
+        return this.unavailable(attemptAt, health);
+      if (this.options.canDispatch?.() === false) {
+        this.refreshDispatchBlocked = true;
+        return this.unavailable(attemptAt, health);
+      }
+      const limit = health.rateWindow?.limit;
+      const reserve = Math.max(
+        MINIMUM_LANDING_ACCOUNT_RESERVE,
+        limit === undefined
+          ? 0
+          : Math.ceil(limit * LANDING_ACCOUNT_RESERVE_FRACTION),
+      );
+      const admitted = await this.store.reserveAccountRate(
+        SHARP_API_ACCOUNT_HEALTH_KEY,
+        reserve,
+        cost,
+        attemptAt.toISOString(),
+        {
+          ...(health.version === undefined ? {} : { version: health.version }),
+          ...(limit === undefined ? {} : { limit }),
+          ...(resetsAt === undefined ? {} : { resetsAt }),
+        },
+      );
+      if (admitted) {
+        const dispatchAt = this.options.now?.() ?? attemptAt;
+        if (this.options.canDispatch?.() === false) {
+          this.refreshDispatchBlocked = true;
+          return this.unavailable(dispatchAt, health);
+        }
+        if (
+          resetsAt !== undefined &&
+          Date.parse(resetsAt) <=
+            dispatchAt.getTime() + ACCOUNT_RATE_RESET_GUARD_MS
+        )
+          return this.unavailable(dispatchAt, health);
+        return { admitted: true };
+      }
+      const current =
+        (await this.store.getHealth(SHARP_API_ACCOUNT_HEALTH_KEY)) ?? health;
+      if (accountHealthIsTerminal(current))
+        throw new Error("provider-landing-account-terminal");
+      if (!current.healthy && accountHealthCanRecover(current, attemptAt))
+        return this.unavailable(attemptAt, current);
+      if (!current.healthy)
+        return {
+          admitted: false,
+          reason: "account-provider-unhealthy",
+          resumeAfter: futureBoundary(
+            attemptAt,
+            current.cooldownUntil,
+            current.retryAt,
+            current.rateWindow?.resetsAt,
+          ),
+        };
+      const currentRemaining =
+        current.rateWindow?.remaining ?? current.quotaRemaining;
+      if (currentRemaining === undefined)
+        return this.unavailable(attemptAt, current);
+      const currentReset = current.rateWindow?.resetsAt;
+      if (
+        currentReset &&
+        Date.parse(currentReset) <=
+          attemptAt.getTime() + ACCOUNT_RATE_RESET_GUARD_MS
+      )
+        return this.unavailable(attemptAt, current);
+      const currentLimit = current.rateWindow?.limit;
+      const currentReserve = Math.max(
+        MINIMUM_LANDING_ACCOUNT_RESERVE,
+        currentLimit === undefined
+          ? 0
+          : Math.ceil(currentLimit * LANDING_ACCOUNT_RESERVE_FRACTION),
+      );
+      if (attempt === 0 && currentRemaining - cost >= currentReserve) {
+        health = current;
+        continue;
+      }
+      return {
+        admitted: false,
+        reason: "account-rate-reserve",
+        resumeAfter: futureBoundary(
+          attemptAt,
+          current.cooldownUntil,
+          current.retryAt,
+          current.rateWindow?.resetsAt,
+        ),
+      };
+    }
+    throw new Error("provider-landing-account-reserve-unreachable");
+  }
+
+  async reserve(
+    cost: number,
+    requestedAt: Date,
+  ): Promise<ProviderLandingAccountRateAdmission> {
+    if (!Number.isSafeInteger(cost) || cost <= 0 || cost > 2)
+      throw new Error("provider-landing-account-cost-invalid");
+    const firstAttemptAt = this.options.now?.() ?? requestedAt;
+    if (this.refreshDispatchBlocked) return this.unavailable(firstAttemptAt);
+    const first = await this.reserveOnce(cost, firstAttemptAt);
+    if (
+      first.admitted ||
+      first.reason !== "account-health-unavailable" ||
+      !this.options.recoverWindow ||
+      this.options.canRecoverWindow?.() === false
+    )
+      return first;
+    const health = await this.store.getHealth(SHARP_API_ACCOUNT_HEALTH_KEY);
+    const recoveryKey =
+      health?.rateWindow?.resetsAt ?? health?.updatedAt ?? "missing";
+    if (this.attemptedRecoveryKeys.has(recoveryKey)) return first;
+    if (this.attemptedRecoveryKeys.size >= 32) {
+      const oldest = this.attemptedRecoveryKeys.values().next().value;
+      if (oldest !== undefined) this.attemptedRecoveryKeys.delete(oldest);
+    }
+    this.attemptedRecoveryKeys.add(recoveryKey);
+    await this.options.recoverWindow();
+    if (this.options.canDispatch?.() === false) {
+      this.refreshDispatchBlocked = true;
+      return first;
+    }
+    const second = await this.reserveOnce(
+      cost,
+      this.options.now?.() ?? new Date(),
+    );
+    if (!second.admitted && second.reason === "account-health-unavailable") {
+      const unresolved = await this.store.getHealth(
+        SHARP_API_ACCOUNT_HEALTH_KEY,
+      );
+      const unresolvedKey =
+        unresolved?.rateWindow?.probeUntil ??
+        unresolved?.rateWindow?.resetsAt ??
+        unresolved?.updatedAt ??
+        "missing";
+      this.attemptedRecoveryKeys.add(unresolvedKey);
+    }
+    return second;
+  }
+
+  reconcile(
+    reservedCost: number,
+    metadata: SharpApiResponseMetadata | undefined,
+    completedAt: Date,
+  ) {
+    return this.store.reconcileAccountRateWindow(
+      SHARP_API_ACCOUNT_HEALTH_KEY,
+      reservedCost,
+      reservedCost,
+      metadata?.rateWindow,
+      completedAt.toISOString(),
+    );
+  }
+
+  rateLimited(retryAt: string, failedAt: Date) {
+    return this.store.blockAccountRateWindow(
+      SHARP_API_ACCOUNT_HEALTH_KEY,
+      retryAt,
+      failedAt.toISOString(),
+    );
+  }
+
+  terminal(
+    reason: "configuration" | "not-entitled" | "unauthorized",
+    failedAt: Date,
+  ) {
+    return this.store.blockAccountTerminal(
+      SHARP_API_ACCOUNT_HEALTH_KEY,
+      reason,
+      failedAt.toISOString(),
+    );
+  }
+}
+
+const asValue = <T extends object>(
+  value: T,
+): Readonly<Record<string, unknown>> =>
+  value as unknown as Readonly<Record<string, unknown>>;
+
+const sweepId = (stream: ProviderLandingStream, now: Date) =>
+  `${stream}:${now.toISOString()}`;
+
+const recoverySweepId = (
+  stream: ProviderLandingStream,
+  version: number,
+  now: Date,
+) => `${stream}:recovery-${version}:${now.toISOString()}`;
+
+const digest = (value: unknown) =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+// DynamoDB map key order is not contractual. Rebuild every partition in one
+// canonical field order before hashing catalog lineage so a semantically
+// identical checkpoint cannot look like a new plan after a read round-trip.
+const eventPlanDigest = (
+  partitions: readonly ProviderLandingEventPartition[],
+) =>
+  digest(
+    partitions.map((partition) => ({
+      sport: partition.sport,
+      ...(partition.leagues ? { leagues: [...partition.leagues] } : {}),
+    })),
+  );
+
+const encodedBytes = (value: unknown) =>
+  new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
+const eventPlanFits = (
+  eventPartitions: readonly ProviderLandingEventPartition[],
+) =>
+  eventPartitions.length <= MAX_EVENT_PARTITIONS &&
+  eventPartitions.reduce(
+    (total, partition) => total + encodedBytes(partition),
+    0,
+  ) <= MAX_EVENT_PLAN_BYTES;
+
+const refinedEventCheckpointFits = (
+  eventPartitions: readonly ProviderLandingEventPartition[],
+  checkpoint: ProviderLandingCheckpoint,
+) =>
+  eventPlanFits(eventPartitions) &&
+  encodedBytes(checkpoint) <= MAX_EVENT_CHECKPOINT_BYTES;
+
+const positionHash = (checkpoint: ProviderLandingCheckpoint) =>
+  providerLandingPositionHash(checkpoint, 64);
+
+const advancePositionHistory = (
+  history: readonly string[],
+  nextPositionHash: string,
+) => {
+  if (history.includes(nextPositionHash)) return history;
+  return [...history, nextPositionHash].slice(-MAX_VISITED_POSITION_HASHES);
+};
+
+const pageHash = (
+  page: SharpApiUniversalPage<
+    SharpApiUniversalEvent | SharpApiUniversalOddsRecord
+  >,
+) =>
+  digest({
+    records: page.records,
+    quarantines: page.quarantines,
+    sourceRows: page.sourceRows,
+    hasMore: page.hasMore,
+    nextOffset: page.nextOffset ?? null,
+    nextCursor: page.nextCursor ?? null,
+    providerTotal: page.providerTotal ?? null,
+  });
+
+const zeroCounts = () => ({
+  pages: 0,
+  sourceRows: 0,
+  landedRows: 0,
+  quarantinedRows: 0,
+  warningRows: 0,
+});
+
+const withoutTransientPageState = (checkpoint: ProviderLandingCheckpoint) => {
+  const committed = { ...checkpoint };
+  delete committed.pendingPage;
+  delete committed.resumeAfter;
+  delete committed.pauseScope;
+  return committed;
+};
+
+const withoutEventPartitionProgress = (
+  checkpoint: ProviderLandingCheckpoint,
+) => {
+  const completed = { ...checkpoint };
+  delete completed.eventPartitionSourceRows;
+  delete completed.eventDeferredPartitions;
+  delete completed.eventPrimaryTraversalComplete;
+  delete completed.eventPositionRevision;
+  return completed;
+};
+
+const withCurrentPageMetadata = (
+  checkpoint: ProviderLandingCheckpoint,
+  page: SharpApiUniversalPage<
+    SharpApiUniversalEvent | SharpApiUniversalOddsRecord
+  >,
+) => {
+  const current = { ...checkpoint };
+  // SharpAPI's updated_at describes the mutable provider view observed by the
+  // current request, not an immutable pagination snapshot. Likewise, some
+  // cursor feeds (notably /odds) legitimately omit total. Keep the latest
+  // bounded evidence when supplied without turning either optional field into
+  // a liveness prerequisite for a cursor/offset-complete sweep.
+  delete current.providerUpdatedAt;
+  delete current.providerTotal;
+  if (page.providerUpdatedAt)
+    current.providerUpdatedAt = page.providerUpdatedAt;
+  if (page.providerTotal !== undefined)
+    current.providerTotal = page.providerTotal;
+  return current;
+};
+
+const warningRows = (
+  records: readonly (SharpApiUniversalEvent | SharpApiUniversalOddsRecord)[],
+) =>
+  records.filter((record) => (record.sourceWarnings?.length ?? 0) > 0).length;
+
+const emitRows = (
+  metrics: ProviderLandingMetricSink | undefined,
+  stream: ProviderLandingStream,
+  landed: number,
+  quarantined: number,
+  warnings: number,
+  persistedPages = 1,
+) => {
+  metrics?.emit("ProviderLandingPage", persistedPages, {
+    stream,
+    outcome: "persisted",
+  });
+  if (landed > 0)
+    metrics?.emit("ProviderLandingRows", landed, {
+      stream,
+      outcome: "landed",
+    });
+  if (quarantined > 0)
+    metrics?.emit("ProviderLandingRows", quarantined, {
+      stream,
+      outcome: "quarantined",
+    });
+  if (warnings > 0)
+    metrics?.emit("ProviderLandingRows", warnings, {
+      stream,
+      outcome: "warning",
+    });
+};
+
+const createRateGate = (now: () => Date) => {
+  let resumeAfter: string | undefined;
+  const observe = (metadata: SharpApiResponseMetadata | undefined) => {
+    const { limit, remaining, resetsAt } = metadata?.rateWindow ?? {};
+    if (limit === undefined || remaining === undefined) return;
+    const reserve = Math.max(25, Math.ceil(limit * 0.2));
+    if (remaining > reserve) return;
+    const candidate =
+      resetsAt && Date.parse(resetsAt) > now().getTime()
+        ? resetsAt
+        : new Date(now().getTime() + DEFAULT_RATE_PAUSE_MS).toISOString();
+    if (!resumeAfter || Date.parse(candidate) > Date.parse(resumeAfter))
+      resumeAfter = candidate;
+  };
+  return {
+    observe,
+    deferUntil: (candidate: string | undefined) => {
+      if (
+        candidate &&
+        Date.parse(candidate) > now().getTime() &&
+        (!resumeAfter || Date.parse(candidate) > Date.parse(resumeAfter))
+      )
+        resumeAfter = candidate;
+    },
+    canRequest: () =>
+      !resumeAfter || now().getTime() >= Date.parse(resumeAfter),
+    resumeAfter: () => resumeAfter,
+  };
+};
+
+const startCheckpoint = async (
+  store: ProviderLandingStore,
+  stream: ProviderLandingStream,
+  prior: ProviderLandingCheckpoint | null,
+  now: Date,
+  eventPartitions?: readonly ProviderLandingEventPartition[],
+  eventCatalogPlanHash?: string,
+) => {
+  if (prior?.status === "running") return prior;
+  const position =
+    stream === "events"
+      ? { partition: 0, offset: 0 }
+      : stream === "odds"
+        ? { cursor: INITIAL_CURSOR }
+        : null;
+  const checkpoint: ProviderLandingCheckpoint = {
+    schemaVersion: PROVIDER_LANDING_CHECKPOINT_SCHEMA_VERSION,
+    providerId: "sharpapi",
+    stream,
+    version: (prior?.version ?? -1) + 1,
+    status: "running",
+    sweepId: sweepId(stream, now),
+    slot: prior ? (prior.slot === 0 ? 1 : 0) : 0,
+    position,
+    startedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    counts: zeroCounts(),
+    ...(stream === "events" && eventPartitions
+      ? {
+          eventPartitions,
+          eventCatalogPlanHash:
+            eventCatalogPlanHash ?? eventPlanDigest(eventPartitions),
+          eventPartitionSourceRows: 0,
+          eventPositionRevision: 0,
+        }
+      : {}),
+    ...(position
+      ? {
+          visitedPositionHashes: [
+            providerLandingPositionHash({
+              stream,
+              position,
+              ...(stream === "events" ? { eventPositionRevision: 0 } : {}),
+            }),
+          ],
+        }
+      : {}),
+    ...(prior?.lastCompletedAt
+      ? { lastCompletedAt: prior.lastCompletedAt }
+      : {}),
+    ...(prior?.lastCompletedSlot !== undefined
+      ? { lastCompletedSlot: prior.lastCompletedSlot }
+      : {}),
+    ...(prior?.lastCompletedSweepId
+      ? { lastCompletedSweepId: prior.lastCompletedSweepId }
+      : {}),
+    ...(prior?.lastCompletedCounts
+      ? { lastCompletedCounts: prior.lastCompletedCounts }
+      : {}),
+  };
+  await store.putCheckpoint(checkpoint, prior?.version ?? null);
+  return checkpoint;
+};
+
+const restartCheckpointAfterDrift = async (
+  store: ProviderLandingStore,
+  checkpoint: ProviderLandingCheckpoint,
+  now: Date,
+  metrics: ProviderLandingMetricSink | undefined,
+  reason:
+    | "provider-landing-page-replay-drift"
+    | "provider-landing-pagination-cycle"
+    | "provider-landing-total-missing"
+    | "provider-landing-total-mismatch"
+    | "provider-landing-event-plan-migrated"
+    | "provider-landing-cursor-rejected"
+    | "provider-landing-event-partition-split"
+    | "provider-landing-event-partition-deferred",
+  eventPartitions = checkpoint.eventPartitions,
+  eventCatalogPlanHash = checkpoint.eventCatalogPlanHash,
+  eventDeferredPartitions?: readonly number[],
+) => {
+  const firstPrimaryEventPartition =
+    checkpoint.stream === "events" && eventPartitions
+      ? eventPartitions.findIndex(
+          (_, index) => !eventDeferredPartitions?.includes(index),
+        )
+      : -1;
+  const eventPrimaryTraversalComplete =
+    checkpoint.stream === "events" &&
+    !!eventDeferredPartitions?.length &&
+    firstPrimaryEventPartition < 0;
+  const position =
+    checkpoint.stream === "events"
+      ? {
+          partition: eventPrimaryTraversalComplete
+            ? (eventDeferredPartitions?.[0] ?? 0)
+            : Math.max(firstPrimaryEventPartition, 0),
+          offset: 0,
+        }
+      : checkpoint.stream === "odds"
+        ? { cursor: INITIAL_CURSOR }
+        : null;
+  const priorVersion = checkpoint.version;
+  const restarted: ProviderLandingCheckpoint = {
+    schemaVersion: PROVIDER_LANDING_CHECKPOINT_SCHEMA_VERSION,
+    providerId: "sharpapi",
+    stream: checkpoint.stream,
+    version: priorVersion + 1,
+    status: "running",
+    sweepId: recoverySweepId(checkpoint.stream, priorVersion + 1, now),
+    slot: checkpoint.slot,
+    position,
+    startedAt: checkpoint.startedAt,
+    updatedAt: now.toISOString(),
+    counts: zeroCounts(),
+    ...(checkpoint.stream === "events" && eventPartitions
+      ? {
+          eventPartitions,
+          eventCatalogPlanHash:
+            eventCatalogPlanHash ?? eventPlanDigest(eventPartitions),
+          eventPartitionSourceRows: 0,
+          eventPositionRevision: 0,
+          ...(eventDeferredPartitions?.length
+            ? { eventDeferredPartitions }
+            : {}),
+          ...(eventPrimaryTraversalComplete
+            ? { eventPrimaryTraversalComplete: true as const }
+            : {}),
+        }
+      : {}),
+    ...(position
+      ? {
+          visitedPositionHashes: [
+            providerLandingPositionHash({
+              stream: checkpoint.stream,
+              position,
+              ...(checkpoint.stream === "events"
+                ? { eventPositionRevision: 0 }
+                : {}),
+            }),
+          ],
+        }
+      : {}),
+    ...(checkpoint.lastCompletedSlot !== undefined
+      ? { lastCompletedSlot: checkpoint.lastCompletedSlot }
+      : {}),
+    ...(checkpoint.lastCompletedSweepId
+      ? { lastCompletedSweepId: checkpoint.lastCompletedSweepId }
+      : {}),
+    ...(checkpoint.lastCompletedAt
+      ? { lastCompletedAt: checkpoint.lastCompletedAt }
+      : {}),
+    ...(checkpoint.lastCompletedCounts
+      ? { lastCompletedCounts: checkpoint.lastCompletedCounts }
+      : {}),
+    ...(eventPrimaryTraversalComplete
+      ? {
+          resumeAfter: new Date(
+            now.getTime() + FILTER_RETRY_PAUSE_MS,
+          ).toISOString(),
+          pauseScope: "stream" as const,
+        }
+      : {}),
+  };
+  await store.putCheckpoint(restarted, priorVersion);
+  metrics?.emit("ProviderLandingFailure", 1, {
+    stream: checkpoint.stream,
+    reason,
+  });
+  metrics?.emit("ProviderLandingRecovery", 1, {
+    stream: checkpoint.stream,
+    outcome: "restart",
+  });
+  return restarted;
+};
+
+const reservePaidRequest = async (input: {
+  accountRate?: ProviderLandingAccountRateCoordinator;
+  store: ProviderLandingStore;
+  checkpoint: ProviderLandingCheckpoint;
+  stream: ProviderLandingStream;
+  cost: number;
+  now: () => Date;
+  metrics?: ProviderLandingMetricSink;
+}) => {
+  if (!input.accountRate)
+    return { admitted: true as const, checkpoint: input.checkpoint };
+  const admission = await input.accountRate.reserve(input.cost, input.now());
+  if (admission.admitted)
+    return { admitted: true as const, checkpoint: input.checkpoint };
+  const priorVersion = input.checkpoint.version;
+  const checkpoint = {
+    ...input.checkpoint,
+    version: priorVersion + 1,
+    updatedAt: input.now().toISOString(),
+    resumeAfter: admission.resumeAfter ?? futureBoundary(input.now()),
+    pauseScope: "account" as const,
+  };
+  await input.store.putCheckpoint(checkpoint, priorVersion);
+  input.metrics?.emit("ProviderLandingFailure", 1, {
+    stream: input.stream,
+    reason: admission.reason ?? "account-rate-reserve",
+  });
+  return { admitted: false as const, checkpoint };
+};
+
+const pauseCheckpointAfterNonRetryable = async (
+  store: ProviderLandingStore,
+  checkpoint: ProviderLandingCheckpoint,
+  now: Date,
+) => {
+  const priorVersion = checkpoint.version;
+  const paused = {
+    ...checkpoint,
+    version: priorVersion + 1,
+    updatedAt: now.toISOString(),
+    resumeAfter: new Date(now.getTime() + NON_RETRYABLE_PAUSE_MS).toISOString(),
+    pauseScope: "stream" as const,
+  };
+  await store.putCheckpoint(paused, priorVersion);
+  return paused;
+};
+
+const quarantineRecord = (
+  quarantine: SharpApiLandingQuarantine,
+  checkpoint: ProviderLandingCheckpoint,
+  pageNumber: number,
+  retrievedAt: string,
+): ProviderLandingRecord => ({
+  schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+  providerId: "sharpapi",
+  recordType: "quarantine",
+  recordId: `${checkpoint.sweepId}:${quarantine.endpoint}:${pageNumber}:${quarantine.rowIndex}`,
+  endpoint: quarantine.endpoint,
+  ...(quarantine.providerSportId ? { sport: quarantine.providerSportId } : {}),
+  pageNumber,
+  sweepId: checkpoint.sweepId,
+  slot: checkpoint.slot,
+  retrievedAt,
+  value: asValue({
+    reason: quarantine.reason,
+    rowIndex: quarantine.rowIndex,
+    ...(quarantine.providerRecordId
+      ? { providerRecordId: quarantine.providerRecordId }
+      : {}),
+    ...(quarantine.providerSportId
+      ? { providerSportId: quarantine.providerSportId }
+      : {}),
+    sourceFields: quarantine.sourceFields,
+    sourceFieldCount: quarantine.sourceFieldCount,
+    ...(quarantine.sourceFieldsTruncated
+      ? { sourceFieldsTruncated: true }
+      : {}),
+    ...(quarantine.sourceSchemaHash
+      ? { sourceSchemaHash: quarantine.sourceSchemaHash }
+      : {}),
+    ...(quarantine.providerCode
+      ? { providerCode: quarantine.providerCode }
+      : {}),
+    ...(quarantine.httpStatus === undefined
+      ? {}
+      : { httpStatus: quarantine.httpStatus }),
+    ...(quarantine.requestId ? { requestId: quarantine.requestId } : {}),
+  }),
+});
+
+const providerFailureRecord = (
+  checkpoint: ProviderLandingCheckpoint,
+  error: SharpApiError,
+  retrievedAt: string,
+): ProviderLandingRecord => {
+  const endpoint =
+    checkpoint.stream === "catalog"
+      ? error.stage?.startsWith("leagues:")
+        ? "leagues"
+        : "sports"
+      : checkpoint.stream;
+  const positionEvidence =
+    checkpoint.position === null
+      ? checkpoint.stream
+      : `${checkpoint.stream}:${positionHash(checkpoint)}`;
+  return {
+    schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+    providerId: "sharpapi",
+    recordType: "quarantine",
+    recordId: `${checkpoint.sweepId}:provider-failure:${digest({
+      positionEvidence,
+      code: error.providerCode ?? error.code,
+      status: error.httpStatus ?? null,
+      requestId: error.requestId ?? null,
+      retrievedAt,
+    }).slice(0, 32)}`,
+    endpoint,
+    pageNumber: checkpoint.counts.pages + 1,
+    sweepId: checkpoint.sweepId,
+    slot: checkpoint.slot,
+    retrievedAt,
+    value: asValue({
+      reason:
+        checkpoint.stream === "events" &&
+        error.providerCode === "invalid_filter" &&
+        error.httpStatus === 400
+          ? "provider-filter-rejected"
+          : "provider-request-rejected",
+      providerCode: error.providerCode ?? error.code,
+      ...(error.httpStatus === undefined
+        ? {}
+        : { httpStatus: error.httpStatus }),
+      ...(error.requestId ? { requestId: error.requestId } : {}),
+      positionHash: positionEvidence,
+    }),
+  };
+};
+
+const persistProviderFailureEvidence = async (
+  store: ProviderLandingStore,
+  checkpoint: ProviderLandingCheckpoint,
+  error: SharpApiError,
+  observedAt: Date,
+) => {
+  await store.putRecords([
+    providerFailureRecord(checkpoint, error, observedAt.toISOString()),
+  ]);
+};
+
+const persistEventCoverageGapEvidence = async (
+  store: ProviderLandingStore,
+  checkpoint: ProviderLandingCheckpoint,
+  providerTotal: number,
+  observedAt: Date,
+) => {
+  const retrievedAt = observedAt.toISOString();
+  const positionEvidence = `events:${positionHash(checkpoint)}`;
+  await store.putRecords([
+    {
+      schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+      providerId: "sharpapi",
+      recordType: "quarantine",
+      recordId: `${checkpoint.sweepId}:coverage-gap:${digest({
+        positionEvidence,
+        providerTotal,
+        retrievedAt,
+      }).slice(0, 32)}`,
+      endpoint: "events",
+      pageNumber: checkpoint.counts.pages + 1,
+      sweepId: checkpoint.sweepId,
+      slot: checkpoint.slot,
+      retrievedAt,
+      value: asValue({
+        reason: "provider-event-partition-too-large",
+        providerTotal,
+        positionHash: positionEvidence,
+      }),
+    },
+  ]);
+};
+
+const persistEventPlanCapacityEvidence = async (
+  store: ProviderLandingStore,
+  checkpoint: ProviderLandingCheckpoint,
+  eventPartitions: readonly ProviderLandingEventPartition[],
+  observedAt: Date,
+) => {
+  const retrievedAt = observedAt.toISOString();
+  const planHash = eventPlanDigest(eventPartitions);
+  await store.putRecords([
+    {
+      schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+      providerId: "sharpapi",
+      recordType: "quarantine",
+      recordId: `${checkpoint.sweepId}:event-plan-capacity:${planHash.slice(0, 32)}`,
+      endpoint: "events",
+      pageNumber: checkpoint.counts.pages + 1,
+      sweepId: checkpoint.sweepId,
+      slot: checkpoint.slot,
+      retrievedAt,
+      value: asValue({
+        reason: "provider-event-plan-capacity",
+        partitionCount: eventPartitions.length,
+        encodedPlanBytes: eventPartitions.reduce(
+          (total, partition) => total + encodedBytes(partition),
+          0,
+        ),
+        planHash,
+      }),
+    },
+  ]);
+};
+
+const refineOrDeferEventPartition = async (input: {
+  store: ProviderLandingStore;
+  checkpoint: ProviderLandingCheckpoint;
+  now: Date;
+  counts: ProviderLandingCheckpoint["counts"];
+  attemptOutcome: "rejected" | "coverage-gap";
+  splitReason:
+    | "provider-landing-event-partition-filter-split"
+    | "provider-landing-event-partition-split";
+  deferredReason:
+    | "provider-filter-rejected"
+    | "provider-landing-event-partition-too-large"
+    | "provider-landing-event-plan-capacity";
+  metrics?: ProviderLandingMetricSink;
+}) => {
+  const { checkpoint } = input;
+  if (
+    checkpoint.stream !== "events" ||
+    checkpoint.status !== "running" ||
+    !checkpoint.position ||
+    !("partition" in checkpoint.position) ||
+    checkpoint.position.offset !== 0 ||
+    !checkpoint.eventPartitions
+  )
+    return null;
+  const partitionIndex = checkpoint.position.partition;
+  const partition = checkpoint.eventPartitions[partitionIndex];
+  if (!partition) return null;
+  if (checkpoint.pendingPage)
+    return restartCheckpointAfterDrift(
+      input.store,
+      checkpoint,
+      input.now,
+      input.metrics,
+      "provider-landing-page-replay-drift",
+    );
+  const retrievedAt = input.now.toISOString();
+  const priorVersion = checkpoint.version;
+  let deferredReason = input.deferredReason;
+  if (partition.leagues && partition.leagues.length > 1) {
+    const midpoint = Math.ceil(partition.leagues.length / 2);
+    const replacements = [
+      { ...partition, leagues: partition.leagues.slice(0, midpoint) },
+      { ...partition, leagues: partition.leagues.slice(midpoint) },
+    ];
+    const eventPartitions = checkpoint.eventPartitions.flatMap(
+      (candidate, index) =>
+        index === partitionIndex ? replacements : [candidate],
+    );
+    const shiftedDeferred = (checkpoint.eventDeferredPartitions ?? []).flatMap(
+      (candidate) =>
+        candidate === partitionIndex
+          ? [partitionIndex, partitionIndex + 1]
+          : [candidate > partitionIndex ? candidate + 1 : candidate],
+    );
+    const eventPositionRevision = (checkpoint.eventPositionRevision ?? 0) + 1;
+    const position = { partition: partitionIndex, offset: 0 };
+    const refined = {
+      ...withoutTransientPageState(checkpoint),
+      version: priorVersion + 1,
+      updatedAt: retrievedAt,
+      counts: input.counts,
+      position,
+      eventPartitions,
+      eventPartitionSourceRows: 0,
+      eventPositionRevision,
+      ...(shiftedDeferred.length > 0
+        ? { eventDeferredPartitions: shiftedDeferred }
+        : {}),
+      visitedPositionHashes: advancePositionHistory(
+        checkpoint.visitedPositionHashes ?? [],
+        providerLandingPositionHash({
+          stream: "events",
+          position,
+          eventPositionRevision,
+        }),
+      ),
+    };
+    delete refined.providerTotal;
+    if (refinedEventCheckpointFits(eventPartitions, refined)) {
+      await input.store.putCheckpoint(refined, priorVersion);
+      input.metrics?.emit("ProviderLandingPage", 1, {
+        stream: "events",
+        outcome: input.attemptOutcome,
+      });
+      input.metrics?.emit("ProviderLandingFailure", 1, {
+        stream: "events",
+        reason: input.splitReason,
+      });
+      return refined;
+    }
+    deferredReason = "provider-landing-event-plan-capacity";
+  }
+  const deferred = [
+    ...(checkpoint.eventDeferredPartitions ?? []).filter(
+      (candidate) => candidate !== partitionIndex,
+    ),
+    partitionIndex,
+  ];
+  const committed = {
+    ...withoutTransientPageState(checkpoint),
+    version: priorVersion + 1,
+    updatedAt: retrievedAt,
+    counts: input.counts,
+    eventPartitionSourceRows: 0,
+    eventDeferredPartitions: deferred,
+  };
+  delete committed.providerTotal;
+  const retryingDeferred = checkpoint.eventPrimaryTraversalComplete === true;
+  const nextPartition = partitionIndex + 1;
+  let advanced: ProviderLandingCheckpoint;
+  if (!retryingDeferred && nextPartition < checkpoint.eventPartitions.length) {
+    const position = { partition: nextPartition, offset: 0 };
+    advanced = {
+      ...committed,
+      status: "running",
+      position,
+      visitedPositionHashes: advancePositionHistory(
+        checkpoint.visitedPositionHashes ?? [],
+        providerLandingPositionHash({
+          stream: "events",
+          position,
+          ...(checkpoint.eventPositionRevision === undefined
+            ? {}
+            : { eventPositionRevision: checkpoint.eventPositionRevision }),
+        }),
+      ),
+    };
+  } else {
+    const existingDeferred = deferred.filter(
+      (candidate) => candidate !== partitionIndex,
+    );
+    const retryQueue = [...existingDeferred, partitionIndex];
+    const position = { partition: retryQueue[0]!, offset: 0 };
+    const eventPositionRevision = (checkpoint.eventPositionRevision ?? 0) + 1;
+    advanced = {
+      ...committed,
+      status: "running",
+      position,
+      eventDeferredPartitions: retryQueue,
+      eventPrimaryTraversalComplete: true,
+      eventPositionRevision,
+      visitedPositionHashes: advancePositionHistory(
+        checkpoint.visitedPositionHashes ?? [],
+        providerLandingPositionHash({
+          stream: "events",
+          position,
+          eventPositionRevision,
+        }),
+      ),
+      ...(retryingDeferred || existingDeferred.length === 0
+        ? {
+            resumeAfter: new Date(
+              input.now.getTime() +
+                (deferredReason === "provider-landing-event-plan-capacity"
+                  ? NON_RETRYABLE_PAUSE_MS
+                  : FILTER_RETRY_PAUSE_MS),
+            ).toISOString(),
+            pauseScope: "stream" as const,
+          }
+        : {}),
+    };
+  }
+  await input.store.putCheckpoint(advanced, priorVersion);
+  input.metrics?.emit("ProviderLandingPage", 1, {
+    stream: "events",
+    outcome: input.attemptOutcome,
+  });
+  input.metrics?.emit("ProviderLandingFailure", 1, {
+    stream: "events",
+    reason: deferredReason,
+  });
+  return advanced;
+};
+
+const deferRejectedEventPartition = async (input: {
+  store: ProviderLandingStore;
+  checkpoint: ProviderLandingCheckpoint;
+  error: SharpApiError;
+  now: Date;
+  metrics?: ProviderLandingMetricSink;
+}) => {
+  const { checkpoint } = input;
+  if (
+    checkpoint.stream !== "events" ||
+    checkpoint.status !== "running" ||
+    !checkpoint.position ||
+    !("partition" in checkpoint.position) ||
+    checkpoint.position.offset !== 0 ||
+    !checkpoint.eventPartitions ||
+    input.error.code !== "provider-rejected" ||
+    input.error.httpStatus !== 400 ||
+    input.error.providerCode !== "invalid_filter" ||
+    !input.error.requestId
+  )
+    return null;
+  await persistProviderFailureEvidence(
+    input.store,
+    checkpoint,
+    input.error,
+    input.now,
+  );
+  if (checkpoint.pendingPage) {
+    const restarted = await restartCheckpointAfterDrift(
+      input.store,
+      checkpoint,
+      input.now,
+      input.metrics,
+      "provider-landing-page-replay-drift",
+    );
+    input.metrics?.emit("ProviderLandingPage", 1, {
+      stream: "events",
+      outcome: "rejected",
+    });
+    input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+      stream: "events",
+      outcome: "observed",
+    });
+    return restarted;
+  }
+  const refined = await refineOrDeferEventPartition({
+    store: input.store,
+    checkpoint,
+    now: input.now,
+    counts: {
+      ...checkpoint.counts,
+      pages: checkpoint.counts.pages + 1,
+    },
+    attemptOutcome: "rejected",
+    splitReason: "provider-landing-event-partition-filter-split",
+    deferredReason: "provider-filter-rejected",
+    ...(input.metrics ? { metrics: input.metrics } : {}),
+  });
+  if (refined)
+    input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+      stream: "events",
+      outcome: "observed",
+    });
+  return refined;
+};
+
+const catalogDue = (
+  checkpoint: ProviderLandingCheckpoint | null,
+  now: Date,
+  refreshMs: number,
+) =>
+  checkpoint?.status === "running" ||
+  !checkpoint?.lastCompletedAt ||
+  now.getTime() - Date.parse(checkpoint.lastCompletedAt) >= refreshMs;
+
+const runCatalog = async (input: {
+  source: ProviderLandingSource;
+  store: ProviderLandingStore;
+  accountRate?: ProviderLandingAccountRateCoordinator;
+  prior: ProviderLandingCheckpoint | null;
+  now: () => Date;
+  refreshMs: number;
+  shouldContinue: () => boolean;
+  rateGate: ReturnType<typeof createRateGate>;
+  metrics?: ProviderLandingMetricSink;
+}) => {
+  if (!catalogDue(input.prior, input.now(), input.refreshMs))
+    return input.prior!;
+  let checkpoint = await startCheckpoint(
+    input.store,
+    "catalog",
+    input.prior,
+    input.now(),
+  );
+  if (
+    checkpoint.resumeAfter &&
+    input.now().getTime() < Date.parse(checkpoint.resumeAfter)
+  )
+    return checkpoint;
+  if (!input.shouldContinue()) return checkpoint;
+  if (!input.rateGate.canRequest()) return checkpoint;
+  const reservation = await reservePaidRequest({
+    ...(input.accountRate ? { accountRate: input.accountRate } : {}),
+    store: input.store,
+    checkpoint,
+    stream: "catalog",
+    // The catalog snapshot is two ordered provider calls: sports, then
+    // leagues. The second response carries the conservative account window.
+    cost: 2,
+    now: input.now,
+    ...(input.metrics ? { metrics: input.metrics } : {}),
+  });
+  checkpoint = reservation.checkpoint;
+  if (!reservation.admitted) return checkpoint;
+  let snapshot: SharpApiCatalogSnapshot;
+  try {
+    snapshot = await input.source.fetchCatalog();
+  } catch (error) {
+    if (error instanceof SharpApiError && terminalSharpApiCode(error.code)) {
+      await persistProviderFailureEvidence(
+        input.store,
+        checkpoint,
+        error,
+        input.now(),
+      );
+      await input.accountRate?.terminal(error.code, input.now());
+    }
+    if (
+      error instanceof SharpApiError &&
+      !error.retryable &&
+      !["rate-limited", "provider-request-ambiguous"].includes(error.code) &&
+      !terminalSharpApiCode(error.code)
+    ) {
+      await persistProviderFailureEvidence(
+        input.store,
+        checkpoint,
+        error,
+        input.now(),
+      );
+      checkpoint = await pauseCheckpointAfterNonRetryable(
+        input.store,
+        checkpoint,
+        input.now(),
+      );
+      input.metrics?.emit("ProviderLandingFailure", 1, {
+        stream: "catalog",
+        reason: error.code,
+      });
+      return checkpoint;
+    }
+    if (
+      error instanceof SharpApiError &&
+      ["rate-limited", "provider-request-ambiguous"].includes(error.code)
+    ) {
+      await persistProviderFailureEvidence(
+        input.store,
+        checkpoint,
+        error,
+        input.now(),
+      );
+      const priorVersion = checkpoint.version;
+      const accountWidePause = error.code === "rate-limited";
+      const resumeAfter =
+        error.retryAt ??
+        new Date(
+          input.now().getTime() +
+            (error.code === "rate-limited"
+              ? DEFAULT_RATE_PAUSE_MS
+              : input.refreshMs),
+        ).toISOString();
+      if (accountWidePause) {
+        input.rateGate.deferUntil(resumeAfter);
+        await input.accountRate?.rateLimited(resumeAfter, input.now());
+      }
+      checkpoint = {
+        ...checkpoint,
+        version: priorVersion + 1,
+        updatedAt: input.now().toISOString(),
+        resumeAfter,
+        pauseScope: accountWidePause ? "account" : "stream",
+      };
+      await input.store.putCheckpoint(checkpoint, priorVersion);
+      input.metrics?.emit("ProviderLandingFailure", 1, {
+        stream: "catalog",
+        reason: error.code,
+      });
+      return checkpoint;
+    }
+    throw error;
+  }
+  await input.accountRate?.reconcile(2, snapshot.responseMetadata, input.now());
+  input.rateGate.observe(snapshot.responseMetadata);
+  const eventPartitions = buildSharpApiEventPartitions(snapshot);
+  const eventPlanAvailable =
+    eventPlanFits(eventPartitions) &&
+    catalogEventCoverageIdentifiable(snapshot);
+  if (!eventPlanAvailable)
+    await persistEventPlanCapacityEvidence(
+      input.store,
+      checkpoint,
+      eventPartitions,
+      input.now(),
+    );
+  const sealedPage = {
+    positionHash: providerLandingPositionHash(
+      { stream: "catalog", position: null },
+      64,
+    ),
+    pageHash: digest({
+      sports: snapshot.sports,
+      leagues: snapshot.leagues,
+      quarantines: snapshot.quarantines,
+      sourceRows: snapshot.sourceRows,
+      providerUpdatedAt: snapshot.providerUpdatedAt ?? null,
+      eventPlanHash: eventPlanDigest(eventPartitions),
+      eventPartitionCount: eventPartitions.length,
+      eventPlanAvailable,
+    }),
+  };
+  if (checkpoint.pendingPage) {
+    if (
+      checkpoint.pendingPage.positionHash !== sealedPage.positionHash ||
+      checkpoint.pendingPage.pageHash !== sealedPage.pageHash
+    )
+      return restartCheckpointAfterDrift(
+        input.store,
+        checkpoint,
+        input.now(),
+        input.metrics,
+        "provider-landing-page-replay-drift",
+      );
+  } else {
+    const priorVersion = checkpoint.version;
+    checkpoint = {
+      ...checkpoint,
+      version: priorVersion + 1,
+      updatedAt: input.now().toISOString(),
+      pendingPage: sealedPage,
+      ...(snapshot.providerUpdatedAt
+        ? { providerUpdatedAt: snapshot.providerUpdatedAt }
+        : {}),
+      ...(eventPlanAvailable ? { eventPartitions } : {}),
+    };
+    await input.store.putCheckpoint(checkpoint, priorVersion);
+  }
+  const records: ProviderLandingRecord[] = [
+    ...snapshot.sports.map((sport): ProviderLandingRecord => ({
+      schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+      providerId: "sharpapi",
+      recordType: "catalog-sport",
+      recordId: sport.providerSportId,
+      sport: sport.providerSportId,
+      pageNumber: 1,
+      sweepId: checkpoint.sweepId,
+      slot: checkpoint.slot,
+      retrievedAt: snapshot.retrievedAt,
+      value: asValue(sport),
+    })),
+    ...snapshot.leagues.map((league): ProviderLandingRecord => ({
+      schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+      providerId: "sharpapi",
+      recordType: "catalog-league",
+      recordId: league.providerLeagueId,
+      sport: league.providerSportId,
+      pageNumber: 1,
+      sweepId: checkpoint.sweepId,
+      slot: checkpoint.slot,
+      retrievedAt: snapshot.retrievedAt,
+      value: asValue(league),
+    })),
+    ...snapshot.quarantines.map((quarantine) =>
+      quarantineRecord(quarantine, checkpoint, 1, snapshot.retrievedAt),
+    ),
+  ];
+  if (records.length !== snapshot.sourceRows)
+    throw new Error("provider-landing-reconciliation-failed");
+  let writtenRows = checkpoint.counts.sourceRows;
+  const persistedPrefix = records.slice(0, writtenRows);
+  const persistedLandedRows = persistedPrefix.filter(
+    ({ recordType }) => recordType !== "quarantine",
+  ).length;
+  const persistedQuarantinedRows = writtenRows - persistedLandedRows;
+  if (
+    writtenRows > records.length ||
+    (writtenRows < records.length &&
+      writtenRows % CATALOG_WRITE_CHUNK_SIZE !== 0) ||
+    checkpoint.counts.landedRows !== persistedLandedRows ||
+    checkpoint.counts.quarantinedRows !== persistedQuarantinedRows
+  )
+    throw new Error("provider-landing-reconciliation-failed");
+  while (writtenRows < records.length && input.shouldContinue()) {
+    const chunk = records.slice(
+      writtenRows,
+      writtenRows + CATALOG_WRITE_CHUNK_SIZE,
+    );
+    const write = await input.store.putRecords(chunk);
+    if (write.crossPageDuplicateCount > 0)
+      throw new Error("provider-landing-reconciliation-failed");
+    const landedRows = chunk.filter(
+      ({ recordType }) => recordType !== "quarantine",
+    ).length;
+    const quarantinedRows = chunk.length - landedRows;
+    const priorVersion = checkpoint.version;
+    const counts = {
+      pages: 0,
+      sourceRows: checkpoint.counts.sourceRows + chunk.length,
+      landedRows: checkpoint.counts.landedRows + landedRows,
+      quarantinedRows: checkpoint.counts.quarantinedRows + quarantinedRows,
+      warningRows: 0,
+    };
+    checkpoint = {
+      ...checkpoint,
+      version: priorVersion + 1,
+      updatedAt: input.now().toISOString(),
+      counts,
+    };
+    await input.store.putCheckpoint(checkpoint, priorVersion);
+    writtenRows += chunk.length;
+    if (landedRows > 0)
+      input.metrics?.emit("ProviderLandingRows", landedRows, {
+        stream: "catalog",
+        outcome: "landed",
+      });
+    if (quarantinedRows > 0)
+      input.metrics?.emit("ProviderLandingRows", quarantinedRows, {
+        stream: "catalog",
+        outcome: "quarantined",
+      });
+  }
+  if (writtenRows < records.length) return checkpoint;
+  if (snapshot.sports.length === 0 || snapshot.leagues.length === 0)
+    throw new Error("provider-landing-catalog-empty");
+  const completedAt = input.now().toISOString();
+  const catalogResumeAfter = input.rateGate.canRequest()
+    ? undefined
+    : input.rateGate.resumeAfter();
+  const counts = {
+    pages: 2,
+    sourceRows: snapshot.sourceRows,
+    landedRows: snapshot.sports.length + snapshot.leagues.length,
+    quarantinedRows: snapshot.quarantines.length,
+    warningRows: 0,
+  };
+  const committed = withoutTransientPageState(checkpoint);
+  checkpoint = {
+    ...committed,
+    version: checkpoint.version + 1,
+    status: "complete",
+    position: null,
+    updatedAt: completedAt,
+    counts,
+    lastCompletedSlot: checkpoint.slot,
+    lastCompletedSweepId: checkpoint.sweepId,
+    lastCompletedAt: completedAt,
+    lastCompletedCounts: counts,
+    ...(eventPlanAvailable ? { eventPartitions } : {}),
+    ...(catalogResumeAfter
+      ? { resumeAfter: catalogResumeAfter, pauseScope: "account" as const }
+      : {}),
+  };
+  await input.store.putCheckpoint(checkpoint, checkpoint.version - 1);
+  if (!eventPlanAvailable) {
+    input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+      stream: "catalog",
+      outcome: "observed",
+    });
+    input.metrics?.emit("ProviderLandingFailure", 1, {
+      stream: "catalog",
+      reason: "provider-landing-event-plan-capacity",
+    });
+  }
+  input.metrics?.emit("ProviderLandingPage", counts.pages, {
+    stream: "catalog",
+    outcome: "persisted",
+  });
+  input.metrics?.emit("ProviderLandingSweep", 1, {
+    stream: "catalog",
+    outcome: "complete",
+  });
+  return checkpoint;
+};
+
+const recordsForPage = (
+  stream: Extract<ProviderLandingStream, "events" | "odds">,
+  page:
+    | SharpApiUniversalPage<SharpApiUniversalEvent>
+    | SharpApiUniversalPage<SharpApiUniversalOddsRecord>,
+  checkpoint: ProviderLandingCheckpoint,
+  pageNumber: number,
+) => [
+  ...page.records.map((record): ProviderLandingRecord => ({
+    schemaVersion: PROVIDER_LANDING_SCHEMA_VERSION,
+    providerId: "sharpapi",
+    recordType: stream === "events" ? "event" : "odds",
+    recordId:
+      stream === "events"
+        ? (record as SharpApiUniversalEvent).providerEventId
+        : (record as SharpApiUniversalOddsRecord).providerPriceId,
+    sport: record.sport,
+    pageNumber,
+    sweepId: checkpoint.sweepId,
+    slot: checkpoint.slot,
+    retrievedAt: page.retrievedAt,
+    value: asValue(record),
+  })),
+  ...page.quarantines.map((quarantine) =>
+    quarantineRecord(quarantine, checkpoint, pageNumber, page.retrievedAt),
+  ),
+];
+
+const streamDue = (
+  checkpoint: ProviderLandingCheckpoint | null,
+  now: Date,
+  refreshMs: number,
+) =>
+  checkpoint?.status === "running" ||
+  !checkpoint?.lastCompletedAt ||
+  now.getTime() - Date.parse(checkpoint.lastCompletedAt) >= refreshMs;
+
+const runPagedStream = async (input: {
+  stream: Extract<ProviderLandingStream, "events" | "odds">;
+  source: ProviderLandingSource;
+  store: ProviderLandingStore;
+  accountRate?: ProviderLandingAccountRateCoordinator;
+  prior: ProviderLandingCheckpoint | null;
+  now: () => Date;
+  refreshMs: number;
+  pageBudget: number;
+  shouldContinue: () => boolean;
+  rateGate: ReturnType<typeof createRateGate>;
+  metrics?: ProviderLandingMetricSink;
+  eventPartitions?: readonly ProviderLandingEventPartition[];
+  eventCatalogPlanHash?: string;
+}) => {
+  if (!streamDue(input.prior, input.now(), input.refreshMs))
+    return input.prior!;
+  let checkpoint = await startCheckpoint(
+    input.store,
+    input.stream,
+    input.prior,
+    input.now(),
+    input.eventPartitions,
+    input.eventCatalogPlanHash,
+  );
+  // Deployed partition-aware checkpoints predate the catalog-plan lineage
+  // field. Bind their already-frozen plan before comparing it with a newer
+  // catalog; otherwise an undefined lineage would look like a catalog change
+  // and replay paid pages from partition zero.
+  if (
+    input.stream === "events" &&
+    checkpoint.eventPartitions &&
+    !checkpoint.eventCatalogPlanHash
+  ) {
+    const priorVersion = checkpoint.version;
+    checkpoint = {
+      ...checkpoint,
+      version: priorVersion + 1,
+      updatedAt: input.now().toISOString(),
+      eventCatalogPlanHash: eventPlanDigest(checkpoint.eventPartitions),
+    };
+    await input.store.putCheckpoint(checkpoint, priorVersion);
+  }
+  if (
+    input.stream === "events" &&
+    input.eventPartitions &&
+    (checkpoint.eventPartitions === undefined ||
+      !checkpoint.position ||
+      !("partition" in checkpoint.position) ||
+      checkpoint.eventCatalogPlanHash !==
+        (input.eventCatalogPlanHash ?? eventPlanDigest(input.eventPartitions)))
+  )
+    checkpoint = await restartCheckpointAfterDrift(
+      input.store,
+      checkpoint,
+      input.now(),
+      input.metrics,
+      "provider-landing-event-plan-migrated",
+      input.eventPartitions,
+      input.eventCatalogPlanHash ?? eventPlanDigest(input.eventPartitions),
+    );
+  if (
+    input.stream === "events" &&
+    input.eventPartitions?.length === 0 &&
+    checkpoint.status === "running"
+  ) {
+    const priorVersion = checkpoint.version;
+    const completedAt = input.now().toISOString();
+    const completed = {
+      ...withoutEventPartitionProgress(withoutTransientPageState(checkpoint)),
+      version: priorVersion + 1,
+      status: "complete" as const,
+      position: null,
+      updatedAt: completedAt,
+      counts: zeroCounts(),
+      lastCompletedSlot: checkpoint.slot,
+      lastCompletedSweepId: checkpoint.sweepId,
+      lastCompletedAt: completedAt,
+      lastCompletedCounts: zeroCounts(),
+    };
+    delete completed.providerTotal;
+    await input.store.putCheckpoint(completed, priorVersion);
+    input.metrics?.emit("ProviderLandingSweep", 1, {
+      stream: "events",
+      outcome: "complete",
+    });
+    return completed;
+  }
+  if (
+    checkpoint.resumeAfter &&
+    input.now().getTime() < Date.parse(checkpoint.resumeAfter)
+  )
+    return checkpoint;
+  let pagesThisInvocation = 0;
+  while (
+    pagesThisInvocation < input.pageBudget &&
+    input.shouldContinue() &&
+    input.rateGate.canRequest()
+  ) {
+    const claim = await input.store.claimPosition({
+      stream: input.stream,
+      sweepId: checkpoint.sweepId,
+      slot: checkpoint.slot,
+      positionHash: positionHash(checkpoint).slice(0, 32),
+      pageNumber: checkpoint.counts.pages + 1,
+      claimedAt: input.now().toISOString(),
+    });
+    if (claim === "cycle")
+      return restartCheckpointAfterDrift(
+        input.store,
+        checkpoint,
+        input.now(),
+        input.metrics,
+        "provider-landing-pagination-cycle",
+      );
+    const reservation = await reservePaidRequest({
+      ...(input.accountRate ? { accountRate: input.accountRate } : {}),
+      store: input.store,
+      checkpoint,
+      stream: input.stream,
+      cost: 1,
+      now: input.now,
+      ...(input.metrics ? { metrics: input.metrics } : {}),
+    });
+    checkpoint = reservation.checkpoint;
+    if (!reservation.admitted) return checkpoint;
+    let page:
+      | SharpApiUniversalPage<SharpApiUniversalEvent>
+      | SharpApiUniversalPage<SharpApiUniversalOddsRecord>;
+    try {
+      page =
+        input.stream === "events"
+          ? await input.source.fetchEvents(
+              checkpoint.eventPartitions![
+                checkpoint.position && "partition" in checkpoint.position
+                  ? checkpoint.position.partition
+                  : 0
+              ]!,
+              checkpoint.position && "offset" in checkpoint.position
+                ? checkpoint.position.offset
+                : 0,
+            )
+          : await input.source.fetchOdds(
+              checkpoint.position && "cursor" in checkpoint.position
+                ? checkpoint.position.cursor === INITIAL_CURSOR
+                  ? undefined
+                  : checkpoint.position.cursor
+                : undefined,
+            );
+    } catch (error) {
+      if (error instanceof SharpApiError && terminalSharpApiCode(error.code)) {
+        await persistProviderFailureEvidence(
+          input.store,
+          checkpoint,
+          error,
+          input.now(),
+        );
+        await input.accountRate?.terminal(error.code, input.now());
+      }
+      if (
+        input.stream === "odds" &&
+        error instanceof SharpApiError &&
+        error.code === "provider-rejected" &&
+        checkpoint.position &&
+        "cursor" in checkpoint.position &&
+        checkpoint.position.cursor !== INITIAL_CURSOR
+      )
+        await persistProviderFailureEvidence(
+          input.store,
+          checkpoint,
+          error,
+          input.now(),
+        );
+      if (
+        input.stream === "odds" &&
+        error instanceof SharpApiError &&
+        error.code === "provider-rejected" &&
+        checkpoint.position &&
+        "cursor" in checkpoint.position &&
+        checkpoint.position.cursor !== INITIAL_CURSOR
+      )
+        return restartCheckpointAfterDrift(
+          input.store,
+          checkpoint,
+          input.now(),
+          input.metrics,
+          "provider-landing-cursor-rejected",
+        );
+      if (
+        error instanceof SharpApiError &&
+        !error.retryable &&
+        !["rate-limited", "provider-request-ambiguous"].includes(error.code) &&
+        !terminalSharpApiCode(error.code)
+      ) {
+        const deferred = await deferRejectedEventPartition({
+          store: input.store,
+          checkpoint,
+          error,
+          now: input.now(),
+          ...(input.metrics ? { metrics: input.metrics } : {}),
+        });
+        if (deferred) return deferred;
+        await persistProviderFailureEvidence(
+          input.store,
+          checkpoint,
+          error,
+          input.now(),
+        );
+        checkpoint = await pauseCheckpointAfterNonRetryable(
+          input.store,
+          checkpoint,
+          input.now(),
+        );
+        input.metrics?.emit("ProviderLandingFailure", 1, {
+          stream: input.stream,
+          reason: error.code,
+        });
+        return checkpoint;
+      }
+      if (
+        error instanceof SharpApiError &&
+        ["rate-limited", "provider-request-ambiguous"].includes(error.code)
+      ) {
+        await persistProviderFailureEvidence(
+          input.store,
+          checkpoint,
+          error,
+          input.now(),
+        );
+        const priorVersion = checkpoint.version;
+        const accountWidePause = error.code === "rate-limited";
+        const resumeAfter =
+          error.retryAt ??
+          new Date(
+            input.now().getTime() +
+              (error.code === "rate-limited"
+                ? DEFAULT_RATE_PAUSE_MS
+                : input.refreshMs),
+          ).toISOString();
+        if (accountWidePause) {
+          input.rateGate.deferUntil(resumeAfter);
+          await input.accountRate?.rateLimited(resumeAfter, input.now());
+        }
+        checkpoint = {
+          ...checkpoint,
+          version: priorVersion + 1,
+          updatedAt: input.now().toISOString(),
+          resumeAfter,
+          pauseScope: accountWidePause ? "account" : "stream",
+        };
+        await input.store.putCheckpoint(checkpoint, priorVersion);
+        input.metrics?.emit("ProviderLandingFailure", 1, {
+          stream: input.stream,
+          reason: error.code,
+        });
+        return checkpoint;
+      }
+      throw error;
+    }
+    await input.accountRate?.reconcile(1, page.responseMetadata, input.now());
+    input.rateGate.observe(page.responseMetadata);
+    if (input.stream === "events" && page.providerTotal === undefined)
+      return restartCheckpointAfterDrift(
+        input.store,
+        checkpoint,
+        input.now(),
+        input.metrics,
+        "provider-landing-total-missing",
+      );
+    if (
+      input.stream === "events" &&
+      page.providerTotal! > MAX_ACCESSIBLE_EVENT_PARTITION_ROWS
+    ) {
+      await persistEventCoverageGapEvidence(
+        input.store,
+        checkpoint,
+        page.providerTotal!,
+        input.now(),
+      );
+      const partitionIndex =
+        checkpoint.position && "partition" in checkpoint.position
+          ? checkpoint.position.partition
+          : 0;
+      const currentOffset =
+        checkpoint.position && "offset" in checkpoint.position
+          ? checkpoint.position.offset
+          : 0;
+      if (currentOffset > 0) {
+        const partition = checkpoint.eventPartitions![partitionIndex]!;
+        const members = partition.leagues;
+        if (members && members.length > 1) {
+          const midpoint = Math.ceil(members.length / 2);
+          const replacements = [
+            { ...partition, leagues: members.slice(0, midpoint) },
+            { ...partition, leagues: members.slice(midpoint) },
+          ];
+          const refinedPlan = checkpoint.eventPartitions!.flatMap(
+            (candidate, index) =>
+              index === partitionIndex ? replacements : [candidate],
+          );
+          if (eventPlanFits(refinedPlan)) {
+            const restarted = await restartCheckpointAfterDrift(
+              input.store,
+              checkpoint,
+              input.now(),
+              input.metrics,
+              "provider-landing-event-partition-split",
+              refinedPlan,
+              checkpoint.eventCatalogPlanHash,
+            );
+            input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+              stream: "events",
+              outcome: "observed",
+            });
+            return restarted;
+          }
+        }
+        const failureReason =
+          members && members.length > 1
+            ? "provider-landing-event-plan-capacity"
+            : "provider-landing-event-partition-too-large";
+        const restarted = await restartCheckpointAfterDrift(
+          input.store,
+          checkpoint,
+          input.now(),
+          input.metrics,
+          "provider-landing-event-partition-deferred",
+          checkpoint.eventPartitions,
+          checkpoint.eventCatalogPlanHash,
+          [partitionIndex],
+        );
+        input.metrics?.emit("ProviderLandingFailure", 1, {
+          stream: "events",
+          reason: failureReason,
+        });
+        input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+          stream: "events",
+          outcome: "observed",
+        });
+        return restarted;
+      }
+      const deferred = await refineOrDeferEventPartition({
+        store: input.store,
+        checkpoint,
+        now: input.now(),
+        counts: {
+          ...checkpoint.counts,
+          pages: checkpoint.counts.pages + 1,
+        },
+        attemptOutcome: "coverage-gap",
+        splitReason: "provider-landing-event-partition-split",
+        deferredReason: "provider-landing-event-partition-too-large",
+        ...(input.metrics ? { metrics: input.metrics } : {}),
+      });
+      if (deferred) {
+        input.metrics?.emit("ProviderLandingDiagnostic", 1, {
+          stream: "events",
+          outcome: "observed",
+        });
+        return deferred;
+      }
+      throw new Error("provider-landing-event-partition-too-large");
+    }
+    const currentPositionHash = positionHash(checkpoint);
+    const sealedPage = {
+      positionHash: currentPositionHash,
+      pageHash: pageHash(page),
+    };
+    if (checkpoint.pendingPage) {
+      if (
+        checkpoint.pendingPage.positionHash !== sealedPage.positionHash ||
+        checkpoint.pendingPage.pageHash !== sealedPage.pageHash
+      )
+        return restartCheckpointAfterDrift(
+          input.store,
+          checkpoint,
+          input.now(),
+          input.metrics,
+          "provider-landing-page-replay-drift",
+        );
+    } else {
+      const priorVersion = checkpoint.version;
+      checkpoint = {
+        ...withCurrentPageMetadata(checkpoint, page),
+        version: priorVersion + 1,
+        updatedAt: input.now().toISOString(),
+        pendingPage: sealedPage,
+      };
+      await input.store.putCheckpoint(checkpoint, priorVersion);
+    }
+    const pageNumber = checkpoint.counts.pages + 1;
+    const eventPartitionSourceRows =
+      (checkpoint.eventPartitionSourceRows ?? 0) + page.sourceRows;
+    if (
+      page.providerTotal !== undefined &&
+      (input.stream === "events"
+        ? eventPartitionSourceRows
+        : checkpoint.counts.sourceRows + page.sourceRows) > page.providerTotal
+    )
+      return restartCheckpointAfterDrift(
+        input.store,
+        checkpoint,
+        input.now(),
+        input.metrics,
+        "provider-landing-total-mismatch",
+      );
+    const write = await input.store.putRecords(
+      recordsForPage(input.stream, page, checkpoint, pageNumber),
+    );
+    const warnings = warningRows(page.records);
+    const counts = {
+      pages: pageNumber,
+      sourceRows: checkpoint.counts.sourceRows + page.sourceRows,
+      landedRows:
+        checkpoint.counts.landedRows +
+        page.records.length -
+        write.crossPageDuplicateCount,
+      quarantinedRows:
+        checkpoint.counts.quarantinedRows +
+        page.quarantines.length +
+        write.crossPageDuplicateCount,
+      warningRows: (checkpoint.counts.warningRows ?? 0) + warnings,
+    };
+    if (counts.sourceRows !== counts.landedRows + counts.quarantinedRows)
+      throw new Error("provider-landing-reconciliation-failed");
+    const updatedAt = input.now().toISOString();
+    const priorVersion = checkpoint.version;
+    const effectiveTotal = page.providerTotal;
+    const committed = withCurrentPageMetadata(
+      withoutTransientPageState(checkpoint),
+      page,
+    );
+    if (!page.hasMore) {
+      if (
+        effectiveTotal !== undefined &&
+        (input.stream === "events"
+          ? eventPartitionSourceRows
+          : counts.sourceRows) !== effectiveTotal
+      )
+        return restartCheckpointAfterDrift(
+          input.store,
+          checkpoint,
+          input.now(),
+          input.metrics,
+          "provider-landing-total-mismatch",
+        );
+      const currentPartition =
+        checkpoint.position && "partition" in checkpoint.position
+          ? checkpoint.position.partition
+          : 0;
+      const nextPrimaryPartition =
+        input.stream === "events"
+          ? checkpoint.eventPartitions!.findIndex(
+              (_, partition) =>
+                partition > currentPartition &&
+                !checkpoint.eventDeferredPartitions?.includes(partition),
+            )
+          : -1;
+      if (
+        input.stream === "events" &&
+        checkpoint.eventPrimaryTraversalComplete === true
+      ) {
+        const remainingDeferred = (
+          checkpoint.eventDeferredPartitions ?? []
+        ).filter((partition) => partition !== currentPartition);
+        if (remainingDeferred.length > 0) {
+          const position = { partition: remainingDeferred[0]!, offset: 0 };
+          const eventPositionRevision =
+            (checkpoint.eventPositionRevision ?? 0) + 1;
+          const nextPositionHash = providerLandingPositionHash({
+            stream: input.stream,
+            position,
+            eventPositionRevision,
+          });
+          const nextCheckpoint = {
+            ...committed,
+            version: priorVersion + 1,
+            status: "running" as const,
+            position,
+            updatedAt,
+            counts,
+            eventPartitionSourceRows: 0,
+            eventDeferredPartitions: remainingDeferred,
+            eventPrimaryTraversalComplete: true as const,
+            eventPositionRevision,
+            visitedPositionHashes: advancePositionHistory(
+              checkpoint.visitedPositionHashes ?? [],
+              nextPositionHash,
+            ),
+          };
+          delete nextCheckpoint.providerTotal;
+          checkpoint = nextCheckpoint;
+        } else {
+          const completedCheckpoint = {
+            ...withoutEventPartitionProgress(committed),
+            version: priorVersion + 1,
+            status: "complete" as const,
+            position: null,
+            updatedAt,
+            counts,
+            lastCompletedSlot: checkpoint.slot,
+            lastCompletedSweepId: checkpoint.sweepId,
+            lastCompletedAt: updatedAt,
+            lastCompletedCounts: counts,
+          };
+          delete completedCheckpoint.providerTotal;
+          checkpoint = completedCheckpoint;
+        }
+      } else if (input.stream === "events" && nextPrimaryPartition >= 0) {
+        const position = { partition: nextPrimaryPartition, offset: 0 };
+        const nextPositionHash = providerLandingPositionHash({
+          stream: input.stream,
+          position,
+          ...(checkpoint.eventPositionRevision === undefined
+            ? {}
+            : { eventPositionRevision: checkpoint.eventPositionRevision }),
+        });
+        const nextCheckpoint = {
+          ...committed,
+          version: priorVersion + 1,
+          status: "running" as const,
+          position,
+          updatedAt,
+          counts,
+          eventPartitionSourceRows: 0,
+          visitedPositionHashes: advancePositionHistory(
+            checkpoint.visitedPositionHashes ?? [],
+            nextPositionHash,
+          ),
+        };
+        delete nextCheckpoint.providerTotal;
+        checkpoint = nextCheckpoint;
+      } else if (
+        input.stream === "events" &&
+        (checkpoint.eventDeferredPartitions?.length ?? 0) > 0
+      ) {
+        const position = {
+          partition: checkpoint.eventDeferredPartitions![0]!,
+          offset: 0,
+        };
+        const eventPositionRevision =
+          (checkpoint.eventPositionRevision ?? 0) + 1;
+        const nextCheckpoint = {
+          ...committed,
+          version: priorVersion + 1,
+          status: "running" as const,
+          position,
+          updatedAt,
+          counts,
+          eventPartitionSourceRows: 0,
+          eventPrimaryTraversalComplete: true as const,
+          eventPositionRevision,
+          visitedPositionHashes: advancePositionHistory(
+            checkpoint.visitedPositionHashes ?? [],
+            providerLandingPositionHash({
+              stream: input.stream,
+              position,
+              eventPositionRevision,
+            }),
+          ),
+          resumeAfter: new Date(
+            input.now().getTime() + FILTER_RETRY_PAUSE_MS,
+          ).toISOString(),
+          pauseScope: "stream" as const,
+        };
+        delete nextCheckpoint.providerTotal;
+        checkpoint = nextCheckpoint;
+      } else {
+        const completedCheckpoint = {
+          ...(input.stream === "events"
+            ? withoutEventPartitionProgress(committed)
+            : committed),
+          version: priorVersion + 1,
+          status: "complete" as const,
+          position: null,
+          updatedAt,
+          counts,
+          ...(effectiveTotal === undefined
+            ? {}
+            : { providerTotal: effectiveTotal }),
+          lastCompletedSlot: checkpoint.slot,
+          lastCompletedSweepId: checkpoint.sweepId,
+          lastCompletedAt: updatedAt,
+          lastCompletedCounts: counts,
+        };
+        // Event partitions each have their own exact denominator. Retaining
+        // only the last partition's total beside all-partition counts would
+        // falsely present it as a provider-wide total. Equality for every
+        // partition has already been enforced before reaching this commit.
+        if (input.stream === "events") delete completedCheckpoint.providerTotal;
+        delete completedCheckpoint.eventPartitionSourceRows;
+        checkpoint = completedCheckpoint;
+      }
+    } else {
+      const position =
+        input.stream === "events"
+          ? page.nextOffset === undefined
+            ? null
+            : {
+                partition:
+                  checkpoint.position && "partition" in checkpoint.position
+                    ? checkpoint.position.partition
+                    : 0,
+                offset: page.nextOffset,
+              }
+          : page.nextCursor === undefined
+            ? null
+            : { cursor: page.nextCursor };
+      if (!position) throw new Error("provider-landing-pagination-invalid");
+      if (
+        input.stream === "events" &&
+        checkpoint.position &&
+        "offset" in checkpoint.position &&
+        "offset" in position &&
+        position.offset !== checkpoint.position.offset + 200
+      )
+        throw new Error("provider-landing-pagination-invalid");
+      const nextPositionHash = providerLandingPositionHash({
+        stream: input.stream,
+        position,
+        ...(input.stream === "events" &&
+        checkpoint.eventPositionRevision !== undefined
+          ? { eventPositionRevision: checkpoint.eventPositionRevision }
+          : {}),
+      });
+      const visited = checkpoint.visitedPositionHashes ?? [];
+      const resumeAfter = input.rateGate.canRequest()
+        ? undefined
+        : input.rateGate.resumeAfter();
+      checkpoint = {
+        ...committed,
+        version: priorVersion + 1,
+        status: "running",
+        position,
+        updatedAt,
+        counts,
+        ...(input.stream === "events" ? { eventPartitionSourceRows } : {}),
+        visitedPositionHashes: advancePositionHistory(
+          visited,
+          nextPositionHash,
+        ),
+        ...(effectiveTotal === undefined
+          ? {}
+          : { providerTotal: effectiveTotal }),
+        ...(resumeAfter ? { resumeAfter } : {}),
+        ...(resumeAfter ? { pauseScope: "account" as const } : {}),
+      };
+    }
+    await input.store.putCheckpoint(checkpoint, priorVersion);
+    pagesThisInvocation += 1;
+    emitRows(
+      input.metrics,
+      input.stream,
+      page.records.length - write.crossPageDuplicateCount,
+      page.quarantines.length + write.crossPageDuplicateCount,
+      warnings,
+    );
+    if (checkpoint.status === "complete") {
+      input.metrics?.emit("ProviderLandingSweep", 1, {
+        stream: input.stream,
+        outcome: "complete",
+      });
+      return checkpoint;
+    }
+  }
+  const gatedResumeAfter = input.rateGate.canRequest()
+    ? undefined
+    : input.rateGate.resumeAfter();
+  if (
+    checkpoint.status === "running" &&
+    gatedResumeAfter &&
+    checkpoint.resumeAfter !== gatedResumeAfter
+  ) {
+    const priorVersion = checkpoint.version;
+    checkpoint = {
+      ...checkpoint,
+      version: priorVersion + 1,
+      updatedAt: input.now().toISOString(),
+      resumeAfter: gatedResumeAfter,
+      pauseScope: "account",
+    };
+    await input.store.putCheckpoint(checkpoint, priorVersion);
+  }
+  return checkpoint;
+};
+
+const emitCheckpointAges = (
+  metrics: ProviderLandingMetricSink | undefined,
+  now: Date,
+  checkpoints: readonly (ProviderLandingCheckpoint | null | undefined)[],
+) => {
+  for (const checkpoint of checkpoints) {
+    if (!checkpoint) continue;
+    const completionBoundary =
+      checkpoint.lastCompletedAt ?? checkpoint.startedAt;
+    metrics?.emit(
+      "ProviderLandingCompletionAgeSeconds",
+      Math.max(0, (now.getTime() - Date.parse(completionBoundary)) / 1_000),
+      { stream: checkpoint.stream, outcome: "observed" },
+    );
+    metrics?.emit(
+      "ProviderLandingRunAgeSeconds",
+      checkpoint.status === "running"
+        ? Math.max(
+            0,
+            (now.getTime() - Date.parse(checkpoint.startedAt)) / 1_000,
+          )
+        : 0,
+      { stream: checkpoint.stream, outcome: checkpoint.status },
+    );
+  }
+};
+
+const emitCheckpointQualityEvidence = (
+  metrics: ProviderLandingMetricSink | undefined,
+  checkpoints: readonly (ProviderLandingCheckpoint | null)[],
+) => {
+  for (const checkpoint of checkpoints) {
+    if (!checkpoint) continue;
+    if (checkpoint.counts.quarantinedRows > 0)
+      metrics?.emit("ProviderLandingRows", checkpoint.counts.quarantinedRows, {
+        stream: checkpoint.stream,
+        outcome: "quarantined",
+      });
+    const warnings = checkpoint.counts.warningRows ?? 0;
+    if (warnings > 0)
+      metrics?.emit("ProviderLandingRows", warnings, {
+        stream: checkpoint.stream,
+        outcome: "warning",
+      });
+  }
+};
+
+export const runProviderLanding = async (
+  input: ProviderLandingRunInput,
+): Promise<ProviderLandingRunSummary> => {
+  const now = input.now ?? (() => new Date());
+  const [catalogPrior, eventsPrior, oddsPrior] = await Promise.all([
+    input.store.getCheckpoint("catalog"),
+    input.store.getCheckpoint("events"),
+    input.store.getCheckpoint("odds"),
+  ]);
+  emitCheckpointQualityEvidence(input.metrics, [
+    catalogPrior,
+    eventsPrior,
+    oddsPrior,
+  ]);
+  const summary: {
+    catalog?: ProviderLandingCheckpoint;
+    events?: ProviderLandingCheckpoint;
+    odds?: ProviderLandingCheckpoint;
+  } = {};
+  const failures: { stream: ProviderLandingStream; error: unknown }[] = [];
+  const rateGate = createRateGate(now);
+  for (const checkpoint of [catalogPrior, eventsPrior, oddsPrior])
+    if (checkpoint?.pauseScope === "account")
+      rateGate.deferUntil(checkpoint.resumeAfter);
+  try {
+    summary.catalog = await runCatalog({
+      source: input.source,
+      store: input.store,
+      ...(input.accountRate ? { accountRate: input.accountRate } : {}),
+      prior: catalogPrior,
+      now,
+      refreshMs: input.catalogRefreshMs ?? DEFAULT_CATALOG_REFRESH_MS,
+      shouldContinue: input.shouldContinue ?? (() => true),
+      rateGate,
+      ...(input.metrics ? { metrics: input.metrics } : {}),
+    });
+  } catch (error) {
+    failures.push({ stream: "catalog", error });
+    const durableCatalog = await input.store.getCheckpoint("catalog");
+    if (durableCatalog) summary.catalog = durableCatalog;
+  }
+  const catalogFailure = failures[0]?.error;
+  if (accountGlobalProviderFailure(catalogFailure)) {
+    input.metrics?.emit("ProviderLandingFailure", 1, {
+      stream: "catalog",
+      reason:
+        catalogFailure instanceof SharpApiError
+          ? catalogFailure.code
+          : catalogFailure instanceof Error
+            ? catalogFailure.message
+            : "unexpected",
+    });
+    emitCheckpointAges(input.metrics, now(), [
+      catalogPrior,
+      eventsPrior,
+      oddsPrior,
+    ]);
+    throw catalogFailure;
+  }
+  const shouldContinue = input.shouldContinue ?? (() => true);
+  const completedCatalog =
+    summary.catalog?.status === "complete"
+      ? summary.catalog
+      : catalogPrior?.status === "complete"
+        ? catalogPrior
+        : null;
+  const catalogEventPartitions = completedCatalog
+    ? completedCatalog.eventPartitions
+    : eventsPrior?.eventPartitions;
+  const eventCatalogPlanHash = completedCatalog?.eventPartitions
+    ? eventPlanDigest(completedCatalog.eventPartitions)
+    : completedCatalog
+      ? undefined
+      : (eventsPrior?.eventCatalogPlanHash ??
+        (catalogEventPartitions
+          ? eventPlanDigest(catalogEventPartitions)
+          : undefined));
+  const eventPartitions =
+    catalogEventPartitions &&
+    eventsPrior?.eventPartitions &&
+    eventsPrior.eventCatalogPlanHash === eventCatalogPlanHash
+      ? eventsPrior.eventPartitions
+      : catalogEventPartitions;
+  const states: Record<
+    Extract<ProviderLandingStream, "events" | "odds">,
+    ProviderLandingCheckpoint | null
+  > = { events: eventsPrior, odds: oddsPrior };
+  const remaining = {
+    events: input.eventPageBudget ?? 200,
+    odds: input.oddsPageBudget ?? 800,
+  };
+  const inactive = new Set<Extract<ProviderLandingStream, "events" | "odds">>();
+  if (!eventPartitions) inactive.add("events");
+  while (
+    shouldContinue() &&
+    rateGate.canRequest() &&
+    [...Object.values(remaining)].some((value) => value > 0) &&
+    inactive.size < 2
+  ) {
+    let progressed = false;
+    for (const stream of ["events", "odds"] as const) {
+      if (
+        inactive.has(stream) ||
+        remaining[stream] <= 0 ||
+        !shouldContinue() ||
+        !rateGate.canRequest()
+      )
+        continue;
+      const prior = states[stream];
+      try {
+        const checkpoint = await runPagedStream({
+          stream,
+          source: input.source,
+          store: input.store,
+          ...(input.accountRate ? { accountRate: input.accountRate } : {}),
+          prior,
+          now,
+          refreshMs: input.streamRefreshMs ?? DEFAULT_STREAM_REFRESH_MS,
+          pageBudget: 1,
+          shouldContinue,
+          rateGate,
+          ...(stream === "events" && eventPartitions
+            ? {
+                eventPartitions,
+                eventCatalogPlanHash: eventCatalogPlanHash!,
+              }
+            : {}),
+          ...(input.metrics ? { metrics: input.metrics } : {}),
+        });
+        states[stream] = checkpoint;
+        summary[stream] = checkpoint;
+        const pageAdvanced =
+          checkpoint.sweepId === prior?.sweepId
+            ? checkpoint.counts.pages > (prior?.counts.pages ?? 0)
+            : checkpoint.counts.pages > 0;
+        if (pageAdvanced) {
+          remaining[stream] -= 1;
+          progressed = true;
+        }
+        if (
+          !pageAdvanced ||
+          checkpoint.status === "complete" ||
+          (checkpoint.resumeAfter !== undefined &&
+            now().getTime() < Date.parse(checkpoint.resumeAfter))
+        )
+          inactive.add(stream);
+      } catch (error) {
+        failures.push({ stream, error });
+        inactive.add(stream);
+        if (accountGlobalProviderFailure(error)) {
+          inactive.add("events");
+          inactive.add("odds");
+          break;
+        }
+      }
+    }
+    if (!progressed) break;
+  }
+  for (const failure of failures)
+    input.metrics?.emit("ProviderLandingFailure", 1, {
+      stream: failure.stream,
+      reason:
+        failure.error instanceof Error &&
+        SAFE_FAILURE_REASONS.has(failure.error.message)
+          ? failure.error.message
+          : "unexpected",
+    });
+  emitCheckpointAges(input.metrics, now(), [
+    summary.catalog ?? catalogPrior,
+    summary.events ?? eventsPrior,
+    summary.odds ?? oddsPrior,
+  ]);
+  if (failures.length > 0) throw failures[0]!.error;
+  return summary;
+};

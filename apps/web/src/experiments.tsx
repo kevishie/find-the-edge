@@ -1,7 +1,9 @@
 // The strategy experiment screens load on demand.
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { GamesClientContext, type StrategyExperimentDto } from "./App";
+import { isRequestCancellation } from "./api";
+import { SessionContext, useSession } from "./session";
 export function ExperimentsList() {
   const client = useContext(GamesClientContext);
   const [items, setItems] = useState<readonly StrategyExperimentDto[]>([]);
@@ -72,40 +74,118 @@ export function ExperimentsList() {
 export function ExperimentDetail() {
   const { experimentId } = useParams({ from: "/experiments/$experimentId" });
   const client = useContext(GamesClientContext);
-  const [item, setItem] = useState<
-    | (StrategyExperimentDto & {
-        readonly train: { startsAt: string; endsAt: string; digest: string };
-        readonly tune: { startsAt: string; endsAt: string; digest: string };
-        readonly holdout: { startsAt: string; endsAt: string; digest: string };
-        readonly contentDigest: string;
-        readonly audit: readonly {
-          readonly activationId?: string;
-          readonly effectiveAt?: string;
-        }[];
-        readonly active: { readonly activationId: string } | null;
-      })
-    | null
-  >(null);
-  const [allowed, setAllowed] = useState(false);
+  const session = useSession(useContext(SessionContext));
+  const sessionKey =
+    session === null ? null : `${session.accountId}\u0000${session.token}`;
+  type ExperimentDetailItem = StrategyExperimentDto & {
+    readonly train: { startsAt: string; endsAt: string; digest: string };
+    readonly tune: { startsAt: string; endsAt: string; digest: string };
+    readonly holdout: { startsAt: string; endsAt: string; digest: string };
+    readonly contentDigest: string;
+    readonly audit: readonly {
+      readonly activationId?: string;
+      readonly effectiveAt?: string;
+    }[];
+    readonly active: { readonly activationId: string } | null;
+  };
+  type ExperimentDetailState =
+    | {
+        readonly kind: "loading";
+        readonly client: typeof client;
+        readonly experimentId: string;
+      }
+    | {
+        readonly kind: "ready";
+        readonly client: typeof client;
+        readonly experimentId: string;
+        readonly item: ExperimentDetailItem;
+      }
+    | {
+        readonly kind: "error";
+        readonly client: typeof client;
+        readonly experimentId: string;
+      };
+  const [detail, setDetail] = useState<ExperimentDetailState>({
+    kind: "loading",
+    client,
+    experimentId,
+  });
+  const currentDetail =
+    detail.client === client && detail.experimentId === experimentId
+      ? detail
+      : ({ kind: "loading", client, experimentId } as const);
+  const item = currentDetail.kind === "ready" ? currentDetail.item : null;
+  const [authority, setAuthority] = useState<{
+    readonly client: unknown;
+    readonly sessionKey: string | null;
+    readonly allowed: boolean;
+  }>({ client: null, sessionKey: null, allowed: false });
+  const allowed =
+    authority.client === client &&
+    authority.sessionKey === sessionKey &&
+    authority.allowed === true;
   const [reason, setReason] = useState("");
   const [effectiveAt, setEffectiveAt] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [actionState, setActionState] = useState<string | null>(null);
+  const actionController = useRef<AbortController | null>(null);
   const load = useCallback(
-    (signal: AbortSignal) =>
-      client.ok && client.value.getExperiment
-        ? client.value
-            .getExperiment(experimentId, signal)
-            .then((value) => setItem(value as never))
-        : Promise.resolve(),
+    async (signal: AbortSignal) => {
+      await Promise.resolve();
+      if (signal.aborted) return;
+      if (!client.ok || !client.value.getExperiment) {
+        setDetail({ kind: "error", client, experimentId });
+        return;
+      }
+      try {
+        const value = await client.value.getExperiment(experimentId, signal);
+        if (!signal.aborted)
+          setDetail({
+            kind: "ready",
+            client,
+            experimentId,
+            item: value as ExperimentDetailItem,
+          });
+      } catch (error) {
+        if (signal.aborted || isRequestCancellation(error)) return;
+        setDetail({ kind: "error", client, experimentId });
+      }
+    },
     [client, experimentId],
   );
   useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal);
-    if (client.ok) void client.value.canManageExperiments?.().then(setAllowed);
+    void Promise.resolve().then(() => load(controller.signal));
     return () => controller.abort();
-  }, [client, load]);
+  }, [client, experimentId, load]);
+  useEffect(() => {
+    const controller = new AbortController();
+    if (client.ok && sessionKey !== null)
+      void client.value
+        .canManageExperiments?.(controller.signal)
+        .then((nextAllowed) => {
+          if (!controller.signal.aborted)
+            setAuthority({ client, sessionKey, allowed: nextAllowed });
+        })
+        .catch(() => {
+          if (!controller.signal.aborted)
+            setAuthority({ client, sessionKey, allowed: false });
+        });
+    return () => controller.abort();
+  }, [client, sessionKey]);
+  useEffect(
+    () => () => {
+      actionController.current?.abort();
+      actionController.current = null;
+    },
+    [sessionKey],
+  );
+  if (currentDetail.kind === "error")
+    return (
+      <section className="empty-state" role="alert">
+        Strategy experiment evidence is unavailable.
+      </section>
+    );
   if (!item)
     return (
       <section className="empty-state">
@@ -166,10 +246,7 @@ export function ExperimentDetail() {
       <section className="metric-card" aria-label="Strategy promotion controls">
         <h2>Human promotion control</h2>
         {!allowed ? (
-          <p>
-            Read-only. Sign in through the dedicated strategy promoter client to
-            take action.
-          </p>
+          <p>Read-only. Strategy promoter access is unavailable.</p>
         ) : (
           <>
             <label>
@@ -209,7 +286,9 @@ export function ExperimentDetail() {
                   }
                   onClick={() => {
                     if (!client.ok || !client.value.manageExperiment) return;
+                    actionController.current?.abort();
                     const controller = new AbortController();
+                    actionController.current = controller;
                     const idempotencyKey = crypto.randomUUID();
                     const body =
                       action === "approve"
@@ -254,14 +333,20 @@ export function ExperimentDetail() {
                         controller.signal,
                       )
                       .then(() => {
+                        if (controller.signal.aborted) return;
                         setActionState("Saved. Reloaded immutable history.");
                         return load(controller.signal);
                       })
                       .catch(() => {
+                        if (controller.signal.aborted) return;
                         setActionState(
                           "Conflict or unavailable. Reloaded current evidence.",
                         );
                         return load(controller.signal);
+                      })
+                      .finally(() => {
+                        if (actionController.current === controller)
+                          actionController.current = null;
                       });
                   }}
                 >

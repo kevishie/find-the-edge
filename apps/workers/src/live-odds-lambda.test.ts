@@ -4,15 +4,106 @@ import {
   assertLiveOddsMaintenanceOwnership,
   boundedLiveOddsInvocationError,
   boundedRetryVisibilitySeconds,
+  handler,
   liveOddsErrorRetryDecision,
+  liveOddsSqsFailureResponse,
   liveOddsSummaryRetryDecision,
   liveOddsSummaryRetryReason,
   parseLiveOddsInvocation,
+  retainLiveOddsSqsRetryOwnership,
   runLiveOddsFastLane,
 } from "./live-odds-lambda";
 import { SharpApiError } from "@find-the-edge/providers";
 
 describe("live odds Lambda invocation", () => {
+  it("accepts staging cadence and manual invocation shapes", () => {
+    expect(
+      parseLiveOddsInvocation({
+        Records: [
+          {
+            eventSource: "aws:sqs",
+            messageId: "scheduled-1",
+            attributes: { ApproximateReceiveCount: "1" },
+          },
+        ],
+      }),
+    ).toMatchObject({
+      forceRefresh: false,
+      sqs: { messageId: "scheduled-1", receiveCount: 1 },
+    });
+    expect(parseLiveOddsInvocation(undefined)).toEqual({ forceRefresh: false });
+  });
+
+  it("routes a real staging SQS invocation through normal configuration validation", async () => {
+    const originalStage = process.env["FTE_AWS_STAGE"];
+    const originalTable = process.env["FTE_EVENT_TABLE"];
+    const originalSecret = process.env["FTE_SHARP_API_SECRET_ID"];
+    const originalEnabled = process.env["FTE_SHARP_API_ENABLED"];
+    try {
+      process.env["FTE_AWS_STAGE"] = "staging";
+      delete process.env["FTE_EVENT_TABLE"];
+      delete process.env["FTE_SHARP_API_SECRET_ID"];
+      delete process.env["FTE_SHARP_API_ENABLED"];
+      await expect(
+        handler({
+          Records: [
+            {
+              eventSource: "aws:sqs",
+              messageId: "staging-cadence-1",
+              attributes: { ApproximateReceiveCount: "1" },
+            },
+          ],
+        }),
+      ).resolves.toEqual({ batchItemFailures: [] });
+    } finally {
+      if (originalStage === undefined) delete process.env["FTE_AWS_STAGE"];
+      else process.env["FTE_AWS_STAGE"] = originalStage;
+      if (originalTable === undefined) delete process.env["FTE_EVENT_TABLE"];
+      else process.env["FTE_EVENT_TABLE"] = originalTable;
+      if (originalSecret === undefined)
+        delete process.env["FTE_SHARP_API_SECRET_ID"];
+      else process.env["FTE_SHARP_API_SECRET_ID"] = originalSecret;
+      if (originalEnabled === undefined)
+        delete process.env["FTE_SHARP_API_ENABLED"];
+      else process.env["FTE_SHARP_API_ENABLED"] = originalEnabled;
+    }
+  });
+
+  it("acknowledges deterministic production configuration failures", async () => {
+    const originalStage = process.env["FTE_AWS_STAGE"];
+    const originalTable = process.env["FTE_EVENT_TABLE"];
+    const originalSecret = process.env["FTE_SHARP_API_SECRET_ID"];
+    const originalEnabled = process.env["FTE_SHARP_API_ENABLED"];
+    try {
+      process.env["FTE_AWS_STAGE"] = "prod";
+      delete process.env["FTE_EVENT_TABLE"];
+      delete process.env["FTE_SHARP_API_SECRET_ID"];
+      delete process.env["FTE_SHARP_API_ENABLED"];
+      await expect(
+        handler({
+          Records: [
+            {
+              eventSource: "aws:sqs",
+              messageId: "prod-terminal-1",
+              attributes: { ApproximateReceiveCount: "1" },
+            },
+          ],
+        }),
+      ).resolves.toEqual({ batchItemFailures: [] });
+    } finally {
+      if (originalStage === undefined) delete process.env["FTE_AWS_STAGE"];
+      else process.env["FTE_AWS_STAGE"] = originalStage;
+      if (originalTable === undefined) delete process.env["FTE_EVENT_TABLE"];
+      else process.env["FTE_EVENT_TABLE"] = originalTable;
+      if (originalSecret === undefined)
+        delete process.env["FTE_SHARP_API_SECRET_ID"];
+      else process.env["FTE_SHARP_API_SECRET_ID"] = originalSecret;
+      if (originalEnabled === undefined)
+        delete process.env["FTE_SHARP_API_ENABLED"];
+      else process.env["FTE_SHARP_API_ENABLED"] = originalEnabled;
+    }
+  });
+
   it("preserves closed diagnostics and bounds unexpected runtime failures", () => {
     expect(
       boundedLiveOddsInvocationError(
@@ -86,6 +177,76 @@ describe("live odds Lambda invocation", () => {
         { status: "failed", reason: "not-entitled" },
       ]),
     ).toBeUndefined();
+    for (const reason of [
+      "storage-throttled",
+      "storage-unavailable",
+      "storage-transaction-in-progress",
+    ]) {
+      expect(
+        liveOddsSummaryRetryReason({
+          nested: { status: "failed", reason },
+        }),
+      ).toBe(reason);
+      expect(
+        liveOddsSummaryRetryReason({
+          nested: {
+            status: "failed",
+            reason: `schedule-provider-error-${reason}`,
+          },
+        }),
+      ).toBe(reason);
+    }
+    for (const reason of [
+      "storage-validation",
+      "storage-resource-missing",
+      "storage-access-denied",
+      "storage-transaction-cancelled",
+      "schedule-provider-error-storage-validation",
+    ])
+      expect(
+        liveOddsSummaryRetryReason({ status: "failed", reason }),
+      ).toBeUndefined();
+  });
+  it("retains retry ownership through receive five for transient storage errors", () => {
+    const throttled = Object.assign(new Error("sensitive storage detail"), {
+      name: "ThrottlingException",
+    });
+    for (const attempt of [1, 2, 3, 4])
+      expect(liveOddsErrorRetryDecision(throttled, attempt).action).toBe(
+        "retry",
+      );
+    const exhausted = liveOddsErrorRetryDecision(throttled, 5);
+    expect(exhausted.action).toBe("exhausted");
+    expect(liveOddsSqsFailureResponse("message-5", exhausted.action)).toEqual({
+      batchItemFailures: [{ itemIdentifier: "message-5" }],
+    });
+    const validation = Object.assign(new Error("deterministic failure"), {
+      name: "ValidationException",
+    });
+    expect(liveOddsErrorRetryDecision(validation, 1).action).toBe("stop");
+    expect(liveOddsSqsFailureResponse("message-terminal", "stop")).toEqual({
+      batchItemFailures: [],
+    });
+  });
+  it("keeps retry ownership when visibility extension fails terminally", async () => {
+    await expect(
+      retainLiveOddsSqsRetryOwnership(
+        {
+          messageId: "message-storage",
+          receiveCount: 2,
+          receiptHandle: "receipt",
+        },
+        { action: "retry" },
+        () =>
+          Promise.reject(
+            Object.assign(new Error("sensitive queue detail"), {
+              name: "AccessDeniedException",
+            }),
+          ),
+      ),
+    ).resolves.toEqual({
+      batchItemFailures: [{ itemIdentifier: "message-storage" }],
+    });
   });
   it("bounds provider-directed visibility without retrying early", () => {
     expect(
@@ -292,6 +453,41 @@ describe("intra-tick fast lane", () => {
     });
     expect(attempts).toBe(2);
     expect(passes).toBe(1);
+  });
+
+  it("surfaces retryable storage summaries and thrown failures to the FIFO owner", async () => {
+    for (const [runPass, expected] of [
+      [
+        () =>
+          Promise.resolve([
+            { pages: 0, status: "failed", reason: "storage-throttled" },
+          ]),
+        "storage-throttled",
+      ],
+      [
+        () =>
+          Promise.reject(
+            Object.assign(new Error("sensitive storage detail"), {
+              name: "ServiceUnavailable",
+            }),
+          ),
+        "storage-unavailable",
+      ],
+    ] as const) {
+      const clock = virtualClock();
+      const decisions: string[] = [];
+      const passes = await runLiveOddsFastLane({
+        budgetMs: 20_000,
+        pauseMs: 10_000,
+        runPass,
+        materialize: () => Promise.resolve(),
+        onRetryableStorageFailure: ({ reason }) => decisions.push(reason),
+        sleep: clock.sleep,
+        now: clock.now,
+      });
+      expect(passes).toBe(0);
+      expect(decisions).toEqual([expected]);
+    }
   });
 
   it("respects time consumed by the passes themselves", async () => {

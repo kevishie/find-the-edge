@@ -52,9 +52,11 @@ import { LandingPage } from "./landing-page";
 import { PublicLegalPage } from "./public-legal";
 import {
   GamesClientError,
+  isRequestCancellation,
   type OddsHistoryDto,
   type RetrospectiveDto,
   type WatchlistEntryDto,
+  type OwnedSessionCapabilitiesDto,
 } from "./api";
 import {
   accountHint,
@@ -218,6 +220,7 @@ const GameDetail = lazy(() => import("./game-detail"));
 const Watchlist = lazy(() =>
   import("./watchlist").then((module) => ({ default: module.Watchlist })),
 );
+const AdminUsers = lazy(() => import("./admin-users"));
 const PerformanceDashboard = lazy(() => import("./performance"));
 const RetrospectivesList = lazy(() =>
   import("./retrospectives").then((module) => ({
@@ -425,6 +428,7 @@ export interface UiGamesPage {
     readonly odds:
       | {
           readonly state: "available";
+          readonly source?: "canonical-closing" | "pregame-snapshot";
           readonly selections: readonly {
             readonly marketKey: string;
             readonly selectionKey: string;
@@ -551,7 +555,7 @@ export interface UiGamesClient {
     retrospectiveId: string,
     signal: AbortSignal,
   ): Promise<readonly RetrospectiveDto[]>;
-  canReviewRetrospectives?(): Promise<boolean>;
+  canReviewRetrospectives?(signal: AbortSignal): Promise<boolean>;
   reviewRetrospective?(
     version: RetrospectiveDto,
     input: {
@@ -565,7 +569,7 @@ export interface UiGamesClient {
     signal: AbortSignal,
   ): Promise<readonly StrategyExperimentDto[]>;
   getExperiment?(id: string, signal: AbortSignal): Promise<unknown>;
-  canManageExperiments?(): Promise<boolean>;
+  canManageExperiments?(signal: AbortSignal): Promise<boolean>;
   manageExperiment?(
     id: string,
     action: "approve" | "promote" | "rollback",
@@ -599,6 +603,16 @@ export interface UiGamesClient {
   revokeSession?: NonNullable<import("./api").GamesClient["revokeSession"]>;
   startCheckout?: NonNullable<import("./api").GamesClient["startCheckout"]>;
   entitlement?: NonNullable<import("./api").GamesClient["entitlement"]>;
+  getSessionCapabilities?: NonNullable<
+    import("./api").GamesClient["getSessionCapabilities"]
+  >;
+  listAdminUsers?: NonNullable<import("./api").GamesClient["listAdminUsers"]>;
+  grantAdminUserAccess?: NonNullable<
+    import("./api").GamesClient["grantAdminUserAccess"]
+  >;
+  revokeAdminUserAccess?: NonNullable<
+    import("./api").GamesClient["revokeAdminUserAccess"]
+  >;
 }
 export interface StrategyExperimentDto {
   readonly experimentId: string;
@@ -658,14 +672,19 @@ export interface WatchlistControl {
 }
 
 type WatchlistState =
-  | { readonly kind: "loading" }
+  | { readonly kind: "loading"; readonly ownerKey: string }
   | {
       readonly kind: "ready";
+      readonly ownerKey: string;
       readonly entries: readonly WatchlistEntryDto[];
       readonly loadedAt: string;
     }
-  | { readonly kind: "signed-out" }
-  | { readonly kind: "unavailable"; readonly reason: string };
+  | { readonly kind: "signed-out"; readonly ownerKey: string }
+  | {
+      readonly kind: "unavailable";
+      readonly ownerKey: string;
+      readonly reason: string;
+    };
 
 const byKickoff = (
   entries: readonly WatchlistEntryDto[],
@@ -693,6 +712,11 @@ const withoutEntry = (
 export function useWatchlistControl(
   client: GamesClientResult,
 ): WatchlistControl {
+  const sessionStore = useContext(SessionContext);
+  const session = useSession(sessionStore);
+  const sessionKey = session
+    ? `${session.accountId}\u0000${session.token}`
+    : "signed-out";
   const listWatchlist = client.ok ? client.value.listWatchlist : undefined;
   const addToWatchlist = client.ok ? client.value.addToWatchlist : undefined;
   const removeFromWatchlist = client.ok
@@ -700,9 +724,10 @@ export function useWatchlistControl(
     : undefined;
   const [state, setState] = useState<WatchlistState>(() =>
     listWatchlist
-      ? { kind: "loading" }
+      ? { kind: "loading", ownerKey: sessionKey }
       : {
           kind: "unavailable",
+          ownerKey: sessionKey,
           reason: "The watchlist is unavailable in this environment.",
         },
   );
@@ -722,29 +747,37 @@ export function useWatchlistControl(
       controller.abort();
       mutations.current = null;
     };
-  }, []);
+  }, [sessionKey]);
 
   useEffect(() => {
     if (!listWatchlist) return;
     const controller = new AbortController();
+    queueMicrotask(() => {
+      if (controller.signal.aborted) return;
+      setState({ kind: "loading", ownerKey: sessionKey });
+      setPending(new Set<string>());
+      setMutationError(null);
+    });
     listWatchlist(controller.signal)
       .then((page) => {
         if (controller.signal.aborted) return;
         setState({
           kind: "ready",
+          ownerKey: sessionKey,
           entries: page.items,
           loadedAt: new Date().toISOString(),
         });
       })
       .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || isRequestCancellation(error)) return;
         const code = error instanceof GamesClientError ? error.code : null;
         if (code === "authentication" || code === "forbidden") {
-          setState({ kind: "signed-out" });
+          setState({ kind: "signed-out", ownerKey: sessionKey });
           return;
         }
         setState({
           kind: "unavailable",
+          ownerKey: sessionKey,
           reason:
             code === "invalid-response"
               ? "The watchlist did not match its published contract, so none of it is shown."
@@ -752,7 +785,7 @@ export function useWatchlistControl(
         });
       });
     return () => controller.abort();
-  }, [generation, listWatchlist]);
+  }, [generation, listWatchlist, sessionKey]);
 
   const markPending = useCallback((eventId: string, active: boolean) => {
     setPending((current) => {
@@ -763,16 +796,25 @@ export function useWatchlistControl(
     });
   }, []);
 
+  const visibleState: WatchlistState = useMemo(
+    () =>
+      !listWatchlist || state.ownerKey === sessionKey
+        ? state
+        : { kind: "loading", ownerKey: sessionKey },
+    [listWatchlist, sessionKey, state],
+  );
+
   const add = useCallback(
     async (eventId: string): Promise<boolean> => {
       const signal = mutations.current?.signal;
-      if (!addToWatchlist || !signal) return false;
+      if (!addToWatchlist || !signal || visibleState.kind !== "ready")
+        return false;
       markPending(eventId, true);
       setMutationError(null);
       try {
         const entry = await addToWatchlist(eventId, signal);
         setState((current) =>
-          current.kind === "ready"
+          current.kind === "ready" && current.ownerKey === sessionKey
             ? {
                 ...current,
                 entries: byKickoff([
@@ -784,7 +826,7 @@ export function useWatchlistControl(
         );
         return true;
       } catch (error: unknown) {
-        if (signal.aborted) return false;
+        if (signal.aborted || isRequestCancellation(error)) return false;
         const code = error instanceof GamesClientError ? error.code : null;
         setMutationError(
           code === "authentication" || code === "forbidden"
@@ -798,24 +840,25 @@ export function useWatchlistControl(
         markPending(eventId, false);
       }
     },
-    [addToWatchlist, markPending],
+    [addToWatchlist, markPending, sessionKey, visibleState.kind],
   );
 
   const remove = useCallback(
     async (eventId: string): Promise<boolean> => {
       const signal = mutations.current?.signal;
-      if (!removeFromWatchlist || !signal) return false;
+      if (!removeFromWatchlist || !signal || visibleState.kind !== "ready")
+        return false;
       // Capture rollback data from the exact render that exposed the Remove
       // button. Mirroring entries through an effect leaves a brief window in
       // which the row is visible but its rollback snapshot is still stale.
       const removed =
-        state.kind === "ready"
-          ? state.entries.find((entry) => entry.eventId === eventId)
+        visibleState.kind === "ready"
+          ? visibleState.entries.find((entry) => entry.eventId === eventId)
           : undefined;
       markPending(eventId, true);
       setMutationError(null);
       setState((current) =>
-        current.kind === "ready"
+        current.kind === "ready" && current.ownerKey === sessionKey
           ? { ...current, entries: withoutEntry(current.entries, eventId) }
           : current,
       );
@@ -823,11 +866,11 @@ export function useWatchlistControl(
         await removeFromWatchlist(eventId, signal);
         return true;
       } catch (error: unknown) {
-        if (signal.aborted) return false;
+        if (signal.aborted || isRequestCancellation(error)) return false;
         // The row goes back exactly where it was; nothing was removed.
         if (removed)
           setState((current) =>
-            current.kind === "ready"
+            current.kind === "ready" && current.ownerKey === sessionKey
               ? {
                   ...current,
                   entries: byKickoff([
@@ -848,35 +891,36 @@ export function useWatchlistControl(
         markPending(eventId, false);
       }
     },
-    [markPending, removeFromWatchlist, state],
+    [markPending, removeFromWatchlist, sessionKey, visibleState],
   );
 
   const watched = useMemo(
     () =>
       new Set(
-        state.kind === "ready"
-          ? state.entries.map((entry) => entry.eventId)
+        visibleState.kind === "ready"
+          ? visibleState.entries.map((entry) => entry.eventId)
           : [],
       ),
-    [state],
+    [visibleState],
   );
 
   const retry = useCallback(() => {
-    setState({ kind: "loading" });
+    setState({ kind: "loading", ownerKey: sessionKey });
     setGeneration((value) => value + 1);
-  }, []);
+  }, [sessionKey]);
 
   return {
     availability:
-      state.kind === "ready"
+      visibleState.kind === "ready"
         ? "ready"
-        : state.kind === "loading"
+        : visibleState.kind === "loading"
           ? "loading"
-          : state.kind,
-    entries: state.kind === "ready" ? state.entries : [],
-    unavailableReason: state.kind === "unavailable" ? state.reason : null,
-    pending,
-    mutationError,
+          : visibleState.kind,
+    entries: visibleState.kind === "ready" ? visibleState.entries : [],
+    unavailableReason:
+      visibleState.kind === "unavailable" ? visibleState.reason : null,
+    pending: state.ownerKey === sessionKey ? pending : new Set<string>(),
+    mutationError: state.ownerKey === sessionKey ? mutationError : null,
     isWatched: (eventId: string) => watched.has(eventId),
     add,
     remove,
@@ -886,8 +930,10 @@ export function useWatchlistControl(
 
 function GlassNav({
   eventsSearch,
+  showAdmin,
 }: {
   readonly eventsSearch: Record<string, unknown>;
+  readonly showAdmin: boolean;
 }) {
   // Apple-glass behavior: the bar condenses while the page scrolls and
   // springs back to full size the moment scrolling rests.
@@ -955,6 +1001,18 @@ function GlassNav({
         </span>
         <span className="glass-label">Scanner</span>
       </Link>
+      {showAdmin && (
+        <Link
+          to="/admin/users"
+          className="glass-tab"
+          activeProps={{ className: "glass-tab active" }}
+        >
+          <span className="glass-icon" aria-hidden="true">
+            ⚙
+          </span>
+          <span className="glass-label">Admin</span>
+        </Link>
+      )}
     </nav>
   );
 }
@@ -1009,13 +1067,36 @@ function SessionBadge({ collapsed }: { readonly collapsed: boolean }) {
         </span>
       </span>
       <button type="button" className="shell-session-out" onClick={signOut}>
-        Sign out
+        <span aria-hidden="true">⇥</span>
+        <span className={collapsed ? "sr-only" : undefined}>Sign out</span>
       </button>
     </div>
   );
 }
 
 function AppShell() {
+  const client = useContext(GamesClientContext);
+  const session = useSession(useContext(SessionContext));
+  const [adminAccountId, setAdminAccountId] = useState<string | null>(null);
+  const showAdmin = session !== null && session.accountId === adminAccountId;
+  useEffect(() => {
+    const controller = new AbortController();
+    if (client.ok && client.value.getSessionCapabilities)
+      void client.value
+        .getSessionCapabilities(controller.signal)
+        .then((value) => {
+          if (!controller.signal.aborted)
+            setAdminAccountId(
+              value.capabilities.includes("accounts/access:manage")
+                ? value.accountId
+                : null,
+            );
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setAdminAccountId(null);
+        });
+    return () => controller.abort();
+  }, [client, session?.accountId]);
   const [navCollapsed, setNavCollapsed] = useState(() => {
     try {
       return window.localStorage.getItem("fte.navCollapsed") === "1";
@@ -1074,7 +1155,7 @@ function AppShell() {
         </div>
         {/* Only screens that are built out are advertised. The remaining
             routes still resolve for anyone holding a direct link. */}
-        <nav aria-label="Primary navigation">
+        <nav id="primary-navigation" aria-label="Primary navigation">
           {navCollapsed ? (
             <div className="nav-divider" aria-hidden="true" />
           ) : (
@@ -1127,33 +1208,54 @@ function AppShell() {
             title="Scanner"
           >
             <span className="nav-icon" aria-hidden="true">
-              ⚡
+              ✦
             </span>
             <span className={navCollapsed ? "sr-only" : "nav-label"}>
               Scanner
             </span>
           </Link>
+          {showAdmin && (
+            <Link
+              to="/admin/users"
+              activeProps={{ className: "active" }}
+              title="Admin users"
+            >
+              <span className="nav-icon" aria-hidden="true">
+                ⚙
+              </span>
+              <span className={navCollapsed ? "sr-only" : "nav-label"}>
+                Admin
+              </span>
+            </Link>
+          )}
         </nav>
         <SessionBadge collapsed={navCollapsed} />
-        <div className="nav-footer">
-          <button
-            type="button"
-            className="nav-toggle"
-            onClick={toggleNav}
-            aria-pressed={navCollapsed}
-            title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
-            aria-label={
-              navCollapsed ? "Expand navigation" : "Collapse navigation"
-            }
-          >
-            <span className="nav-toggle-glyph" aria-hidden="true">
-              {navCollapsed ? "»" : "«"}
-            </span>
-            {!navCollapsed && <span>Collapse</span>}
-          </button>
-        </div>
       </aside>
-      <GlassNav eventsSearch={eventsSearch} />
+      <button
+        type="button"
+        className="nav-toggle"
+        onClick={toggleNav}
+        aria-controls="primary-navigation"
+        aria-pressed={navCollapsed}
+        title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+        aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+      >
+        <svg
+          className="nav-toggle-glyph"
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          aria-hidden="true"
+        >
+          {navCollapsed ? (
+            <path d="M2 2L6 6L2 10M5 2L9 6L5 10" />
+          ) : (
+            <path d="M10 2L6 6L10 10M7 2L3 6L7 10" />
+          )}
+        </svg>
+      </button>
+      <GlassNav eventsSearch={eventsSearch} showAdmin={showAdmin} />
       <main>
         <Outlet />
         <footer>
@@ -2183,15 +2285,24 @@ function EventGameBlock({
               <span className="evb-flag">· {game.status}</span>
             )}
             {(() => {
-              // Pre-game collection freezes at first pitch: past kickoff the
-              // numbers are closing lines, not stale quotes. Age (and the
-              // stale alarm) only mean something before the start.
+              // Past kickoff, only provider-authored canonical evidence may
+              // be called a close. A missing close stays visibly unavailable;
+              // the final pregame poll must never impersonate settlement-time
+              // evidence merely because the scheduled start has passed.
               const started =
                 snapshotAt !== null &&
                 snapshotAt !== undefined &&
                 Date.parse(game.startsAt) <= Date.parse(snapshotAt);
-              if (started)
+              if (
+                started &&
+                game.odds.state === "available" &&
+                game.odds.source === "canonical-closing"
+              )
                 return <span className="evb-age">· closing lines</span>;
+              if (started)
+                return (
+                  <span className="evb-age">· closing data unavailable</span>
+                );
               // Staleness follows the same evidence the label shows: the
               // odds rows themselves. The metadata freshness flag tracks
               // schedule evidence, which legitimately idles for hours on an
@@ -3153,6 +3264,7 @@ function RootLayout() {
 const rootRoute = createRootRouteWithContext<{
   readonly session: SessionStore;
   readonly resolveEntitlement?: UiGamesClient["entitlement"];
+  readonly resolveCapabilities?: UiGamesClient["getSessionCapabilities"];
 }>()({
   beforeLoad: ({ context, location, abortController }) =>
     requireEntitledSession(
@@ -3224,16 +3336,34 @@ function SignInRoute() {
   const { returnUrl } = useSearch({ from: "/login" });
   const router = useRouter();
   return (
-    <Suspense fallback={<p role="status">Loading sign-in…</p>}>
+    <Suspense
+      fallback={
+        <main className="sign-in-page">
+          <SignInHomeLink />
+          <p role="status">Loading sign-in…</p>
+        </main>
+      }
+    >
       <SignInScreen
         client={useContext(GamesClientContext)}
         store={useContext(SessionContext)}
         from={returnUrl}
+        homeLink={<SignInHomeLink />}
         // The form is replaced rather than pushed: going back from where the
         // reader landed must not return them to a spent code.
         onSignedIn={(path) => router.history.replace(path)}
       />
     </Suspense>
+  );
+}
+
+function SignInHomeLink() {
+  return (
+    <Link to="/" className="sign-in-back" aria-label="Back to home">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="m15 18-6-6 6-6" />
+      </svg>
+    </Link>
   );
 }
 const signInRoute = createRoute({
@@ -3338,6 +3468,35 @@ const watchlistRoute = createRoute({
   beforeLoad: ({ context, location }) =>
     requireSession(context.session, location.pathname, location.searchStr),
   component: WatchlistRoute,
+});
+function AdminUsersRoute() {
+  const client = useContext(GamesClientContext);
+  return (
+    <Suspense fallback={<p role="status">Loading admin users…</p>}>
+      <AdminUsers client={client.ok ? client.value : null} />
+    </Suspense>
+  );
+}
+const adminUsersRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/admin/users",
+  beforeLoad: async ({ context, location, abortController }) => {
+    requireSession(context.session, location.pathname, location.searchStr);
+    if (!context.resolveCapabilities)
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: "/dashboard", replace: true });
+    let projection: OwnedSessionCapabilitiesDto;
+    try {
+      projection = await context.resolveCapabilities(abortController.signal);
+    } catch {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: "/dashboard", replace: true });
+    }
+    if (!projection.capabilities.includes("accounts/access:manage"))
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: "/dashboard", replace: true });
+  },
+  component: AdminUsersRoute,
 });
 const performanceRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -3526,6 +3685,7 @@ const routeTree = rootRoute.addChildren([
   scoutReportRoute,
   splitsRoute,
   watchlistRoute,
+  adminUsersRoute,
   performanceRoute,
   dataSourcesRoute,
   retrospectivesRoute,
@@ -3561,10 +3721,17 @@ export function App({
   const client = gamesClient ?? defaultGamesClient;
   const resolveEntitlement =
     routeEntitlement ?? (client.ok ? client.value.entitlement : undefined);
+  const resolveCapabilities = client.ok
+    ? client.value.getSessionCapabilities
+    : undefined;
   const [router] = useState(() =>
     createRouter({
       routeTree,
-      context: { session: sessionStore, resolveEntitlement },
+      context: {
+        session: sessionStore,
+        resolveEntitlement,
+        resolveCapabilities,
+      },
       ...(initialPath
         ? {
             history: createMemoryHistory({

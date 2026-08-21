@@ -34,13 +34,16 @@ Resources:
                   - apigateway:*
                   - cloudformation:*
                   - cloudfront:*
-                  - cloudwatch:*
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:TagResource
+                  - cloudwatch:UntagResource
                   - cognito-idp:*
                   - dynamodb:*
                   - events:*
                   - iam:*
                   - lambda:*
-                  - logs:*
                   - s3:*
                   - secretsmanager:*
                   - sns:*
@@ -81,13 +84,16 @@ Resources:
                   - apigateway:*
                   - cloudformation:*
                   - cloudfront:*
-                  - cloudwatch:*
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:TagResource
+                  - cloudwatch:UntagResource
                   - cognito-idp:*
                   - dynamodb:*
                   - events:*
                   - iam:*
                   - lambda:*
-                  - logs:*
                   - s3:*
                   - secretsmanager:*
                   - sns:*
@@ -101,8 +107,138 @@ Resources:
         - { Key: Environment, Value: production }
         - { Key: ManagedBy, Value: cloudformation }
 
+  StagingAuthorizationOperatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-actions-find-the-edge-staging-authorization-operator
+      Description: Exact-account authorization provisioning for FIND THE EDGE staging.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:kevishie@880315/find-the-edge@1301138962:environment:staging
+      Policies:
+        - PolicyName: find-the-edge-staging-authorization-operator
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:ListStackResources
+                Resource: arn:aws:cloudformation:us-east-1:228246988391:stack/FindTheEdge-staging-Foundation/*
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                Resource: arn:aws:dynamodb:us-east-1:228246988391:table/FindTheEdge-staging-Foundation-EventIngestionTable*
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: arn:aws:dynamodb:us-east-1:228246988391:table/FindTheEdge-staging-Foundation-EventIngestionTable*
+                Condition:
+                  ForAllValues:StringLike:
+                    dynamodb:LeadingKeys:
+                      - ACCOUNT#*
+                  "Null":
+                    dynamodb:LeadingKeys: "false"
+              - Effect: Allow
+                Action:
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:PutItem
+                Resource: arn:aws:dynamodb:us-east-1:228246988391:table/FindTheEdge-staging-Foundation-EventIngestionTable*
+                Condition:
+                  StringEquals:
+                    dynamodb:EnclosingOperation: TransactWriteItems
+                  ForAllValues:StringLike:
+                    dynamodb:LeadingKeys:
+                      - ACCOUNT#*
+                  "Null":
+                    dynamodb:LeadingKeys: "false"
+      Tags:
+        - { Key: Project, Value: find-the-edge }
+        - { Key: Environment, Value: staging }
+        - { Key: ManagedBy, Value: cloudformation }
+
+  ProductionAuthorizationOperatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-actions-find-the-edge-production-authorization-operator
+      Description: Exact-account authorization provisioning for FIND THE EDGE production.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:kevishie@880315/find-the-edge@1301138962:environment:production
+      Policies:
+        - PolicyName: find-the-edge-production-authorization-operator
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:ListStackResources
+                Resource: arn:aws:cloudformation:us-east-1:228246988391:stack/FindTheEdge-prod-Foundation/*
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                Resource: arn:aws:dynamodb:us-east-1:228246988391:table/FindTheEdge-prod-Foundation-EventIngestionTable*
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: arn:aws:dynamodb:us-east-1:228246988391:table/FindTheEdge-prod-Foundation-EventIngestionTable*
+                Condition:
+                  ForAllValues:StringLike:
+                    dynamodb:LeadingKeys:
+                      - ACCOUNT#*
+                  "Null":
+                    dynamodb:LeadingKeys: "false"
+              - Effect: Allow
+                Action:
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:PutItem
+                Resource: arn:aws:dynamodb:us-east-1:228246988391:table/FindTheEdge-prod-Foundation-EventIngestionTable*
+                Condition:
+                  StringEquals:
+                    dynamodb:EnclosingOperation: TransactWriteItems
+                  ForAllValues:StringLike:
+                    dynamodb:LeadingKeys:
+                      - ACCOUNT#*
+                  "Null":
+                    dynamodb:LeadingKeys: "false"
+      Tags:
+        - { Key: Project, Value: find-the-edge }
+        - { Key: Environment, Value: production }
+        - { Key: ManagedBy, Value: cloudformation }
+
 Outputs:
   StagingDeployRoleArn:
     Value: !GetAtt StagingDeployRole.Arn
   ProductionDeployRoleArn:
     Value: !GetAtt ProductionDeployRole.Arn
+  StagingAuthorizationOperatorRoleArn:
+    Value: !GetAtt StagingAuthorizationOperatorRole.Arn
+  ProductionAuthorizationOperatorRoleArn:
+    Value: !GetAtt ProductionAuthorizationOperatorRole.Arn

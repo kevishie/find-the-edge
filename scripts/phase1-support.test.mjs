@@ -7,10 +7,98 @@ import test from "node:test";
 import {
   checksums,
   failureDetail,
+  parseAdminAccessRollout,
+  parseProductAccessEnforcement,
+  safeDeploymentConfig,
   safeDevConfig,
   validateSafeDevConfig,
+  validateSafeDeploymentConfig,
+  validateRecurringRuleBinding,
   validateTemplate,
 } from "./phase1-support.mjs";
+
+test("recurring-rule validation binds the exact retained function and schedule", () => {
+  const template = {
+    Resources: {
+      ProviderLandingWorker: {
+        Type: "AWS::Lambda::Function",
+        Properties: {
+          Environment: {
+            Variables: {
+              FTE_AWS_STAGE: "staging",
+              FTE_EVENT_TABLE: { Ref: "Table" },
+              FTE_SHARP_API_SECRET_ID: { Ref: "Secret" },
+            },
+          },
+        },
+      },
+      Decoy: { Type: "AWS::Lambda::Function", Properties: {} },
+      Rule: {
+        Type: "AWS::Events::Rule",
+        Properties: {
+          State: "ENABLED",
+          ScheduleExpression: "cron(15 5,13,21 * * ? *)",
+          Targets: [
+            { Arn: { "Fn::GetAtt": ["ProviderLandingWorker", "Arn"] } },
+          ],
+        },
+      },
+    },
+    Outputs: {
+      ProviderLandingFunctionName: {
+        Value: { Ref: "ProviderLandingWorker" },
+      },
+    },
+  };
+  const expected = {
+    outputName: "ProviderLandingFunctionName",
+    scheduleExpression: "cron(15 5,13,21 * * ? *)",
+    expectedState: "ENABLED",
+    stage: "staging",
+  };
+  assert.doesNotThrow(() => validateRecurringRuleBinding(template, expected));
+
+  const decoy = structuredClone(template);
+  decoy.Resources.Rule.Properties.Targets[0].Arn["Fn::GetAtt"][0] = "Decoy";
+  assert.throws(
+    () => validateRecurringRuleBinding(decoy, expected),
+    /exactly one ENABLED/,
+  );
+  const wrongCadence = structuredClone(template);
+  wrongCadence.Resources.Rule.Properties.ScheduleExpression = "rate(1 minute)";
+  assert.throws(
+    () => validateRecurringRuleBinding(wrongCadence, expected),
+    /exactly one ENABLED/,
+  );
+  const wrongState = structuredClone(template);
+  wrongState.Resources.Rule.Properties.State = "DISABLED";
+  assert.throws(
+    () => validateRecurringRuleBinding(wrongState, expected),
+    /exactly one ENABLED/,
+  );
+  const missingOutput = structuredClone(template);
+  delete missingOutput.Outputs.ProviderLandingFunctionName;
+  assert.throws(
+    () => validateRecurringRuleBinding(missingOutput, expected),
+    /retained Lambda function/,
+  );
+  const jointlyRetargeted = structuredClone(template);
+  jointlyRetargeted.Outputs.ProviderLandingFunctionName.Value.Ref = "Decoy";
+  jointlyRetargeted.Resources.Rule.Properties.Targets[0].Arn["Fn::GetAtt"][0] =
+    "Decoy";
+  assert.throws(
+    () => validateRecurringRuleBinding(jointlyRetargeted, expected),
+    /exact retained worker/,
+  );
+  const fanout = structuredClone(template);
+  fanout.Resources.Rule.Properties.Targets.push({
+    Arn: { "Fn::GetAtt": ["Decoy", "Arn"] },
+  });
+  assert.throws(
+    () => validateRecurringRuleBinding(fanout, expected),
+    /exactly one ENABLED/,
+  );
+});
 
 test("failed commands report their own diagnostics without leaking credentials", () => {
   assert.equal(
@@ -39,6 +127,91 @@ test("safe defaults are credential-free dev placeholders", () => {
     "events/scouting:read",
     "events/scouting:write",
   ]);
+});
+
+test("product access enforcement accepts only exact boolean strings", () => {
+  assert.equal(parseProductAccessEnforcement(undefined), false);
+  assert.equal(
+    parseProductAccessEnforcement("false", { required: true }),
+    false,
+  );
+  assert.equal(parseProductAccessEnforcement("true", { required: true }), true);
+  assert.throws(
+    () => parseProductAccessEnforcement(undefined, { required: true }),
+    /required/,
+  );
+  for (const value of ["", "1", "TRUE", " false", "false "])
+    assert.throws(() => parseProductAccessEnforcement(value), /true or false/);
+});
+
+test("protected deployment config requires its explicit enforcement value", () => {
+  assert.throws(() => safeDeploymentConfig({}), /required/);
+  const stagingConfig = safeDeploymentConfig({
+    FTE_AWS_STAGE: "staging",
+    FTE_PRODUCT_ACCESS_ENFORCED: "false",
+  });
+  assert.equal(stagingConfig.productAccessEnforced, false);
+  assert.equal(stagingConfig.schedulerEnabled, false);
+  assert.doesNotThrow(() => validateSafeDeploymentConfig(stagingConfig));
+  const prodConfig = safeDeploymentConfig({
+    FTE_AWS_STAGE: "prod",
+    FTE_PRODUCT_ACCESS_ENFORCED: "false",
+  });
+  assert.equal(prodConfig.schedulerEnabled, true);
+  assert.doesNotThrow(() => validateSafeDeploymentConfig(prodConfig));
+  assert.throws(
+    () =>
+      safeDeploymentConfig({
+        FTE_AWS_STAGE: "staging",
+        FTE_PRODUCT_ACCESS_ENFORCED: "false",
+        FTE_UPCOMING_SCHEDULER_ENABLED: "true",
+      }),
+    /must be false for staging/,
+  );
+  assert.throws(
+    () =>
+      safeDeploymentConfig({
+        FTE_AWS_STAGE: "prod",
+        FTE_PRODUCT_ACCESS_ENFORCED: "false",
+        FTE_UPCOMING_SCHEDULER_ENABLED: "false",
+      }),
+    /must be true for prod/,
+  );
+  assert.throws(
+    () =>
+      safeDeploymentConfig({
+        FTE_AWS_STAGE: "prod",
+        FTE_PRODUCT_ACCESS_ENFORCED: "true",
+      }),
+    /cutover/,
+  );
+});
+
+test("admin rollout defaults disabled and requires an exact fresh or verified ceremony", () => {
+  assert.deepEqual(parseAdminAccessRollout({}), {
+    enabled: false,
+    mode: "disabled",
+  });
+  const ownerAccountId = `account:${"a".repeat(64)}`;
+  for (const mode of ["fresh", "verified"])
+    assert.deepEqual(
+      parseAdminAccessRollout({
+        FTE_ADMIN_ACCESS_ENABLED: "true",
+        FTE_ADMIN_BOOTSTRAP_MODE: mode,
+        FTE_OWNER_ACCOUNT_ID: ownerAccountId,
+      }),
+      { enabled: true, mode, ownerAccountId },
+    );
+  assert.throws(() =>
+    parseAdminAccessRollout({ FTE_ADMIN_ACCESS_ENABLED: "true" }),
+  );
+  assert.throws(() =>
+    parseAdminAccessRollout({
+      FTE_ADMIN_ACCESS_ENABLED: "false",
+      FTE_ADMIN_BOOTSTRAP_MODE: "verified",
+      FTE_OWNER_ACCOUNT_ID: ownerAccountId,
+    }),
+  );
 });
 
 test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs", () => {
@@ -75,7 +248,7 @@ test("rejects prod, wildcard origins, HTTP endpoints, and malformed secret ARNs"
 
 function validTemplate() {
   const exactSpaCode =
-    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
+    "function handler(event) {\n  var request = event.request;\n  if (request.uri === '/auth/callback' || request.uri === '/login' || request.uri === '/subscribe' || request.uri === '/sign-in' || request.uri === '/privacy' || request.uri === '/terms' || request.uri === '/events' || request.uri.indexOf('/events/') === 0 || request.uri === '/games' || request.uri.indexOf('/games/') === 0 || request.uri === '/splits' || request.uri === '/watchlist' || request.uri === '/dashboard' || request.uri === '/performance' || request.uri === '/admin/users' || request.uri === '/data-sources' || request.uri.indexOf('/data-sources/') === 0 || request.uri === '/retrospectives' || request.uri.indexOf('/retrospectives/') === 0 || request.uri === '/experiments' || request.uri.indexOf('/experiments/') === 0 || request.uri.indexOf('/scout-jobs/') === 0) {\n    request.uri = '/index.html';\n  }\n  return request;\n}";
   const webOrigin = {
     "Fn::Join": [
       "",
@@ -528,9 +701,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "POST /retrospectives/{eventId}/review",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/retrospectives:approve"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -566,9 +737,7 @@ function validTemplate() {
             Properties: {
               RouteKey: `POST /strategy-experiments/{eventId}/${action}`,
               ApiId: { Ref: "Api" },
-              AuthorizationType: "JWT",
-              AuthorizerId: { Ref: "Auth" },
-              AuthorizationScopes: ["events/strategies:promote"],
+              AuthorizationType: "NONE",
               Target: {
                 "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
               },
@@ -581,9 +750,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /events",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/events:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -605,9 +772,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "POST /events/{eventId}/scout",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:write"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -618,9 +783,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /scout-jobs/{jobId}",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -631,9 +794,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "POST /scout-jobs/{jobId}/retry",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:write"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -644,9 +805,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /scout-jobs/{jobId}/report",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -657,9 +816,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /scout-reports/{reportId}/versions",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -670,9 +827,7 @@ function validTemplate() {
         Properties: {
           RouteKey: "GET /scout-reports/{reportId}/versions/{versionNumber}",
           ApiId: { Ref: "Api" },
-          AuthorizationType: "JWT",
-          AuthorizerId: { Ref: "Auth" },
-          AuthorizationScopes: ["events/scouting:read"],
+          AuthorizationType: "NONE",
           Target: {
             "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
           },
@@ -685,6 +840,12 @@ function validTemplate() {
           ["AuthSessionRefreshRoute", "POST /auth/session/refresh"],
           ["AuthSessionRevokeRoute", "POST /auth/session/revoke"],
           ["AuthSessionCapabilitiesRoute", "GET /auth/session/capabilities"],
+          ["AdminUsersRoute", "GET /admin/users"],
+          ["AdminGrantRoute", "POST /admin/users/grants"],
+          [
+            "AdminRevokeRoute",
+            "DELETE /admin/users/{directoryId}/manual-grant",
+          ],
           ["BillingWebhookRoute", "POST /billing/webhook"],
           ["BillingEntitlementRoute", "GET /billing/entitlement"],
           ["BillingCheckoutRoute", "POST /billing/checkout"],
@@ -716,8 +877,7 @@ function validTemplate() {
             Properties: {
               RouteKey: routeKey,
               ApiId: { Ref: "Api" },
-              AuthorizationType: "JWT",
-              AuthorizerId: { Ref: "Auth" },
+              AuthorizationType: "NONE",
               Target: {
                 "Fn::Join": ["", ["integrations/", { Ref: "Integration" }]],
               },
@@ -725,17 +885,6 @@ function validTemplate() {
           },
         ]),
       ),
-      Auth: {
-        Type: "AWS::ApiGatewayV2::Authorizer",
-        Properties: {
-          ApiId: { Ref: "Api" },
-          AuthorizerType: "JWT",
-          JwtConfiguration: {
-            Issuer: { "Fn::GetAtt": ["Pool", "ProviderURL"] },
-            Audience: [{ Ref: "Client" }, { Ref: "ReviewerClient" }],
-          },
-        },
-      },
       Integration: {
         Type: "AWS::ApiGatewayV2::Integration",
         Properties: {
@@ -747,7 +896,15 @@ function validTemplate() {
       SeedRole: { Type: "AWS::IAM::Role", Properties: {} },
       ApiLambda: {
         Type: "AWS::Lambda::Function",
-        Properties: { Role: { "Fn::GetAtt": ["ApiRole", "Arn"] } },
+        Properties: {
+          Role: { "Fn::GetAtt": ["ApiRole", "Arn"] },
+          Environment: {
+            Variables: {
+              FTE_PRODUCT_ACCESS_ENFORCED: "false",
+              FTE_ADMIN_ACCESS_ENABLED: "false",
+            },
+          },
+        },
       },
       Seed: {
         Type: "AWS::Lambda::Function",
@@ -891,6 +1048,7 @@ function validTemplate() {
         },
       },
       LiveOddsIngestionFunctionName: { Value: { Ref: "Seed" } },
+      ProviderLandingFunctionName: { Value: { Ref: "Seed" } },
       SharpApiSecretName: { Value: "find-the-edge/dev/sharpapi" },
       WebOrigin: { Value: webOrigin },
       WebDistributionId: { Value: { Ref: "Distribution" } },
@@ -934,6 +1092,8 @@ const templateConfig = {
   webOrigin: "https://app.example.com",
   issuer: "https://issuer.example.com",
   audience: "audience",
+  productAccessEnforced: false,
+  adminAccess: { enabled: false, mode: "disabled" },
 };
 
 test("template validation structurally binds public reads, outputs, and scoped IAM", () => {
@@ -1092,7 +1252,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
   wrongApi.Resources.Route.Properties.ApiId = { Ref: "OtherApi" };
   assert.throws(
     () => validateTemplate(wrongApi, templateConfig),
-    /public|scoped/i,
+    /public|scoped|ordinary|elevated/i,
   );
   for (const routeId of [
     "Route",
@@ -1106,21 +1266,29 @@ test("template validation structurally binds public reads, outputs, and scoped I
     delete missingRoute.Resources[routeId];
     assert.throws(
       () => validateTemplate(missingRoute, templateConfig),
-      /public|scoped/,
+      /public|scoped|ordinary|elevated/i,
     );
   }
-  for (const [routeId, wrongScope] of [
-    ["ScoutCreateRoute", "events/scouting:read"],
-    ["ScoutStatusRoute", "events/scouting:write"],
-    ["ScoutRetryRoute", "events/events:read"],
+  for (const routeId of [
+    "EventsRoute",
+    "ScoutCreateRoute",
+    "ScoutStatusRoute",
+    "ScoutRetryRoute",
+    "ScoutReportByJobRoute",
+    "ScoutReportVersionsRoute",
+    "ScoutReportVersionRoute",
+    "WatchlistListRoute",
+    "WatchlistAddRoute",
+    "WatchlistRemoveRoute",
   ]) {
     const wrongScoutingScope = structuredClone(template);
-    wrongScoutingScope.Resources[routeId].Properties.AuthorizationScopes = [
-      wrongScope,
-    ];
+    wrongScoutingScope.Resources[routeId].Properties.AuthorizationType = "JWT";
+    wrongScoutingScope.Resources[routeId].Properties.AuthorizerId = {
+      Ref: "Auth",
+    };
     assert.throws(
       () => validateTemplate(wrongScoutingScope, templateConfig),
-      /scoped/,
+      /owned routes/i,
     );
   }
   const extraRoute = structuredClone(template);
@@ -1128,7 +1296,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
   extraRoute.Resources.ExtraRoute.Properties.RouteKey = "GET /extra";
   assert.throws(
     () => validateTemplate(extraRoute, templateConfig),
-    /public|scoped/,
+    /public|scoped|ordinary|elevated/i,
   );
   for (const mutate of [
     (copy) => delete copy.Resources.EventsRoute.Properties.Target,
@@ -1158,24 +1326,38 @@ test("template validation structurally binds public reads, outputs, and scoped I
   };
   assert.throws(
     () => validateTemplate(publicRoute, templateConfig),
-    /public|\$default/,
+    /public|\$default|ordinary|elevated/i,
   );
-  for (const change of [
-    { AuthorizerId: { Ref: "OtherAuth" } },
-    { AuthorizationScopes: ["other:read"] },
-    { AuthorizationScopes: undefined },
-  ]) {
-    const weakRoute = structuredClone(template);
-    weakRoute.Resources.OtherRoute = {
-      Type: "AWS::ApiGatewayV2::Route",
-      Properties: {
-        ...weakRoute.Resources.Route.Properties,
-        RouteKey: "GET /events",
-        ...change,
-      },
-    };
-    assert.throws(() => validateTemplate(weakRoute, templateConfig), /public/);
-  }
+  for (const routeId of [
+    "RetrospectiveReviewRoute",
+    "StrategyExperimentapproveRoute",
+    "StrategyExperimentpromoteRoute",
+    "StrategyExperimentrollbackRoute",
+  ])
+    for (const change of [
+      { AuthorizationType: "JWT", AuthorizerId: { Ref: "OtherAuth" } },
+      { AuthorizerId: { Ref: "OtherAuth" } },
+      { AuthorizationScopes: ["other:read"] },
+    ]) {
+      const weakRoute = structuredClone(template);
+      Object.assign(weakRoute.Resources[routeId].Properties, change);
+      assert.throws(
+        () => validateTemplate(weakRoute, templateConfig),
+        /ordinary|elevated/i,
+      );
+    }
+  const staleAuthorizer = structuredClone(template);
+  staleAuthorizer.Resources.StaleAuthorizer = {
+    Type: "AWS::ApiGatewayV2::Authorizer",
+    Properties: {
+      ApiId: { Ref: "Api" },
+      AuthorizerType: "JWT",
+    },
+  };
+  assert.throws(
+    () => validateTemplate(staleAuthorizer, templateConfig),
+    /zero API Gateway authorizers/,
+  );
   const wildcardIam = structuredClone(template);
   wildcardIam.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Resource =
     "*";
@@ -1319,7 +1501,7 @@ test("template validation structurally binds public reads, outputs, and scoped I
     mutation(authorizedIdentity.Resources.AuthOtpVerifyRoute);
     assert.throws(
       () => validateTemplate(authorizedIdentity, templateConfig),
-      /Public reads must remain public/,
+      /owned routes/i,
     );
   }
   for (const routeId of [
@@ -1333,25 +1515,16 @@ test("template validation structurally binds public reads, outputs, and scoped I
     delete missingIdentityRoute.Resources[routeId];
     assert.throws(
       () => validateTemplate(missingIdentityRoute, templateConfig),
-      /public|scoped/,
+      /public|scoped|ordinary|elevated/i,
     );
   }
-  for (const mutation of [
-    (route) => {
-      route.Properties.AuthorizationType = "NONE";
-      delete route.Properties.AuthorizerId;
-    },
-    (route) => {
-      route.Properties.AuthorizationScopes = ["events/events:read"];
-    },
-  ]) {
-    const unscopedWatchlist = structuredClone(template);
-    mutation(unscopedWatchlist.Resources.WatchlistRemoveRoute);
-    assert.throws(
-      () => validateTemplate(unscopedWatchlist, templateConfig),
-      /Public reads must remain public/,
-    );
-  }
+  const scopedWatchlist = structuredClone(template);
+  scopedWatchlist.Resources.WatchlistRemoveRoute.Properties.AuthorizationScopes =
+    ["events/events:read"];
+  assert.throws(
+    () => validateTemplate(scopedWatchlist, templateConfig),
+    /owned routes/i,
+  );
   const denyOnly = structuredClone(template);
   denyOnly.Resources.ApiPolicy.Properties.PolicyDocument.Statement[0].Effect =
     "Deny";
@@ -1381,6 +1554,50 @@ test("template validation structurally binds public reads, outputs, and scoped I
       /API output/,
     );
   }
+});
+
+test("template validation binds product access to the shared API Lambda", () => {
+  const enabled = validTemplate();
+  enabled.Resources.ApiLambda.Properties.Environment.Variables.FTE_PRODUCT_ACCESS_ENFORCED =
+    "true";
+  assert.doesNotThrow(() =>
+    validateTemplate(enabled, {
+      ...templateConfig,
+      productAccessEnforced: true,
+    }),
+  );
+  assert.throws(
+    () => validateTemplate(enabled, templateConfig),
+    /product access enforcement/i,
+  );
+  assert.throws(
+    () =>
+      validateTemplate(validTemplate(), {
+        ...templateConfig,
+        productAccessEnforced: undefined,
+      }),
+    /explicit boolean/i,
+  );
+});
+
+test("template validation admits only the explicitly selected admin rollout", () => {
+  const enabled = validTemplate();
+  const ownerAccountId = `account:${"a".repeat(64)}`;
+  Object.assign(enabled.Resources.ApiLambda.Properties.Environment.Variables, {
+    FTE_ADMIN_ACCESS_ENABLED: "true",
+    FTE_ADMIN_BOOTSTRAP_MODE: "verified",
+    FTE_OWNER_ACCOUNT_ID: ownerAccountId,
+  });
+  assert.doesNotThrow(() =>
+    validateTemplate(enabled, {
+      ...templateConfig,
+      adminAccess: { enabled: true, mode: "verified", ownerAccountId },
+    }),
+  );
+  assert.throws(
+    () => validateTemplate(enabled, templateConfig),
+    /admin access/i,
+  );
 });
 
 test("checksum walk rejects symlinks without following them", async (t) => {
